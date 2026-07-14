@@ -211,11 +211,11 @@ export const {
 
       event.subscribe((event, { directory, workspace }) => {
         switch (event.type) {
-          case "server.instance.disposed":
-            pendingDeltas.clear()
-            if (deltaTimer) { clearTimeout(deltaTimer); deltaTimer = undefined }
-            void bootstrap()
-            break
+        case "server.instance.disposed":
+          pendingDeltas.clear()
+          if (deltaTimer) { clearTimeout(deltaTimer); deltaTimer = undefined }
+          void bootstrap()
+          break
         case "permission.replied": {
           const requests = store.permission[event.properties.sessionID]
           if (!requests) break
@@ -411,66 +411,66 @@ export const {
           }
           break
         }
-          case "message.part.updated": {
-            // full snapshot supersedes any buffered deltas for this part
-            dropPendingDeltas(event.properties.part.messageID, event.properties.part.id)
-            touchPart(event.properties.part.sessionID, event.properties.part.id)
-            const parts = store.part[event.properties.part.messageID]
-            if (!parts) {
-              setStore("part", event.properties.part.messageID, [event.properties.part])
-              break
-            }
-            const result = search(parts, event.properties.part.id, (p) => p.id)
-            if (result.found) {
-              setStore("part", event.properties.part.messageID, result.index, reconcile(event.properties.part))
-              break
-            }
+        case "message.part.updated": {
+          // full snapshot supersedes any buffered deltas for this part
+          dropPendingDeltas(event.properties.part.messageID, event.properties.part.id)
+          touchPart(event.properties.part.sessionID, event.properties.part.id)
+          const parts = store.part[event.properties.part.messageID]
+          if (!parts) {
+            setStore("part", event.properties.part.messageID, [event.properties.part])
+            break
+          }
+          const result = search(parts, event.properties.part.id, (p) => p.id)
+          if (result.found) {
+            setStore("part", event.properties.part.messageID, result.index, reconcile(event.properties.part))
+            break
+          }
+          setStore(
+            "part",
+            event.properties.part.messageID,
+            produce((draft) => {
+              draft.splice(result.index, 0, event.properties.part)
+            }),
+          )
+          break
+        }
+
+        case "message.part.delta": {
+          const parts = store.part[event.properties.messageID]
+          if (!parts) break
+          const result = search(parts, event.properties.partID, (p) => p.id)
+          if (!result.found) break
+          touchPart(event.properties.sessionID, event.properties.partID)
+          const key = `${event.properties.messageID}|${event.properties.partID}|${event.properties.field}`
+          const pending = pendingDeltas.get(key)
+          if (pending) pending.delta += event.properties.delta
+          else
+            pendingDeltas.set(key, {
+              messageID: event.properties.messageID,
+              partID: event.properties.partID,
+              field: event.properties.field,
+              delta: event.properties.delta,
+            })
+          if (!deltaTimer) deltaTimer = setTimeout(flushDeltas, 40)
+          break
+        }
+
+        case "message.part.removed": {
+          dropPendingDeltas(event.properties.messageID, event.properties.partID)
+          touchPart(event.properties.sessionID, event.properties.partID)
+          const parts = store.part[event.properties.messageID]
+          const result = search(parts, event.properties.partID, (p) => p.id)
+          if (result.found) {
             setStore(
               "part",
-              event.properties.part.messageID,
+              event.properties.messageID,
               produce((draft) => {
-                draft.splice(result.index, 0, event.properties.part)
+                draft.splice(result.index, 1)
               }),
             )
-            break
           }
-
-          case "message.part.delta": {
-            const parts = store.part[event.properties.messageID]
-            if (!parts) break
-            const result = search(parts, event.properties.partID, (p) => p.id)
-            if (!result.found) break
-            touchPart(event.properties.sessionID, event.properties.partID)
-            const key = `${event.properties.messageID}|${event.properties.partID}|${event.properties.field}`
-            const pending = pendingDeltas.get(key)
-            if (pending) pending.delta += event.properties.delta
-            else
-              pendingDeltas.set(key, {
-                messageID: event.properties.messageID,
-                partID: event.properties.partID,
-                field: event.properties.field,
-                delta: event.properties.delta,
-              })
-            if (!deltaTimer) deltaTimer = setTimeout(flushDeltas, 40)
-            break
-          }
-
-          case "message.part.removed": {
-            dropPendingDeltas(event.properties.messageID, event.properties.partID)
-            touchPart(event.properties.sessionID, event.properties.partID)
-            const parts = store.part[event.properties.messageID]
-            const result = search(parts, event.properties.partID, (p) => p.id)
-            if (result.found) {
-              setStore(
-                "part",
-                event.properties.messageID,
-                produce((draft) => {
-                  draft.splice(result.index, 1)
-                }),
-              )
-            }
-            break
-          }
+          break
+        }
 
         case "lsp.updated": {
           const workspace = project.workspace.current()
