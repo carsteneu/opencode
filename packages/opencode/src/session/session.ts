@@ -634,11 +634,14 @@ const layer: Layer.Layer<
         return msg
       }).pipe(Effect.withSpan("Session.updateMessage"))
 
+    // No structuredClone here (PR #35111): deep-cloning large parts per publish caused
+    // unbounded heap churn. Invariant: callers must not mutate `part` after this call —
+    // async PubSub subscribers (SSE, share) serialize it at dequeue time.
     const updatePart = <T extends SessionV1.Part>(part: T): Effect.Effect<T> =>
       Effect.gen(function* () {
         yield* events.publish(SessionV1.Event.PartUpdated, {
           sessionID: part.sessionID,
-          part: structuredClone(part),
+          part,
           time: Date.now(),
         })
         return part

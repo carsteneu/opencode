@@ -1,7 +1,29 @@
 import { Formatter, Logger, type LogLevel } from "effect"
+import fs from "fs"
 import path from "path"
 import { Global } from "../global"
 import { runID } from "./shared"
+
+const MAX_LOG_BYTES = 10 * 1024 * 1024
+const MAX_ROTATED_FILES = 5
+
+function rotate(file: string) {
+  // Best-effort startup rotation; must never block or fail logger creation.
+  try {
+    if (fs.statSync(file).size < MAX_LOG_BYTES) return
+    const dir = path.dirname(file)
+    const base = path.basename(file, ".log")
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)
+    fs.renameSync(file, path.join(dir, `${base}-${stamp}.log`))
+    const archives = fs
+      .readdirSync(dir)
+      .filter((entry) => entry.startsWith(`${base}-`) && entry.endsWith(".log"))
+      .sort()
+    for (const entry of archives.slice(0, Math.max(0, archives.length - MAX_ROTATED_FILES))) {
+      fs.unlinkSync(path.join(dir, entry))
+    }
+  } catch {}
+}
 
 function formatter(id: string = runID) {
   return Logger.map(Logger.formatStructured, (output) => {
@@ -47,6 +69,7 @@ function format(input: unknown) {
 }
 
 export function fileLogger(file = path.join(Global.Path.log, "opencode.log"), id: string = runID) {
+  rotate(file)
   // Do not set batchWindow to 0; it causes high idle CPU usage.
   return Logger.toFile(formatter(id), file, { flag: "a" })
 }

@@ -143,6 +143,13 @@ export const {
 
     const fullSyncedSessions = new Set<string>()
     const syncingSessions = new Map<string, Promise<void>>()
+    // History paging: sessions where the user scrolled past the hydrated 100
+    // messages. loadOlder() prepends server pages; membership in
+    // olderLoadedSessions disables the 100-message trim so loaded history
+    // survives incoming messages. olderExhausted marks "reached the start".
+    const loadingOlder = new Map<string, Promise<number>>()
+    const olderLoadedSessions = new Set<string>()
+    const olderExhausted = new Set<string>()
     const hydratingSessions = new Map<string, { messages: Set<string>; parts: Set<string> }>()
     const touchMessage = (sessionID: string, messageID: string) => {
       hydratingSessions.get(sessionID)?.messages.add(messageID)
@@ -161,15 +168,52 @@ export const {
       }
     }
 
-    function listSessions() {
-      return sdk.client.session
-        .list({ start: Date.now() - 30 * 24 * 60 * 60 * 1000, ...sessionListQuery() })
-        .then((x) => (x.data ?? []).toSorted((a, b) => a.id.localeCompare(b.id)))
-    }
+      function listSessions() {
+        return sdk.client.session
+          .list({ start: Date.now() - 30 * 24 * 60 * 60 * 1000, ...sessionListQuery() })
+          .then((x) => (x.data ?? []).toSorted((a, b) => a.id.localeCompare(b.id)))
+      }
 
-    event.subscribe((event, { directory, workspace }) => {
-      switch (event.type) {
+      // Fast-streaming models emit message.part.delta faster than the renderer
+      // keeps up; applying every chunk synchronously starves input handling and
+      // freezes scrolling (#36043). Deltas accumulate per part field and flush
+      // together on a short interval instead.
+      const pendingDeltas = new Map<string, { messageID: string; partID: string; field: string; delta: string }>()
+      let deltaTimer: ReturnType<typeof setTimeout> | undefined
+      const dropPendingDeltas = (messageID: string, partID: string) => {
+        if (!pendingDeltas.size) return
+        const prefix = `${messageID}|${partID}|`
+        for (const key of pendingDeltas.keys()) if (key.startsWith(prefix)) pendingDeltas.delete(key)
+      }
+      const flushDeltas = () => {
+        deltaTimer = undefined
+        if (!pendingDeltas.size) return
+        batch(() => {
+          for (const pending of pendingDeltas.values()) {
+            const parts = store.part[pending.messageID]
+            if (!parts) continue
+            const result = search(parts, pending.partID, (p) => p.id)
+            if (!result.found) continue
+            setStore(
+              "part",
+              pending.messageID,
+              produce((draft) => {
+                const part = draft[result.index]
+                const field = pending.field as keyof typeof part
+                const existing = part[field] as string | undefined
+                ;(part[field] as string) = (existing ?? "") + pending.delta
+              }),
+            )
+          }
+          pendingDeltas.clear()
+        })
+      }
+
+      event.subscribe((event, { directory, workspace }) => {
+        switch (event.type) {
         case "server.instance.disposed":
+          pendingDeltas.clear()
+          if (deltaTimer) { clearTimeout(deltaTimer); deltaTimer = undefined }
           void bootstrap()
           break
         case "permission.replied": {
@@ -332,7 +376,7 @@ export const {
             }),
           )
           const updated = store.message[event.properties.info.sessionID]
-          if (updated.length > 100) {
+          if (updated.length > 100 && !olderLoadedSessions.has(event.properties.info.sessionID)) {
             const oldest = updated[0]
             batch(() => {
               setStore(
@@ -368,6 +412,8 @@ export const {
           break
         }
         case "message.part.updated": {
+          // full snapshot supersedes any buffered deltas for this part
+          dropPendingDeltas(event.properties.part.messageID, event.properties.part.id)
           touchPart(event.properties.part.sessionID, event.properties.part.id)
           const parts = store.part[event.properties.part.messageID]
           if (!parts) {
@@ -395,20 +441,22 @@ export const {
           const result = search(parts, event.properties.partID, (p) => p.id)
           if (!result.found) break
           touchPart(event.properties.sessionID, event.properties.partID)
-          setStore(
-            "part",
-            event.properties.messageID,
-            produce((draft) => {
-              const part = draft[result.index]
-              const field = event.properties.field as keyof typeof part
-              const existing = part[field] as string | undefined
-              ;(part[field] as string) = (existing ?? "") + event.properties.delta
-            }),
-          )
+          const key = `${event.properties.messageID}|${event.properties.partID}|${event.properties.field}`
+          const pending = pendingDeltas.get(key)
+          if (pending) pending.delta += event.properties.delta
+          else
+            pendingDeltas.set(key, {
+              messageID: event.properties.messageID,
+              partID: event.properties.partID,
+              field: event.properties.field,
+              delta: event.properties.delta,
+            })
+          if (!deltaTimer) deltaTimer = setTimeout(flushDeltas, 40)
           break
         }
 
         case "message.part.removed": {
+          dropPendingDeltas(event.properties.messageID, event.properties.partID)
           touchPart(event.properties.sessionID, event.properties.partID)
           const parts = store.part[event.properties.messageID]
           const result = search(parts, event.properties.partID, (p) => p.id)
@@ -584,6 +632,51 @@ export const {
           if (!last) return "idle"
           if (last.role === "user") return "working"
           return last.time.completed ? "idle" : "working"
+        },
+        async loadOlder(sessionID: string) {
+          if (olderExhausted.has(sessionID)) return 0
+          const pending = loadingOlder.get(sessionID)
+          if (pending) return pending
+          const oldest = store.message[sessionID]?.[0]
+          if (!oldest) return 0
+          const task = (async () => {
+            // Cursor shape mirrors MessageV2.cursor.encode: time_created is
+            // projected verbatim from info.time.created (core projector.ts).
+            const before = Buffer.from(JSON.stringify({ id: oldest.id, time: oldest.time.created })).toString(
+              "base64url",
+            )
+            const response = await sdk.client.session.messages({ sessionID, limit: 50, before })
+            const items = (response.data ?? []).filter(
+              (message) => !store.message[sessionID]?.some((item) => item.id === message.info.id),
+            )
+            if (items.length === 0) {
+              olderExhausted.add(sessionID)
+              return 0
+            }
+            olderLoadedSessions.add(sessionID)
+            batch(() => {
+              setStore(
+                "part",
+                produce((draft) => {
+                  for (const message of items) {
+                    if (!draft[message.info.id]) draft[message.info.id] = message.parts
+                  }
+                }),
+              )
+              setStore(
+                "message",
+                sessionID,
+                produce((draft) => {
+                  draft.unshift(...items.map((message) => message.info))
+                }),
+              )
+            })
+            return items.length
+          })().finally(() => {
+            loadingOlder.delete(sessionID)
+          })
+          loadingOlder.set(sessionID, task)
+          return task
         },
         async sync(sessionID: string) {
           if (fullSyncedSessions.has(sessionID)) return

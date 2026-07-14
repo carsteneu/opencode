@@ -209,7 +209,7 @@ const layer = Layer.effect(
         // oxlint-disable-next-line no-self-assign -- reactivity trigger
         ctx.reasoningMap[reasoningID].text = ctx.reasoningMap[reasoningID].text
         ctx.reasoningMap[reasoningID].time = { ...ctx.reasoningMap[reasoningID].time, end: Date.now() }
-        yield* session.updatePart(ctx.reasoningMap[reasoningID])
+        yield* session.updatePart({ ...ctx.reasoningMap[reasoningID] })
         delete ctx.reasoningMap[reasoningID]
       })
 
@@ -288,7 +288,7 @@ const layer = Layer.effect(
               time: { start: Date.now() },
               metadata: value.providerMetadata,
             }
-            yield* session.updatePart(ctx.reasoningMap[value.id])
+            yield* session.updatePart({ ...ctx.reasoningMap[value.id] })
             return
 
           case "reasoning-delta":
@@ -493,7 +493,7 @@ const layer = Layer.effect(
               time: { start: Date.now() },
               metadata: value.providerMetadata,
             }
-            yield* session.updatePart(ctx.currentText)
+            yield* session.updatePart({ ...ctx.currentText })
             return
 
           case "text-delta":
@@ -527,7 +527,7 @@ const layer = Layer.effect(
               ctx.currentText.time = { start: ctx.currentText.time?.start ?? end, end }
             }
             if (value.providerMetadata) ctx.currentText.metadata = value.providerMetadata
-            yield* session.updatePart(ctx.currentText)
+            yield* session.updatePart({ ...ctx.currentText })
             ctx.currentText = undefined
             return
 
@@ -555,7 +555,7 @@ const layer = Layer.effect(
         if (ctx.currentText) {
           const end = Date.now()
           ctx.currentText.time = { start: ctx.currentText.time?.start ?? end, end }
-          yield* session.updatePart(ctx.currentText)
+          yield* session.updatePart({ ...ctx.currentText })
           ctx.currentText = undefined
         }
 
