@@ -83,20 +83,20 @@ const layer = Layer.effect(
         yield* status.set(sessionID, { type: "idle" })
         return
       }
-        yield* existing.cancel
-      })
+      yield* existing.cancel
+    })
 
-      const settle = Effect.fn("SessionRunState.settle")(function* (sessionID: SessionID) {
-        const data = yield* InstanceState.get(state)
-        const existing = data.runners.get(sessionID)
-        if (existing?.busy) return
-        data.runners.delete(sessionID)
-        const current = yield* status.get(sessionID)
-        if (current.type === "idle") return
-        yield* status.set(sessionID, { type: "idle" })
-      })
+    const settle = Effect.fn("SessionRunState.settle")(function* (sessionID: SessionID) {
+      const data = yield* InstanceState.get(state)
+      const existing = data.runners.get(sessionID)
+      if (existing?.busy) return
+      data.runners.delete(sessionID)
+      const current = yield* status.get(sessionID)
+      if (current.type === "idle") return
+      yield* status.set(sessionID, { type: "idle" })
+    })
 
-      const ensureRunning = Effect.fn("SessionRunState.ensureRunning")(function* (
+    const ensureRunning = Effect.fn("SessionRunState.ensureRunning")(function* (
       sessionID: SessionID,
       onInterrupt: Effect.Effect<SessionV1.WithParts>,
       work: Effect.Effect<SessionV1.WithParts>,
@@ -115,7 +115,7 @@ const layer = Layer.effect(
         .pipe(Effect.catchTag("RunnerBusy", () => Effect.fail(busyError(sessionID))))
     })
 
-      return Service.of({ assertNotBusy, cancel, settle, ensureRunning, startShell })
+    return Service.of({ assertNotBusy, cancel, settle, ensureRunning, startShell })
   }),
 )
 
