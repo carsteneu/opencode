@@ -43,6 +43,7 @@ import { errorMessage } from "../../util/error"
 import { formatDuration } from "../../util/format"
 import { createColors, createFrames } from "../../ui/spinner"
 import { useDialog } from "../../ui/dialog"
+import { usePartialRender } from "../../ui/partial-render"
 import { DialogProvider as DialogProviderConnect } from "../dialog-provider"
 import { DialogAlert } from "../../ui/dialog-alert"
 import { useToast } from "../../ui/toast"
@@ -174,6 +175,10 @@ export function Prompt(props: PromptProps) {
   const shell = createMemo(() => props.placeholders?.shell ?? [])
   const fileContextEnabled = createMemo(() => kv.get("file_context_enabled", true))
   const [dismissedEditorSelectionKey, setDismissedEditorSelectionKey] = createSignal<string>()
+  const [promptSpinnerEl, setPromptSpinnerEl] = createSignal<Renderable | undefined>(undefined)
+  // Route the status spinner's animation ticks through the partial-render
+  // fast path when no dialog is mounted, avoiding a full tree render per tick.
+  usePartialRender(promptSpinnerEl)
   const editorContext = createMemo(() => {
     const selection = fileContextEnabled() ? editor.selection() : undefined
     if (!selection) return
@@ -1517,7 +1522,7 @@ export function Prompt(props: PromptProps) {
                 <box flexShrink={0} flexDirection="row" gap={1}>
                   <box marginLeft={1}>
                     <Show when={kv.get("animations_enabled", true)} fallback={<text fg={theme.textMuted}>[⋯]</text>}>
-                      <spinner color={spinnerDef().color} frames={spinnerDef().frames} interval={100} />
+                      <spinner ref={setPromptSpinnerEl} color={spinnerDef().color} frames={spinnerDef().frames} interval={100} />
                     </Show>
                   </box>
                   <box flexDirection="row" gap={1} flexShrink={0}>
