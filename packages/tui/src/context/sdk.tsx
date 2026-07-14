@@ -70,10 +70,14 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
       const elapsed = Date.now() - last
 
       if (timer) return
-      // If we just flushed recently (within 16ms), batch this with future events
-      // Otherwise, process immediately to avoid latency
-      if (elapsed < 16) {
-        timer = setTimeout(flush, 16)
+      // If we just flushed recently, batch this with future events so sustained
+      // streams (message.part.delta) coalesce into ~10 flushes/s instead of 60.
+      // Isolated events still flush immediately to avoid latency.
+      // Note: 250ms was A/B-tested (patched.6) and brought no measurable gain
+      // over 100ms — the remaining cost is per-token (JSON parse, server-side
+      // effect fibers) and per-frame draw, not flush count.
+      if (elapsed < 100) {
+        timer = setTimeout(flush, 100)
         return
       }
       flush()

@@ -143,6 +143,13 @@ export const {
 
     const fullSyncedSessions = new Set<string>()
     const syncingSessions = new Map<string, Promise<void>>()
+    // History paging: sessions where the user scrolled past the hydrated 100
+    // messages. loadOlder() prepends server pages; membership in
+    // olderLoadedSessions disables the 100-message trim so loaded history
+    // survives incoming messages. olderExhausted marks "reached the start".
+    const loadingOlder = new Map<string, Promise<number>>()
+    const olderLoadedSessions = new Set<string>()
+    const olderExhausted = new Set<string>()
     const hydratingSessions = new Map<string, { messages: Set<string>; parts: Set<string> }>()
     const touchMessage = (sessionID: string, messageID: string) => {
       hydratingSessions.get(sessionID)?.messages.add(messageID)
@@ -332,7 +339,7 @@ export const {
             }),
           )
           const updated = store.message[event.properties.info.sessionID]
-          if (updated.length > 100) {
+          if (updated.length > 100 && !olderLoadedSessions.has(event.properties.info.sessionID)) {
             const oldest = updated[0]
             batch(() => {
               setStore(
@@ -584,6 +591,51 @@ export const {
           if (!last) return "idle"
           if (last.role === "user") return "working"
           return last.time.completed ? "idle" : "working"
+        },
+        async loadOlder(sessionID: string) {
+          if (olderExhausted.has(sessionID)) return 0
+          const pending = loadingOlder.get(sessionID)
+          if (pending) return pending
+          const oldest = store.message[sessionID]?.[0]
+          if (!oldest) return 0
+          const task = (async () => {
+            // Cursor shape mirrors MessageV2.cursor.encode: time_created is
+            // projected verbatim from info.time.created (core projector.ts).
+            const before = Buffer.from(JSON.stringify({ id: oldest.id, time: oldest.time.created })).toString(
+              "base64url",
+            )
+            const response = await sdk.client.session.messages({ sessionID, limit: 50, before })
+            const items = (response.data ?? []).filter(
+              (message) => !store.message[sessionID]?.some((item) => item.id === message.info.id),
+            )
+            if (items.length === 0) {
+              olderExhausted.add(sessionID)
+              return 0
+            }
+            olderLoadedSessions.add(sessionID)
+            batch(() => {
+              setStore(
+                "part",
+                produce((draft) => {
+                  for (const message of items) {
+                    if (!draft[message.info.id]) draft[message.info.id] = message.parts
+                  }
+                }),
+              )
+              setStore(
+                "message",
+                sessionID,
+                produce((draft) => {
+                  draft.unshift(...items.map((message) => message.info))
+                }),
+              )
+            })
+            return items.length
+          })().finally(() => {
+            loadingOlder.delete(sessionID)
+          })
+          loadingOlder.set(sessionID, task)
+          return task
         },
         async sync(sessionID: string) {
           if (fullSyncedSessions.has(sessionID)) return
