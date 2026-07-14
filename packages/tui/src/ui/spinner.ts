@@ -149,44 +149,51 @@ function createKnightRiderTrail(options: AdvancedGradientOptions): ColorGenerato
   // Store the base alpha from the inactive factor
   const baseInactiveAlpha = defaultRgba.a
 
-  let cachedFrameIndex = -1
-  let cachedState: ScannerState | null = null
+  // The scanner animation is fully deterministic per (frameIndex, charIndex), so the
+  // whole color matrix is precomputed on first call; the per-frame hot path is then
+  // an allocation-free array lookup.
+  let matrix: ColorInput[][] | null = null
 
-  return (frameIndex: number, charIndex: number, _totalFrames: number, totalChars: number) => {
-    if (frameIndex !== cachedFrameIndex) {
-      cachedFrameIndex = frameIndex
-      cachedState = getScannerState(frameIndex, totalChars, options)
-    }
+  const buildMatrix = (totalFrames: number, totalChars: number): ColorInput[][] => {
+    const rows: ColorInput[][] = []
+    for (let frameIndex = 0; frameIndex < totalFrames; frameIndex++) {
+      const state = getScannerState(frameIndex, totalChars, options)
 
-    const state = cachedState!
+      // Calculate global fade for inactive dots during hold or movement
+      const { isHolding, holdProgress, holdTotal, movementProgress, movementTotal } = state
 
-    const index = calculateColorIndex(frameIndex, charIndex, totalChars, options, state)
-
-    // Calculate global fade for inactive dots during hold or movement
-    const { isHolding, holdProgress, holdTotal, movementProgress, movementTotal } = state
-
-    let fadeFactor = 1.0
-    if (enableFading) {
-      if (isHolding && holdTotal > 0) {
-        // Fade out linearly to minAlpha
-        const progress = Math.min(holdProgress / holdTotal, 1)
-        fadeFactor = Math.max(minAlpha, 1 - progress * (1 - minAlpha))
-      } else if (!isHolding && movementTotal > 0) {
-        // Fade in linearly from minAlpha during movement
-        const progress = Math.min(movementProgress / Math.max(1, movementTotal - 1), 1)
-        fadeFactor = minAlpha + progress * (1 - minAlpha)
+      let fadeFactor = 1.0
+      if (enableFading) {
+        if (isHolding && holdTotal > 0) {
+          // Fade out linearly to minAlpha
+          const progress = Math.min(holdProgress / holdTotal, 1)
+          fadeFactor = Math.max(minAlpha, 1 - progress * (1 - minAlpha))
+        } else if (!isHolding && movementTotal > 0) {
+          // Fade in linearly from minAlpha during movement
+          const progress = Math.min(movementProgress / Math.max(1, movementTotal - 1), 1)
+          fadeFactor = minAlpha + progress * (1 - minAlpha)
+        }
       }
+
+      // Combine base inactive alpha with the fade factor
+      // This ensures inactiveFactor is respected while still allowing fading animation
+      const frameDefault = RGBA.fromValues(defaultRgba.r, defaultRgba.g, defaultRgba.b, baseInactiveAlpha * fadeFactor)
+
+      const row: ColorInput[] = []
+      for (let charIndex = 0; charIndex < totalChars; charIndex++) {
+        const index = calculateColorIndex(frameIndex, charIndex, totalChars, options, state)
+        row.push(index === -1 ? frameDefault : (colors[index] ?? frameDefault))
+      }
+      rows.push(row)
     }
+    return rows
+  }
 
-    // Combine base inactive alpha with the fade factor
-    // This ensures inactiveFactor is respected while still allowing fading animation
-    defaultRgba.a = baseInactiveAlpha * fadeFactor
-
-    if (index === -1) {
-      return defaultRgba
+  return (frameIndex: number, charIndex: number, totalFrames: number, totalChars: number) => {
+    if (!matrix || matrix.length !== totalFrames || (matrix[0]?.length ?? 0) !== totalChars) {
+      matrix = buildMatrix(totalFrames, totalChars)
     }
-
-    return colors[index] ?? defaultRgba
+    return matrix[frameIndex]?.[charIndex] ?? defaultRgba
   }
 }
 
