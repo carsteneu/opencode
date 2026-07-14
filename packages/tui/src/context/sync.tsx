@@ -168,14 +168,49 @@ export const {
       }
     }
 
-    function listSessions() {
-      return sdk.client.session
-        .list({ start: Date.now() - 30 * 24 * 60 * 60 * 1000, ...sessionListQuery() })
-        .then((x) => (x.data ?? []).toSorted((a, b) => a.id.localeCompare(b.id)))
-    }
+      function listSessions() {
+        return sdk.client.session
+          .list({ start: Date.now() - 30 * 24 * 60 * 60 * 1000, ...sessionListQuery() })
+          .then((x) => (x.data ?? []).toSorted((a, b) => a.id.localeCompare(b.id)))
+      }
 
-    event.subscribe((event, { directory, workspace }) => {
-      switch (event.type) {
+      // Fast-streaming models emit message.part.delta faster than the renderer
+      // keeps up; applying every chunk synchronously starves input handling and
+      // freezes scrolling (#36043). Deltas accumulate per part field and flush
+      // together on a short interval instead.
+      const pendingDeltas = new Map<string, { messageID: string; partID: string; field: string; delta: string }>()
+      let deltaTimer: ReturnType<typeof setTimeout> | undefined
+      const dropPendingDeltas = (messageID: string, partID: string) => {
+        if (!pendingDeltas.size) return
+        const prefix = `${messageID}|${partID}|`
+        for (const key of pendingDeltas.keys()) if (key.startsWith(prefix)) pendingDeltas.delete(key)
+      }
+      const flushDeltas = () => {
+        deltaTimer = undefined
+        if (!pendingDeltas.size) return
+        batch(() => {
+          for (const pending of pendingDeltas.values()) {
+            const parts = store.part[pending.messageID]
+            if (!parts) continue
+            const result = search(parts, pending.partID, (p) => p.id)
+            if (!result.found) continue
+            setStore(
+              "part",
+              pending.messageID,
+              produce((draft) => {
+                const part = draft[result.index]
+                const field = pending.field as keyof typeof part
+                const existing = part[field] as string | undefined
+                ;(part[field] as string) = (existing ?? "") + pending.delta
+              }),
+            )
+          }
+          pendingDeltas.clear()
+        })
+      }
+
+      event.subscribe((event, { directory, workspace }) => {
+        switch (event.type) {
         case "server.instance.disposed":
           void bootstrap()
           break
@@ -374,8 +409,10 @@ export const {
           }
           break
         }
-        case "message.part.updated": {
-          touchPart(event.properties.part.sessionID, event.properties.part.id)
+          case "message.part.updated": {
+            // full snapshot supersedes any buffered deltas for this part
+            dropPendingDeltas(event.properties.part.messageID, event.properties.part.id)
+            touchPart(event.properties.part.sessionID, event.properties.part.id)
           const parts = store.part[event.properties.part.messageID]
           if (!parts) {
             setStore("part", event.properties.part.messageID, [event.properties.part])
@@ -396,24 +433,25 @@ export const {
           break
         }
 
-        case "message.part.delta": {
-          const parts = store.part[event.properties.messageID]
-          if (!parts) break
-          const result = search(parts, event.properties.partID, (p) => p.id)
-          if (!result.found) break
-          touchPart(event.properties.sessionID, event.properties.partID)
-          setStore(
-            "part",
-            event.properties.messageID,
-            produce((draft) => {
-              const part = draft[result.index]
-              const field = event.properties.field as keyof typeof part
-              const existing = part[field] as string | undefined
-              ;(part[field] as string) = (existing ?? "") + event.properties.delta
-            }),
-          )
-          break
-        }
+          case "message.part.delta": {
+            const parts = store.part[event.properties.messageID]
+            if (!parts) break
+            const result = search(parts, event.properties.partID, (p) => p.id)
+            if (!result.found) break
+            touchPart(event.properties.sessionID, event.properties.partID)
+            const key = `${event.properties.messageID}|${event.properties.partID}|${event.properties.field}`
+            const pending = pendingDeltas.get(key)
+            if (pending) pending.delta += event.properties.delta
+            else
+              pendingDeltas.set(key, {
+                messageID: event.properties.messageID,
+                partID: event.properties.partID,
+                field: event.properties.field,
+                delta: event.properties.delta,
+              })
+            if (!deltaTimer) deltaTimer = setTimeout(flushDeltas, 40)
+            break
+          }
 
         case "message.part.removed": {
           touchPart(event.properties.sessionID, event.properties.partID)
