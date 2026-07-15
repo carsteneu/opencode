@@ -245,6 +245,67 @@ export function Session() {
     return messages().findLast((x) => x.role === "assistant")
   })
 
+  // Windowed message rendering + infinite scroll-up paging.
+  // F is the expand ladder (messages mounted to the DOM). When the user scrolls
+  // to the top, the window grows through the ladder; once exhausted, further
+  // scroll-up triggers session.loadOlder() which fetches older pages from the
+  // server via the SDK. The window shrinks back to F[0] once the user returns
+  // to the bottom.
+  const WINDOW_LADDER = [10, 30, 50, 100]
+  const [windowSize, setWindowSize] = createSignal(WINDOW_LADDER[0])
+  const visibleMessages = createMemo(() => {
+    const all = messages()
+    const size = windowSize()
+    return all.length > size ? all.slice(-size) : all
+  })
+  const hiddenMessages = createMemo(() => messages().length - visibleMessages().length)
+
+  // Reset the window whenever the session changes so long histories don't
+  // render fully on the first frame of a new session.
+  createEffect(
+    on(() => route.sessionID, (prev, next) => {
+      if (prev !== undefined && prev !== next) setWindowSize(WINDOW_LADDER[0])
+      return next
+    }),
+  )
+
+  let lastExpandAt = 0
+
+  const expandRenderWindow = () => {
+    const nextSize = WINDOW_LADDER.find((size) => size > windowSize()) ?? windowSize() + 100
+    lastExpandAt = Date.now()
+    const prevScrollHeight = scroll.scrollHeight
+    setWindowSize(nextSize)
+    // Keep the user anchored at the same scroll offset after the prepended
+    // content shifts the layout.
+    setTimeout(() => {
+      if (!scroll || scroll.isDestroyed) return
+      const delta = scroll.scrollHeight - prevScrollHeight
+      if (delta > 0) scroll.scrollBy(delta)
+    }, 80)
+  }
+
+  // Poll scroll position at 150ms. Top of content: expand window or load
+  // older. Bottom of content: shrink window back to the ladder floor.
+  const windowPoll = setInterval(() => {
+    if (!scroll || scroll.isDestroyed) return
+    if (Date.now() - lastExpandAt < 400) return
+    if (scroll.scrollHeight <= scroll.height) return
+    if (scroll.scrollTop <= 2) {
+      if (hiddenMessages() > 0) {
+        expandRenderWindow()
+      } else {
+        lastExpandAt = Date.now()
+        void sync.session.loadOlder(route.sessionID)
+      }
+      return
+    }
+    if (windowSize() !== WINDOW_LADDER[0] && scroll.scrollTop >= scroll.scrollHeight - scroll.height - 1) {
+      setWindowSize(WINDOW_LADDER[0])
+    }
+  }, 150)
+  onCleanup(() => clearInterval(windowPoll))
+
   const dimensions = useTerminalDimensions()
   const [sidebar, setSidebar] = kv.signal<"auto" | "hide">("sidebar", "auto")
   const [sidebarOpen, setSidebarOpen] = createSignal(false)
@@ -1184,7 +1245,7 @@ export function Session() {
                 scrollAcceleration={scrollAcceleration()}
               >
                 <box height={1} />
-                <For each={messages()}>
+                <For each={visibleMessages()}>
                   {(message, index) => (
                     <Switch>
                       <Match when={message.id === revert()?.messageID}>
