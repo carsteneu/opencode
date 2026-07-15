@@ -1,4 +1,4 @@
-import { Deferred, Effect } from "effect"
+import { Deferred, Effect, Scope } from "effect"
 import { HttpServerRequest } from "effect/unstable/http"
 
 /**
@@ -19,30 +19,42 @@ import { HttpServerRequest } from "effect/unstable/http"
  */
 export function sseDisconnectSignal(
   request: HttpServerRequest.HttpServerRequest,
-): Effect.Effect<Deferred.Deferred<void>, never, HttpServerRequest.HttpServerRequest> {
+): Effect.Effect<Deferred.Deferred<void>, never, HttpServerRequest.HttpServerRequest | Scope.Scope> {
   return Effect.gen(function* () {
     const deferred = yield* Deferred.make<void>()
     const source = (request as unknown as { source: unknown }).source
 
     if (isEventEmitter(source)) {
-      const handler = () => {
-        Deferred.unsafeDone(deferred, Effect.void)
+      const complete = () => {
+        Effect.runPromise(Deferred.succeed(deferred, undefined).pipe(Effect.ignore))
       }
-      source.on("close", handler)
-      yield* Effect.addFinalizer(() =>
-        Effect.sync(() => {
-          source.off("close", handler)
-        }),
-      )
+      if ((source as { destroyed?: boolean }).destroyed) {
+        complete()
+      } else {
+        source.on("close", complete)
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            source.off("close", complete)
+          }),
+        )
+      }
     } else if (source instanceof Request && source.signal) {
-      const handler = () => {
-        Deferred.unsafeDone(deferred, Effect.void)
+      const complete = () => {
+        Effect.runPromise(Deferred.succeed(deferred, undefined).pipe(Effect.ignore))
       }
-      source.signal.addEventListener("abort", handler, { once: true })
-      yield* Effect.addFinalizer(() =>
-        Effect.sync(() => {
-          source.signal.removeEventListener("abort", handler)
-        }),
+      if (source.signal.aborted) {
+        complete()
+      } else {
+        source.signal.addEventListener("abort", complete, { once: true })
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            source.signal.removeEventListener("abort", complete)
+          }),
+        )
+      }
+    } else {
+      yield* Effect.logWarning(
+        "sseDisconnectSignal: request.source is neither an EventEmitter nor a Request — disconnect detection disabled",
       )
     }
 

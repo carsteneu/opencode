@@ -22,6 +22,10 @@ export function sseDisconnect(): Effect.Effect<SseStats> {
   })
 }
 
+export function activeSseCount(): number {
+  return activeConnections
+}
+
 function stats(): SseStats {
   return {
     active: activeConnections,

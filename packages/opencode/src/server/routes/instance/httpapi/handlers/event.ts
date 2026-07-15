@@ -39,14 +39,12 @@ function eventResponse(events: EventV2.Interface) {
     // Listener registration is eager, so events published after this point cannot
     // be lost while the HTTP body fiber is starting or emitting server.connected.
     const queue = yield* Queue.bounded<EventV2.Payload>(SSE_QUEUE_CAPACITY)
-    const overflow = yield* Deferred.make<void>()
-    const unsubscribe = yield* events.listen((event) =>
-      Effect.sync(() => {
-        if (!Queue.offerUnsafe(queue, event)) {
-          Deferred.unsafeDone(overflow, Effect.void)
-        }
-      }),
-    )
+      const overflow = yield* Deferred.make<void>()
+      const unsubscribe = yield* events.listen((event) =>
+        Queue.offerUnsafe(queue, event)
+          ? Effect.void
+          : Deferred.succeed(overflow, undefined).pipe(Effect.asVoid),
+      )
     yield* Effect.addFinalizer(() => unsubscribe)
     const stream = Stream.fromQueue(queue).pipe(
       Stream.filter(
@@ -76,8 +74,8 @@ function eventResponse(events: EventV2.Interface) {
     const output = stream.pipe(
       Stream.merge(disposed, { haltStrategy: "left" }),
       Stream.takeUntil((event) => event.type === "server.instance.disposed"),
-      Stream.interruptWhen(disconnect),
-      Stream.interruptWhen(overflow),
+      Stream.interruptWhen(Deferred.await(disconnect)),
+      Stream.interruptWhen(Deferred.await(overflow)),
     )
     const heartbeat = Stream.tick("10 seconds").pipe(
       Stream.drop(1),

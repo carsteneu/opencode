@@ -41,20 +41,20 @@ function eventResponse() {
     const request = yield* HttpServerRequest.HttpServerRequest
     const disconnect = yield* sseDisconnectSignal(request)
     const queue = yield* Queue.bounded<GlobalBusEvent>(SSE_QUEUE_CAPACITY)
-    const overflow = yield* Deferred.make<void>()
-    const handler = (event: GlobalBusEvent) => {
-      if (!Queue.offerUnsafe(queue, event)) {
-        Deferred.unsafeDone(overflow, Effect.void)
+      const overflow = yield* Deferred.make<void>()
+      const handler = (event: GlobalBusEvent) => {
+        if (!Queue.offerUnsafe(queue, event)) {
+          Effect.runPromise(Deferred.succeed(overflow, undefined).pipe(Effect.ignore))
+        }
       }
-    }
-    yield* Effect.acquireRelease(
+      yield* Effect.acquireRelease(
       Effect.sync(() => GlobalBus.on("event", handler)),
       () => Effect.sync(() => GlobalBus.off("event", handler)),
     )
-    const events = Stream.fromQueue(queue).pipe(
-      Stream.interruptWhen(disconnect),
-      Stream.interruptWhen(overflow),
-    )
+      const events = Stream.fromQueue(queue).pipe(
+        Stream.interruptWhen(Deferred.await(disconnect)),
+        Stream.interruptWhen(Deferred.await(overflow)),
+      )
     const heartbeat = Stream.tick("10 seconds").pipe(
       Stream.drop(1),
       Stream.map(() => ({ payload: { id: EventV2.ID.create(), type: "server.heartbeat", properties: {} } })),
