@@ -41,7 +41,7 @@ import type { AssistantMessage, FilePart, UserMessage } from "@opencode-ai/sdk/v
 import { Locale } from "../../util/locale"
 import { errorMessage } from "../../util/error"
 import { formatDuration } from "../../util/format"
-import { createColors, createFrames } from "../../ui/spinner"
+import { createFrames } from "../../ui/spinner"
 import { useDialog } from "../../ui/dialog"
 import { usePartialRender } from "../../ui/partial-render"
 import { DialogProvider as DialogProviderConnect } from "../dialog-provider"
@@ -58,8 +58,6 @@ import { usePromptWorkspace } from "./workspace"
 import { usePromptMove } from "./move"
 import { readLocalAttachment } from "./local-attachment"
 import { useLocation } from "../../context/location"
-
-registerOpencodeSpinner()
 
 export type PromptProps = {
   sessionID?: string
@@ -178,8 +176,6 @@ export function Prompt(props: PromptProps) {
   const fileContextEnabled = createMemo(() => kv.get("file_context_enabled", true))
   const [dismissedEditorSelectionKey, setDismissedEditorSelectionKey] = createSignal<string>()
   const [promptSpinnerEl, setPromptSpinnerEl] = createSignal<Renderable | undefined>(undefined)
-  // Route the status spinner's animation ticks through the partial-render
-  // fast path when no dialog is mounted, avoiding a full tree render per tick.
   usePartialRender(promptSpinnerEl)
   const editorContext = createMemo(() => {
     const selection = fileContextEnabled() ? editor.selection() : undefined
@@ -1339,13 +1335,7 @@ export function Prompt(props: PromptProps) {
         // enableFading: false,
         minAlpha: 0.3,
       }),
-      color: createColors({
-        color,
-        style: "blocks",
-        inactiveFactor: 0.6,
-        // enableFading: false,
-        minAlpha: 0.3,
-      }),
+      color,
     }
   })
   const maxHeight = createMemo(() => tuiConfig.prompt?.max_height ?? Math.max(6, Math.floor(dimensions().height / 3)))

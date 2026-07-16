@@ -84,7 +84,7 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
     }
 
     function startSSE() {
-      sse?.abort()
+      abortQuietly(sse)
       const ctrl = new AbortController()
       sse = ctrl
       ;(async () => {
@@ -136,8 +136,8 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
     })
 
     onCleanup(() => {
-      abort.abort()
-      sse?.abort()
+      abortQuietly(abort)
+      abortQuietly(sse)
       if (timer) clearTimeout(timer)
       handlers.clear()
     })
@@ -153,3 +153,12 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
     }
   },
 })
+
+function abortQuietly(controller: AbortController | undefined) {
+  if (!controller || controller.signal.aborted) return
+  try {
+    controller.abort()
+  } catch (error) {
+    if (!(error instanceof DOMException) || error.name !== "AbortError") throw error
+  }
+}

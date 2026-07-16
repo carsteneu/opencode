@@ -89,7 +89,7 @@ for (const item of targets) {
     define: {
       OPENCODE_VERSION: `'${Script.version}'`,
       OPENCODE_CLI_NAME: `'${binary}'`,
-      OPENCODE_MODELS_DEV: modelsData,
+      OPENCODE_MODELS_DEV: JSON.stringify(modelsData),
       OPENCODE_CHANNEL: `'${Script.channel}'`,
       OPENCODE_LIBC: item.os === "linux" ? `'${item.abi ?? "glibc"}'` : "undefined",
       // FFF_LIBC selects the fff native lib variant: "musl" or "gnu".

@@ -4,7 +4,7 @@ import { type streamText } from "ai"
 import { errorMessage } from "@/util/error"
 
 type Result = Awaited<ReturnType<typeof streamText>>
-type AISDKEvent = Result["fullStream"] extends AsyncIterable<infer T> ? T : never
+export type AISDKEvent = Result["fullStream"] extends AsyncIterable<infer T> ? T : never
 
 export function adapterState() {
   return {

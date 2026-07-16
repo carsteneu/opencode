@@ -194,16 +194,10 @@ export const {
             if (!parts) continue
             const result = search(parts, pending.partID, (p) => p.id)
             if (!result.found) continue
-            setStore(
-              "part",
-              pending.messageID,
-              produce((draft) => {
-                const part = draft[result.index]
-                const field = pending.field as keyof typeof part
-                const existing = part[field] as string | undefined
-                ;(part[field] as string) = (existing ?? "") + pending.delta
-              }),
-            )
+            const part = parts[result.index]
+            const field = pending.field as keyof typeof part
+            const existing = part[field] as string | undefined
+            setStore("part", pending.messageID, result.index, field, (existing ?? "") + pending.delta)
           }
           pendingDeltas.clear()
         })
@@ -451,7 +445,7 @@ export const {
               field: event.properties.field,
               delta: event.properties.delta,
             })
-          if (!deltaTimer) deltaTimer = setTimeout(flushDeltas, 40)
+          if (!deltaTimer) deltaTimer = setTimeout(flushDeltas, 50)
           break
         }
 

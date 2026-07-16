@@ -15,9 +15,6 @@ export function Spinner(props: { children?: JSX.Element; color?: RGBA }) {
   const kv = useKV()
   const color = () => props.color ?? theme.textMuted
   const [spinnerEl, setSpinnerEl] = createSignal<Renderable | undefined>(undefined)
-  // Spinner animation ticks (via the underlying SpinnerRenderable's own
-  // scheduler) route through the partial-render fast path when no dialog is
-  // open, avoiding a full tree render per frame.
   usePartialRender(spinnerEl)
   return (
     <Show when={kv.get("animations_enabled", true)} fallback={<text fg={color()}>⋯ {props.children}</text>}>

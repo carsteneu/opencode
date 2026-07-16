@@ -79,12 +79,12 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
 
     const message = {
       update(sessionID: string, fn: (messages: SessionMessage[]) => void) {
+        if (!store.session.message[sessionID]) setStore("session", "message", sessionID, [])
         setStore(
           "session",
           "message",
-          produce((draft) => {
-            fn((draft[sessionID] ??= []))
-          }),
+          sessionID,
+          produce((draft) => fn(draft)),
         )
       },
       prepend(messages: SessionMessage[], item: SessionMessage) {

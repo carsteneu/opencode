@@ -5,6 +5,7 @@ import path from "path"
 import yargs from "yargs"
 import { tmpdir } from "../../fixture/fixture"
 import { TuiThreadCommand, resolveThreadDirectory } from "../../../src/cli/cmd/tui"
+import { startTuiServerProcess } from "../../../src/cli/tui/process-server"
 import { cliIt } from "../../lib/cli-process"
 
 describe("tui thread", () => {
@@ -16,11 +17,30 @@ describe("tui thread", () => {
     expect(source).not.toContain('import("./app")')
   })
 
-  test("forwards the CLI environment to the TUI worker", async () => {
+  test("starts the TUI server in a separate process", async () => {
     const source = await Bun.file(new URL("../../../src/cli/cmd/tui.ts", import.meta.url)).text()
 
-    expect(source).toMatch(/new Worker\(file, \{\s*env: Object\.fromEntries\(\s*Object\.entries\(process\.env\)/)
+    expect(source).toContain("startTuiServerProcess")
+    expect(source).not.toContain("new Worker")
   })
+
+  test("starts and stops the private TUI server child", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const server = await startTuiServerProcess({
+      directory: tmp.path,
+      network: { hostname: "127.0.0.1", port: 0 },
+      private: true,
+      entrypoint: path.resolve(import.meta.dir, "../../../src/bootstrap.ts"),
+    })
+
+    expect(server.url).toStartWith("http://127.0.0.1:")
+    expect(server.password).toBeString()
+    const response = await fetch(server.url + "/global/health", {
+      headers: { Authorization: `Basic ${btoa(`opencode:${server.password}`)}` },
+    })
+    expect(response.status).toBe(200)
+    await server.stop()
+  }, 15_000)
 
   async function check(project?: string) {
     await using tmp = await tmpdir({ git: true })

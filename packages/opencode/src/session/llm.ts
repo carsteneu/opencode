@@ -29,6 +29,7 @@ import * as OtelTracer from "@effect/opentelemetry/Tracer"
 import { LLMAISDK } from "./llm/ai-sdk"
 import { LLMNativeRuntime } from "./llm/native-runtime"
 import { LLMRequestPrep } from "./llm/request"
+import { LLMAIProcess } from "./llm/ai-process-client"
 
 export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
 
@@ -268,11 +269,55 @@ const live: Layer.Layer<
         })
       }
 
+      const isolated = !cfg.experimental?.openTelemetry && LLMAIProcess.supported(input.model, item)
       yield* Effect.logInfo("llm runtime selected", {
-        "llm.runtime": "ai-sdk",
+        "llm.runtime": isolated ? "ai-process" : "ai-sdk",
         "llm.provider": input.model.providerID,
         "llm.model": input.model.id,
       })
+      if (isolated) {
+        const tools = Object.fromEntries(
+          Object.entries(prepared.tools).map(([name, tool]) => [
+            name,
+            { description: tool.description ?? "", inputSchema: LLMAIProcess.inputSchema(tool) },
+          ]),
+        )
+        return {
+          type: "ai-process" as const,
+          stream: LLMAIProcess.stream(
+            {
+              provider: input.model.providerID,
+              package: input.model.api.npm,
+              model: input.model.api.id,
+              endpoint: "endpoint" in input.model.api ? String(input.model.api.endpoint) : undefined,
+              options: {
+                ...item.options,
+                apiKey: item.options.apiKey ?? item.key,
+                baseURL: item.options.baseURL ?? input.model.api.url,
+                headers: { ...item.options.headers, ...input.model.headers },
+              },
+              messages: ProviderTransform.message(
+                prepared.messages,
+                input.model,
+                prepared.messageTransformOptions,
+              ),
+              tools,
+              activeTools: Object.keys(prepared.tools).filter((name) => name !== "invalid"),
+              toolChoice: input.toolChoice,
+              temperature: prepared.params.temperature,
+              topP: prepared.params.topP,
+              topK: prepared.params.topK,
+              maxOutputTokens: prepared.params.maxOutputTokens,
+              providerOptions: ProviderTransform.providerOptions(input.model, prepared.params.options),
+              headers: prepared.headers,
+              maxRetries: input.retries ?? 0,
+            },
+            prepared.tools,
+            prepared.messages,
+            input.abort,
+          ),
+        }
+      }
       // Default runtime path: AI SDK owns provider execution and tool dispatch;
       // LLMAISDK.toLLMEvents below normalizes fullStream parts for the processor.
       return {
@@ -370,9 +415,13 @@ const live: Layer.Layer<
             // Adapter seam: both runtimes expose the same LLMEvent stream. Native
             // already returns one; AI SDK streams are converted here.
             const state = LLMAISDK.adapterState()
-            return Stream.fromAsyncIterable(result.result.fullStream, (e) =>
-              e instanceof Error ? e : new Error(String(e)),
-            ).pipe(
+            const stream =
+              result.type === "ai-process"
+                ? result.stream
+                : Stream.fromAsyncIterable(result.result.fullStream, (e) =>
+                    e instanceof Error ? e : new Error(String(e)),
+                  )
+            return stream.pipe(
               Stream.mapEffect((event) => LLMAISDK.toLLMEvents(state, event)),
               Stream.flatMap((events) => Stream.fromIterable(events)),
             )

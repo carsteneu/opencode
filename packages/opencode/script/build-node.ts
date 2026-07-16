@@ -20,7 +20,7 @@ await Bun.build({
   sourcemap: "linked",
   external: ["jsonc-parser", "@lydell/node-pty"],
   define: {
-    OPENCODE_MODELS_DEV: generated.modelsData,
+    OPENCODE_MODELS_DEV: JSON.stringify(generated.modelsData),
     OPENCODE_CHANNEL: `'${Script.channel}'`,
   },
   files: {
