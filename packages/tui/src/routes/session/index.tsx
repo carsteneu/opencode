@@ -3,7 +3,6 @@ import {
   createContext,
   createEffect,
   createMemo,
-  createRenderEffect,
   createSignal,
   For,
   Match,
@@ -272,13 +271,10 @@ export function Session() {
   // Reset the window whenever the session changes so long histories don't
   // render fully on the first frame of a new session.
   createEffect(
-    on(
-      () => route.sessionID,
-      (prev, next) => {
-        if (prev !== undefined && prev !== next) setWindowSize(WINDOW_LADDER[0])
-        return next
-      },
-    ),
+    on(() => route.sessionID, (prev, next) => {
+      if (prev !== undefined && prev !== next) setWindowSize(WINDOW_LADDER[0])
+      return next
+    }),
   )
 
   let lastExpandAt = 0
@@ -1219,24 +1215,6 @@ export function Session() {
   // snap to bottom when session changes
   createEffect(on(() => route.sessionID, toBottom))
 
-  // Completed assistant messages are immutable transcript entries. Keep their
-  // rendered element so streaming deltas for the active message do not make
-  // Solid reconcile every completed message still mounted in the viewport.
-  const bufferedMessages = new Map<string, JSX.Element>()
-  createRenderEffect(
-    on(
-      () => route.sessionID,
-      () => bufferedMessages.clear(),
-    ),
-  )
-  createEffect(
-    on(
-      () => revert(),
-      () => bufferedMessages.clear(),
-      { defer: true },
-    ),
-  )
-
   return (
     <LocationProvider location={location()}>
       <context.Provider
@@ -1280,116 +1258,98 @@ export function Session() {
               >
                 <box height={1} />
                 <For each={visibleMessages()}>
-                  {(message, index) => {
-                    if (message.role === "assistant" && message.time.completed) {
-                      const revertMessageID = revert()?.messageID
-                      if (!revertMessageID || message.id < revertMessageID) {
-                        const buffered = bufferedMessages.get(message.id)
-                        if (buffered) return buffered
-                        const element = (
-                          <AssistantMessage
-                            last={lastAssistant()?.id === message.id}
-                            message={message as AssistantMessage}
-                            parts={sync.data.part[message.id] ?? []}
-                          />
-                        )
-                        bufferedMessages.set(message.id, element)
-                        return element
-                      }
-                    }
-                    return (
-                      <Switch>
-                        <Match when={message.id === revert()?.messageID}>
-                          {(function () {
-                            const redoShortcut = useCommandShortcut("session.redo")
-                            const [hover, setHover] = createSignal(false)
-                            const dialog = useDialog()
+                  {(message, index) => (
+                    <Switch>
+                      <Match when={message.id === revert()?.messageID}>
+                        {(function () {
+                          const redoShortcut = useCommandShortcut("session.redo")
+                          const [hover, setHover] = createSignal(false)
+                          const dialog = useDialog()
 
-                            const handleUnrevert = async () => {
-                              const confirmed = await DialogConfirm.show(
-                                dialog,
-                                "Confirm Redo",
-                                "Are you sure you want to restore the reverted messages?",
-                              )
-                              if (confirmed) {
-                                keymap.dispatchCommand("session.redo")
-                              }
-                            }
-
-                            return (
-                              <box
-                                onMouseOver={() => setHover(true)}
-                                onMouseOut={() => setHover(false)}
-                                onMouseUp={handleUnrevert}
-                                marginTop={1}
-                                flexShrink={0}
-                                border={["left"]}
-                                customBorderChars={SplitBorder.customBorderChars}
-                                borderColor={theme.backgroundPanel}
-                              >
-                                <box
-                                  paddingTop={1}
-                                  paddingBottom={1}
-                                  paddingLeft={2}
-                                  backgroundColor={hover() ? theme.backgroundElement : theme.backgroundPanel}
-                                >
-                                  <text fg={theme.textMuted}>{revert()!.reverted.length} message reverted</text>
-                                  <text fg={theme.textMuted}>
-                                    <span style={{ fg: theme.text }}>{redoShortcut()}</span> or /redo to restore
-                                  </text>
-                                  <Show when={revert()!.diffFiles?.length}>
-                                    <box marginTop={1}>
-                                      <For each={revert()!.diffFiles}>
-                                        {(file) => (
-                                          <text fg={theme.text}>
-                                            {file.filename}
-                                            <Show when={file.additions > 0}>
-                                              <span style={{ fg: theme.diffAdded }}> +{file.additions}</span>
-                                            </Show>
-                                            <Show when={file.deletions > 0}>
-                                              <span style={{ fg: theme.diffRemoved }}> -{file.deletions}</span>
-                                            </Show>
-                                          </text>
-                                        )}
-                                      </For>
-                                    </box>
-                                  </Show>
-                                </box>
-                              </box>
+                          const handleUnrevert = async () => {
+                            const confirmed = await DialogConfirm.show(
+                              dialog,
+                              "Confirm Redo",
+                              "Are you sure you want to restore the reverted messages?",
                             )
-                          })()}
-                        </Match>
-                        <Match when={revert()?.messageID && message.id >= revert()!.messageID}>
-                          <></>
-                        </Match>
-                        <Match when={message.role === "user"}>
-                          <UserMessage
-                            index={index()}
-                            onMouseUp={() => {
-                              if (renderer.getSelection()?.getSelectedText()) return
-                              dialog.replace(() => (
-                                <DialogMessage
-                                  messageID={message.id}
-                                  sessionID={route.sessionID}
-                                  setPrompt={(promptInfo) => prompt?.set(promptInfo)}
-                                />
-                              ))
-                            }}
-                            message={message as UserMessage}
-                            parts={sync.data.part[message.id] ?? []}
-                            pending={pending()}
-                          />
-                        </Match>
-                        <Match when={message.role === "assistant"}>
-                          <AssistantMessage
-                            last={lastAssistant()?.id === message.id}
-                            message={message as AssistantMessage}
-                            parts={sync.data.part[message.id] ?? []}
-                          />
-                        </Match>
-                      </Switch>
-                    )
-                  }}
+                            if (confirmed) {
+                              keymap.dispatchCommand("session.redo")
+                            }
+                          }
+
+                          return (
+                            <box
+                              onMouseOver={() => setHover(true)}
+                              onMouseOut={() => setHover(false)}
+                              onMouseUp={handleUnrevert}
+                              marginTop={1}
+                              flexShrink={0}
+                              border={["left"]}
+                              customBorderChars={SplitBorder.customBorderChars}
+                              borderColor={theme.backgroundPanel}
+                            >
+                              <box
+                                paddingTop={1}
+                                paddingBottom={1}
+                                paddingLeft={2}
+                                backgroundColor={hover() ? theme.backgroundElement : theme.backgroundPanel}
+                              >
+                                <text fg={theme.textMuted}>{revert()!.reverted.length} message reverted</text>
+                                <text fg={theme.textMuted}>
+                                  <span style={{ fg: theme.text }}>{redoShortcut()}</span> or /redo to restore
+                                </text>
+                                <Show when={revert()!.diffFiles?.length}>
+                                  <box marginTop={1}>
+                                    <For each={revert()!.diffFiles}>
+                                      {(file) => (
+                                        <text fg={theme.text}>
+                                          {file.filename}
+                                          <Show when={file.additions > 0}>
+                                            <span style={{ fg: theme.diffAdded }}> +{file.additions}</span>
+                                          </Show>
+                                          <Show when={file.deletions > 0}>
+                                            <span style={{ fg: theme.diffRemoved }}> -{file.deletions}</span>
+                                          </Show>
+                                        </text>
+                                      )}
+                                    </For>
+                                  </box>
+                                </Show>
+                              </box>
+                            </box>
+                          )
+                        })()}
+                      </Match>
+                      <Match when={revert()?.messageID && message.id >= revert()!.messageID}>
+                        <></>
+                      </Match>
+                      <Match when={message.role === "user"}>
+                        <UserMessage
+                          index={index()}
+                          onMouseUp={() => {
+                            if (renderer.getSelection()?.getSelectedText()) return
+                            dialog.replace(() => (
+                              <DialogMessage
+                                messageID={message.id}
+                                sessionID={route.sessionID}
+                                setPrompt={(promptInfo) => prompt?.set(promptInfo)}
+                              />
+                            ))
+                          }}
+                          message={message as UserMessage}
+                          parts={sync.data.part[message.id] ?? []}
+                          pending={pending()}
+                        />
+                      </Match>
+                      <Match when={message.role === "assistant"}>
+                        <AssistantMessage
+                          last={lastAssistant()?.id === message.id}
+                          message={message as AssistantMessage}
+                          parts={sync.data.part[message.id] ?? []}
+                        />
+                      </Match>
+                    </Switch>
+                  )}
                 </For>
               </scrollbox>
               <box flexShrink={0}>
@@ -1732,7 +1692,7 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
             <code
               filetype="markdown"
               drawUnstyledText={false}
-              streaming={!props.message.time.completed}
+              streaming={true}
               syntaxStyle={syntax()}
               content={summary().body}
               conceal={ctx.conceal()}
@@ -1800,7 +1760,7 @@ function TextPart(props: { last: boolean; part: TextPart; message: AssistantMess
         <markdown
           ref={setMarkdown}
           syntaxStyle={syntax()}
-          streaming={!props.message.time.completed}
+          streaming={true}
           internalBlockMode="top-level"
           content={props.part.text.trim()}
           tableOptions={{ style: "grid" }}
