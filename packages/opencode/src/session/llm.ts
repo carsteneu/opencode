@@ -7,7 +7,7 @@ import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import { Context, Effect, Layer } from "effect"
 import * as Stream from "effect/Stream"
 import { streamText, wrapLanguageModel, type ModelMessage, type Tool } from "ai"
-import type { LLMEvent } from "@opencode-ai/llm"
+import { LLMEvent } from "@opencode-ai/llm"
 import { LLMClient } from "@opencode-ai/llm/route"
 import type { LLMClientService } from "@opencode-ai/llm/route"
 import { GitLabWorkflowLanguageModel } from "gitlab-ai-provider"
@@ -54,6 +54,30 @@ export type StreamRequest = StreamInput & {
 
 export interface Interface {
   readonly stream: (input: StreamInput) => Stream.Stream<LLMEvent, unknown>
+}
+
+export function coalesceDeltas(events: ReadonlyArray<LLMEvent>) {
+  return events.reduce<LLMEvent[]>((result, event) => {
+    const previous = result.at(-1)
+    if (event.type === "text-delta" && previous?.type === "text-delta" && previous.id === event.id) {
+      result[result.length - 1] = LLMEvent.textDelta({
+        id: event.id,
+        text: previous.text + event.text,
+        providerMetadata: event.providerMetadata ?? previous.providerMetadata,
+      })
+      return result
+    }
+    if (event.type === "reasoning-delta" && previous?.type === "reasoning-delta" && previous.id === event.id) {
+      result[result.length - 1] = LLMEvent.reasoningDelta({
+        id: event.id,
+        text: previous.text + event.text,
+        providerMetadata: event.providerMetadata ?? previous.providerMetadata,
+      })
+      return result
+    }
+    result.push(event)
+    return result
+  }, [])
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/LLM") {}
@@ -424,6 +448,8 @@ const live: Layer.Layer<
             return stream.pipe(
               Stream.mapEffect((event) => LLMAISDK.toLLMEvents(state, event)),
               Stream.flatMap((events) => Stream.fromIterable(events)),
+              Stream.groupedWithin(64, "16 millis"),
+              Stream.flatMap((events) => Stream.fromIterable(coalesceDeltas(events))),
             )
           }),
         ),
