@@ -32,6 +32,7 @@ import {
   TextAttributes,
   RGBA,
   type MarkdownRenderable,
+  type TextRenderable,
 } from "@opentui/core"
 import { Prompt, type PromptRef } from "../../component/prompt"
 import type {
@@ -271,10 +272,13 @@ export function Session() {
   // Reset the window whenever the session changes so long histories don't
   // render fully on the first frame of a new session.
   createEffect(
-    on(() => route.sessionID, (prev, next) => {
-      if (prev !== undefined && prev !== next) setWindowSize(WINDOW_LADDER[0])
-      return next
-    }),
+    on(
+      () => route.sessionID,
+      (prev, next) => {
+        if (prev !== undefined && prev !== next) setWindowSize(WINDOW_LADDER[0])
+        return next
+      },
+    ),
   )
 
   let lastExpandAt = 0
@@ -1876,7 +1880,6 @@ function GenericTool(props: ToolProps) {
     if (expanded() || !collapsed().overflow) return output()
     return collapsed().output
   })
-
   return (
     <Show
       when={props.output && ctx.showGenericToolOutput()}
@@ -2126,6 +2129,12 @@ function Shell(props: ToolProps) {
     if (expanded() || !collapsed().overflow) return output()
     return collapsed().output
   })
+  const [outputText, setOutputText] = createSignal<TextRenderable>()
+  usePartialRender(() => (isRunning() ? outputText() : undefined))
+  createEffect(() => {
+    const renderable = outputText()
+    if (renderable) renderable.content = limited()
+  })
 
   const workdirDisplay = createMemo(() => {
     const workdir = stringValue(props.input.workdir)
@@ -2154,7 +2163,7 @@ function Shell(props: ToolProps) {
               <Spinner color={theme.text}>{stringValue(props.input.command)}</Spinner>
             </Show>
             <Show when={output()}>
-              <text fg={theme.text}>{limited()}</text>
+              <text ref={setOutputText} width="100%" fg={theme.text} />
             </Show>
             <Show when={collapsed().overflow}>
               <text fg={theme.textMuted}>{expanded() ? "Click to collapse" : "Click to expand"}</text>
