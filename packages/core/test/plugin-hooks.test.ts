@@ -4,6 +4,7 @@ import { Agent } from "@opencode-ai/schema/agent"
 import { Model } from "@opencode-ai/schema/model"
 import { Provider } from "@opencode-ai/schema/provider"
 import { Session } from "@opencode-ai/schema/session"
+import type { SessionHooks } from "@opencode-ai/plugin/v2/effect/session"
 import { Effect, Layer } from "effect"
 import { PluginHooks } from "../src/plugin/hooks"
 import { testEffect } from "./lib/effect"
@@ -28,7 +29,7 @@ describe("PluginHooks", () => {
           event.messages = [Message.user("changed")]
         }),
       )
-      const event = {
+      const event: SessionHooks["context"] = {
         sessionID: Session.ID.make("ses_hooks"),
         agent: Agent.ID.make("build"),
         model: Model.Ref.make({ providerID: Provider.ID.make("test"), id: Model.ID.make("model") }),
@@ -40,6 +41,36 @@ describe("PluginHooks", () => {
       expect(yield* hooks.trigger("session", "context", event)).toBe(event)
       expect(seen).toEqual(["first", "second"])
       expect(event.messages).toEqual([Message.user("changed")])
+    }),
+  )
+
+  it.effect("registers session request hooks and triggers them sequentially", () =>
+    Effect.gen(function* () {
+      const hooks = yield* PluginHooks.Service
+      yield* hooks.register("session", "request", (event) =>
+        Effect.sync(() => {
+          event.headers.authorization = "Bearer changed"
+          delete event.body.max_output_tokens
+          event.body.store = false
+        }),
+      )
+      yield* hooks.register("session", "request", (event) =>
+        Effect.sync(() => {
+          event.headers = { ...event.headers, "x-store": String(event.body.store) }
+          event.body = { input: event.body.input ?? [] }
+        }),
+      )
+      const event: SessionHooks["request"] = {
+        sessionID: Session.ID.make("ses_request_hooks"),
+        agent: Agent.ID.make("build"),
+        model: Model.Ref.make({ providerID: Provider.ID.make("test"), id: Model.ID.make("model") }),
+        headers: { authorization: "Bearer original" },
+        body: { input: ["hello"], max_output_tokens: 1024 },
+      }
+
+      expect(yield* hooks.trigger("session", "request", event)).toBe(event)
+      expect(event.headers).toEqual({ authorization: "Bearer changed", "x-store": "false" })
+      expect(event.body).toEqual({ input: ["hello"] })
     }),
   )
 })

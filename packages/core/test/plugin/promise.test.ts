@@ -218,6 +218,37 @@ describe("fromPromise", () => {
     }),
   )
 
+  it.effect("forwards session request hooks", () =>
+    Effect.gen(function* () {
+      const plugin = yield* PluginV2.Service
+      const hooks = yield* PluginHooks.Service
+      const host = yield* PluginHost.make(plugin)
+      yield* PluginPromise.fromPromise(
+        Plugin.define({
+          id: "promise-session-request",
+          setup: async (ctx) => {
+            await ctx.session.hook("request", (event) => {
+              event.headers["x-plugin"] = "promise"
+              delete event.body.max_output_tokens
+            })
+          },
+        }),
+      ).effect(host)
+      const event: SessionHooks["request"] = {
+        sessionID: SessionV2.ID.make("ses_promise_session_request"),
+        agent: AgentV2.ID.make("build"),
+        model: Model.Ref.make({ providerID: Provider.ID.make("test"), id: Model.ID.make("model") }),
+        headers: {},
+        body: { max_output_tokens: 1024 },
+      }
+
+      yield* hooks.trigger("session", "request", event)
+
+      expect(event.headers).toEqual({ "x-plugin": "promise" })
+      expect(event.body).toEqual({})
+    }),
+  )
+
   it.effect("disposes a hook registration on request", () =>
     Effect.gen(function* () {
       const agents = yield* AgentV2.Service

@@ -4,7 +4,10 @@ import type { Agent } from "@opencode-ai/schema/agent"
 import type { Model } from "@opencode-ai/schema/model"
 import type { Session } from "@opencode-ai/schema/session"
 import type { JsonSchema } from "effect"
+import type { SessionRequest } from "../session.js"
 import type { Hooks } from "./registration.js"
+
+export type { RequestBody, RequestValue, SessionRequest } from "../session.js"
 
 export interface SessionContext {
   readonly sessionID: Session.ID
@@ -17,6 +20,7 @@ export interface SessionContext {
 
 export interface SessionHooks {
   readonly context: SessionContext
+  readonly request: SessionRequest
 }
 
 export type SessionDomain = Pick<
