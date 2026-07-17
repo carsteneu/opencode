@@ -41,7 +41,7 @@ import type { AssistantMessage, FilePart, UserMessage } from "@opencode-ai/sdk/v
 import { Locale } from "../../util/locale"
 import { errorMessage } from "../../util/error"
 import { formatDuration } from "../../util/format"
-import { createFrames } from "../../ui/spinner"
+import { createColors, createFrames } from "../../ui/spinner"
 import { useDialog } from "../../ui/dialog"
 import { usePartialRender } from "../../ui/partial-render"
 import { DialogProvider as DialogProviderConnect } from "../dialog-provider"
@@ -1335,7 +1335,13 @@ export function Prompt(props: PromptProps) {
         // enableFading: false,
         minAlpha: 0.3,
       }),
-      color,
+      color: createColors({
+        color,
+        style: "blocks",
+        inactiveFactor: 0.6,
+        // enableFading: false,
+        minAlpha: 0.3,
+      }),
     }
   })
   const maxHeight = createMemo(() => tuiConfig.prompt?.max_height ?? Math.max(6, Math.floor(dimensions().height / 3)))
