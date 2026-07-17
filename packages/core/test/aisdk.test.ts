@@ -3,12 +3,17 @@ import { AISDK } from "@opencode-ai/core/aisdk"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { LLM, Message } from "@opencode-ai/ai"
-import { LLMClient } from "@opencode-ai/ai/route"
+import { LLMClient, RequestExecutor, type RequestData } from "@opencode-ai/ai/route"
 import { expect } from "bun:test"
-import { Effect } from "effect"
+import { Effect, Layer, Stream } from "effect"
 import { testEffect } from "./lib/effect"
 
-const it = testEffect(AISDK.locationLayer)
+const it = testEffect(
+  Layer.merge(
+    AISDK.locationLayer,
+    LLMClient.layer.pipe(Layer.provide(Layer.mock(RequestExecutor.Service)({ execute: () => Effect.die("unused") }))),
+  ),
+)
 
 const model = (packageName: string, settings: Record<string, unknown> = {}) =>
   ModelV2.Info.make({
@@ -65,6 +70,64 @@ it.effect("projects request settings, headers, and body overlays", () =>
     })
     expect(prepared.body.headers).toEqual({ "x-test": "header" })
     expect(body).toEqual({ safety_setting: "strict" })
+  }),
+)
+
+it.effect("isolates request transforms across cached AI SDK streams", () =>
+  Effect.gen(function* () {
+    const aisdk = yield* AISDK.Service
+    const upstream: Array<{ headers: Headers; body: Record<string, unknown> }> = []
+    let sdkFetch: typeof fetch | undefined
+    const input = model("test-sdk")
+    if (!input.settings) return yield* Effect.die("AI SDK test model settings are missing")
+    Object.assign(input.settings, {
+      fetch: async (_input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+        upstream.push({
+          headers: new Headers(init?.headers),
+          body: JSON.parse(String(init?.body)),
+        })
+        return new Response()
+      },
+    })
+    yield* aisdk.hook.sdk((event) => {
+      sdkFetch = event.options.fetch
+      event.sdk = {
+        languageModel: () => ({
+          doStream: async (options: LanguageModelV3CallOptions) => {
+            if (!sdkFetch) throw new Error("AI SDK fetch was not installed")
+            await sdkFetch("https://provider.test/model", {
+              method: "POST",
+              headers: Object.fromEntries(
+                Object.entries(options.headers ?? {}).filter(
+                  (entry): entry is [string, string] => entry[1] !== undefined,
+                ),
+              ),
+              body: JSON.stringify({ model: "api-model", remove: true }),
+            })
+            return { stream: new ReadableStream({ start: (controller) => controller.close() }) }
+          },
+        }),
+      }
+    })
+    const resolved = yield* aisdk.model(input)
+    const llm = yield* LLMClient.Service
+    const run = (session: string) =>
+      llm
+        .stream(LLM.request({ model: resolved, prompt: session }), {
+          transformRequest: (request) =>
+            Effect.sync(() => {
+              const body: RequestData["body"] = { ...request.body, session }
+              delete body.remove
+              return { headers: { ...request.headers, "x-session": session }, body }
+            }),
+        })
+        .pipe(Stream.runDrain)
+
+    yield* Effect.all([run("one"), run("two")], { concurrency: "unbounded" })
+
+    expect(upstream.map((request) => request.headers.get("x-session")).toSorted()).toEqual(["one", "two"])
+    expect(upstream.map((request) => request.body.session).toSorted()).toEqual(["one", "two"])
+    expect(upstream.every((request) => !("remove" in request.body))).toBe(true)
   }),
 )
 

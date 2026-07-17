@@ -1,6 +1,8 @@
 import { Cause, Context, Effect, Layer, Queue, Stream } from "effect"
 import { Headers } from "effect/unstable/http"
+import { encodeJson } from "../../protocols/shared"
 import { LLMError, TransportReason } from "../../schema"
+import { Auth } from "../auth"
 import * as HttpTransport from "./http"
 import type { Transport } from "./index"
 
@@ -228,13 +230,24 @@ export const json = <Body, Message>(input: JsonInput<Body, Message>): JsonTransp
   with: (patch) => json({ ...input, ...patch }),
   prepare: (prepareInput) =>
     Effect.gen(function* () {
-      const parts = yield* HttpTransport.jsonRequestParts({
-        ...prepareInput,
+      const parts = yield* HttpTransport.jsonRequestBaseParts(prepareInput)
+      const message = input.encodeMessage(yield* input.toMessage(parts.jsonBody))
+      const transformRequest = prepareInput.transformRequest
+      const transformed = transformRequest
+        ? yield* transformRequest({ headers: parts.headers, body: yield* HttpTransport.decodeRequestBody(message) })
+        : { headers: parts.headers, body: yield* HttpTransport.decodeRequestBody(message) }
+      const bodyText = transformRequest ? encodeJson(transformed.body) : message
+      const headers = yield* Auth.toEffect(prepareInput.auth)({
+        request: prepareInput.request,
+        method: "POST",
+        url: parts.url,
+        body: bodyText,
+        headers: Headers.fromInput(transformed.headers),
       })
       return {
         url: yield* webSocketUrl(parts.url),
-        headers: parts.headers,
-        message: input.encodeMessage(yield* input.toMessage(parts.jsonBody)),
+        headers,
+        message: bodyText,
       }
     }),
   frames: (prepared, _request, runtime) => {

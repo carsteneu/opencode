@@ -4,6 +4,7 @@ import { Auth } from "../auth"
 import type { Interface as RequestExecutorInterface } from "../executor"
 import type { Interface as WebSocketExecutorInterface } from "./websocket"
 import type { LLMError, LLMRequest } from "../../schema"
+import type { RequestTransform } from "../request-transform"
 
 export interface TransportRuntime {
   readonly http: RequestExecutorInterface
@@ -27,6 +28,7 @@ export interface TransportPrepareInput<Body> {
   readonly auth: Auth.Definition
   readonly encodeBody: (body: Body) => string
   readonly headers?: (input: { readonly request: LLMRequest }) => Record<string, string>
+  readonly transformRequest?: RequestTransform
 }
 
 export * as HttpTransport from "./http"

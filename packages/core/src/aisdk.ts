@@ -1,5 +1,6 @@
 export * as AISDK from "./aisdk"
 
+import { AsyncLocalStorage } from "node:async_hooks"
 import { makeLocationNode } from "./effect/app-node"
 import type {
   JSONSchema7,
@@ -29,7 +30,7 @@ import {
   type ToolDefinition,
   type UsageInput,
 } from "@opencode-ai/ai"
-import { Auth, Endpoint, type AnyRoute } from "@opencode-ai/ai/route"
+import { Auth, Endpoint, type AnyRoute, type CallOptions } from "@opencode-ai/ai/route"
 import { Cause, Context, Effect, Layer, Option, Schema, Scope, Stream } from "effect"
 import { ModelV2 } from "./model"
 import { ProviderV2 } from "./provider"
@@ -39,6 +40,12 @@ type SDK = any
 type UserContent = Extract<LanguageModelV3Message, { role: "user" }>["content"]
 type AssistantContent = Extract<LanguageModelV3Message, { role: "assistant" }>["content"]
 type ToolResultContent = Extract<AssistantContent[number], { type: "tool-result" }>
+type TransformRequest = NonNullable<CallOptions["transformRequest"]>
+
+interface AISDKPrepared {
+  readonly call: LanguageModelV3CallOptions
+  readonly transformRequest?: TransformRequest
+}
 
 export interface SDKEvent {
   readonly model: ModelV2.Info
@@ -102,7 +109,7 @@ function wrapSSE(res: Response, ms: number, ctl: AbortController) {
   })
 }
 
-function prepareOptions(model: ModelV2.Info, pkg: string) {
+function prepareOptions(model: ModelV2.Info, pkg: string, requests: AsyncLocalStorage<TransformRequest>) {
   const projected = mapBodyToProviderOptions(model, pkg)
   const options: Record<string, any> = {
     name: model.providerID,
@@ -149,6 +156,21 @@ function prepareOptions(model: ModelV2.Info, pkg: string) {
       }
     }
 
+    const headers = new Headers(opts.headers)
+    const transformRequest = requests.getStore()
+    if (transformRequest) {
+      if (typeof opts.body !== "string") throw new Error("Session request hooks require a JSON request body")
+      const prepared = await Effect.runPromise(
+        transformRequest({
+          headers: Object.fromEntries(headers.entries()),
+          body: JSON.parse(opts.body),
+        }),
+      )
+      opts.headers = prepared.headers
+      opts.body = JSON.stringify(prepared.body)
+    }
+    if (!transformRequest) opts.headers = headers
+
     const res = await (typeof customFetch === "function" ? customFetch : fetch)(input, {
       ...opts,
       timeout: false,
@@ -193,6 +215,7 @@ export const locationLayer = Layer.effect(
     let languageHooks: ((event: LanguageEvent) => Effect.Effect<void> | void)[] = []
     const languages = new Map<string, LanguageModelV3>()
     const sdks = new Map<string, SDK>()
+    const requests = new AsyncLocalStorage<TransformRequest>()
     const functionIDs = new WeakMap<object, number>()
     let nextFunctionID = 0
     const cacheKey = (input: unknown) =>
@@ -266,7 +289,7 @@ export const locationLayer = Layer.effect(
           })
 
         const packageName = ProviderV2.packageName(model.package)
-        const options = prepareOptions(model, packageName)
+        const options = prepareOptions(model, packageName, requests)
         const sdkKey = cacheKey({
           providerID: model.providerID,
           package: packageName,
@@ -291,7 +314,7 @@ export const locationLayer = Layer.effect(
         return language
       }),
       model: Effect.fn("AISDK.model")(function* (model) {
-        return modelFromLanguage(model, yield* service.language(model))
+        return modelFromLanguage(model, yield* service.language(model), requests)
       }),
     })
     return service
@@ -300,7 +323,11 @@ export const locationLayer = Layer.effect(
 
 export const defaultLayer = locationLayer
 
-function modelFromLanguage(info: ModelV2.Info, language: LanguageModelV3) {
+function modelFromLanguage(
+  info: ModelV2.Info,
+  language: LanguageModelV3,
+  requests: AsyncLocalStorage<TransformRequest>,
+) {
   const packageName = ProviderV2.packageName(info.package!)
   const projected = mapBodyToProviderOptions(info, packageName)
   const optionKey = providerOptionKey(packageName, info.providerID)
@@ -340,8 +367,13 @@ function modelFromLanguage(info: ModelV2.Info, language: LanguageModelV3) {
     },
     with: () => route,
     model: (input) => Model.make({ ...input, provider: "provider" in input ? input.provider : info.providerID, route }),
-    prepareTransport: (body) => Effect.succeed(body),
-    streamPrepared: (prepared) => streamLanguage(language, prepared as LanguageModelV3CallOptions),
+    prepareTransport: (body, _request, options) =>
+      Effect.succeed({ call: body as LanguageModelV3CallOptions, transformRequest: options?.transformRequest }),
+    streamPrepared: (prepared) => {
+      const request = prepared as AISDKPrepared
+      if (!request.transformRequest) return streamLanguage(language, request.call)
+      return streamLanguage(language, request.call, requests, request.transformRequest)
+    },
   }
   return Model.make({ id: info.modelID ?? info.id, provider: info.providerID, route })
 }
@@ -532,13 +564,21 @@ function providerOptions(input: LLMRequest["providerOptions"]): SharedV3Provider
   return Object.fromEntries(Object.entries(input).map(([key, value]) => [key, jsonObject(value)]))
 }
 
-function streamLanguage(language: LanguageModelV3, options: LanguageModelV3CallOptions) {
+function streamLanguage(
+  language: LanguageModelV3,
+  options: LanguageModelV3CallOptions,
+  requests?: AsyncLocalStorage<TransformRequest>,
+  transformRequest?: TransformRequest,
+) {
   const state = { step: 0, toolNames: {} as Record<string, string> }
   return Stream.concat(
     Stream.make(LLMEvent.stepStart({ index: state.step })),
     Stream.unwrap(
       Effect.tryPromise({
-        try: () => language.doStream(options),
+        try: () =>
+          requests && transformRequest
+            ? requests.run(transformRequest, () => language.doStream(options))
+            : language.doStream(options),
         catch: (error) => llmError("doStream", error),
       }).pipe(
         Effect.map((result) =>

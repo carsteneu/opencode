@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { Effect, Schema } from "effect"
+import { Effect, Schema, Stream } from "effect"
 import { HttpClientRequest } from "effect/unstable/http"
 import { LLM, mergeProviderOptions } from "../src"
 import { AnthropicMessages, OpenAIChat } from "../src/protocols"
@@ -134,6 +134,41 @@ describe("request option precedence", () => {
         ),
       ),
     ),
+  )
+
+  it.effect("transforms provider-native headers and JSON", () =>
+    Effect.gen(function* () {
+      const model = OpenAIChat.route
+        .with({ endpoint: { baseURL: "https://api.openai.test/v1/" }, auth: Auth.bearer("test") })
+        .model({ id: "gpt-4o-mini" })
+      yield* LLMClient.stream(LLM.request({ model, prompt: "Say hello." }), {
+        transformRequest: (request) =>
+          Effect.sync(() => {
+            const body = { ...request.body, store: true }
+            delete body.stream_options
+            return {
+              headers: { ...request.headers, "x-plugin": "enabled" },
+              body,
+            }
+          }),
+      }).pipe(
+        Stream.runDrain,
+        Effect.provide(
+          dynamicResponse((input) =>
+            Effect.gen(function* () {
+              const web = yield* HttpClientRequest.toWeb(input.request).pipe(Effect.orDie)
+              expect(web.headers.get("authorization")).toBe("Bearer test")
+              expect(web.headers.get("x-plugin")).toBe("enabled")
+              expect(decodeJson(input.text)).toMatchObject({ store: true })
+              expect(decodeJson(input.text)).not.toHaveProperty("stream_options")
+              return input.respond(sseEvents(deltaChunk({}, "stop")), {
+                headers: { "content-type": "text/event-stream" },
+              })
+            }),
+          ),
+        ),
+      )
+    }),
   )
 
   it.effect("rejects raw body overlays for protocol-owned roots", () =>

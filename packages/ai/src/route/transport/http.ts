@@ -1,4 +1,4 @@
-import { Effect, Stream } from "effect"
+import { Effect, Schema, Stream } from "effect"
 import { Headers, HttpClientRequest } from "effect/unstable/http"
 import { Auth } from "../auth"
 import { render as renderEndpoint } from "../endpoint"
@@ -6,6 +6,7 @@ import { Framing } from "../framing"
 import type { Transport, TransportPrepareInput } from "./index"
 import * as ProviderShared from "../../protocols/shared"
 import { mergeJsonRecords, type LLMRequest } from "../../schema"
+import type { RequestValue } from "../request-transform"
 
 export type JsonRequestInput<Body> = TransportPrepareInput<Body>
 
@@ -86,24 +87,61 @@ const bodyWithOverlay = <Body>(body: Body, request: LLMRequest, encodeBody: (bod
     return yield* ProviderShared.invalidRequest("http.body can only overlay JSON object request bodies")
   })
 
-export const jsonRequestParts = <Body>(input: JsonRequestInput<Body>) =>
+const isRequestValue = (value: unknown): value is RequestValue => {
+  if (value === null || ["boolean", "number", "string"].includes(typeof value)) return true
+  if (Array.isArray(value)) return value.every(isRequestValue)
+  return ProviderShared.isRecord(value) && Object.values(value).every(isRequestValue)
+}
+
+export const isRequestBody = (value: unknown): value is Record<string, RequestValue> =>
+  ProviderShared.isRecord(value) && Object.values(value).every(isRequestValue)
+
+const decodeJson = Schema.decodeUnknownEffect(Schema.UnknownFromJsonString)
+
+export const decodeRequestBody = (text: string) =>
+  decodeJson(text).pipe(
+    Effect.mapError(() => ProviderShared.invalidRequest("Request hooks require a JSON object body")),
+    Effect.flatMap((body) =>
+      isRequestBody(body)
+        ? Effect.succeed(body)
+        : Effect.fail(ProviderShared.invalidRequest("Request hooks require a JSON object body")),
+    ),
+  )
+
+export const jsonRequestBaseParts = <Body>(input: JsonRequestInput<Body>) =>
   Effect.gen(function* () {
     const url = applyQuery(
       renderEndpoint(input.endpoint, { request: input.request, body: input.body }).toString(),
       input.request.http?.query,
     )
     const body = yield* bodyWithOverlay(input.body, input.request, input.encodeBody)
+    return {
+      url,
+      jsonBody: body.jsonBody,
+      bodyText: body.bodyText,
+      headers: {
+        ...input.headers?.({ request: input.request }),
+        ...input.request.http?.headers,
+      },
+    }
+  })
+
+export const jsonRequestParts = <Body>(input: JsonRequestInput<Body>) =>
+  Effect.gen(function* () {
+    const base = yield* jsonRequestBaseParts(input)
+    const transformRequest = input.transformRequest
+    const transformed = transformRequest
+      ? yield* transformRequest({ headers: base.headers, body: yield* decodeRequestBody(base.bodyText) })
+      : { headers: base.headers, body: base.jsonBody }
+    const bodyText = transformRequest ? ProviderShared.encodeJson(transformed.body) : base.bodyText
     const headers = yield* Auth.toEffect(input.auth)({
       request: input.request,
       method: "POST",
-      url,
-      body: body.bodyText,
-      headers: Headers.fromInput({
-        ...input.headers?.({ request: input.request }),
-        ...input.request.http?.headers,
-      }),
+      url: base.url,
+      body: bodyText,
+      headers: Headers.fromInput(transformed.headers),
     })
-    return { url, jsonBody: body.jsonBody, bodyText: body.bodyText, headers }
+    return { url: base.url, jsonBody: transformed.body, bodyText, headers }
   })
 
 export interface HttpJsonInput<_Body, Frame> {

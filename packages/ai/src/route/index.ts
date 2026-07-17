@@ -9,6 +9,7 @@ export type {
   Interface as LLMClientShape,
   Service as LLMClientService,
 } from "./client"
+export type { CallOptions, RequestData, RequestTransform, RequestValue } from "./request-transform"
 export * from "./executor"
 export { Auth } from "./auth"
 export { AuthOptions } from "./auth-options"

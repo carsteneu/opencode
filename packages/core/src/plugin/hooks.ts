@@ -16,6 +16,10 @@ export interface Domains {
 type Callback<Event> = (event: Event) => Effect.Effect<void>
 
 export interface Interface {
+  readonly has: <Domain extends keyof Domains, Name extends keyof Domains[Domain]>(
+    domain: Domain,
+    name: Name,
+  ) => boolean
   readonly register: <Domain extends keyof Domains, Name extends keyof Domains[Domain]>(
     domain: Domain,
     name: Name,
@@ -60,7 +64,7 @@ const layer = Layer.effect(
       return event
     })
 
-    return Service.of({ register, trigger })
+    return Service.of({ has: (domain, name) => (callbacks.get(key(domain, name))?.length ?? 0) > 0, register, trigger })
   }),
 )
 

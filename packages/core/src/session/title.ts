@@ -1,15 +1,15 @@
 export * as SessionTitle from "./title"
 
-import { LLM, LLMClient, LLMError, LLMEvent, Message, type LLMRequest } from "@opencode-ai/ai"
+import { LLM, LLMEvent, Message } from "@opencode-ai/ai"
 import { Context, Effect, Layer, Stream } from "effect"
 import { AgentV2 } from "../agent"
 import { Database } from "../database/database"
 import { EventV2 } from "../event"
 import { makeLocationNode } from "../effect/app-node"
-import { llmClient } from "../effect/app-node-platform"
 import { SessionEvent } from "./event"
 import { SessionHistory } from "./history"
 import { SessionModelHeaders } from "./model-headers"
+import { SessionModelStream } from "./model-stream"
 import { SessionRunnerModel } from "./runner/model"
 import { SessionSchema } from "./schema"
 import { SessionUsage } from "./usage"
@@ -18,9 +18,7 @@ const MAX_LENGTH = 100
 
 type Dependencies = {
   readonly events: EventV2.Interface
-  readonly llm: {
-    readonly stream: (request: LLMRequest) => Stream.Stream<LLMEvent, LLMError>
-  }
+  readonly llm: SessionModelStream.Interface
   readonly agents: AgentV2.Interface
   readonly models: SessionRunnerModel.Interface
 }
@@ -63,15 +61,18 @@ const make = (dependencies: Dependencies) => {
         : Effect.void,
     )
     const streamed = yield* dependencies.llm
-      .stream(
-        LLM.request({
+      .stream({
+        sessionID: session.id,
+        agent: agent.id,
+        model: resolved.ref,
+        request: LLM.request({
           model: resolved.model,
           http: { headers: SessionModelHeaders.make(session) },
           system: agent.system,
           messages: [Message.user(firstUser.text)],
           tools: [],
         }),
-      )
+      })
       .pipe(
         Stream.runForEach((event) => {
           if (LLMEvent.is.providerError(event)) failed = true
@@ -106,7 +107,7 @@ export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const events = yield* EventV2.Service
-    const llm = yield* LLMClient.Service
+    const llm = yield* SessionModelStream.Service
     const agents = yield* AgentV2.Service
     const models = yield* SessionRunnerModel.Service
     const database = yield* Database.Service
@@ -120,5 +121,5 @@ export const layer = Layer.effect(
 export const node = makeLocationNode({
   service: Service,
   layer,
-  deps: [EventV2.node, llmClient, AgentV2.node, SessionRunnerModel.node, Database.node],
+  deps: [EventV2.node, SessionModelStream.node, AgentV2.node, SessionRunnerModel.node, Database.node],
 })

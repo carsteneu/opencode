@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import { LLMClient, LLMEvent, Model, type LLMRequest } from "@opencode-ai/ai"
 import { OpenAIChat } from "@opencode-ai/ai/protocols"
+import { AgentV2 } from "@opencode-ai/core/agent"
 import { Config } from "@opencode-ai/core/config"
 import { Database } from "@opencode-ai/core/database/database"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
@@ -176,6 +177,7 @@ it.effect("manual compaction summarizes short context instead of no-op", () =>
     expect(
       yield* compaction.compactManual({
         session,
+        agent: AgentV2.ID.make("build"),
         messages: [userMessage],
         inputID: SessionMessage.ID.make("msg_manual_compaction"),
       }),
