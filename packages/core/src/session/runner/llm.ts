@@ -4,6 +4,7 @@ import { LLMError, LLMEvent, isContextOverflowFailure, type ProviderErrorEvent }
 import { SessionError } from "@opencode-ai/schema/session-error"
 import { Cause, Effect, Exit, Fiber, FiberSet, Layer, Option, Semaphore, Stream } from "effect"
 import { Database } from "../../database/database"
+import { AgentV2 } from "../../agent"
 import { EventV2 } from "../../event"
 import { PermissionV2 } from "../../permission"
 import { QuestionTool } from "../../tool/question"
@@ -40,6 +41,7 @@ const layer = Layer.effect(
     const db = (yield* Database.Service).db
     const compaction = yield* SessionCompaction.Service
     const title = yield* SessionTitle.Service
+    const agents = yield* AgentV2.Service
     // Title generation is a side effect of the first step; it must not delay step continuation.
     // Tracked per process so repeated wakes before the second user message arrives don't
     // re-fire a redundant LLM call; `SessionTitle` itself is idempotent based on durable history.
@@ -408,14 +410,15 @@ const layer = Layer.effect(
     ) {
       const pending = yield* SessionPending.compaction(db, sessionID)
       if (!pending) return
-      const selected = yield* context.select(sessionID)
+      const session = yield* getSession(sessionID)
       return yield* Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
           const compacted = yield* restore(
             Effect.gen(function* () {
+              const agent = yield* agents.select(session.agent)
               return yield* compaction.compactManual({
-                session: selected.session,
-                agent: selected.agent.id,
+                session,
+                agent: agent.id,
                 messages: yield* store.context(sessionID),
                 inputID: pending.id,
               })
@@ -498,6 +501,7 @@ export const node = makeLocationNode({
     SessionStore.node,
     SessionCompaction.node,
     SessionTitle.node,
+    AgentV2.node,
     Snapshot.node,
     Database.node,
   ],

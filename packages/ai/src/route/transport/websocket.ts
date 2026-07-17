@@ -235,14 +235,14 @@ export const json = <Body, Message>(input: JsonInput<Body, Message>): JsonTransp
       const transformRequest = prepareInput.transformRequest
       const transformed = transformRequest
         ? yield* transformRequest({ headers: parts.headers, body: yield* HttpTransport.decodeRequestBody(message) })
-        : { headers: parts.headers, body: yield* HttpTransport.decodeRequestBody(message) }
-      const bodyText = transformRequest ? encodeJson(transformed.body) : message
+        : undefined
+      const bodyText = transformed ? encodeJson(transformed.body) : message
       const headers = yield* Auth.toEffect(prepareInput.auth)({
         request: prepareInput.request,
         method: "POST",
         url: parts.url,
         body: bodyText,
-        headers: Headers.fromInput(transformed.headers),
+        headers: Headers.fromInput(transformed?.headers ?? parts.headers),
       })
       return {
         url: yield* webSocketUrl(parts.url),
