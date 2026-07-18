@@ -1,5 +1,3 @@
-import { runtimeModules as keymapRuntimeModules } from "@opentui/keymap/runtime-modules"
-import { ensureRuntimePluginSupport } from "@opentui/solid/runtime-plugin-support/configure"
 import {
   type TuiDispose,
   type TuiPlugin,
@@ -43,8 +41,6 @@ import { createCommandShim } from "@opencode-ai/tui/plugin/command-shim"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Effect } from "effect"
 import { createPluginRuntime, type PluginRuntime, type TuiPluginHost } from "@opencode-ai/tui/plugin/runtime"
-
-ensureRuntimePluginSupport({ additional: keymapRuntimeModules })
 
 type PluginLoad = {
   options: ConfigPluginV1.Options | undefined
@@ -674,6 +670,13 @@ function applyInitialPluginEnabledState(state: RuntimeState, config: TuiConfig.R
 }
 
 async function resolveExternalPlugins(list: ConfigPlugin.Origin[], wait: () => Promise<void>) {
+  if (!list.length) return []
+  const [{ runtimeModules }, { ensureRuntimePluginSupport }] = await Promise.all([
+    import("@opentui/keymap/runtime-modules"),
+    import("@opentui/solid/runtime-plugin-support/configure"),
+  ])
+  ensureRuntimePluginSupport({ additional: runtimeModules })
+
   return PluginLoader.loadExternal({
     items: list,
     kind: "tui",
