@@ -3,7 +3,7 @@
 - Stand: 2026-07-18
 - Untersuchter OpenCode-Stand: `working` / `7e017ce` plus lokale Änderungen
 - Untersuchter OpenTUI-Stand: `main` / `a89c08e` plus lokale Änderungen
-- Fixbuild: `1.18.1-patched.80` lokal gebaut und installiert
+- Fixbuild: `1.18.1-patched.85` lokal gebaut und installiert; `.81` bis `.84` waren ausschließlich A/B-Builds
 
 ## Kurzfassung
 
@@ -111,6 +111,34 @@ Taktreduktion; pro Update wird nach einem beweisbaren Präfix-/Default-Style-Che
 Parser-Absatzwechsel sanken im Replay zusätzlich um 91 %. Die verbleibenden ungefähr 17 Prozentpunkte über Idle
 verteilen sich auf Event/Store-Verarbeitung, Animation/Partialframes und echte Layoutänderungen. Sie sind deutlich
 kleiner als der beseitigte vollständige TextBuffer-Ersatz und noch nicht vollständig eliminiert.
+
+### Nachlauf: schnelle Last und verworfener Zeichen-Batch (`.80` bis `.84`)
+
+Ein nach dem Fix aufgenommenes, signalgesteuertes JSC-Profil bestätigte, dass bei schneller Last vor allem
+native Retained-/Partial-Frames, Yoga-Layout, TextBuffer-Zeichnung und der Spinnerpfad aktiv bleiben. Die
+`timeDeltas` dieses Profils sind nicht als CPU-Zeiten verwendbar: Während der Eventloop schläft, entstehen keine
+Samples; der nächste Sample erhält dadurch einen langen Walltime-Abstand. Für die Callpath-Bewertung wurden
+deshalb Sampleanzahlen und die unabhängigen `/proc`-Messungen verwendet.
+
+Als konkrete Gegenprobe wurde die acht Zeichen breite Knight-Rider-Animation ohne Frequenzänderung gebündelt:
+statt acht JS→Native-`drawChar`-Aufrufen sollte ein nativer Batch-Aufruf denselben Frame zeichnen. Der isolierte
+Grenzbenchmark war deutlich: 100.000 Frames sanken im Median von 702 auf 189 ms (`-73 %`). In einem synthetischen
+vollständigen Partial-Frame-Loop blieb davon noch ungefähr 16 % CPU-/Walltime-Gewinn übrig.
+
+Der instrumentationsfreie Live-A/B widerlegte jedoch einen relevanten Produktgewinn. Beide Läufe nutzten
+`power-saver`, 156×65 Zellen, `--pure`, DeepSeek ohne Reasoning, denselben 3.000-Wörter-Prompt und ein extern über
+SSE am ersten Textdelta gestartetes Zehn-Sekunden-Fenster:
+
+| Variante | Gesamt-CPU | Main | `HeapHelper` gesamt |
+|---|---:|---:|---:|
+| `.84`, acht einzelne Zeichenaufrufe | 83,4 % | 43,3 % | 35,4 % |
+| `.83`, ein gebündelter Zeichenaufruf | 81,7 % | 43,1 % | 34,0 % |
+
+Der Main-Thread blieb damit praktisch unverändert; die Differenz von 1,7 Prozentpunkten liegt in der
+GC-/Lauf-zu-Lauf-Streuung. Der Batch, seine neue native ABI und der Dependency-Patch wurden vollständig entfernt.
+Das ist zugleich ein wichtiger Lastbefund: Ein schneller Provider kann trotz des TextBuffer-Append-Fixes noch
+deutlich höhere CPU erzeugen als der frühere GLM-Vergleich. Die Restarbeit skaliert weiterhin mit Delta-Rate,
+Layoutänderungen und Allocation/GC; sie ist nicht durch die acht Zeichen des Spinners allein erklärbar.
 
 Zusätzlich verarbeitet der Streamingpfad an mehreren Stellen den vollständigen gewachsenen Wert statt nur das
 Delta. Das erzeugt vermeidbare O(n)-Arbeit pro Update, potenziell O(n²) über einen langen Block, viele kurzlebige
