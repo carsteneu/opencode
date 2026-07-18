@@ -1083,6 +1083,7 @@ const layer = Layer.effect(
         const ctx = yield* InstanceState.context
         let structured: unknown
         let step = 0
+        let nextSnapshot: string | undefined
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
 
         while (true) {
@@ -1142,11 +1143,13 @@ const layer = Layer.effect(
           const task = tasks.pop()
 
           if (task?.type === "subtask") {
+            nextSnapshot = undefined
             yield* handleSubtask({ task, model, lastUser, sessionID, session, msgs })
             continue
           }
 
           if (task?.type === "compaction") {
+            nextSnapshot = undefined
             const result = yield* compaction.process({
               messages: msgs,
               parentID: lastUser.id,
@@ -1163,6 +1166,7 @@ const layer = Layer.effect(
             lastFinished.summary !== true &&
             (yield* compaction.isOverflow({ tokens: lastFinished.tokens, model }))
           ) {
+            nextSnapshot = undefined
             yield* compaction.create({ sessionID, agent: lastUser.agent, model: lastUser.model, auto: true })
             continue
           }
@@ -1215,6 +1219,7 @@ const layer = Layer.effect(
               assistantMessage: msg,
               sessionID,
               model,
+              initialSnapshot: nextSnapshot,
             })
             .pipe(Effect.onInterrupt(() => finalizeInterruptedAssistant))
 
@@ -1284,6 +1289,7 @@ const layer = Layer.effect(
               model,
               toolChoice: format.type === "json_schema" ? "required" : undefined,
             })
+            nextSnapshot = handle.nextSnapshot
 
             if (structured !== undefined) {
               handle.message.structured = structured

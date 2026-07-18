@@ -179,8 +179,11 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
           return file
         })
 
+        const excludeFile = yield* Effect.cached(excludes())
+        let synced: string | undefined
+
         const sync = Effect.fnUntraced(function* (list: string[] = []) {
-          const file = yield* excludes()
+          const file = yield* excludeFile
           const target = path.join(state.gitdir, "info", "exclude")
           const text = [
             file ? (yield* read(file)).trimEnd() : "",
@@ -188,8 +191,11 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
           ]
             .filter(Boolean)
             .join("\n")
+          const content = text ? `${text}\n` : ""
+          if (content === synced) return
           yield* fs.ensureDir(path.join(state.gitdir, "info")).pipe(Effect.orDie)
-          yield* fs.writeFileString(target, text ? `${text}\n` : "").pipe(Effect.orDie)
+          yield* fs.writeFileString(target, content).pipe(Effect.orDie)
+          synced = content
         })
 
         // Reuse the hashes for the git storage between the original repo and snapshot
@@ -315,35 +321,35 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
           )
         })
 
+        const trackUnlocked = Effect.fnUntraced(function* () {
+          if (!(yield* enabled())) return
+          const existed = yield* exists(state.gitdir)
+          yield* fs.ensureDir(state.gitdir).pipe(Effect.orDie)
+          if (!existed) {
+            yield* git(["init"], {
+              env: { GIT_DIR: state.gitdir, GIT_WORK_TREE: state.worktree },
+            })
+            yield* git(["--git-dir", state.gitdir, "config", "core.autocrlf", "false"])
+            yield* git(["--git-dir", state.gitdir, "config", "core.longpaths", "true"])
+            yield* git(["--git-dir", state.gitdir, "config", "core.symlinks", "true"])
+            yield* git(["--git-dir", state.gitdir, "config", "core.fsmonitor", "false"])
+            // Tuning for very large worktrees so the first add stays bounded.
+            yield* git(["--git-dir", state.gitdir, "config", "feature.manyFiles", "true"])
+            yield* git(["--git-dir", state.gitdir, "config", "index.version", "4"])
+            yield* git(["--git-dir", state.gitdir, "config", "index.threads", "true"])
+            yield* git(["--git-dir", state.gitdir, "config", "core.untrackedCache", "true"])
+            yield* seed()
+            yield* Effect.logInfo("initialized")
+          }
+          yield* add()
+          const result = yield* git(args(["write-tree"]), { cwd: state.directory })
+          const hash = result.text.trim()
+          yield* Effect.logInfo("tracking", { hash, cwd: state.directory, git: state.gitdir })
+          return hash
+        })
+
         const track = Effect.fnUntraced(function* () {
-          return yield* locked(
-            Effect.gen(function* () {
-              if (!(yield* enabled())) return
-              const existed = yield* exists(state.gitdir)
-              yield* fs.ensureDir(state.gitdir).pipe(Effect.orDie)
-              if (!existed) {
-                yield* git(["init"], {
-                  env: { GIT_DIR: state.gitdir, GIT_WORK_TREE: state.worktree },
-                })
-                yield* git(["--git-dir", state.gitdir, "config", "core.autocrlf", "false"])
-                yield* git(["--git-dir", state.gitdir, "config", "core.longpaths", "true"])
-                yield* git(["--git-dir", state.gitdir, "config", "core.symlinks", "true"])
-                yield* git(["--git-dir", state.gitdir, "config", "core.fsmonitor", "false"])
-                // Tuning for very large worktrees so the first add stays bounded.
-                yield* git(["--git-dir", state.gitdir, "config", "feature.manyFiles", "true"])
-                yield* git(["--git-dir", state.gitdir, "config", "index.version", "4"])
-                yield* git(["--git-dir", state.gitdir, "config", "index.threads", "true"])
-                yield* git(["--git-dir", state.gitdir, "config", "core.untrackedCache", "true"])
-                yield* seed()
-                yield* Effect.logInfo("initialized")
-              }
-              yield* add()
-              const result = yield* git(args(["write-tree"]), { cwd: state.directory })
-              const hash = result.text.trim()
-              yield* Effect.logInfo("tracking", { hash, cwd: state.directory, git: state.gitdir })
-              return hash
-            }),
-          )
+          return yield* locked(trackUnlocked())
         })
 
         const patch = Effect.fnUntraced(function* (hash: string) {

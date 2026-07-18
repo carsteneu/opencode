@@ -1822,6 +1822,11 @@ describe("ProviderTransform.message - surrogate sanitization", () => {
     headers: {},
   } as any
 
+  test("keeps ordinary text and paired surrogates unchanged", () => {
+    expect(ProviderTransform.sanitizeSurrogates("plain ASCII text")).toBe("plain ASCII text")
+    expect(ProviderTransform.sanitizeSurrogates("paired 🚀 surrogate")).toBe("paired 🚀 surrogate")
+  })
+
   test("replaces lone surrogates in model-visible text", () => {
     const lone = "\uD83D"
     const valid = "🚀"

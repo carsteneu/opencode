@@ -445,9 +445,17 @@ const live: Layer.Layer<
                 : Stream.fromAsyncIterable(result.result.fullStream, (e) =>
                     e instanceof Error ? e : new Error(String(e)),
                   )
-            return stream.pipe(
+            const normalized = stream.pipe(
               Stream.mapEffect((event) => LLMAISDK.toLLMEvents(state, event)),
               Stream.flatMap((events) => Stream.fromIterable(events)),
+            )
+
+            // The worker already coalesces adjacent text/reasoning deltas before
+            // writing them over IPC. Running groupedWithin here as well creates a
+            // second queue, schedule fiber, and timer without reducing event count.
+            if (result.type === "ai-process") return normalized
+
+            return normalized.pipe(
               Stream.groupedWithin(64, "16 millis"),
               Stream.flatMap((events) => Stream.fromIterable(coalesceDeltas(events))),
             )

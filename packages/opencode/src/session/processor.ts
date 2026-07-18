@@ -31,6 +31,7 @@ export type Result = "compact" | "stop" | "continue"
 
 export interface Handle {
   readonly message: SessionV1.Assistant
+  readonly nextSnapshot: string | undefined
   readonly updateToolCall: (
     toolCallID: string,
     update: (part: SessionV1.ToolPart) => SessionV1.ToolPart,
@@ -51,6 +52,7 @@ type Input = {
   assistantMessage: SessionV1.Assistant
   sessionID: SessionID
   model: Provider.Model
+  initialSnapshot?: string
 }
 
 export interface Interface {
@@ -72,6 +74,7 @@ interface ProcessorContext extends Input {
   needsCompaction: boolean
   currentText: SessionV1.TextPart | undefined
   reasoningMap: Record<string, SessionV1.ReasoningPart>
+  nextSnapshot: string | undefined
 }
 
 type StreamEvent = LLMEvent
@@ -96,10 +99,9 @@ const layer = Layer.effect(
     const database = yield* Database.Service
 
     const create = Effect.fn("SessionProcessor.create")(function* (input: Input) {
-      // Pre-capture snapshot before the LLM stream starts. The AI SDK
-      // may execute tools internally before emitting start-step events,
-      // so capturing inside the event handler can be too late.
-      const initialSnapshot = yield* snapshot.track()
+      // Reuse the preceding step's completed snapshot when available. Otherwise
+      // capture before the LLM stream because tools may execute before start-step.
+      const initialSnapshot = input.initialSnapshot ?? (yield* snapshot.track())
       const ctx: ProcessorContext = {
         assistantMessage: input.assistantMessage,
         sessionID: input.sessionID,
@@ -111,6 +113,7 @@ const layer = Layer.effect(
         needsCompaction: false,
         currentText: undefined,
         reasoningMap: {},
+        nextSnapshot: undefined,
       }
       let aborted = false
 
@@ -434,6 +437,7 @@ const layer = Layer.effect(
 
           case "step-finish": {
             const completedSnapshot = yield* snapshot.track()
+            ctx.nextSnapshot = completedSnapshot
             yield* Effect.forEach(Object.keys(ctx.reasoningMap), finishReasoning)
             const usage = Session.getUsage({
               model: ctx.model,
@@ -685,6 +689,9 @@ const layer = Layer.effect(
       return {
         get message() {
           return ctx.assistantMessage
+        },
+        get nextSnapshot() {
+          return ctx.nextSnapshot
         },
         updateToolCall,
         completeToolCall,
