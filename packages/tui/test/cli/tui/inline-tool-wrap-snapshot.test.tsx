@@ -259,6 +259,7 @@ describe("TUI inline tool wrapping", () => {
   })
 
   test("ignores diagnostics with malformed nested ranges", () => {
+    expect(parseDiagnostics({}, "a.ts")).toEqual([])
     expect(
       parseDiagnostics(
         {

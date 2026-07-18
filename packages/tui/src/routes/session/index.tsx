@@ -297,9 +297,9 @@ export function Session() {
     }, 80)
   }
 
-  // Poll scroll position at 150ms. Top of content: expand window or load
-  // older. Bottom of content: shrink window back to the ladder floor.
-  const windowPoll = setInterval(() => {
+  // React only to actual scrollbar changes. Top of content expands the
+  // window or loads older messages; bottom shrinks it to the ladder floor.
+  const updateRenderWindow = () => {
     if (!scroll || scroll.isDestroyed) return
     if (Date.now() - lastExpandAt < 400) return
     if (scroll.scrollHeight <= scroll.height) return
@@ -315,8 +315,7 @@ export function Session() {
     if (windowSize() !== WINDOW_LADDER[0] && scroll.scrollTop >= scroll.scrollHeight - scroll.height - 1) {
       setWindowSize(WINDOW_LADDER[0])
     }
-  }, 150)
-  onCleanup(() => clearInterval(windowPoll))
+  }
 
   const dimensions = useTerminalDimensions()
   const [sidebar, setSidebar] = kv.signal<"auto" | "hide">("sidebar", "auto")
@@ -1250,6 +1249,7 @@ export function Session() {
                 verticalScrollbarOptions={{
                   paddingLeft: 1,
                   visible: showScrollbar(),
+                  onChange: updateRenderWindow,
                   trackOptions: {
                     backgroundColor: theme.backgroundElement,
                     foregroundColor: theme.border,
@@ -1696,7 +1696,7 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
             <code
               filetype="markdown"
               drawUnstyledText={false}
-              streaming={true}
+              streaming={!isDone()}
               syntaxStyle={syntax()}
               content={summary().body}
               conceal={ctx.conceal()}
@@ -1764,7 +1764,7 @@ function TextPart(props: { last: boolean; part: TextPart; message: AssistantMess
         <markdown
           ref={setMarkdown}
           syntaxStyle={syntax()}
-          streaming={true}
+          streaming={props.message.time.completed === undefined}
           internalBlockMode="top-level"
           content={props.part.text.trim()}
           tableOptions={{ style: "grid" }}
@@ -2183,13 +2183,20 @@ function Shell(props: ToolProps) {
 function Write(props: ToolProps) {
   const { theme, syntax } = useTheme()
   const pathFormatter = usePathFormatter()
+  const terminalEnvironment = useTuiTerminalEnvironment()
   const code = createMemo(() => {
     return stringValue(props.input.content) ?? ""
+  })
+  const diagnostics = createMemo(() => {
+    return parseDiagnostics(
+      props.metadata.diagnostics,
+      normalizePath(stringValue(props.input.filePath) ?? "", terminalEnvironment.platform),
+    )
   })
 
   return (
     <Switch>
-      <Match when={props.metadata.diagnostics !== undefined}>
+      <Match when={diagnostics().length > 0}>
         <BlockTool title={"# Wrote " + pathFormatter.format(stringValue(props.input.filePath))} part={props.part}>
           <line_number fg={theme.textMuted} minWidth={3} paddingRight={1}>
             <code

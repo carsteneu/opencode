@@ -44,6 +44,9 @@ const themeSource: ThemeSource = {
     return discoverThemes(directories)
   },
   subscribeRefresh(refresh) {
+    // The profiling bootstrap owns SIGUSR2 as its stop signal. Refreshing the
+    // theme at the same time adds a palette/layout spike to the profile tail.
+    if (process.env.OPENCODE_CPU_PROFILE) return () => {}
     process.on("SIGUSR2", refresh)
     return () => process.off("SIGUSR2", refresh)
   },
