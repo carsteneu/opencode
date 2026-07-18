@@ -118,6 +118,23 @@ it.instance(
 )
 
 it.instance(
+  "patch between tracked snapshots excludes later worktree changes",
+  withTrackedSnapshot(({ tmp, snapshot, before }) =>
+    Effect.gen(function* () {
+      yield* write(`${tmp.path}/during-step.txt`, "during")
+      const after = yield* snapshot.track()
+      expect(after).toBeTruthy()
+      yield* write(`${tmp.path}/after-step.txt`, "after")
+
+      const patch = yield* snapshot.patch(before, after!)
+
+      expect(patch.files).toEqual([fwd(tmp.path, "during-step.txt")])
+    }),
+  ),
+  { git: true },
+)
+
+it.instance(
   "revert should remove new files",
   withTrackedSnapshot(({ tmp, snapshot, before }) =>
     Effect.gen(function* () {

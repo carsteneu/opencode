@@ -518,29 +518,40 @@ export const get = Effect.fn("MessageV2.get")(function* (input: { sessionID: Ses
   }
 })
 
-export function filterCompacted(msgs: Iterable<WithParts>) {
-  const result = [] as WithParts[]
-  const completed = new Set<string>()
-  let retain: MessageID | undefined
+type CompactionScan = {
+  result: WithParts[]
+  completed: Set<string>
+  retain: MessageID | undefined
+  done: boolean
+}
+
+function scanCompacted(msgs: Iterable<WithParts>, state: CompactionScan) {
   for (const msg of msgs) {
-    result.push(msg)
-    if (retain) {
-      if (msg.info.id === retain) break
+    state.result.push(msg)
+    if (state.retain) {
+      if (msg.info.id === state.retain) {
+        state.done = true
+        break
+      }
       continue
     }
-    if (msg.info.role === "user" && completed.has(msg.info.id)) {
+    if (msg.info.role === "user" && state.completed.has(msg.info.id)) {
       const part = msg.parts.find((item): item is CompactionPart => item.type === "compaction")
       if (!part) continue
-      if (!part.tail_start_id) break
-      retain = part.tail_start_id
-      if (msg.info.id === retain) break
+      if (!part.tail_start_id || msg.info.id === part.tail_start_id) {
+        state.done = true
+        break
+      }
+      state.retain = part.tail_start_id
       continue
     }
-    if (msg.info.role === "user" && completed.has(msg.info.id) && msg.parts.some((part) => part.type === "compaction"))
-      break
     if (msg.info.role === "assistant" && msg.info.summary && msg.info.finish && !msg.info.error)
-      completed.add(msg.info.parentID)
+      state.completed.add(msg.info.parentID)
   }
+  return state
+}
+
+function finishCompacted(result: WithParts[]) {
   result.reverse()
   const compactionIndex = result.findLastIndex(
     (msg) =>
@@ -571,8 +582,27 @@ export function filterCompacted(msgs: Iterable<WithParts>) {
   return result
 }
 
+export function filterCompacted(msgs: Iterable<WithParts>) {
+  return finishCompacted(
+    scanCompacted(msgs, { result: [], completed: new Set(), retain: undefined, done: false }).result,
+  )
+}
+
 export const filterCompactedEffect = Effect.fnUntraced(function* (sessionID: SessionID) {
-  return filterCompacted(yield* stream(sessionID))
+  const state: CompactionScan = { result: [], completed: new Set(), retain: undefined, done: false }
+  let before: string | undefined
+  while (!state.done) {
+    const next = yield* page({ sessionID, limit: 50, before }).pipe(
+      Effect.catchIf(NotFoundError.isInstance, () =>
+        Effect.succeed({ items: [] as WithParts[], more: false, cursor: undefined }),
+      ),
+    )
+    if (next.items.length === 0) break
+    scanCompacted(next.items.toReversed(), state)
+    if (state.done || !next.more || !next.cursor) break
+    before = next.cursor
+  }
+  return finishCompacted(state.result)
 })
 
 // filterCompacted reorders messages for model consumption

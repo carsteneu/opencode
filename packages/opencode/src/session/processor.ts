@@ -459,7 +459,7 @@ const layer = Layer.effect(
             })
             yield* session.updateMessage(ctx.assistantMessage)
             if (ctx.snapshot) {
-              const patch = yield* snapshot.patch(ctx.snapshot)
+              const patch = yield* snapshot.patch(ctx.snapshot, completedSnapshot)
               if (patch.files.length) {
                 yield* session.updatePart({
                   id: PartID.ascending(),

@@ -644,6 +644,24 @@ describe("MessageV2.filterCompacted", () => {
     ),
   )
 
+  it.instance("filterCompactedEffect preserves results when the boundary is inside the newest page", () =>
+    withSession(({ sessionID }) =>
+      Effect.gen(function* () {
+        yield* fill(sessionID, 120, (index: number) => index)
+        const compact = yield* addUser(sessionID)
+        yield* addCompactionPart(sessionID, compact)
+        const summary = yield* addAssistant(sessionID, compact, { summary: true, finish: "end_turn" })
+        const recent = yield* fill(sessionID, 10)
+
+        const paginated = yield* MessageV2.filterCompactedEffect(sessionID)
+        const exhaustive = MessageV2.filterCompacted(yield* MessageV2.stream(sessionID))
+
+        expect(paginated.map((item) => item.info.id)).toEqual(exhaustive.map((item) => item.info.id))
+        expect(paginated.map((item) => item.info.id)).toEqual([compact, summary, ...recent])
+      }),
+    ),
+  )
+
   it.live("handles empty iterable", () =>
     Effect.sync(() => {
       const result = MessageV2.filterCompacted([])

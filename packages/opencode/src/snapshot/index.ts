@@ -37,7 +37,7 @@ export interface Interface {
   readonly init: () => Effect.Effect<void>
   readonly cleanup: () => Effect.Effect<void>
   readonly track: () => Effect.Effect<string | undefined>
-  readonly patch: (hash: string) => Effect.Effect<Patch>
+  readonly patch: (hash: string, to?: string) => Effect.Effect<Patch>
   readonly restore: (snapshot: string) => Effect.Effect<void>
   readonly revert: (patches: Patch[]) => Effect.Effect<void>
   readonly diff: (hash: string) => Effect.Effect<string>
@@ -352,12 +352,24 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
           return yield* locked(trackUnlocked())
         })
 
-        const patch = Effect.fnUntraced(function* (hash: string) {
+        const patch = Effect.fnUntraced(function* (hash: string, to?: string) {
           return yield* locked(
             Effect.gen(function* () {
-              yield* add()
+              if (!to) yield* add()
               const result = yield* git(
-                [...quote, ...args(["diff", "--cached", "--no-ext-diff", "--name-only", hash, "--", "."])],
+                [
+                  ...quote,
+                  ...args([
+                    "diff",
+                    ...(to ? [] : ["--cached"]),
+                    "--no-ext-diff",
+                    "--name-only",
+                    hash,
+                    ...(to ? [to] : []),
+                    "--",
+                    ".",
+                  ]),
+                ],
                 {
                   cwd: state.directory,
                 },
@@ -785,8 +797,8 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
       track: Effect.fn("Snapshot.track")(function* () {
         return yield* InstanceState.useEffect(state, (s) => s.track())
       }),
-      patch: Effect.fn("Snapshot.patch")(function* (hash: string) {
-        return yield* InstanceState.useEffect(state, (s) => s.patch(hash))
+      patch: Effect.fn("Snapshot.patch")(function* (hash: string, to?: string) {
+        return yield* InstanceState.useEffect(state, (s) => s.patch(hash, to))
       }),
       restore: Effect.fn("Snapshot.restore")(function* (snapshot: string) {
         return yield* InstanceState.useEffect(state, (s) => s.restore(snapshot))
