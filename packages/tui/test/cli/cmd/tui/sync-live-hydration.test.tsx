@@ -176,6 +176,53 @@ test("hydration does not clear text streamed before it starts", async () => {
   }
 })
 
+test("batched deltas expose append provenance until a full snapshot arrives", async () => {
+  await using tmp = await tmpdir()
+  await Bun.write(`${tmp.path}/kv.json`, "{}")
+
+  const { app, emit, sync } = await mount(() => undefined, tmp.path)
+
+  try {
+    emit(
+      global({
+        id: "evt_part",
+        type: "message.part.updated",
+        properties: {
+          sessionID,
+          time: 1,
+          part: { id: partID, sessionID, messageID, type: "text", text: "Hello " },
+        },
+      }),
+    )
+    emit(
+      global({
+        id: "evt_delta",
+        type: "message.part.delta",
+        properties: { sessionID, messageID, partID, field: "text", delta: "world" },
+      }),
+    )
+    await wait(() => sync.data.part[messageID]?.[0]?.type === "text" && sync.data.part[messageID][0].text === "Hello world")
+
+    expect(sync.partDelta(messageID, partID, "text")).toMatchObject({ fromLength: 6, toLength: 11 })
+
+    emit(
+      global({
+        id: "evt_snapshot",
+        type: "message.part.updated",
+        properties: {
+          sessionID,
+          time: 2,
+          part: { id: partID, sessionID, messageID, type: "text", text: "replacement" },
+        },
+      }),
+    )
+    await wait(() => sync.data.part[messageID]?.[0]?.type === "text" && sync.data.part[messageID][0].text === "replacement")
+    expect(sync.partDelta(messageID, partID, "text")).toBeUndefined()
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
 test("live messages merged during hydration retain the 100 message window", async () => {
   await using tmp = await tmpdir()
   await Bun.write(`${tmp.path}/kv.json`, "{}")

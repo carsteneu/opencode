@@ -1755,18 +1755,39 @@ function ReasoningHeader(props: {
 
 function TextPart(props: { last: boolean; part: TextPart; message: AssistantMessage }) {
   const ctx = use()
+  const sync = useSync()
   const { theme, syntax } = useTheme()
   const [markdown, setMarkdown] = createSignal<MarkdownRenderable>()
+  let previousRawLength: number | undefined
+  let previousContent = ""
+  let previousRevision: number | undefined
+  const content = createMemo(() => {
+    const raw = props.part.text
+    const next = raw.trim()
+    const delta = sync.partDelta(props.message.id, props.part.id, "text")
+    const appended =
+      delta &&
+      delta.revision !== previousRevision &&
+      delta.fromLength === previousRawLength &&
+      delta.toLength === raw.length &&
+      next.length >= previousContent.length
+        ? next.slice(previousContent.length)
+        : undefined
+    previousRawLength = raw.length
+    previousContent = next
+    previousRevision = delta?.revision
+    return { content: next, appended }
+  })
   usePartialRender(markdown)
   return (
-    <Show when={props.part.text.trim()}>
+    <Show when={content().content}>
       <box ref={(el: BoxRenderable) => alwaysSeparate.add(el)} paddingLeft={3} marginTop={1} flexShrink={0}>
         <markdown
           ref={setMarkdown}
           syntaxStyle={syntax()}
           streaming={props.message.time.completed === undefined}
           internalBlockMode="top-level"
-          content={props.part.text.trim()}
+          contentUpdate={content()}
           tableOptions={{ style: "grid" }}
           conceal={ctx.conceal()}
           fg={theme.markdownText}

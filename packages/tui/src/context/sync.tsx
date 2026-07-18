@@ -179,11 +179,13 @@ export const {
       // freezes scrolling (#36043). Deltas accumulate per part field and flush
       // together on a short interval instead.
       const pendingDeltas = new Map<string, { messageID: string; partID: string; field: string; delta: string }>()
+      const appliedDeltas = new Map<string, { fromLength: number; toLength: number; revision: number }>()
+      let deltaRevision = 0
       let deltaTimer: ReturnType<typeof setTimeout> | undefined
       const dropPendingDeltas = (messageID: string, partID: string) => {
-        if (!pendingDeltas.size) return
         const prefix = `${messageID}|${partID}|`
         for (const key of pendingDeltas.keys()) if (key.startsWith(prefix)) pendingDeltas.delete(key)
+        for (const key of appliedDeltas.keys()) if (key.startsWith(prefix)) appliedDeltas.delete(key)
       }
       const flushDeltas = () => {
         deltaTimer = undefined
@@ -197,7 +199,13 @@ export const {
             const part = parts[result.index]
             const field = pending.field as keyof typeof part
             const existing = part[field] as string | undefined
-            setStore("part", pending.messageID, result.index, field, (existing ?? "") + pending.delta)
+            const value = (existing ?? "") + pending.delta
+            appliedDeltas.set(`${pending.messageID}|${pending.partID}|${pending.field}`, {
+              fromLength: existing?.length ?? 0,
+              toLength: value.length,
+              revision: ++deltaRevision,
+            })
+            setStore("part", pending.messageID, result.index, field, value)
           }
           pendingDeltas.clear()
         })
@@ -207,6 +215,7 @@ export const {
         switch (event.type) {
         case "server.instance.disposed":
           pendingDeltas.clear()
+          appliedDeltas.clear()
           if (deltaTimer) { clearTimeout(deltaTimer); deltaTimer = undefined }
           void bootstrap()
           break
@@ -603,6 +612,9 @@ export const {
       },
       get path() {
         return project.instance.path()
+      },
+      partDelta(messageID: string, partID: string, field: string) {
+        return appliedDeltas.get(`${messageID}|${partID}|${field}`)
       },
       session: {
         get(sessionID: string) {
