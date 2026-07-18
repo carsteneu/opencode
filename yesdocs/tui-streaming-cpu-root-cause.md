@@ -214,6 +214,48 @@ Die unveränderte Serverkontrolle verbessert sich nicht, während alle drei hard
 rund 20 % sinken. Damit ist der Produktgewinn nicht durch Takt, Modellchunking oder Providerarbeit erklärbar.
 `1.18.1-patched.89` enthält den minifizierten Fix und ist lokal installiert.
 
+### Direkter Vergleich mit dem offiziellen unveränderten OpenCode 1.18.1
+
+Für den fehlenden Gesamtvergleich wurde anschließend das offizielle GitHub-Release
+`opencode-linux-x64.tar.gz` für `v1.18.1` geladen. Der lokale SHA-256
+`9ecce27cf529ade5f177fab478b4876b5c31d9ddc8216b994816acf192159511` stimmt mit dem Digest des
+Release-Assets überein. Der Gegenarm war das eingefrorene Produktionsbinary `1.18.1-patched.89` mit SHA-256
+`097d68a8468da85fbc7c6c8d7f3061eeca680061c129b3f18a412ebe7bff56f8`.
+
+Der endgültige Harness lief unter `power-saver` in einem echten, isolierten `tmux`-Terminal mit 156×65 Zellen,
+leerem Projekt, isoliertem `HOME` und isolierten XDG-Pfaden, `--pure`, vorgewärmten Abhängigkeiten und einer
+leeren Session mit festem Titel. Dadurch gab es weder globale Plugins noch einen automatischen Titel-Turn.
+Jeder Arm erhielt wieder exakt 240 Chunks, 18.960 Textbytes und 25 ms Abstand. `perf stat` startete erst am im
+Serverlog bestätigten Beginn des normalen `small=false`-Provider-Turns und zählte acht Sekunden. Für
+`patched.89` werden TUI und der separat isolierte lokale Server addiert; Stock 1.18.1 enthält beide in einem
+Prozess. Der lokale Fake-Provider ist in beiden Summen ausgeschlossen und dient als unabhängige Kontrolle.
+
+Die Tabelle zeigt den Median aus drei jeweils mit leerer History neu gestarteten Sessions:
+
+| Gesamtmetrik pro Streamfenster | Stock 1.18.1 | `patched.89` | Änderung |
+|---|---:|---:|---:|
+| Task-Zeit, TUI plus lokaler Server | 40.040,53 ms | 19.560,13 ms | −51,1 % |
+| mittlere Gesamt-CPU über 8 s | 500,5 % | 244,5 % | −51,1 % |
+| User-Cycles | 16,208 Mrd. | 8,490 Mrd. | −47,6 % |
+| Instruktionen | 15,845 Mrd. | 9,305 Mrd. | −41,3 % |
+| Instruktionen pro Textbyte | 835.695 | 490.793 | −41,3 % |
+| Fake-Provider-Instruktionen | 46,95 Mio. | 47,96 Mio. | +2,2 % Kontrolle |
+
+Die Einzelwerte der Instruktionen lagen bei Stock bei 12,614 / 15,845 / 16,734 Mrd. und beim Fixbuild bei
+9,476 / 8,120 / 9,305 Mrd. Der Abstand ist damit größer als die Laufstreuung. Mehr als 100 % CPU ist hier
+erwartet, weil `task-clock` die parallele Arbeit von Main- und JSC-Helper-Threads summiert.
+
+Dieser direkte Wert ist der kumulierte reale Gewinn aller Änderungen zwischen dem offiziellen 1.18.1 und
+`patched.89` in genau diesem reproduzierbaren Stream. Er darf nicht mit dem isolierten `.88`→`.87`-A/B des
+letzten Lazy-Import-Fixes verwechselt oder aus den Einzelfixes addiert werden. Der frühere, aus getrennten A/Bs
+hochgerechnete Wert von rund 54 % wird durch die direkte Messung mit rund 51 % bemerkenswert gut bestätigt.
+
+Bei der Durchführung wurden drei zunächst plausible, aber ungültige Reihen verworfen: Eine Login-Shell setzte
+das Arbeitsverzeichnis auf das große Home-Verzeichnis, ein rohes PTY beantwortete Terminal-Capability-Abfragen
+nicht, und die installierte `.89` wurde während der Messung automatisch durch Stock 1.18.3 ersetzt. Der finale
+Vergleich verwendet deshalb explizite Arbeits- und Konfigurationspfade, `tmux` sowie zwei unveränderliche
+Binarykopien. Keine der verworfenen Reihen fließt in die Tabelle ein.
+
 Zusätzlich verarbeitet der Streamingpfad an mehreren Stellen den vollständigen gewachsenen Wert statt nur das
 Delta. Das erzeugt vermeidbare O(n)-Arbeit pro Update, potenziell O(n²) über einen langen Block, viele kurzlebige
 Objekte und entsprechend hohe JSC-GC-Last. Ein unabhängiger Parser-A/B bestätigt diesen Zusammenhang: 5.000
