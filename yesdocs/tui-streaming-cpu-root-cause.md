@@ -1,9 +1,9 @@
 # OpenCode TUI Streaming-CPU: Root-Cause-Analyse
 
 - Stand: 2026-07-18
-- Untersuchter OpenCode-Stand: `working` / `7e017ce` plus lokale Änderungen
-- Untersuchter OpenTUI-Stand: `main` / `a89c08e` plus lokale Änderungen
-- Fixbuild: `1.18.1-patched.85` lokal gebaut und installiert; `.81` bis `.84` waren ausschließlich A/B-Builds
+- Untersuchter OpenCode-Stand: `working` / `d2e431a`
+- Untersuchter OpenTUI-Stand: `main` / `77e2e1e`
+- Fixbuild: `1.18.1-patched.89` lokal gebaut und installiert; `.81` bis `.84`, `.86` bis `.88` waren ausschließlich A/B-/Profilbuilds
 
 ## Kurzfassung
 
@@ -139,6 +139,80 @@ GC-/Lauf-zu-Lauf-Streuung. Der Batch, seine neue native ABI und der Dependency-P
 Das ist zugleich ein wichtiger Lastbefund: Ein schneller Provider kann trotz des TextBuffer-Append-Fixes noch
 deutlich höhere CPU erzeugen als der frühere GLM-Vergleich. Die Restarbeit skaliert weiterhin mit Delta-Rate,
 Layoutänderungen und Allocation/GC; sie ist nicht durch die acht Zeichen des Spinners allein erklärbar.
+
+### Balanced-Nachmessung: JSC-GC scannt einen schon beim Start übergroßen TUI-Heap
+
+Nach Freigabe von `perf_event` wurde die Maschine auf `balanced` umgestellt. Diese Messreihe wird nicht über rohe
+CPU-Prozentwerte mit den früheren `power-saver`-Läufen verglichen. Für A/Bs innerhalb der neuen Reihe werden
+Terminalgröße, Stream und Energiemodus konstant gehalten; zusätzlich werden Task-Zeit, Zyklen und Instruktionen
+pro Stream-Byte ausgewiesen.
+
+Ein 15-Sekunden-`perf`-Lauf des unveränderten `.85` ordnete nur 5,35 % der User-Cycles der nativen OpenTUI-Library
+zu. Der eingebettete Bun-/JSC-Code trug 67,67 % im Mainthread und weitere 21,55 % in den HeapHelper-Threads. Ein
+separater, mit dem offiziellen Bun-Profilruntime gebauter `.86` machte die zuvor anonymen Symbole sichtbar. Die
+größten Self-Anteile waren:
+
+- `JSC::Heap::runEndPhase`: 15,70 %;
+- `JSC::MarkedBlock::isMarked`: 18,19 % über Main- und Helper-Threads;
+- `JSC::FunctionExecutable::finalizeUnconditionally`: 12,62 %;
+- `JSC::Heap::isMarked`: 7,12 %;
+- Weak-Map-Output-Constraints: 7,17 % über Main- und Helper-Threads.
+
+OpenTUI-`prepareRenderFrameWithWriter` lag dagegen bei 1,22 % Self-Cycles,
+`bufferDrawTextBufferView` bei 1,17 %. Das beweist für dieses Fenster, dass die Restspitze kein nativer
+Textzeichen-Loop ist, sondern überwiegend eine JSC-GC-End-/Finalisierungsphase. `heaptrack` bestätigte zugleich
+seine eigene Grenze: Es sah in einem vollständigen TUI-Start nur 1.390 libc-/OpenTUI-Allokationen, aber nicht den
+internen JSC-`bmalloc`-Heap. Seine Daten wurden deshalb nicht als JS-Allokationsprofil fehlinterpretiert.
+
+JSC-`logGC` zeigte im Stream nur vier durch das Heap-Limit angeforderte Collections, aber mehr als 1.400
+Eden-Starts durch die Activity-Timer. Der Modus war stark invasiv und seine CPU-Zeiten sind nicht verwendbar. Der
+zugehörige WebKit-Code bestätigt jedoch unabhängig den Mechanismus: Eden- und Full-GC-Activity-Callbacks planen
+opportunistische Collections aus letzter GC-Dauer und erwarteter Rückgewinnung. Ein vollständiges Abschalten
+dieser Timer war kein Fix: Im kontrollierten 30-Sekunden-Lauf stiegen die Instruktionen pro Stream-Byte um rund
+7 %. Die Timer-Einstellung wurde verworfen.
+
+Heap-Snapshots vor dem ersten Prompt und nach einem langen Stream schließen die Ursachenkette weiter. Im
+entminifizierten TUI-Profilbuild existierten bereits beim Kaltstart 44.829 der späteren 45.096
+`FunctionExecutable`-Objekte, also 99,4 %. Der Stream vergrößerte den TUI-Heap nur von 101,1 auf 106,6 MB und die
+Nodezahl um 1,7 %. Der Server wuchs von 123,2 auf 134,1 MB. Streaming erzeugt die zehntausenden Executables daher
+nicht neu; es löst Collections aus, die einen bereits beim Programmstart sehr großen Modul-/Executable-/Weak-
+Struktur-Graphen wiederholt prüfen und finalisieren.
+
+Das Bundle-Metafile identifizierte einen konkreten unnötigen Teil dieses Startheaps. Der TUI-Pluginhost importierte
+`@opentui/solid/runtime-plugin-support/configure` und die Keymap-Runtime statisch und führte
+`ensureRuntimePluginSupport()` auf Modulebene aus. Dadurch lud selbst `--pure` ohne ein einziges externes
+TUI-Plugin einen 3.696.602-Byte-Chunk aus Babel-Parser, JSX-Compiler, Browser-Mapping und HTML-Parsern. Der Fix
+lädt diese beiden Module erst unmittelbar vor einem tatsächlich vorhandenen externen Plugin.
+
+Die Änderung ist auf drei voneinander unabhängigen Ebenen belegt:
+
+| Beleg | Vorher | Nachher | Änderung |
+|---|---:|---:|---:|
+| Pluginhost-Chunk, unminifiziert | 3.696.602 B | 188.149 B | −94,9 %; Babel bleibt als Dynamic Import verfügbar |
+| TUI-Kaltstart-Heap, Self-Size | 101.099.428 B | 92.683.361 B | −8,3 % |
+| `FunctionExecutable` im TUI-Kaltstart | 44.829 | 39.487 | −11,9 % |
+| `UnlinkedFunctionExecutable` | 47.416 | 41.758 | −11,9 % |
+| `Structure` | 66.330 | 55.991 | −15,6 % |
+
+Der getrennte Server-Heap blieb dabei praktisch identisch, wie für einen reinen TUI-Lazy-Load-Fix erwartet.
+28 externe-/Pure-Plugin- und Lifecycle-Tests sowie `bun typecheck` sind grün.
+
+Der finale CPU-A/B verwendete statt eines variablen Providers einen lokalen OpenAI-kompatiblen Server. Er gab in
+beiden Armen exakt 240 Chunks, 18.960 Textbytes und 25 ms Abstand aus; die automatische Titelanfrage erhielt eine
+separate sofortige Kurzantwort. Beide Binaries stammten aus demselben symbolisierten Build und unterschieden sich
+nur durch den Lazy-Import-Fix. Die Messung lief vollständig in `balanced`:
+
+| Prozess / Metrik | Baseline `.88` | Fix `.87` | Änderung |
+|---|---:|---:|---:|
+| TUI Task-Zeit | 4.612,97 ms | 3.649,60 ms | −20,9 % |
+| TUI User-Cycles | 5,347 Mrd. | 4,123 Mrd. | −22,9 % |
+| TUI Instruktionen | 4,761 Mrd. | 3,817 Mrd. | −19,8 % |
+| TUI Instruktionen pro Textbyte | 251.120 | 201.296 | −19,8 % |
+| Server Instruktionen | 8,885 Mrd. | 9,285 Mrd. | +4,5 % Kontrollstreuung |
+
+Die unveränderte Serverkontrolle verbessert sich nicht, während alle drei hardwareunabhängigen TUI-Metriken um
+rund 20 % sinken. Damit ist der Produktgewinn nicht durch Takt, Modellchunking oder Providerarbeit erklärbar.
+`1.18.1-patched.89` enthält den minifizierten Fix und ist lokal installiert.
 
 Zusätzlich verarbeitet der Streamingpfad an mehreren Stellen den vollständigen gewachsenen Wert statt nur das
 Delta. Das erzeugt vermeidbare O(n)-Arbeit pro Update, potenziell O(n²) über einen langen Block, viele kurzlebige
