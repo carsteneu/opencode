@@ -1,25 +1,33 @@
 const profile = process.env.OPENCODE_CPU_PROFILE?.replace("{pid}", String(process.pid))
 if (profile) {
   const { Session } = await import("node:inspector")
-  const session = new Session()
+  let session: InstanceType<typeof Session> | undefined
   let started = false
-  session.connect()
-  await new Promise<void>((resolve, reject) =>
-    session.post("Profiler.enable", (error) => (error ? reject(error) : resolve())),
-  )
   process.on("SIGUSR1", () => {
-    if (started) return
-    started = true
-    session.post("Profiler.start", (error) => {
+    if (session) return
+    const current = new Session()
+    session = current
+    current.connect()
+    current.post("Profiler.enable", (error) => {
       if (error) throw error
+      current.post("Profiler.start", (error) => {
+        if (error) throw error
+        started = true
+      })
     })
   })
   process.on("SIGUSR2", () => {
-    if (!started) return
+    const current = session
+    if (!started || !current) return
     started = false
-    session.post("Profiler.stop", (error, result) => {
+    current.post("Profiler.stop", (error, result) => {
       if (error) throw error
       void Bun.write(profile, JSON.stringify(result.profile))
+      current.post("Profiler.disable", (error) => {
+        if (error) throw error
+        current.disconnect()
+        if (session === current) session = undefined
+      })
     })
   })
 }

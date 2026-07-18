@@ -19,9 +19,12 @@ describe("tui thread", () => {
 
   test("starts the TUI server in a separate process", async () => {
     const source = await Bun.file(new URL("../../../src/cli/cmd/tui.ts", import.meta.url)).text()
+    const server = await Bun.file(new URL("../../../src/cli/tui/process-server.ts", import.meta.url)).text()
 
     expect(source).toContain("startTuiServerProcess")
     expect(source).not.toContain("new Worker")
+    expect(server).not.toContain("InstanceRuntime")
+    expect(server).not.toContain("AppRuntime")
   })
 
   test("starts and stops the private TUI server child", async () => {
@@ -35,12 +38,32 @@ describe("tui thread", () => {
 
     expect(server.url).toStartWith("http://127.0.0.1:")
     expect(server.password).toBeString()
+    expect(server.events).toBeDefined()
+    if (!server.events) throw new Error("Private TUI server did not expose IPC events")
+    const disposed = Promise.withResolvers<string>()
+    const unsubscribe = await server.events.subscribe((event) => {
+      if (event.payload.type === "global.disposed") disposed.resolve(event.payload.type)
+    })
     const response = await fetch(server.url + "/global/health", {
       headers: { Authorization: `Basic ${btoa(`opencode:${server.password}`)}` },
     })
     expect(response.status).toBe(200)
+    const dispose = await fetch(server.url + "/global/dispose", {
+      method: "POST",
+      headers: { Authorization: `Basic ${btoa(`opencode:${server.password}`)}` },
+    })
+    expect(dispose.status).toBe(200)
+    expect(
+      await Promise.race([
+        disposed.promise,
+        Bun.sleep(5_000).then(() => {
+          throw new Error("Timed out waiting for private TUI server IPC event")
+        }),
+      ]),
+    ).toBe("global.disposed")
+    unsubscribe()
     await server.stop()
-  }, 15_000)
+  }, 20_000)
 
   async function check(project?: string) {
     await using tmp = await tmpdir({ git: true })

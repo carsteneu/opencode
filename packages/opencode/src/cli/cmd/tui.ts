@@ -8,6 +8,7 @@ import { writeHeapSnapshot } from "v8"
 import { ServerAuth } from "@/server/auth"
 import { validateSession } from "../tui/validate-session"
 import { win32InstallCtrlCGuard } from "@opencode-ai/tui/terminal-win32"
+import type { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 
 async function input(value?: string) {
   const piped = process.stdin.isTTY ? undefined : await Bun.stdin.text()
@@ -161,10 +162,14 @@ export const TuiThreadCommand = cmd({
       const external = hasArg("--port") || hasArg("--hostname") || network.mdns === true
       const { startTuiServerProcess } = await import("../tui/process-server")
       await using server = await startTuiServerProcess({ directory: cwd, network, private: !external })
-      const reload = () => {
-        server.call({ name: "reload" }).catch(() => {})
-      }
-      process.on("SIGUSR2", reload)
+      // The profiling bootstrap owns SIGUSR2 as its stop signal. Registering
+      // reload at the same time would abort the profiled provider turn.
+      const reload = process.env.OPENCODE_CPU_PROFILE
+        ? undefined
+        : () => {
+            server.call({ name: "reload" }).catch(() => {})
+          }
+      if (reload) process.on("SIGUSR2", reload)
 
       const prompt = await input(args.prompt)
       const config = await TuiConfig.get()
@@ -188,7 +193,10 @@ export const TuiThreadCommand = cmd({
       }
 
       setTimeout(() => {
-        server.call({ name: "checkUpgrade", input: { directory: cwd } }).catch(() => {})
+        fetch(new URL("/global/config", server.url), { headers })
+          .then((response) => response.json() as Promise<{ autoupdate?: ConfigV1.Info["autoupdate"] }>)
+          .then((global) => server.call({ name: "checkUpgrade", input: { autoupdate: global.autoupdate } }))
+          .catch(() => {})
       }, 1000).unref?.()
 
       try {
@@ -207,6 +215,7 @@ export const TuiThreadCommand = cmd({
             pluginHost: createLegacyTuiPluginHost(),
             directory: cwd,
             headers,
+            events: server.events,
             args: {
               continue: args.continue,
               sessionID: args.session,
@@ -219,7 +228,7 @@ export const TuiThreadCommand = cmd({
           }),
         )
       } finally {
-        process.off("SIGUSR2", reload)
+        if (reload) process.off("SIGUSR2", reload)
       }
     } finally {
       try {

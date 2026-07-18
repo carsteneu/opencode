@@ -131,6 +131,15 @@ describe("cross-spawn spawner", () => {
 
   describe("env option", () => {
     fx.effect(
+      "inherits the environment without explicit overrides",
+      Effect.gen(function* () {
+        const handle = yield* js('process.stdout.write(process.env.PATH ?? "")', { extendEnv: true })
+        const out = yield* decodeByteStream(handle.stdout)
+        expect(out).toBe(process.env.PATH ?? "")
+      }),
+    )
+
+    fx.effect(
       "passes environment variables with extendEnv",
       Effect.gen(function* () {
         const handle = yield* js('process.stdout.write(process.env.TEST_VAR ?? "")', {
