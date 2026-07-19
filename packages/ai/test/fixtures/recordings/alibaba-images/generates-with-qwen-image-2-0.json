@@ -3,7 +3,7 @@
   "metadata": {
     "tags": ["prefix:alibaba-images", "provider:alibaba", "protocol:alibaba-images"],
     "name": "alibaba-images/generates-with-qwen-image-2-0",
-    "recordedAt": "2026-07-19T16:05:19.642Z"
+    "recordedAt": "2026-07-19T16:15:36.863Z"
   },
   "interactions": [
     {
@@ -21,7 +21,7 @@
         "headers": {
           "content-type": "application/json"
         },
-        "body": "{\"output\":{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":[{\"image\":\"https://dashscope-463f.oss-accelerate.aliyuncs.com/7d/7b/20260720/991d10e3/fe425a64-dc6f-4c67-a4fa-a06810984ba9.png?Expires=1785082919&OSSAccessKeyId=fixture&Signature=fixture\"}],\"role\":\"assistant\"}}]},\"usage\":{\"height\":512,\"image_count\":1,\"width\":512},\"request_id\":\"484490f4-9881-90eb-8d52-d270d2395920\"}"
+        "body": "{\"output\":{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":[{\"image\":\"https://dashscope-463f.oss-accelerate.aliyuncs.com/7d/04/20260720/991d10e3/93325a03-aa95-4dd3-a395-8d7246b5e72c.png?Expires=1785083536&OSSAccessKeyId=%5BREDACTED%5D&Signature=%5BREDACTED%5D\"}],\"role\":\"assistant\"}}]},\"usage\":{\"height\":512,\"image_count\":1,\"width\":512},\"request_id\":\"9f94d544-393b-9d6f-b005-4d0ff21f6fdf\"}"
       }
     }
   ]

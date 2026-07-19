@@ -25,6 +25,12 @@ export interface OpenAIImageOptions {
   readonly outputCompression?: number
 }
 
+declare module "../image" {
+  interface ImageProviderOptions {
+    readonly openai?: OpenAIImageOptions
+  }
+}
+
 const OpenAIImageBody = Schema.Struct({
   model: Schema.String,
   prompt: Schema.String,

@@ -3,7 +3,7 @@
   "metadata": {
     "tags": ["prefix:alibaba-images", "provider:alibaba", "protocol:alibaba-images"],
     "name": "alibaba-images/generates-with-wan-2-7",
-    "recordedAt": "2026-07-19T16:05:23.617Z"
+    "recordedAt": "2026-07-19T16:15:40.689Z"
   },
   "interactions": [
     {
@@ -21,7 +21,7 @@
         "headers": {
           "content-type": "application/json"
         },
-        "body": "{\"output\":{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":[{\"image\":\"https://dashscope-463f.oss-accelerate.aliyuncs.com/1d/ae/20260720/10739b93/1784477122_595381b5.png?Expires=1784563522&OSSAccessKeyId=fixture&Signature=fixture\",\"type\":\"image\"}],\"role\":\"assistant\"}}],\"finished\":true},\"usage\":{\"image_count\":1,\"input_tokens\":31,\"output_tokens\":2,\"size\":\"1024*1024\",\"total_tokens\":33},\"request_id\":\"ec5cacb5-c7b0-9e46-8459-49003a3816c3\"}"
+        "body": "{\"output\":{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":[{\"image\":\"https://dashscope-463f.oss-accelerate.aliyuncs.com/1d/0b/20260720/10739b93/1784477739_553aee1e.png?Expires=1784564140&OSSAccessKeyId=%5BREDACTED%5D&Signature=%5BREDACTED%5D\",\"type\":\"image\"}],\"role\":\"assistant\"}}],\"finished\":true},\"usage\":{\"image_count\":1,\"input_tokens\":31,\"output_tokens\":2,\"size\":\"1024*1024\",\"total_tokens\":33},\"request_id\":\"3eb93323-2d8f-9aa5-b010-82dd8fab80ea\"}"
       }
     }
   ]

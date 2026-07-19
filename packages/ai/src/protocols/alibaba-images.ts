@@ -25,7 +25,7 @@ export const PATH = "/services/aigc/multimodal-generation/generation"
 
 export type Family = "qwen" | "wan"
 
-export interface QwenImageOptions extends Record<string, unknown> {
+export interface QwenImageOptions {
   readonly negativePrompt?: string
   readonly promptExtend?: boolean
   readonly watermark?: boolean
@@ -36,14 +36,14 @@ export interface WanColor {
   readonly ratio: string
 }
 
-export interface WanImageOptions extends Record<string, unknown> {
+export interface WanImageOptions {
   readonly resolution?: "1K" | "2K" | "4K"
   readonly thinkingMode?: boolean
   readonly colorPalette?: ReadonlyArray<WanColor>
   readonly watermark?: boolean
 }
 
-export interface AlibabaImageOptions extends Record<string, unknown> {
+export interface AlibabaImageOptions {
   readonly qwen?: QwenImageOptions
   readonly wan?: WanImageOptions
 }
@@ -240,7 +240,8 @@ const expiration = (url: string) => {
   if (!URL.canParse(url)) return undefined
   const value = new URL(url).searchParams.get("Expires")
   if (value === null || !Number.isFinite(Number(value))) return undefined
-  return new Date(Number(value) * 1000).toISOString()
+  const date = new Date(Number(value) * 1000)
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString()
 }
 
 export const model = (input: ModelInput) => {
@@ -297,20 +298,21 @@ export const model = (input: ModelInput) => {
         return yield* invalidOutput("Alibaba Images returned no images", { requestId: decoded.request_id })
 
       return new ImageResponse({
-        images: urls.map(
-          (url) =>
-            new GeneratedImage({
-              mediaType: "image/png",
-              data: url,
-              providerMetadata: {
-                alibaba: {
-                  modelId: request.model.id,
-                  family: input.family,
-                  expiresAt: expiration(url),
-                },
+        images: urls.map((url) => {
+          const expiresAt = expiration(url)
+          return new GeneratedImage({
+            mediaType: "image/png",
+            data: url,
+            expiresAt,
+            providerMetadata: {
+              alibaba: {
+                modelId: request.model.id,
+                family: input.family,
+                expiresAt,
               },
-            }),
-        ),
+            },
+          })
+        }),
         usage:
           decoded.usage === undefined
             ? undefined

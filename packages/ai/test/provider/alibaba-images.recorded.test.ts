@@ -1,5 +1,5 @@
-import { describe, expect } from "bun:test"
-import { Effect } from "effect"
+import { describe, expect, test } from "bun:test"
+import { Effect, Option, Schema } from "effect"
 import { Image } from "../../src"
 import { Alibaba } from "../../src/providers"
 import { recordedTests } from "../recorded-test"
@@ -8,11 +8,77 @@ const alibaba = Alibaba.configure({
   apiKey: process.env.DASHSCOPE_API_KEY ?? "fixture",
 })
 
+const SIGNED_QUERY_CREDENTIALS = new Set(
+  [
+    "AccessKeyId",
+    "AWSAccessKeyId",
+    "GoogleAccessId",
+    "OSSAccessKeyId",
+    "Signature",
+    "SecurityToken",
+    "X-Amz-Credential",
+    "X-Amz-Security-Token",
+    "X-Amz-Signature",
+    "X-Goog-Credential",
+    "X-Goog-Signature",
+    "X-OSS-Security-Token",
+  ].map((name) => name.replace(/[^a-z0-9]/gi, "").toLowerCase()),
+)
+
+const redactSignedUrl = (value: string) => {
+  if (!URL.canParse(value)) return value
+  const url = new URL(value)
+  if (url.protocol !== "http:" && url.protocol !== "https:") return value
+  url.searchParams.forEach((_, name) => {
+    if (SIGNED_QUERY_CREDENTIALS.has(name.replace(/[^a-z0-9]/gi, "").toLowerCase()))
+      url.searchParams.set(name, "[REDACTED]")
+  })
+  return url.toString()
+}
+
+const redactSignedUrls = (body: string) =>
+  Option.match(Schema.decodeUnknownOption(Schema.UnknownFromJsonString)(body), {
+    onNone: () => body,
+    onSome: (value) =>
+      JSON.stringify(
+        (function redact(input: unknown): unknown {
+          if (typeof input === "string") return redactSignedUrl(input)
+          if (Array.isArray(input)) return input.map(redact)
+          if (input === null || typeof input !== "object") return input
+          return Object.fromEntries(Object.entries(input).map(([key, child]) => [key, redact(child)]))
+        })(value),
+      ),
+  })
+
 const recorded = recordedTests({
   prefix: "alibaba-images",
   provider: "alibaba",
   protocol: "alibaba-images",
   requires: ["DASHSCOPE_API_KEY"],
+  options: { redact: { body: redactSignedUrls } },
+})
+
+test("recorder redacts signed URL credentials in nested JSON strings repeatably", () => {
+  const body = JSON.stringify({
+    output: {
+      image:
+        "https://example.oss.aliyuncs.com/image.png?Expires=1893456000&OSSAccessKeyId=access&Signature=signature&x-oss-security-token=token",
+    },
+    mirrors: ["https://storage.googleapis.com/image.png?X-Goog-Credential=credential&X-Goog-Signature=signature"],
+  })
+  const once = redactSignedUrls(body)
+  const twice = redactSignedUrls(once)
+  const parsed = JSON.parse(once)
+  const oss = new URL(parsed.output.image)
+  const gcs = new URL(parsed.mirrors[0])
+
+  expect(oss.searchParams.get("Expires")).toBe("1893456000")
+  expect(oss.searchParams.get("OSSAccessKeyId")).toBe("[REDACTED]")
+  expect(oss.searchParams.get("Signature")).toBe("[REDACTED]")
+  expect(oss.searchParams.get("x-oss-security-token")).toBe("[REDACTED]")
+  expect(gcs.searchParams.get("X-Goog-Credential")).toBe("[REDACTED]")
+  expect(gcs.searchParams.get("X-Goog-Signature")).toBe("[REDACTED]")
+  expect(twice).toBe(once)
 })
 
 describe("Alibaba Images recorded", () => {

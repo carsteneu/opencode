@@ -50,14 +50,18 @@ Alibaba's international synchronous API supports both Qwen Image 2.0 and Wan 2.7
 ```ts
 import { Alibaba } from "@opencode-ai/ai/providers"
 
-const response =
-  yield *
-  Image.generate({
+const program = Effect.gen(function* () {
+  const response = yield* Image.generate({
     model: Alibaba.configure({ apiKey: process.env.DASHSCOPE_API_KEY }).image("wan2.7-image-pro"),
     prompt: "A flower shop with a carved wooden door",
     providerOptions: { alibaba: { wan: { resolution: "2K", thinkingMode: true } } },
   })
+
+  return response.images
+})
 ```
+
+Alibaba returns temporary signed URLs. Persist each image before its optional `expiresAt` timestamp rather than treating the URL as durable storage.
 
 Conversational image generation remains part of the LLM interaction. OpenAI Responses exposes it through its hosted image tool:
 

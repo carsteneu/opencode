@@ -3,6 +3,7 @@ import type { Auth } from "../src/route/auth"
 import type { ModelFactory } from "../src/route/auth-options"
 import { Auth as RuntimeAuth } from "../src/route/auth"
 import * as OpenAIChat from "../src/protocols/openai-chat"
+import * as Alibaba from "../src/providers/alibaba"
 import * as AmazonBedrock from "../src/providers/amazon-bedrock"
 import * as Anthropic from "../src/providers/anthropic"
 import * as AnthropicCompatible from "../src/providers/anthropic-compatible"
@@ -253,3 +254,9 @@ Cloudflare.CloudflareWorkersAI.configure({ accountId: "account", apiKey: "cf-key
 GitHubCopilot.configure({ baseURL: "https://copilot.test", apiKey: "copilot-key" }).model("gpt-4.1")
 // @ts-expect-error GitHub Copilot model selectors only accept model ids.
 GitHubCopilot.configure({ baseURL: "https://copilot.test", apiKey: "copilot-key" }).model("gpt-4.1", {})
+
+Alibaba.configure({ image: { providerOptions: { qwen: { promptExtend: true } } } }).image("qwen-image-2.0")
+// @ts-expect-error Alibaba Qwen options are closed and reject unimplemented parameters.
+Alibaba.configure({ image: { providerOptions: { qwen: { style: "photorealistic" } } } })
+// @ts-expect-error Alibaba Wan options are closed and reject unimplemented parameters.
+Alibaba.configure({ image: { providerOptions: { wan: { parameters: { watermark: true } } } } })

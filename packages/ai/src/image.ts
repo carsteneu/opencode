@@ -49,9 +49,8 @@ export interface ImageModelDefaults {
   readonly http?: HttpOptions
 }
 
-export interface ImageProviderOptions {
-  readonly [provider: string]: Record<string, unknown> | undefined
-}
+// Image protocols augment this interface with closed provider option objects.
+export interface ImageProviderOptions {}
 
 export const ImageModelSchema = Schema.declare((value): value is ImageModel => value instanceof ImageModel, {
   expected: "Image.Model",
@@ -83,6 +82,7 @@ export type ImageRequestInput = Omit<ConstructorParameters<typeof ImageRequest>[
 export class GeneratedImage extends Schema.Class<GeneratedImage>("Image.Generated")({
   mediaType: Schema.String,
   data: Schema.Union([Schema.String, Schema.Uint8Array]),
+  expiresAt: Schema.optional(Schema.String),
   providerMetadata: Schema.optional(ProviderMetadata),
 }) {}
 

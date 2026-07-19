@@ -50,6 +50,7 @@ describe("Alibaba Images", () => {
       })
 
       expect(result.image?.data).toContain("dashscope-result-intl")
+      expect(result.image?.expiresAt).toBe("2030-01-01T00:00:00.000Z")
       expect(result.image?.providerMetadata).toEqual({
         alibaba: {
           modelId: "qwen-image-2.0-pro",
@@ -188,6 +189,56 @@ describe("Alibaba Images", () => {
                 ),
               ),
             ),
+          ),
+        ),
+      ),
+    ),
+  )
+
+  it.effect("rejects parameters overlays owned by the protocol", () =>
+    Image.generate({
+      model: Alibaba.configure({ apiKey: "test" }).image("qwen-image-2.0"),
+      prompt: "A robot",
+      http: { body: { parameters: { watermark: true } } },
+    }).pipe(
+      Effect.flip,
+      Effect.tap((error) =>
+        Effect.sync(() => {
+          expect(error.reason._tag).toBe("InvalidRequest")
+          expect(error.message).toContain("http.body cannot overlay protocol-owned field(s): parameters")
+        }),
+      ),
+      Effect.provide(
+        ImageClient.layer.pipe(
+          Layer.provide(
+            dynamicResponse(() => Effect.die("reserved body validation must happen before the request is sent")),
+          ),
+        ),
+      ),
+    ),
+  )
+
+  it.effect("ignores finite expiration values outside the Date range", () =>
+    Effect.gen(function* () {
+      const result = yield* Image.generate({
+        model: Alibaba.configure({ apiKey: "test" }).image("qwen-image-2.0"),
+        prompt: "A robot",
+      })
+
+      expect(result.image?.expiresAt).toBeUndefined()
+      expect(result.image?.providerMetadata?.alibaba?.expiresAt).toBeUndefined()
+    }).pipe(
+      Effect.provide(
+        ImageClient.layer.pipe(
+          Layer.provide(
+            dynamicResponse((input) => {
+              const payload = response("qwen")
+              payload.output.choices[0].message.content[0].image =
+                "https://dashscope-result-intl.oss-cn-singapore.aliyuncs.com/result.png?Expires=9007199254740991"
+              return Effect.succeed(
+                input.respond(JSON.stringify(payload), { headers: { "content-type": "application/json" } }),
+              )
+            }),
           ),
         ),
       ),
