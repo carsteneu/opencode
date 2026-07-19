@@ -3,6 +3,7 @@ import { LLM, LLMClient, Provider } from "@opencode-ai/ai"
 import { Route, Protocol } from "@opencode-ai/ai/route"
 import { Provider as ProviderSubpath } from "@opencode-ai/ai/provider"
 import {
+  Alibaba,
   CloudflareAIGateway,
   CloudflareWorkersAI,
   OpenAI,
@@ -12,6 +13,7 @@ import {
 } from "@opencode-ai/ai/providers"
 import * as GitHubCopilot from "@opencode-ai/ai/providers/github-copilot"
 import {
+  AlibabaImages,
   OpenAIChat,
   OpenAICompatibleChat,
   OpenAICompatibleResponses,
@@ -40,6 +42,7 @@ describe("public exports", () => {
     expect(OpenAI.provider.responses).toBe(OpenAI.responses)
     expect(OpenAI.provider.responsesWebSocket).toBe(OpenAI.responsesWebSocket)
     expect(OpenAI.configure({ apiKey: "fixture" }).responses).toBeFunction()
+    expect(Alibaba.configure({ apiKey: "fixture" }).image("qwen-image-2.0").provider).toBe("alibaba")
     expect(OpenAICompatible.deepseek.model).toBeFunction()
     expect(
       OpenAICompatibleResponses.configure({ baseURL: "https://responses.test/v1" }).model("fixture").route.id,
@@ -76,6 +79,7 @@ describe("public exports", () => {
   })
 
   test("protocol barrels expose supported low-level routes", () => {
+    expect(AlibabaImages.DEFAULT_BASE_URL).toBe("https://dashscope-intl.aliyuncs.com/api/v1")
     expect(OpenAIChat.route.id).toBe("openai-chat")
     expect(OpenAICompatibleChat.route.id).toBe("openai-compatible-chat")
     expect(OpenAICompatibleResponses.route.id).toBe("openai-compatible-responses")

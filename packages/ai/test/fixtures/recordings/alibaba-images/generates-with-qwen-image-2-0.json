@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "metadata": {
+    "tags": ["prefix:alibaba-images", "provider:alibaba", "protocol:alibaba-images"],
+    "name": "alibaba-images/generates-with-qwen-image-2-0",
+    "recordedAt": "2026-07-19T16:05:19.642Z"
+  },
+  "interactions": [
+    {
+      "transport": "http",
+      "request": {
+        "method": "POST",
+        "url": "https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"model\":\"qwen-image-2.0\",\"input\":{\"messages\":[{\"role\":\"user\",\"content\":[{\"text\":\"A simple flat black circle centered on a plain white background.\"}]}]},\"parameters\":{\"size\":\"512*512\",\"prompt_extend\":false,\"watermark\":false}}"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json"
+        },
+        "body": "{\"output\":{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":[{\"image\":\"https://dashscope-463f.oss-accelerate.aliyuncs.com/7d/7b/20260720/991d10e3/fe425a64-dc6f-4c67-a4fa-a06810984ba9.png?Expires=1785082919&OSSAccessKeyId=fixture&Signature=fixture\"}],\"role\":\"assistant\"}}]},\"usage\":{\"height\":512,\"image_count\":1,\"width\":512},\"request_id\":\"484490f4-9881-90eb-8d52-d270d2395920\"}"
+      }
+    }
+  ]
+}

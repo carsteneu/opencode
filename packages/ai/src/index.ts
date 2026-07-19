@@ -12,7 +12,7 @@ export type {
 } from "./route/client"
 export * from "./schema"
 export { GeneratedImage, ImageModel, ImageRequest, ImageResponse, ImageSize } from "./image"
-export type { ImageModelDefaults, ImageRequestInput, ImageRoute } from "./image"
+export type { ImageModelDefaults, ImageProviderOptions, ImageRequestInput, ImageRoute } from "./image"
 export { Image } from "./image"
 export { Tool, ToolFailure, toDefinitions } from "./tool"
 export { ToolRuntime } from "./tool-runtime"

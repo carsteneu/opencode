@@ -49,6 +49,10 @@ export interface ImageModelDefaults {
   readonly http?: HttpOptions
 }
 
+export interface ImageProviderOptions {
+  readonly [provider: string]: Record<string, unknown> | undefined
+}
+
 export const ImageModelSchema = Schema.declare((value): value is ImageModel => value instanceof ImageModel, {
   expected: "Image.Model",
 })
@@ -71,8 +75,9 @@ export class ImageRequest extends Schema.Class<ImageRequest>("Image.Request")({
   metadata: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
 }) {}
 
-export type ImageRequestInput = Omit<ConstructorParameters<typeof ImageRequest>[0], "http"> & {
+export type ImageRequestInput = Omit<ConstructorParameters<typeof ImageRequest>[0], "http" | "providerOptions"> & {
   readonly http?: HttpOptions.Input
+  readonly providerOptions?: ImageProviderOptions
 }
 
 export class GeneratedImage extends Schema.Class<GeneratedImage>("Image.Generated")({
@@ -93,8 +98,17 @@ export class ImageResponse extends Schema.Class<ImageResponse>("Image.Response")
 
 export const request = (input: ImageRequest | ImageRequestInput) => {
   if (input instanceof ImageRequest) return input
+  const providerOptions =
+    input.providerOptions === undefined
+      ? undefined
+      : Object.fromEntries(
+          Object.entries(input.providerOptions).filter(
+            (entry): entry is [string, Record<string, unknown>] => entry[1] !== undefined,
+          ),
+        )
   return new ImageRequest({
     ...input,
+    providerOptions,
     http: input.http === undefined ? undefined : HttpOptions.make(input.http),
   })
 }
