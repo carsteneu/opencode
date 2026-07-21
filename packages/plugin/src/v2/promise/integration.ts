@@ -15,6 +15,7 @@ export type { IntegrationDraft, IntegrationMethodRegistration }
 export type IntegrationOAuthAuthorization = {
   readonly url: string
   readonly instructions: string
+  readonly expiresAt?: number
 } & (
   | {
       readonly mode: "auto"
@@ -40,7 +41,7 @@ export interface IntegrationDefinition {
   readonly methods?: readonly IntegrationMethodDefinition[]
 }
 
-export interface IntegrationDomain extends IntegrationApi {
+export interface IntegrationDomain extends Omit<IntegrationApi, "wellknown"> {
   readonly register: (definition: IntegrationDefinition) => Promise<Registration>
   readonly transform: Transform<IntegrationDraft>
   readonly reload: () => Promise<void>

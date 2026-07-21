@@ -28,21 +28,24 @@ import { fromRow } from "./session/info"
 import { SessionRunner } from "./session/runner/index"
 import { SessionStore } from "./session/store"
 import { SessionExecution } from "./session/execution"
+import { MessageDecodeError, NotFoundError } from "./session/error"
 import { makeGlobalNode } from "./effect/app-node"
 import { LocationServiceMap } from "./location-service-map"
-import { MessageDecodeError } from "./session/error"
 import { SessionEvent } from "./session/event"
 import { SessionPending } from "./session/pending"
+import { SessionGenerate } from "./session/generate"
 import { Snapshot } from "./snapshot"
 import { SessionRevert } from "./session/revert"
 import { Session } from "@opencode-ai/schema/session"
 import { FSUtil } from "./fs-util"
+import { Image } from "./image"
 import { Mime } from "./mime"
 import type { EventLog } from "@opencode-ai/schema/event-log"
 import { SkillV2 } from "./skill"
 import { Job } from "./job"
 import { CommandV2 } from "./command"
 import { Shell } from "./shell"
+import { Global } from "./global"
 import { Shell as ShellSchema } from "@opencode-ai/schema/shell"
 import { KeyedMutex } from "./effect/keyed-mutex"
 import { fileURLToPath } from "url"
@@ -105,10 +108,6 @@ type ForkInput = {
   messageID?: SessionMessage.ID
 }
 
-export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("Session.NotFoundError", {
-  sessionID: SessionSchema.ID,
-}) {}
-
 export class OperationUnavailableError extends Schema.TaggedErrorClass<OperationUnavailableError>()(
   "Session.OperationUnavailableError",
   {
@@ -116,7 +115,7 @@ export class OperationUnavailableError extends Schema.TaggedErrorClass<Operation
   },
 ) {}
 
-export { MessageDecodeError } from "./session/error"
+export { MessageDecodeError, NotFoundError }
 
 export class PromptConflictError extends Schema.TaggedErrorClass<PromptConflictError>()("Session.PromptConflictError", {
   sessionID: SessionSchema.ID,
@@ -146,6 +145,16 @@ export class BusyError extends Schema.TaggedErrorClass<BusyError>()("Session.Bus
 export class SkillNotFoundError extends Schema.TaggedErrorClass<SkillNotFoundError>()("Session.SkillNotFoundError", {
   skill: SkillV2.ID,
 }) {}
+
+export class DestinationNotFoundError extends Schema.TaggedErrorClass<DestinationNotFoundError>()(
+  "Session.DestinationNotFoundError",
+  { directory: AbsolutePath },
+) {}
+
+export class DestinationNotDirectoryError extends Schema.TaggedErrorClass<DestinationNotDirectoryError>()(
+  "Session.DestinationNotDirectoryError",
+  { directory: AbsolutePath },
+) {}
 export const MessageNotFoundError = SessionRevert.MessageNotFoundError
 export type MessageNotFoundError = SessionRevert.MessageNotFoundError
 
@@ -159,9 +168,12 @@ export type Error =
   | CompactionConflictError
   | BusyError
   | SkillNotFoundError
+  | DestinationNotFoundError
+  | DestinationNotDirectoryError
   | CommandV2.NotFoundError
   | CommandV2.EvaluationError
   | MessageNotFoundError
+  | SessionGenerate.Error
 
 export interface Interface {
   readonly list: (input?: ListInput) => Effect.Effect<{
@@ -194,12 +206,11 @@ export interface Interface {
    */
   readonly pending: (sessionID: SessionSchema.ID) => Effect.Effect<SessionPending.Info[], NotFoundError>
   /**
-   * Durable, ordered session log read. Replays public durable
-   * session events after the exclusive `after` cursor, emits a `Synced`
-   * marker at the captured replay watermark, then continues live when `follow`
-   * is set.
-   * The marker's seq may exceed the last emitted event because non-public
-   * durable events share the aggregate's sequence space.
+   * Durable, ordered session log read. Replays durable session events after
+   * the exclusive `after` cursor, emits a `Synced` marker at the captured
+   * replay watermark, then continues live when `follow` is set.
+   * The marker's seq may exceed the last emitted event because other durable
+   * events share the aggregate's sequence space.
    */
   readonly log: (input: {
     sessionID: SessionSchema.ID
@@ -215,6 +226,11 @@ export interface Interface {
     model: ModelV2.Ref
   }) => Effect.Effect<void, NotFoundError>
   readonly rename: (input: { sessionID: SessionSchema.ID; title: string }) => Effect.Effect<void, NotFoundError>
+  readonly move: (input: {
+    sessionID: SessionSchema.ID
+    directory: AbsolutePath
+    workspaceID?: Location.Ref["workspaceID"]
+  }) => Effect.Effect<void, NotFoundError | DestinationNotFoundError | DestinationNotDirectoryError>
   readonly prompt: (input: {
     id?: SessionMessage.ID
     sessionID: SessionSchema.ID
@@ -225,6 +241,11 @@ export interface Interface {
     delivery?: SessionPending.Delivery
     resume?: boolean
   }) => Effect.Effect<SessionPending.User, NotFoundError | PromptConflictError | AttachmentError>
+  /** Generates text from current Session context without admitting input or mutating history. */
+  readonly generate: (input: {
+    sessionID: SessionSchema.ID
+    prompt: string
+  }) => Effect.Effect<string, NotFoundError | SessionGenerate.Error>
   readonly command: (input: {
     id?: SessionMessage.ID
     sessionID: SessionSchema.ID
@@ -288,6 +309,7 @@ const layer = Layer.effect(
     const db = database.db
     const events = yield* EventV2.Service
     const projects = yield* ProjectV2.Service
+    const global = yield* Global.Service
     const execution = yield* SessionExecution.Service
     const store = yield* SessionStore.Service
     const locations = yield* LocationServiceMap.Service
@@ -512,9 +534,13 @@ const layer = Layer.effect(
             // continues from the reverted boundary rather than stale post-boundary history.
             if (session.revert)
               yield* SessionRevert.commit(session).pipe(Effect.provideService(EventV2.Service, events))
-            const prompt = yield* resolvePrompt({ text: input.text, files: input.files, agents: input.agents }).pipe(
-              Effect.provideService(FSUtil.Service, fs),
-            )
+            // Resolved lazily so prompt admission only boots location services when an
+            // image attachment actually needs the resizer.
+            const image = Image.Service.pipe(Effect.provide(locations.get(session.location)))
+            const prompt = yield* resolvePrompt(
+              { text: input.text, files: input.files, agents: input.agents },
+              image,
+            ).pipe(Effect.provideService(FSUtil.Service, fs))
             const messageID = input.id ?? SessionMessage.ID.create()
             const admittedInput = SessionPending.Message.make({
               type: "user",
@@ -545,6 +571,11 @@ const layer = Layer.effect(
           }),
         ),
       ),
+      generate: Effect.fn("V2Session.generate")(function* (input) {
+        const session = yield* result.get(input.sessionID)
+        const generate = yield* SessionGenerate.Service.pipe(Effect.provide(locations.get(session.location)))
+        return yield* generate.generate(input)
+      }),
       command: Effect.fn("V2Session.command")(function* (input) {
         const session = yield* result.get(input.sessionID)
         const commands = yield* CommandV2.Service.pipe(Effect.provide(locations.get(session.location)))
@@ -671,6 +702,38 @@ const layer = Layer.effect(
         yield* events.publish(SessionEvent.Renamed, {
           sessionID: input.sessionID,
           title: input.title,
+        })
+      }),
+      move: Effect.fn("V2Session.move")(function* (input) {
+        const current = yield* result.get(input.sessionID)
+        const value = input.directory.trim()
+        const expanded =
+          value === "~" ? global.home : value.startsWith("~/") ? path.join(global.home, value.slice(2)) : value
+        const directory = AbsolutePath.make(path.resolve(current.location.directory, expanded))
+        const info = yield* fs.stat(directory).pipe(Effect.catch(() => Effect.succeed(undefined)))
+        if (!info) return yield* new DestinationNotFoundError({ directory })
+        if (info.type !== "Directory") return yield* new DestinationNotDirectoryError({ directory })
+        if (
+          current.location.directory === directory &&
+          current.location.workspaceID === input.workspaceID
+        )
+          return
+        const project = yield* projects.resolve(directory)
+        yield* db
+          .insert(ProjectTable)
+          .values({ id: project.id, worktree: project.directory, vcs: project.vcs?.type, sandboxes: [] })
+          .onConflictDoNothing()
+          .run()
+          .pipe(Effect.orDie)
+        if ((yield* execution.active).has(input.sessionID)) {
+          yield* execution.interrupt(input.sessionID)
+          yield* execution.awaitIdle(input.sessionID)
+        }
+        yield* events.publish(SessionEvent.Moved, {
+          sessionID: input.sessionID,
+          location: Location.Ref.make({ directory, workspaceID: input.workspaceID }),
+          projectID: project.id,
+          subpath: RelativePath.make(path.relative(project.directory, directory).replaceAll("\\", "/")),
         })
       }),
       compact: Effect.fn("V2Session.compact")(function* (input) {
@@ -808,10 +871,13 @@ function synthesizeTerminalShellInfo(started: ShellSchema.Info): ShellSchema.Inf
   }
 }
 
-const resolvePrompt = Effect.fn("V2Session.resolvePrompt")(function* (input: PromptInput.Prompt) {
+const resolvePrompt = Effect.fn("V2Session.resolvePrompt")(function* (
+  input: PromptInput.Prompt,
+  image: Effect.Effect<Image.Interface>,
+) {
   const fs = yield* FSUtil.Service
   const files = input.files
-    ? yield* Effect.forEach(input.files, (file) => materializeAttachment(fs, file), { concurrency: 8 })
+    ? yield* Effect.forEach(input.files, (file) => materializeAttachment(fs, file, image), { concurrency: 8 })
     : undefined
   return Prompt.make({ text: input.text, agents: input.agents, files })
 })
@@ -821,6 +887,7 @@ const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 const materializeAttachment = Effect.fn("V2Session.materializeAttachment")(function* (
   fs: FSUtil.Interface,
   input: PromptInput.FileAttachment,
+  image: Effect.Effect<Image.Interface>,
 ) {
   const resolved = input.uri.startsWith("data:")
     ? {
@@ -849,14 +916,37 @@ const materializeAttachment = Effect.fn("V2Session.materializeAttachment")(funct
             .join("\n"),
         )
       : resolved.bytes
-  return FileAttachment.create({
-    data: Base64.make(Buffer.from(content).toString("base64")),
+  const normalized = yield* normalizeImageAttachment(
+    input,
+    Base64.make(Buffer.from(content).toString("base64")),
     mime,
+    image,
+  )
+  return FileAttachment.create({
+    data: normalized.data,
+    mime: normalized.mime,
     source: resolved.source,
     name: input.name ?? resolved.name,
     description: input.description,
     mention: input.mention,
   })
+})
+
+const normalizeImageAttachment = Effect.fn("V2Session.normalizeImageAttachment")(function* (
+  input: PromptInput.FileAttachment,
+  data: Base64,
+  mime: string,
+  image: Effect.Effect<Image.Interface>,
+) {
+  if (!mime.startsWith("image/")) return { data, mime }
+  const service = yield* image
+  const label = input.name ?? (input.uri.startsWith("data:") ? "inline attachment" : input.uri)
+  const content = { uri: label, content: data, encoding: "base64" as const, mime }
+  const normalized = yield* service.normalize(label, content).pipe(
+    Effect.catchTag("Image.ResizerUnavailableError", () => Effect.succeed(content)),
+    Effect.mapError((error) => new AttachmentError({ uri: label, message: error.message })),
+  )
+  return { data: Base64.make(normalized.content), mime: normalized.mime }
 })
 
 const readFileAttachment = Effect.fn("V2Session.readFileAttachment")(function* (fs: FSUtil.Interface, uri: string) {
@@ -949,5 +1039,6 @@ export const node = makeGlobalNode({
     LocationServiceMap.node,
     SessionProjector.node,
     FSUtil.node,
+    Global.node,
   ],
 })

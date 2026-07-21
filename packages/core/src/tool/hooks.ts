@@ -6,14 +6,14 @@ import { Session } from "@opencode-ai/schema/session"
 import { SessionMessage } from "../session/message"
 import { State } from "../state"
 import { Context, Effect, Layer, Scope } from "effect"
-import type { ToolOutput, ToolResultValue } from "@opencode-ai/llm"
+import type { ToolOutput, ToolResultValue } from "@opencode-ai/ai"
 
 export interface BeforeEvent {
   readonly tool: string
   readonly sessionID: Session.ID
   readonly agent: Agent.ID
-  readonly assistantMessageID: SessionMessage.ID
-  readonly toolCallID: string
+  readonly messageID: SessionMessage.ID
+  readonly callID: string
   input: unknown
 }
 
@@ -21,8 +21,8 @@ export interface AfterEvent {
   readonly tool: string
   readonly sessionID: Session.ID
   readonly agent: Agent.ID
-  readonly assistantMessageID: SessionMessage.ID
-  readonly toolCallID: string
+  readonly messageID: SessionMessage.ID
+  readonly callID: string
   readonly input: unknown
   result: ToolResultValue
   output?: ToolOutput

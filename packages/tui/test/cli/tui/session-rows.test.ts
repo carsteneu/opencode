@@ -1,6 +1,20 @@
 import { expect, test } from "bun:test"
 import type { SessionMessageAssistant, SessionMessageInfo } from "@opencode-ai/client"
-import { reduceSessionRows } from "../../../src/routes/session/rows"
+import { messageBoundaryIDs, reduceSessionRows } from "../../../src/routes/session/rows"
+
+test("assigns assistant boundaries to the first rendered row instead of the first text row", () => {
+  const messages: SessionMessageInfo[] = [
+    { type: "user", id: "user-1", text: "Question", time: { created: 0 } },
+    assistant("assistant-1", [
+      { type: "reasoning", text: "Thinking" },
+      { type: "text", text: "First" },
+      { type: "text", text: "Second" },
+    ]),
+  ]
+  const rows = reduceSessionRows(messages)
+
+  expect(messageBoundaryIDs(rows, messages)).toEqual(["user-1", "assistant-1", undefined, undefined])
+})
 
 test("groups exploration parts across assistant messages until a delimiter", () => {
   const messages: SessionMessageInfo[] = [
@@ -38,7 +52,7 @@ test("keeps non-exploration tools as individual part rows", () => {
   const messages: SessionMessageInfo[] = [
     assistant("assistant-1", [
       { type: "tool", id: "read-1", name: "read", state: pending(), time: { created: 1 } },
-      { type: "tool", id: "bash-1", name: "bash", state: pending(), time: { created: 2 } },
+      { type: "tool", id: "reasoning:0", name: "bash", state: pending(), time: { created: 2 } },
       { type: "tool", id: "grep-1", name: "grep", state: pending(), time: { created: 3 } },
     ]),
   ]
@@ -51,7 +65,7 @@ test("keeps non-exploration tools as individual part rows", () => {
       completed: true,
       refs: [{ messageID: "assistant-1", partID: "read-1" }],
     },
-    { type: "part", ref: { messageID: "assistant-1", partID: "bash-1" } },
+    { type: "part", ref: { messageID: "assistant-1", partID: "reasoning:0" } },
     {
       type: "group",
       kind: "exploration",
@@ -74,9 +88,49 @@ test("assigns stable kind ordinals within an assistant message", () => {
 
   expect(reduceSessionRows(messages)).toEqual([
     { type: "part", ref: { messageID: "assistant-1", partID: "text:0" } },
-    { type: "part", ref: { messageID: "assistant-1", partID: "reasoning:0" } },
+    {
+      type: "group",
+      kind: "reasoning",
+      completed: true,
+      refs: [{ messageID: "assistant-1", partID: "reasoning:0" }],
+    },
     { type: "part", ref: { messageID: "assistant-1", partID: "text:1" } },
-    { type: "part", ref: { messageID: "assistant-1", partID: "reasoning:1" } },
+    {
+      type: "group",
+      kind: "reasoning",
+      completed: false,
+      refs: [{ messageID: "assistant-1", partID: "reasoning:1" }],
+    },
+  ])
+})
+
+test("groups adjacent reasoning parts until a visible boundary", () => {
+  const messages: SessionMessageInfo[] = [
+    assistant("assistant-1", [
+      { type: "reasoning", text: "First" },
+      { type: "reasoning", text: "Second" },
+      { type: "text", text: "Visible" },
+      { type: "reasoning", text: "Third" },
+    ]),
+  ]
+
+  expect(reduceSessionRows(messages)).toEqual([
+    {
+      type: "group",
+      kind: "reasoning",
+      completed: true,
+      refs: [
+        { messageID: "assistant-1", partID: "reasoning:0" },
+        { messageID: "assistant-1", partID: "reasoning:1" },
+      ],
+    },
+    { type: "part", ref: { messageID: "assistant-1", partID: "text:0" } },
+    {
+      type: "group",
+      kind: "reasoning",
+      completed: false,
+      refs: [{ messageID: "assistant-1", partID: "reasoning:2" }],
+    },
   ])
 })
 
@@ -93,7 +147,12 @@ test("groups across empty assistant reasoning parts", () => {
   ]
 
   expect(reduceSessionRows(messages)).toEqual([
-    { type: "part", ref: { messageID: "assistant-1", partID: "reasoning:0" } },
+    {
+      type: "group",
+      kind: "reasoning",
+      completed: true,
+      refs: [{ messageID: "assistant-1", partID: "reasoning:0" }],
+    },
     {
       type: "group",
       kind: "exploration",

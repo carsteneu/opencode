@@ -1,10 +1,9 @@
 import { TextareaRenderable, TextAttributes } from "@opentui/core"
+import { Keymap } from "../context/keymap"
 import { useTheme } from "../context/theme"
 import { useDialog, type DialogContext } from "./dialog"
 import { Show, createEffect, createSignal, onMount, type JSX } from "solid-js"
 import { Spinner } from "../component/spinner"
-import { useConfig } from "../config"
-import { useBindings, useCommandShortcut } from "../keymap"
 
 export type DialogPromptProps = {
   title: string
@@ -19,9 +18,8 @@ export type DialogPromptProps = {
 
 export function DialogPrompt(props: DialogPromptProps) {
   const dialog = useDialog()
-  const { theme } = useTheme()
-  const config = useConfig().data
-  const submitShortcut = useCommandShortcut("dialog.prompt.submit")
+  const { themeV2 } = useTheme().contextual("elevated")
+  const shortcuts = Keymap.useShortcuts()
   const [textareaTarget, setTextareaTarget] = createSignal<TextareaRenderable>()
   let textarea: TextareaRenderable
 
@@ -30,20 +28,21 @@ export function DialogPrompt(props: DialogPromptProps) {
     props.onConfirm?.(textarea.plainText)
   }
 
-  useBindings(() => ({
+  Keymap.createLayer(() => ({
+    mode: "modal",
     target: textareaTarget,
     enabled: textareaTarget() !== undefined && !props.busy,
     // Dialog form semantics must win over the global managed textarea input layer.
     priority: 1,
     commands: [
       {
-        name: "dialog.prompt.submit",
+        id: "dialog.prompt.submit",
         title: "Submit dialog prompt",
-        category: "Dialog",
+        bind: "return",
+        group: "Dialog",
         run: confirm,
       },
     ],
-    bindings: config.keybinds.gather("dialog.prompt", ["dialog.prompt.submit"]),
   }))
 
   onMount(() => {
@@ -75,10 +74,10 @@ export function DialogPrompt(props: DialogPromptProps) {
   return (
     <box paddingLeft={2} paddingRight={2} gap={1}>
       <box flexDirection="row" justifyContent="space-between">
-        <text attributes={TextAttributes.BOLD} fg={theme.text}>
+        <text attributes={TextAttributes.BOLD} fg={themeV2.text.default}>
           {props.title}
         </text>
-        <text fg={theme.textMuted} onMouseUp={() => dialog.clear()}>
+        <text fg={themeV2.text.subdued} onMouseUp={() => dialog.clear()}>
           esc
         </text>
       </box>
@@ -92,20 +91,20 @@ export function DialogPrompt(props: DialogPromptProps) {
           }}
           initialValue={props.value}
           placeholder={props.placeholder ?? "Enter text"}
-          placeholderColor={theme.textMuted}
-          textColor={props.busy ? theme.textMuted : theme.text}
-          focusedTextColor={props.busy ? theme.textMuted : theme.text}
-          cursorColor={props.busy ? theme.backgroundElement : theme.text}
+          placeholderColor={themeV2.text.subdued}
+          textColor={props.busy ? themeV2.text.formfield.disabled : themeV2.text.formfield.default}
+          focusedTextColor={props.busy ? themeV2.text.formfield.disabled : themeV2.text.formfield.default}
+          cursorColor={props.busy ? themeV2.background.formfield.disabled : themeV2.text.default}
         />
         <Show when={props.busy}>
-          <Spinner color={theme.textMuted}>{props.busyText ?? "Working..."}</Spinner>
+          <Spinner color={themeV2.text.subdued}>{props.busyText ?? "Working..."}</Spinner>
         </Show>
       </box>
       <box paddingBottom={1} gap={1} flexDirection="row">
-        <Show when={!props.busy} fallback={<text fg={theme.textMuted}>processing...</text>}>
-          <Show when={submitShortcut()}>
-            <text fg={theme.text}>
-              {submitShortcut()} <span style={{ fg: theme.textMuted }}>submit</span>
+        <Show when={!props.busy} fallback={<text fg={themeV2.text.subdued}>processing...</text>}>
+          <Show when={shortcuts.get("dialog.prompt.submit")}>
+            <text fg={themeV2.text.default}>
+              {shortcuts.get("dialog.prompt.submit")} <span style={{ fg: themeV2.text.subdued }}>submit</span>
             </text>
           </Show>
         </Show>

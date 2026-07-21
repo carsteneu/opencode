@@ -1,17 +1,14 @@
 export * as ServerProcess from "./server-process"
 
 import { NodeServices } from "@effect/platform-node"
-import { Service } from "@opencode-ai/client/effect"
-import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
+import { Service, type DiscoverOptions, type Info } from "@opencode-ai/client/effect/service"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Global } from "@opencode-ai/core/global"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { AppProcess } from "@opencode-ai/core/process"
-import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
-import { start } from "@opencode-ai/server/process"
 import { randomBytes, randomUUID } from "node:crypto"
 import path from "node:path"
-import { Effect, Exit, FileSystem, Logger, Option, Redacted, Schedule, Schema, Scope } from "effect"
+import { Effect, FileSystem, Logger, Option, Redacted, Schedule, Schema } from "effect"
 import { HttpServer } from "effect/unstable/http"
 import { Env } from "./env"
 import { ServiceConfig } from "./services/service-config"
@@ -25,114 +22,203 @@ export type Options = {
   readonly port?: number
 }
 
-export const run = Effect.fn("cli.server-process.run")((options: Options) =>
-  processEffect(options).pipe(
+// The process effect lives until server shutdown; tracing it would parent every request to one process-lifetime trace.
+export const run = Effect.fnUntraced(function* (options: Options) {
+  return yield* processEffect(options).pipe(
     Effect.provide(Updater.layer),
-    Effect.provide(AppNodeBuilder.build(LayerNode.group([Global.node, AppProcess.node, EffectFlock.node]))),
+    Effect.provide(
+      LayerNode.compile(LayerNode.group([Global.node, AppProcess.node]), [
+        [
+          Global.node,
+          Global.layerWith(process.env.OPENCODE_CONFIG_DIR ? { config: process.env.OPENCODE_CONFIG_DIR } : {}),
+        ],
+      ]),
+    ),
     Effect.provide(NodeServices.layer),
-  ),
-)
+  )
+})
 
 const processEffect = Effect.fnUntraced(function* (options: Options) {
   if (options.mode === "service") yield* Effect.sync(() => process.chdir(Global.Path.home))
   return yield* Effect.scoped(
     Effect.gen(function* () {
       const serviceOptions = options.mode === "service" ? yield* ServiceConfig.options() : undefined
-      const lockScope = serviceOptions === undefined ? undefined : yield* acquireServiceLock(serviceOptions.file)
+      const config = options.mode === "service" ? yield* ServiceConfig.read() : {}
+      const hostname = options.hostname ?? config.hostname ?? "127.0.0.1"
+      const port = options.port ?? config.port ?? (options.mode === "service" ? ServiceConfig.defaultPort() : undefined)
       if (
         serviceOptions !== undefined &&
-        lockScope !== undefined &&
-        (yield* Service.discover(serviceOptions)) !== undefined
-      ) {
-        yield* Scope.close(lockScope, Exit.void)
+        port !== undefined &&
+        (yield* Service.incumbent({ ...serviceOptions, url: serviceURL(hostname, port) })) !== undefined
+      )
         return
-      }
+      const { start } = yield* Effect.promise(() => import("@opencode-ai/server/process"))
       const environmentPassword = yield* Env.password
       // Keep the lease credential out of the environment inherited by tools.
       if (options.mode === "stdio") {
         delete process.env.OPENCODE_PASSWORD
         delete process.env.OPENCODE_SERVER_PASSWORD
       }
-      const config = options.mode === "service" ? yield* ServiceConfig.read() : {}
       const password =
         options.mode === "service"
-          ? yield* ServiceConfig.password()
+          ? config.password || randomBytes(32).toString("base64url")
           : environmentPassword
             ? Redacted.value(environmentPassword)
             : randomBytes(32).toString("base64url")
       if (!password) return yield* Effect.fail(new Error("Missing server password"))
-      const address = yield* start({
-        hostname: options.hostname ?? config.hostname ?? "127.0.0.1",
-        port: Option.fromNullishOr(options.port ?? config.port),
-        password,
-        restartContinuity: options.mode === "service",
-      }).pipe(Effect.provide(Logger.layer([], { mergeWithExisting: false })))
-      if (lockScope !== undefined) {
-        yield* register(address, password)
-        yield* Scope.close(lockScope, Exit.void)
-      }
-      const url = HttpServer.formatAddress(address)
+      const instanceID = randomUUID()
+      const server = yield* start(
+        {
+          client: process.env.OPENCODE_CLIENT ?? "cli",
+          hostname,
+          port,
+          password,
+          simulation: truthy(process.env.OPENCODE_SIMULATE),
+          database: {
+            path: process.env.OPENCODE_DB,
+          },
+          models: {
+            url: process.env.OPENCODE_MODELS_URL,
+            file: process.env.OPENCODE_MODELS_PATH,
+            fetch: !truthy(process.env.OPENCODE_DISABLE_MODELS_FETCH),
+          },
+          observability: {
+            endpoint: process.env.OTEL_EXPORTER_OTLP_ENDPOINT,
+            headers: process.env.OTEL_EXPORTER_OTLP_HEADERS,
+          },
+          config: {
+            directory: process.env.OPENCODE_CONFIG_DIR,
+            project: !truthy(
+              process.env.OPENCODE_CONFIG_PROJECT_DISABLE ?? process.env.OPENCODE_DISABLE_PROJECT_CONFIG,
+            ),
+            file: process.env.OPENCODE_CONFIG,
+            content: process.env.OPENCODE_CONFIG_CONTENT,
+          },
+          windows: {
+            gitbash: process.env.OPENCODE_GIT_BASH_PATH,
+          },
+          fs: {
+            filewatcher: !truthy(
+              process.env.OPENCODE_FILEWATCHER_DISABLE ?? process.env.OPENCODE_DISABLE_FILEWATCHER,
+            ),
+            fff:
+              process.env.OPENCODE_DISABLE_FFF === undefined
+                ? process.platform !== "win32"
+                : !truthy(process.env.OPENCODE_DISABLE_FFF),
+          },
+        },
+        serviceOptions === undefined
+          ? undefined
+          : {
+              instanceID,
+              onListen: (address, shutdown) =>
+                Effect.gen(function* () {
+                  if (!config.password) yield* ServiceConfig.password(password)
+                  return yield* register(address, password, instanceID, serviceOptions.file, shutdown)
+                }),
+            },
+      ).pipe(
+        Effect.provide(Logger.layer([], { mergeWithExisting: false })),
+        Effect.catch((error) => {
+          if (serviceOptions === undefined || port === undefined || !addressInUse(error)) return Effect.fail(error)
+          return recognizeIncumbent(serviceOptions, hostname, port).pipe(
+            Effect.flatMap((found) =>
+              found
+                ? Effect.void
+                : Effect.fail(
+                    new Error(
+                      `Managed service port ${port} on ${hostname} is already in use by another process. ` +
+                        "Configure another port with `opencode service set port <port>` and start the service again.",
+                      { cause: error },
+                    ),
+                  ),
+            ),
+          )
+        }),
+      )
+      if (server === undefined) return
+      const url = HttpServer.formatAddress(server.address)
       console.log(options.mode === "stdio" ? JSON.stringify({ url }) : `server listening on ${url}`)
       if (options.mode === "default" && !environmentPassword) console.log(`server password ${password}`)
       const updater = yield* Updater.Service
       yield* updater.check().pipe(Effect.schedule(Schedule.spaced("10 minutes")), Effect.forkScoped)
-      return yield* options.mode === "stdio" ? waitForStdinClose() : Effect.never
+      return yield* options.mode === "service"
+        ? server.shutdown
+        : options.mode === "stdio"
+          ? waitForStdinClose()
+          : Effect.never
     }).pipe(Effect.annotateLogs({ role: "server" })),
   )
 })
 
-const acquireServiceLock = Effect.fnUntraced(function* (file: string) {
-  const flock = yield* EffectFlock.Service
-  const scope = yield* Scope.make()
-  yield* Effect.addFinalizer((exit) => Scope.close(scope, exit))
-  yield* flock
-    .acquire(`service:${file}`, undefined, { staleMs: 3_000, timeoutMs: 3_000 })
-    .pipe(Effect.provideService(Scope.Scope, scope))
-  return scope
-})
-
-// The latest atomic registration wins. A displaced process notices the new id,
-// exits, and cannot remove its successor's registration from its finalizer.
 const infoJson = Schema.fromJsonString(Service.Info)
 const encodeInfo = Schema.encodeEffect(infoJson)
 const decodeInfo = Schema.decodeUnknownEffect(infoJson)
 
-const register = Effect.fnUntraced(function* (address: HttpServer.Address, password: string) {
+const register = Effect.fnUntraced(function* (
+  address: HttpServer.Address,
+  password: string,
+  id: string,
+  file: string,
+  shutdown: Effect.Effect<void>,
+) {
   const fs = yield* FileSystem.FileSystem
-  const options = yield* ServiceConfig.options()
-  const id = randomUUID()
-  const temp = options.file + "." + id + ".tmp"
-  yield* fs.makeDirectory(path.dirname(options.file), { recursive: true })
-  const encoded = yield* encodeInfo({
+  const temp = file + "." + id + ".tmp"
+  yield* fs.makeDirectory(path.dirname(file), { recursive: true })
+  const info = {
     id,
     version: InstallationVersion,
     url: HttpServer.formatAddress(address),
     pid: process.pid,
     password,
-  })
-  yield* fs.writeFileString(temp, encoded, { mode: 0o600 })
-  yield* fs.rename(temp, options.file)
-  const currentID = fs.readFileString(options.file).pipe(
+  }
+  const encoded = yield* encodeInfo(info)
+  const current = fs.readFileString(file).pipe(
     Effect.flatMap(decodeInfo),
-    Effect.map((info) => info.id),
     Effect.orElseSucceed(() => undefined),
   )
-  yield* currentID.pipe(
-    Effect.flatMap((current) =>
-      current === id
-        ? Effect.void
-        : Effect.try({ try: () => process.kill(process.pid, "SIGTERM"), catch: (cause) => cause }).pipe(Effect.ignore),
-    ),
-    Effect.repeat(Schedule.spaced("10 seconds")),
+  const owns = (found: Info | undefined) =>
+    found?.id === info.id &&
+    found.version === info.version &&
+    found.url === info.url &&
+    found.pid === info.pid &&
+    found.password === info.password
+  yield* fs.writeFileString(temp, encoded, { mode: 0o600 }).pipe(Effect.andThen(fs.rename(temp, file)))
+  yield* current.pipe(
+    Effect.filterOrFail(owns),
+    Effect.repeat(Schedule.spaced("5 seconds")),
+    Effect.ignore,
+    Effect.andThen(shutdown),
     Effect.forkScoped,
   )
-  yield* Effect.addFinalizer(() =>
-    currentID.pipe(
-      Effect.flatMap((current) => (current === id ? fs.remove(options.file) : Effect.void)),
-      Effect.ignore,
-    ),
+  return current.pipe(
+    Effect.flatMap((found) => (owns(found) ? fs.remove(file) : Effect.void)),
+    Effect.ignore,
   )
 })
+
+const recognizeIncumbent = Effect.fnUntraced(function* (options: DiscoverOptions, hostname: string, port: number) {
+  const found = yield* Service.incumbent({ ...options, url: serviceURL(hostname, port) }).pipe(
+    Effect.filterOrFail((value) => value !== undefined),
+    Effect.retry(Schedule.spaced("100 millis")),
+    Effect.timeoutOption("15 seconds"),
+  )
+  return Option.isSome(found)
+})
+
+function serviceURL(hostname: string, port: number) {
+  return `http://${hostname.includes(":") ? `[${hostname}]` : hostname}:${port}`
+}
+
+function truthy(value?: string) {
+  return value === "1" || value?.toLowerCase() === "true"
+}
+
+function addressInUse(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false
+  if ("code" in error && error.code === "EADDRINUSE") return true
+  return "cause" in error && addressInUse(error.cause)
+}
 
 function waitForStdinClose() {
   return Effect.callback<void>((resume) => {

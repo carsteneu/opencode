@@ -1,7 +1,7 @@
 export * as ExecuteTool from "./execute"
 
 import { CodeMode, Tool, toolError } from "@opencode-ai/codemode"
-import { ToolOutput } from "@opencode-ai/llm"
+import { ToolOutput } from "@opencode-ai/ai"
 import { Effect, Ref, Schema } from "effect"
 import { definition, make, settle, type AnyTool } from "./tool"
 
@@ -39,7 +39,7 @@ type CollectedFiles = {
 interface Registration {
   readonly tool: AnyTool
   readonly name: string
-  readonly group?: string
+  readonly namespace?: string
 }
 
 export const create = (registrations: ReadonlyMap<string, Registration>) => {
@@ -47,7 +47,7 @@ export const create = (registrations: ReadonlyMap<string, Registration>) => {
     invoke: (name: string, registration: Registration, input: unknown) => Effect.Effect<unknown, unknown>,
     hooks?: CodeMode.ToolCallHooks,
   ) => {
-    const tools: Record<string, Tool.Definition<never> | Record<string, Tool.Definition<never>>> = {}
+    const tools: Record<string, Tool.Definition<never>> = {}
     for (const [name, registration] of registrations) {
       const child = definition(name, registration.tool)
       const value = Tool.make({
@@ -56,24 +56,8 @@ export const create = (registrations: ReadonlyMap<string, Registration>) => {
         output: child.outputSchema,
         run: (input) => invoke(name, registration, input),
       })
-      if (registration.group === undefined) {
-        const path = registration.name
-        if (Object.hasOwn(tools, path)) throw new TypeError(`CodeMode tool namespace conflict: ${path}`)
-        tools[path] = value
-        continue
-      }
-      const path = registration.name
-      const namespace = registration.group
-      const group = tools[namespace]
-      if (group && Tool.isDefinition(group)) throw new TypeError(`CodeMode tool namespace conflict: ${namespace}`)
-      if (group) {
-        if (Object.hasOwn(group, path)) throw new TypeError(`CodeMode tool namespace conflict: ${namespace}.${path}`)
-        group[path] = value
-        continue
-      }
-      const entries: Record<string, Tool.Definition<never>> = {}
-      entries[path] = value
-      tools[namespace] = entries
+      const path = registration.namespace === undefined ? registration.name : `${registration.namespace}.${registration.name}`
+      tools[path] = value
     }
     return CodeMode.make<typeof tools>({ tools, ...hooks })
   }
@@ -113,12 +97,13 @@ export const create = (registrations: ReadonlyMap<string, Registration>) => {
               const index = yield* Ref.getAndUpdate(callIndex, (index) => index + 1)
               const output = yield* settle(
                 registration.tool,
-                { type: "tool-call", id: context.toolCallID, name, input },
+                { type: "tool-call", id: context.callID, name, input },
                 {
                   sessionID: context.sessionID,
                   agent: context.agent,
-                  assistantMessageID: context.assistantMessageID,
-                  toolCallID: context.toolCallID,
+                  messageID: context.messageID,
+                  callID: context.callID,
+                  progress: context.progress,
                 },
               ).pipe(Effect.mapError((failure) => toolError(failure.message, failure)))
               const outputFileParts = outputFiles(output)

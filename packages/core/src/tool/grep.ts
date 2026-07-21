@@ -1,7 +1,7 @@
 export * as GrepTool from "./grep"
 
 import type { Context as PluginContext } from "@opencode-ai/plugin/v2/effect/plugin"
-import { ToolFailure } from "@opencode-ai/llm"
+import { ToolFailure } from "@opencode-ai/ai"
 import { Effect, Schema } from "effect"
 import path from "path"
 import { FileSystem } from "../filesystem"
@@ -25,7 +25,7 @@ export const Input = Schema.Struct({
     description: 'File glob to include in the search (for example, "*.js" or "*.{ts,tsx}")',
   }),
   limit: FileSystem.GrepInput.fields.limit.annotate({
-    description: "Maximum matches to return",
+    description: `Maximum matches to return (default: ${FileSystem.DEFAULT_SEARCH_LIMIT})`,
   }),
 })
 
@@ -90,7 +90,7 @@ export const Plugin = {
                   },
                   sessionID: context.sessionID,
                   agent: context.agent,
-                  source: { type: "tool", messageID: context.assistantMessageID, callID: context.toolCallID },
+                  source: { type: "tool", messageID: context.messageID, callID: context.callID },
                 })
                 const target = path.resolve(location.directory, input.path ?? ".")
                 const info = yield* fs
@@ -106,7 +106,7 @@ export const Plugin = {
                     pattern: input.pattern,
                     file: info?.type === "File" ? path.basename(target) : undefined,
                     include: input.include,
-                    limit: input.limit ?? Number.MAX_SAFE_INTEGER,
+                    limit: input.limit ?? FileSystem.DEFAULT_SEARCH_LIMIT,
                   })
                   .pipe(
                     Effect.map((result) =>

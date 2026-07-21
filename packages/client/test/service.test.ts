@@ -4,7 +4,7 @@ import { Effect } from "effect"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { Service } from "../src/effect/index"
+import { Service, type EnsureReason } from "../src/effect/service"
 
 const fixture = join(import.meta.dir, "fixture/service.ts")
 const processes: Bun.Subprocess[] = []
@@ -23,9 +23,9 @@ test("a concurrent same-version start cannot invalidate a resolved endpoint", as
   await waitForFile(registration)
   const original = await Bun.file(registration).json()
 
-  const starts: Service.StartReason[] = []
+  const starts: EnsureReason[] = []
   const first = run(
-    Service.start({
+    Service.ensure({
       file: registration,
       version: "test",
       command: [],
@@ -34,7 +34,7 @@ test("a concurrent same-version start cannot invalidate a resolved endpoint", as
   )
   await waitForFile(registration + ".first-request")
 
-  const resolved = await run(Service.start({ file: registration, version: "test" }))
+  const resolved = await run(Service.ensure({ file: registration, version: "test" }))
   expect(resolved.url).toBe(original.url)
 
   await writeFile(registration + ".release", "")
@@ -45,21 +45,169 @@ test("a concurrent same-version start cannot invalidate a resolved endpoint", as
   expect(await health(resolved.url)).toEqual({ healthy: true, version: "test", pid: original.pid })
 })
 
+test("waits for a registered service to finish starting", async () => {
+  const directory = await temp()
+  const registration = join(directory, "service.json")
+  const process = spawn(registration, "starting")
+  await waitForFile(registration)
+  const result = run(Service.ensure({ file: registration, version: "test", command: [] }))
+
+  await Bun.sleep(500)
+  expect(process.exitCode).toBe(null)
+  await writeFile(registration + ".release", "")
+  expect((await result).url).toBe((await Bun.file(registration).json()).url)
+})
+
+test("reports a failed registered service without spawning", async () => {
+  const directory = await temp()
+  const registration = join(directory, "service.json")
+  const process = spawn(registration, "failed-owner")
+  await waitForFile(registration)
+
+  await expect(run(Service.ensure({ file: registration, version: "test", command: [] }))).rejects.toThrow(
+    "Background service failed to start",
+  )
+  expect(process.exitCode).toBe(null)
+})
+
+test("requests graceful stop of the exact service instance", async () => {
+  const directory = await temp()
+  const registration = join(directory, "service.json")
+  const process = spawn(registration, "graceful")
+  await waitForFile(registration)
+  const info = await Bun.file(registration).json()
+
+  await run(Service.stop({ file: registration }))
+  await process.exited
+  expect(await Bun.file(registration + ".stop").json()).toEqual({ instanceID: info.id })
+})
+
+test("does not spawn contenders while an incompatible service rejects replacement", async () => {
+  const directory = await temp()
+  const registration = join(directory, "service.json")
+  const contender = join(directory, "contender.json")
+  const existing = spawn(registration, "reject-stop")
+  await waitForFile(registration)
+  const controller = new AbortController()
+  const starting = Effect.runPromise(
+    Service.ensure({
+      file: registration,
+      version: "test",
+      command: [process.execPath, fixture, contender, "record-start"],
+    }).pipe(Effect.provide(NodeFileSystem.layer)),
+    { signal: controller.signal },
+  )
+
+  await waitForFile(registration + ".stop-attempt")
+  await Bun.sleep(500)
+  controller.abort()
+  await starting.catch(() => undefined)
+
+  expect(await Bun.file(contender + ".started").exists()).toBe(false)
+  expect(existing.exitCode).toBe(null)
+})
+
 test("a legacy health response is still replaced", async () => {
   const directory = await temp()
   const registration = join(directory, "service.json")
   const existing = spawn(registration, "legacy")
   await waitForFile(registration)
 
-  const starts: Service.StartReason[] = []
-  const result = run(Service.start({ file: registration, command: [], onStart: (reason) => starts.push(reason) }))
+  const starts: EnsureReason[] = []
+  const result = run(Service.ensure({ file: registration, command: [], onStart: (reason) => starts.push(reason) }))
 
   await expect(result).rejects.toThrow("Missing service command")
   expect(starts).toEqual(["version-mismatch"])
   await existing.exited
-})
+}, 10_000)
 
-function run<A, E>(effect: Effect.Effect<A, E, never>) {
+test("waits for a slow winner while bounding lock probes", async () => {
+  const directory = await temp()
+  const registration = join(directory, "service.json")
+  const endpoint = await run(
+    Service.ensure({
+      file: registration,
+      version: "test",
+      command: [process.execPath, fixture, registration, "coordinated"],
+    }),
+  )
+  const info = await Bun.file(registration).json()
+  try {
+    expect(endpoint.url).toBe(info.url)
+    expect(await health(endpoint.url)).toEqual({ healthy: true, version: "test", pid: info.pid })
+    expect((await Bun.file(registration + ".starts").text()).trim().split("\n")).toHaveLength(2)
+  } finally {
+    process.kill(info.pid, "SIGTERM")
+  }
+}, 15_000)
+
+test("reports a contender that fails to start", async () => {
+  const directory = await temp()
+  const registration = join(directory, "service.json")
+  await expect(
+    run(
+      Service.ensure({
+        file: registration,
+        version: "test",
+        command: [process.execPath, fixture, registration, "failed"],
+      }),
+    ),
+  ).rejects.toThrow("Server process exited with code 1")
+}, 10_000)
+
+test("reports a contender terminated by a signal", async () => {
+  const directory = await temp()
+  const registration = join(directory, "service.json")
+  await expect(
+    run(
+      Service.ensure({
+        file: registration,
+        version: "test",
+        command: [process.execPath, fixture, registration, "signal"],
+      }),
+    ),
+  ).rejects.toThrow(/Server process (terminated by|exited with code)/)
+}, 10_000)
+
+test("reports a slow contender that eventually fails", async () => {
+  const directory = await temp()
+  const registration = join(directory, "service.json")
+  await expect(
+    run(
+      Service.ensure({
+        file: registration,
+        version: "test",
+        command: [process.execPath, fixture, registration, "delayed-failed", "8000"],
+      }),
+    ),
+  ).rejects.toThrow("Server process exited with code 1")
+}, 15_000)
+
+test("replaces an incompatible owner that appears during startup", async () => {
+  const directory = await temp()
+  const registration = join(directory, "service.json")
+  const starting = run(
+    Service.ensure({
+      file: registration,
+      version: "test",
+      command: [process.execPath, fixture, registration, "delayed", "8000"],
+    }),
+  )
+  await Bun.sleep(1_000)
+  const old = spawn(registration, "old")
+  await waitForFile(registration)
+  const endpoint = await starting
+  const info = await Bun.file(registration).json()
+  try {
+    expect(endpoint.url).toBe(info.url)
+    expect(info.version).toBe("test")
+    await old.exited
+  } finally {
+    process.kill(info.pid, "SIGTERM")
+  }
+}, 20_000)
+
+function run<A, E>(effect: Effect.Effect<A, E>) {
   return Effect.runPromise(effect.pipe(Effect.provide(NodeFileSystem.layer)))
 }
 

@@ -1,16 +1,14 @@
 import { InputRenderable, TextAttributes } from "@opentui/core"
 import { Slug } from "@opencode-ai/core/util/slug"
 import { createSignal, onMount } from "solid-js"
-import { useConfig } from "../config"
+import { Keymap } from "../context/keymap"
 import { useTheme } from "../context/theme"
-import { useBindings, useCommandShortcut } from "../keymap"
 import { useDialog, type DialogContext } from "../ui/dialog"
 
 export function DialogProjectCopyName(props: { onConfirm: (name: string) => void }) {
   const dialog = useDialog()
-  const { theme } = useTheme()
-  const config = useConfig().data
-  const generateShortcut = useCommandShortcut("dialog.project_copy.generate")
+  const { themeV2 } = useTheme().contextual("elevated")
+  const shortcuts = Keymap.useShortcuts()
   const [inputTarget, setInputTarget] = createSignal<InputRenderable>()
   let input: InputRenderable
 
@@ -23,19 +21,19 @@ export function DialogProjectCopyName(props: { onConfirm: (name: string) => void
     props.onConfirm(slugify(input.value) || Slug.create())
   }
 
-  useBindings(() => ({
+  Keymap.createLayer(() => ({
+    mode: "modal",
     target: inputTarget,
     enabled: inputTarget() !== undefined,
     priority: 1,
     commands: [
       {
-        name: "dialog.project_copy.generate",
+        id: "dialog.project_copy.generate",
         title: "Generate project copy name",
-        category: "Dialog",
+        group: "Dialog",
         run: generate,
       },
     ],
-    bindings: config.keybinds.get("dialog.project_copy.generate"),
   }))
 
   onMount(() => {
@@ -49,10 +47,10 @@ export function DialogProjectCopyName(props: { onConfirm: (name: string) => void
   return (
     <box paddingLeft={2} paddingRight={2} gap={1}>
       <box flexDirection="row" justifyContent="space-between">
-        <text attributes={TextAttributes.BOLD} fg={theme.text}>
+        <text attributes={TextAttributes.BOLD} fg={themeV2.text.default}>
           Name project copy
         </text>
-        <text fg={theme.textMuted} onMouseUp={() => dialog.clear()}>
+        <text fg={themeV2.text.subdued} onMouseUp={() => dialog.clear()}>
           esc
         </text>
       </box>
@@ -63,17 +61,17 @@ export function DialogProjectCopyName(props: { onConfirm: (name: string) => void
         }}
         onSubmit={confirm}
         placeholder="Project copy name"
-        placeholderColor={theme.textMuted}
-        textColor={theme.text}
-        focusedTextColor={theme.text}
-        cursorColor={theme.text}
+        placeholderColor={themeV2.text.subdued}
+        textColor={themeV2.text.formfield.default}
+        focusedTextColor={themeV2.text.formfield.default}
+        cursorColor={themeV2.text.formfield.default}
       />
       <box paddingBottom={1} flexDirection="row" gap={2}>
-        <text fg={theme.text}>
-          enter <span style={{ fg: theme.textMuted }}>submit</span>
+        <text fg={themeV2.text.default}>
+          enter <span style={{ fg: themeV2.text.subdued }}>submit</span>
         </text>
-        <text fg={theme.text}>
-          {generateShortcut()} <span style={{ fg: theme.textMuted }}>generate one</span>
+        <text fg={themeV2.text.default}>
+          {shortcuts.get("dialog.project_copy.generate")} <span style={{ fg: themeV2.text.subdued }}>generate one</span>
         </text>
       </box>
     </box>
@@ -82,7 +80,10 @@ export function DialogProjectCopyName(props: { onConfirm: (name: string) => void
 
 DialogProjectCopyName.show = (dialog: DialogContext) =>
   new Promise<string | null>((resolve) => {
-    dialog.replace(() => <DialogProjectCopyName onConfirm={resolve} />, () => resolve(null))
+    dialog.replace(
+      () => <DialogProjectCopyName onConfirm={resolve} />,
+      () => resolve(null),
+    )
   })
 
 function slugify(input: string) {

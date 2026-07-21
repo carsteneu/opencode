@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import fs from "fs/promises"
 import path from "path"
 import { DateTime, Effect, Layer } from "effect"
-import { Message } from "@opencode-ai/llm"
+import { Message } from "@opencode-ai/ai"
 import { AgentV2 } from "@opencode-ai/core/agent"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -109,7 +109,7 @@ const it = testEffect(testLayer)
 
 const identity = {
   agent: AgentV2.ID.make("build"),
-  assistantMessageID: SessionMessage.ID.make("msg_nearby"),
+  messageID: SessionMessage.ID.make("msg_nearby"),
 }
 const readCall = (sessionID: SessionV2.ID, id: string, readPath: string): ToolRegistry.ExecuteInput => ({
   sessionID,

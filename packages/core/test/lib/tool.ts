@@ -10,7 +10,7 @@ import { host } from "../plugin/host"
 
 export const toolIdentity = {
   agent: AgentV2.ID.make("build"),
-  assistantMessageID: SessionMessage.ID.make("msg_tool_test"),
+  messageID: SessionMessage.ID.make("msg_tool_test"),
 }
 
 export const toolDefinitions = (registry: ToolRegistry.Interface, permissions?: PermissionV2.Ruleset) =>
@@ -44,6 +44,9 @@ export const registerToolPlugin = <R>(plugin: {
   Effect.gen(function* () {
     const tools = yield* Tools.Service
     const context = host({
+      session: {
+        hook: () => Effect.succeed({ dispose: Effect.void }),
+      },
       tool: {
         transform: (callback) =>
           Effect.gen(function* () {

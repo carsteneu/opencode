@@ -1,9 +1,8 @@
-import { Show } from "solid-js"
 import { useTheme } from "../context/theme"
 import { Spinner } from "./spinner"
 
-export function Reconnecting(props: { attempt: number; error?: string }) {
-  const theme = useTheme().theme
+export function Reconnecting() {
+  const { themeV2 } = useTheme()
 
   return (
     <box
@@ -13,19 +12,12 @@ export function Reconnecting(props: { attempt: number; error?: string }) {
       right={0}
       bottom={0}
       left={0}
-      backgroundColor={theme.background}
+      backgroundColor={themeV2.background.default}
       alignItems="center"
       justifyContent="center"
     >
-      <box width={54} maxWidth="90%" flexDirection="column" alignItems="center" gap={1}>
-        <text fg={theme.text}>Connection lost</text>
-        <Spinner color={theme.textMuted}>Reconnecting to server...</Spinner>
-        <text fg={theme.textMuted}>Attempt {props.attempt}</text>
-        <Show when={props.error}>
-          <text fg={theme.error} wrapMode="word">
-            {props.error}
-          </text>
-        </Show>
+      <box width={62} maxWidth="90%" flexDirection="column" alignItems="center" gap={1}>
+        <Spinner color={themeV2.text.subdued}>Waiting for background service...</Spinner>
       </box>
     </box>
   )

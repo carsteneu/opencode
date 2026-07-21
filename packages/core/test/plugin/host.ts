@@ -9,18 +9,22 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import { WebSearch } from "@opencode-ai/core/websearch"
 import type {
   CredentialOAuth,
+  IntegrationCommandMethod,
   IntegrationEnvMethod,
   IntegrationKeyMethod,
   IntegrationOAuthMethod,
 } from "@opencode-ai/sdk/v2/types"
 import { Effect, Stream } from "effect"
 
-type Overrides = Partial<Omit<Plugin.Context, "options">>
+type Overrides = Partial<Omit<Plugin.Context, "options" | "session">> & {
+  readonly session?: Partial<Plugin.Context["session"]>
+}
 
 export function host(overrides: Overrides = {}): Plugin.Context {
   return {
     options: {},
     agent: overrides.agent ?? {
+      get: () => Effect.die("unused agent.get"),
       list: () => Effect.die("unused agent.list"),
       transform: () => Effect.die("unused agent.transform"),
       reload: () => Effect.die("unused agent.reload"),
@@ -34,6 +38,7 @@ export function host(overrides: Overrides = {}): Plugin.Context {
         get: () => Effect.die("unused catalog.provider.get"),
       },
       model: {
+        get: () => Effect.die("unused catalog.model.get"),
         list: () => Effect.die("unused catalog.model.list"),
         default: () => Effect.die("unused catalog.model.default"),
       },
@@ -53,12 +58,17 @@ export function host(overrides: Overrides = {}): Plugin.Context {
       get: () => Effect.die("unused integration.get"),
       connect: {
         key: () => Effect.die("unused integration.connect.key"),
-        oauth: () => Effect.die("unused integration.connect.oauth"),
       },
-      attempt: {
-        status: () => Effect.die("unused integration.attempt.status"),
-        complete: () => Effect.die("unused integration.attempt.complete"),
-        cancel: () => Effect.die("unused integration.attempt.cancel"),
+      oauth: {
+        connect: () => Effect.die("unused integration.oauth.connect"),
+        status: () => Effect.die("unused integration.oauth.status"),
+        complete: () => Effect.die("unused integration.oauth.complete"),
+        cancel: () => Effect.die("unused integration.oauth.cancel"),
+      },
+      command: {
+        connect: () => Effect.die("unused integration.command.connect"),
+        status: () => Effect.die("unused integration.command.status"),
+        cancel: () => Effect.die("unused integration.command.cancel"),
       },
       register: () => Effect.die("unused integration.register"),
       transform: () => Effect.die("unused integration.transform"),
@@ -88,18 +98,22 @@ export function host(overrides: Overrides = {}): Plugin.Context {
     websearch: overrides.websearch ?? {
       register: () => Effect.die("unused websearch.register"),
     },
-    session: overrides.session ?? {
-      create: () => Effect.die("unused session.create"),
-      get: () => Effect.die("unused session.get"),
-      prompt: () => Effect.die("unused session.prompt"),
-      command: () => Effect.die("unused session.command"),
-      interrupt: () => Effect.die("unused session.interrupt"),
+    session: {
+      hook: overrides.session?.hook ?? (() => Effect.die("unused session.hook")),
+      create: overrides.session?.create ?? (() => Effect.die("unused session.create")),
+      get: overrides.session?.get ?? (() => Effect.die("unused session.get")),
+      prompt: overrides.session?.prompt ?? (() => Effect.die("unused session.prompt")),
+      generate: overrides.session?.generate ?? (() => Effect.die("unused session.generate")),
+      command: overrides.session?.command ?? (() => Effect.die("unused session.command")),
+      synthetic: overrides.session?.synthetic ?? (() => Effect.die("unused session.synthetic")),
+      interrupt: overrides.session?.interrupt ?? (() => Effect.die("unused session.interrupt")),
     },
   }
 }
 
 export function agentHost(agent: AgentV2.Interface): Plugin.Context["agent"] {
   return {
+    get: (id) => agent.get(AgentV2.ID.make(id)).pipe(Effect.map((value) => value && agentInfo(value))),
     list: () => Effect.die("unused agent.list"),
     reload: agent.reload,
     transform: (callback) =>
@@ -130,6 +144,10 @@ export function catalogHost(catalog: Catalog.Interface): Plugin.Context["catalog
       get: () => Effect.die("unused catalog.provider.get"),
     },
     model: {
+      get: (providerID, modelID) =>
+        catalog.model
+          .get(ProviderV2.ID.make(providerID), ModelV2.ID.make(modelID))
+          .pipe(Effect.map((value) => value && modelInfo(value))),
       list: () => Effect.die("unused catalog.model.list"),
       default: () => Effect.die("unused catalog.model.default"),
     },
@@ -201,12 +219,17 @@ export function integrationHost(integration: Integration.Interface): Plugin.Cont
     get: () => Effect.die("unused integration.get"),
     connect: {
       key: () => Effect.die("unused integration.connect.key"),
-      oauth: () => Effect.die("unused integration.connect.oauth"),
     },
-    attempt: {
-      status: () => Effect.die("unused integration.attempt.status"),
-      complete: () => Effect.die("unused integration.attempt.complete"),
-      cancel: () => Effect.die("unused integration.attempt.cancel"),
+    oauth: {
+      connect: () => Effect.die("unused integration.oauth.connect"),
+      status: () => Effect.die("unused integration.oauth.status"),
+      complete: () => Effect.die("unused integration.oauth.complete"),
+      cancel: () => Effect.die("unused integration.oauth.cancel"),
+    },
+    command: {
+      connect: () => Effect.die("unused integration.command.connect"),
+      status: () => Effect.die("unused integration.command.status"),
+      cancel: () => Effect.die("unused integration.command.cancel"),
     },
     reload: integration.reload,
     connection: {
@@ -229,7 +252,83 @@ export function integrationHost(integration: Integration.Interface): Plugin.Cont
           remove: (id) => draft.remove(Integration.ID.make(id)),
           method: {
             list: (id) => draft.method.list(Integration.ID.make(id)).map(method),
-            update: (input) => draft.method.update(methodImplementation(input)),
+            update: (input) => {
+              if ("authorize" in input) {
+                const methodID = Integration.MethodID.make(input.method.id)
+                const refresh = input.refresh
+                draft.method.update({
+                  integrationID: Integration.ID.make(input.integrationID),
+                  method: { ...input.method, id: methodID },
+                  authorize: (inputs) =>
+                    input.authorize(inputs).pipe(
+                      Effect.map((authorization) => {
+                        if (authorization.mode === "auto") {
+                          return {
+                            ...authorization,
+                            callback: authorization.callback.pipe(
+                              Effect.map((credential) =>
+                                Credential.OAuth.make({
+                                  ...credential,
+                                  methodID: Integration.MethodID.make(credential.methodID),
+                                }),
+                              ),
+                            ),
+                          }
+                        }
+                        return {
+                          ...authorization,
+                          callback: (code: string) =>
+                            authorization.callback(code).pipe(
+                              Effect.map((credential) =>
+                                Credential.OAuth.make({
+                                  ...credential,
+                                  methodID: Integration.MethodID.make(credential.methodID),
+                                }),
+                              ),
+                            ),
+                        }
+                      }),
+                    ),
+                  ...(refresh
+                    ? {
+                        refresh: (value: Credential.OAuth) =>
+                          refresh(value).pipe(
+                            Effect.map((next) =>
+                              Credential.OAuth.make({
+                                ...next,
+                                methodID: Integration.MethodID.make(next.methodID),
+                              }),
+                            ),
+                          ),
+                      }
+                    : {}),
+                  ...(input.label ? { label: input.label } : {}),
+                })
+                return
+              }
+              if (input.method.type === "env") {
+                draft.method.update({
+                  integrationID: Integration.ID.make(input.integrationID),
+                  method: { ...input.method, names: [...input.method.names] },
+                })
+                return
+              }
+              if (input.method.type === "command") {
+                draft.method.update({
+                  integrationID: Integration.ID.make(input.integrationID),
+                  method: {
+                    ...input.method,
+                    id: Integration.MethodID.make(input.method.id),
+                    command: [...input.method.command],
+                  },
+                })
+                return
+              }
+              draft.method.update({
+                integrationID: Integration.ID.make(input.integrationID),
+                method: input.method,
+              })
+            },
             remove: (id, item) => draft.method.remove(Integration.ID.make(id), internalMethod(item)),
           },
         }),
@@ -301,6 +400,16 @@ function methodImplementation(input: IntegrationMethodRegistration): Integration
       method: { ...input.method, names: [...input.method.names] },
     }
   }
+  if (input.method.type === "command") {
+    return {
+      integrationID: Integration.ID.make(input.integrationID),
+      method: {
+        ...input.method,
+        id: Integration.MethodID.make(input.method.id),
+        command: [...input.method.command],
+      },
+    }
+  }
   return { integrationID: Integration.ID.make(input.integrationID), method: input.method }
 }
 
@@ -311,6 +420,7 @@ function oauthCredential(value: CredentialOAuth) {
 function method(value: Integration.Method) {
   if (value.type === "env") return { type: value.type, names: [...value.names] }
   if (value.type === "key") return { type: value.type, label: value.label }
+  if (value.type === "command") return { ...value, command: [...value.command] }
   return {
     type: value.type,
     id: value.id,
@@ -323,10 +433,17 @@ function method(value: Integration.Method) {
 }
 
 function internalMethod(
-  value: IntegrationOAuthMethod | IntegrationKeyMethod | IntegrationEnvMethod,
+  value: IntegrationOAuthMethod | IntegrationCommandMethod | IntegrationKeyMethod | IntegrationEnvMethod,
 ): Integration.Method {
   if (value.type === "env") return value
   if (value.type === "key") return value
+  if (value.type === "command") {
+    return {
+      ...value,
+      id: Integration.MethodID.make(value.id),
+      command: [...value.command],
+    }
+  }
   return {
     ...value,
     id: Integration.MethodID.make(value.id),

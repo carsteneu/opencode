@@ -29,7 +29,7 @@ export type JsonSchema = {
 /** Either a validating Effect Schema or a render-only JSON Schema document. */
 export type SchemaType = Schema.Decoder<unknown> | JsonSchema
 
-/** Schema-backed tool definition consumed by a CodeMode tool tree. */
+/** Schema-backed tool definition exposed through CodeMode's `tools` object. */
 export type Definition<R = never> = {
   readonly _tag: "CodeModeTool"
   readonly description: string
@@ -50,8 +50,13 @@ export type Options<I extends SchemaType, O extends SchemaType | undefined, R = 
   readonly run: (input: InputType<I>) => Effect.Effect<ResultType<O>, unknown, R>
 }
 
+// Object.hasOwn: an inherited _tag must not classify a namespace as a Definition.
 export const isDefinition = <R = never>(value: unknown): value is Definition<R> =>
-  typeof value === "object" && value !== null && "_tag" in value && value._tag === "CodeModeTool"
+  typeof value === "object" &&
+  value !== null &&
+  "_tag" in value &&
+  Object.hasOwn(value, "_tag") &&
+  value._tag === "CodeModeTool"
 
 /**
  * Defines one schema-described tool available to a CodeMode program through `tools.*`.

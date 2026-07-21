@@ -1,6 +1,6 @@
 export * as SessionCompaction from "./compaction"
 
-import { LLM, LLMClient, LLMError, LLMEvent, Message, type LLMRequest, type Model } from "@opencode-ai/llm"
+import { LLM, LLMClient, LLMError, LLMEvent, Message, type LLMRequest, type Model } from "@opencode-ai/ai"
 import { SessionError } from "@opencode-ai/schema/session-error"
 import { Context, Effect, Layer, Stream } from "effect"
 import { Config } from "../config"
@@ -9,10 +9,13 @@ import { makeLocationNode } from "../effect/app-node"
 import { llmClient } from "../effect/app-node-platform"
 import { SessionEvent } from "./event"
 import type { SessionMessage } from "./message"
+import { SessionModelHeaders } from "./model-headers"
 import { SessionRunnerModel } from "./runner/model"
 import { SessionSchema } from "./schema"
 import { toSessionError } from "./to-session-error"
 import { Token } from "../util/token"
+import type { ModelV2 } from "../model"
+import { SessionUsage } from "./usage"
 
 const DEFAULT_BUFFER = 20_000
 const DEFAULT_KEEP_TOKENS = 8_000
@@ -57,6 +60,7 @@ type Settings = {
 }
 
 type Dependencies = {
+  readonly headers?: SessionModelHeaders.Options
   readonly events: EventV2.Interface
   readonly llm: {
     readonly stream: (request: LLMRequest) => Stream.Stream<LLMEvent, LLMError>
@@ -66,9 +70,10 @@ type Dependencies = {
 }
 
 export type AutoInput = {
-  readonly sessionID: SessionSchema.ID
+  readonly session: SessionSchema.Info
   readonly messages: readonly SessionMessage.Info[]
   readonly model: Model
+  readonly cost: ModelV2.Info["cost"]
 }
 
 export type ManualInput = {
@@ -78,8 +83,9 @@ export type ManualInput = {
 }
 
 type Plan = {
-  readonly sessionID: SessionSchema.ID
+  readonly session: SessionSchema.Info
   readonly model: Model
+  readonly cost: ModelV2.Info["cost"]
   readonly reason: SessionMessage.Compaction["reason"]
   readonly prompt: string
   readonly recent: string
@@ -197,6 +203,7 @@ export const buildPrompt = (input: { readonly previousSummary?: string; readonly
       ? `Update the anchored summary below using the conversation history above.\nPreserve still-true details, remove stale details, and merge in the new facts.\n<previous-summary>\n${input.previousSummary}\n</previous-summary>`
       : "Create a new anchored summary from the conversation history.",
     SUMMARY_TEMPLATE,
+    "The following is the conversation history:",
     ...input.context,
   ].join("\n\n")
 
@@ -230,7 +237,7 @@ const make = (dependencies: Dependencies) => {
   })
   const execute = Effect.fn("SessionCompaction.execute")(function* (plan: Plan) {
     yield* dependencies.events.publish(SessionEvent.Compaction.Started, {
-      sessionID: plan.sessionID,
+      sessionID: plan.session.id,
       reason: plan.reason,
       recent: plan.recent,
       inputID: plan.inputID,
@@ -238,10 +245,21 @@ const make = (dependencies: Dependencies) => {
 
     const chunks: string[] = []
     let failure: SessionError.Error | undefined
+    let usage: SessionUsage.Recorded | undefined
+    const recordUsage = Effect.suspend(() =>
+      usage
+        ? dependencies.events.publish(SessionEvent.UsageRecorded, {
+            sessionID: plan.session.id,
+            source: "compaction",
+            ...usage,
+          })
+        : Effect.void,
+    )
     yield* dependencies.llm
       .stream(
         LLM.request({
           model: plan.model,
+          http: { headers: SessionModelHeaders.make(plan.session, dependencies.headers) },
           messages: [Message.user(plan.prompt)],
           tools: [],
         }),
@@ -256,9 +274,13 @@ const make = (dependencies: Dependencies) => {
           if (LLMEvent.is.textDelta(event)) {
             chunks.push(event.text)
             return dependencies.events.publish(SessionEvent.Compaction.Delta, {
-              sessionID: plan.sessionID,
+              sessionID: plan.session.id,
               text: event.text,
             })
+          }
+          if (LLMEvent.is.stepFinish(event)) {
+            const step = SessionUsage.record(event.usage, plan.cost)
+            usage = usage ? SessionUsage.add(usage, step) : step
           }
           return Effect.void
         }),
@@ -268,28 +290,33 @@ const make = (dependencies: Dependencies) => {
           }),
         ),
         Effect.onInterrupt(() =>
-          plan.reason === "auto"
-            ? failed({
-                sessionID: plan.sessionID,
-                reason: plan.reason,
-                error: { type: "compaction.interrupted", message: "Compaction was interrupted" },
-                inputID: plan.inputID,
-              }).pipe(Effect.asVoid)
-            : Effect.void,
+          recordUsage.pipe(
+            Effect.andThen(
+              plan.reason === "auto"
+                ? failed({
+                    sessionID: plan.session.id,
+                    reason: plan.reason,
+                    error: { type: "compaction.interrupted", message: "Compaction was interrupted" },
+                    inputID: plan.inputID,
+                  }).pipe(Effect.asVoid)
+                : Effect.void,
+            ),
+          ),
         ),
       )
+    yield* recordUsage
     const summary = chunks.join("")
     if (failure || !summary.trim()) {
       const error = failure ?? { type: "compaction.failed" as const, message: "Compaction produced no summary" }
       return yield* failed({
-        sessionID: plan.sessionID,
+        sessionID: plan.session.id,
         reason: plan.reason,
         error,
         inputID: plan.inputID,
       })
     }
     yield* dependencies.events.publish(SessionEvent.Compaction.Ended, {
-      sessionID: plan.sessionID,
+      sessionID: plan.session.id,
       reason: plan.reason,
       text: summary,
       recent: plan.recent,
@@ -300,14 +327,15 @@ const make = (dependencies: Dependencies) => {
     const content = planContent(input.messages, config.tokens)
     if (content)
       return yield* execute({
-        sessionID: input.sessionID,
+        session: input.session,
         model: input.model,
+        cost: input.cost,
         reason: "auto",
         ...content,
       })
     const error = { type: "compaction.unavailable" as const, message: "Nothing to compact yet" }
     return yield* failed({
-      sessionID: input.sessionID,
+      sessionID: input.session.id,
       reason: "auto",
       error,
     })
@@ -348,8 +376,9 @@ const make = (dependencies: Dependencies) => {
     )
     if ("status" in resolved) return resolved
     return yield* execute({
-      sessionID: input.session.id,
+      session: input.session,
       model: resolved.model,
+      cost: resolved.cost,
       reason: "manual",
       inputID: input.inputID,
       ...content,
@@ -362,19 +391,23 @@ const make = (dependencies: Dependencies) => {
   })
 }
 
-export const layer = Layer.effect(
+export const layer = (options?: SessionModelHeaders.Options) => Layer.effect(
   Service,
   Effect.gen(function* () {
     const events = yield* EventV2.Service
     const llm = yield* LLMClient.Service
     const config = yield* Config.Service
     const models = yield* SessionRunnerModel.Service
-    return make({ events, llm, models, config: settings(yield* config.entries()) })
+    return make({ events, llm, models, config: settings(yield* config.entries()), headers: options })
   }),
 )
 
-export const node = makeLocationNode({
-  service: Service,
-  layer,
-  deps: [EventV2.node, llmClient, Config.node, SessionRunnerModel.node],
-})
+export function configured(options?: SessionModelHeaders.Options) {
+  return makeLocationNode({
+    service: Service,
+    layer: layer(options),
+    deps: [EventV2.node, llmClient, Config.node, SessionRunnerModel.node],
+  })
+}
+
+export const node = configured()

@@ -1,10 +1,10 @@
 import { TextAttributes } from "@opentui/core"
+import { Keymap } from "../context/keymap"
 import { useTheme } from "../context/theme"
 import { useDialog, type DialogContext } from "./dialog"
 import { createStore } from "solid-js/store"
 import { For } from "solid-js"
 import { Locale } from "../util/locale"
-import { useBindings } from "../keymap"
 
 export type DialogConfirmProps = {
   title: string
@@ -18,36 +18,37 @@ export type DialogConfirmResult = boolean | undefined
 
 export function DialogConfirm(props: DialogConfirmProps) {
   const dialog = useDialog()
-  const { theme } = useTheme()
+  const { themeV2 } = useTheme().contextual("elevated")
   const [store, setStore] = createStore({
     active: "confirm" as "confirm" | "cancel",
   })
 
-  useBindings(() => ({
-    bindings: [
+  Keymap.createLayer(() => ({
+    mode: "modal",
+    commands: [
       {
-        key: "return",
-        desc: "Confirm dialog selection",
+        bind: "return",
+        title: "Confirm dialog selection",
         group: "Dialog",
-        cmd: () => {
+        run: () => {
           if (store.active === "confirm") props.onConfirm?.()
           if (store.active === "cancel") props.onCancel?.()
           dialog.clear()
         },
       },
       {
-        key: "left",
-        desc: "Previous dialog option",
+        bind: "left",
+        title: "Previous dialog option",
         group: "Dialog",
-        cmd: () => {
+        run: () => {
           setStore("active", store.active === "confirm" ? "cancel" : "confirm")
         },
       },
       {
-        key: "right",
-        desc: "Next dialog option",
+        bind: "right",
+        title: "Next dialog option",
         group: "Dialog",
-        cmd: () => {
+        run: () => {
           setStore("active", store.active === "confirm" ? "cancel" : "confirm")
         },
       },
@@ -56,15 +57,15 @@ export function DialogConfirm(props: DialogConfirmProps) {
   return (
     <box paddingLeft={2} paddingRight={2} gap={1}>
       <box flexDirection="row" justifyContent="space-between">
-        <text attributes={TextAttributes.BOLD} fg={theme.text}>
+        <text attributes={TextAttributes.BOLD} fg={themeV2.text.default}>
           {props.title}
         </text>
-        <text fg={theme.textMuted} onMouseUp={() => dialog.clear()}>
+        <text fg={themeV2.text.subdued} onMouseUp={() => dialog.clear()}>
           esc
         </text>
       </box>
       <box paddingBottom={1}>
-        <text fg={theme.textMuted}>{props.message}</text>
+        <text fg={themeV2.text.subdued}>{props.message}</text>
       </box>
       <box flexDirection="row" justifyContent="flex-end" paddingBottom={1}>
         <For each={["cancel", "confirm"] as const}>
@@ -72,14 +73,14 @@ export function DialogConfirm(props: DialogConfirmProps) {
             <box
               paddingLeft={1}
               paddingRight={1}
-              backgroundColor={key === store.active ? theme.primary : undefined}
+              backgroundColor={key === store.active ? themeV2.background.action.primary.focused : undefined}
               onMouseUp={() => {
                 if (key === "confirm") props.onConfirm?.()
                 if (key === "cancel") props.onCancel?.()
                 dialog.clear()
               }}
             >
-              <text fg={key === store.active ? theme.selectedListItemText : theme.textMuted}>
+              <text fg={key === store.active ? themeV2.text.action.primary.focused : themeV2.text.subdued}>
                 {Locale.titlecase(key === "cancel" ? (props.label ?? key) : key)}
               </text>
             </box>

@@ -3,6 +3,7 @@ import { Tool } from "@opencode-ai/core/tool/tool"
 import { AgentV2 } from "@opencode-ai/core/agent"
 import type { PermissionV2 } from "@opencode-ai/core/permission"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
+import { Image } from "@opencode-ai/core/image"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { SessionMessage } from "@opencode-ai/core/session/message"
 import { ToolOutputStore } from "@opencode-ai/core/tool-output-store"
@@ -15,10 +16,10 @@ const bounds: ToolOutputStore.BoundInput[] = []
 const retentionFailure = new ToolOutputStore.StorageError({ operation: "write", cause: new Error("disk full") })
 const outputStore = Layer.mock(ToolOutputStore.Service, {
   bound: (input) => {
-    if (input.toolCallID === "call-retention-failure") return Effect.fail(retentionFailure)
+    if (input.callID === "call-retention-failure") return Effect.fail(retentionFailure)
     return Effect.sync(() => bounds.push(input)).pipe(
       Effect.as(
-        input.toolCallID === "call-bounded"
+        input.callID === "call-bounded"
           ? {
               output: { structured: {}, content: [{ type: "text" as const, text: "bounded reference" }] },
               outputPaths: ["/managed/generic"],
@@ -28,11 +29,32 @@ const outputStore = Layer.mock(ToolOutputStore.Service, {
     )
   },
 })
-const registryLayer = AppNodeBuilder.build(ToolRegistry.node, [[ToolOutputStore.node, outputStore]])
+const imageStore = Layer.mock(Image.Service, {
+  normalize: (resource, content) => {
+    if (resource === "corrupt.png") return Effect.fail(new Image.DecodeError({ resource }))
+    if (resource === "too-large.png")
+      return Effect.fail(
+        new Image.SizeError({
+          resource,
+          width: 9_000,
+          height: 9_000,
+          bytes: content.content.length,
+          maxWidth: 2_000,
+          maxHeight: 2_000,
+          maxBytes: 5,
+        }),
+      )
+    return Effect.succeed({ ...content, content: "bm9ybWFsaXplZA==", mime: "image/jpeg" })
+  },
+})
+const registryLayer = AppNodeBuilder.build(ToolRegistry.node, [
+  [ToolOutputStore.node, outputStore],
+  [Image.node, imageStore],
+])
 const it = testEffect(registryLayer)
 const identity = {
   agent: AgentV2.ID.make("build"),
-  assistantMessageID: SessionMessage.ID.make("msg_registry"),
+  messageID: SessionMessage.ID.make("msg_registry"),
 }
 const sessionID = SessionV2.ID.make("ses_registry")
 const call = (name: string, id = `call-${name}`): ToolRegistry.ExecuteInput => ({
@@ -62,6 +84,32 @@ const constant = (text: string) =>
   })
 
 describe("ToolRegistry", () => {
+  it.effect("rejects invalid dotted namespaces", () =>
+    Effect.gen(function* () {
+      const service = yield* ToolRegistry.Service
+      const error = yield* service.register({ echo: make() }, { namespace: "slack..admin" }).pipe(Effect.flip)
+
+      expect(error).toBeInstanceOf(Tool.RegistrationError)
+      expect(error.message).toBe('Invalid tool namespace: "slack..admin"')
+      expect((yield* service.materialize()).definitions).toEqual([])
+    }),
+  )
+
+  it.effect("validates a registration batch before installing any tools", () =>
+    Effect.gen(function* () {
+      const service = yield* ToolRegistry.Service
+      const error = yield* service
+        .registerBatch([
+          { tools: { first: make() }, options: { codemode: false } },
+          { tools: { second: make() }, options: { namespace: "invalid..namespace", codemode: false } },
+        ])
+        .pipe(Effect.flip)
+
+      expect(error).toBeInstanceOf(Tool.RegistrationError)
+      expect((yield* service.materialize()).definitions).toEqual([])
+    }),
+  )
+
   it.effect("filters disabled tools with edit aliases and ordered wildcard precedence", () =>
     Effect.gen(function* () {
       const service = yield* ToolRegistry.Service
@@ -104,17 +152,6 @@ describe("ToolRegistry", () => {
           (definition) => definition.name,
         ),
       ).toEqual(["first"])
-    }),
-  )
-
-  it.effect("reuses model definitions across requests", () =>
-    Effect.gen(function* () {
-      const service = yield* ToolRegistry.Service
-      yield* service.register({ echo: make() }, { codemode: false })
-      const first = yield* toolDefinitions(service)
-      const second = yield* toolDefinitions(service)
-
-      expect(second[0]).toBe(first[0])
     }),
   )
 
@@ -240,7 +277,9 @@ describe("ToolRegistry", () => {
         ...identity,
         call: { type: "tool-call", id: "call-context", name: "context", input: {} },
       })
-      expect(contexts).toEqual([{ sessionID, ...identity, toolCallID: "call-context" }])
+      expect(contexts).toEqual([
+        { sessionID, ...identity, callID: "call-context", progress: expect.any(Function) },
+      ])
     }),
   )
 
@@ -261,6 +300,75 @@ describe("ToolRegistry", () => {
         outputPaths: ["/managed/generic"],
       })
       expect(bounds).toHaveLength(1)
+    }),
+  )
+
+  it.effect("normalizes image tool output at settlement and drops unresizable images", () =>
+    Effect.gen(function* () {
+      const service = yield* ToolRegistry.Service
+      yield* service.register({
+        snapshot: Tool.make({
+          description: "Return images",
+          input: Schema.Struct({ text: Schema.String }),
+          output: Schema.Struct({ text: Schema.String }),
+          execute: ({ text }) => Effect.succeed({ text }),
+          toModelOutput: ({ output }) => [
+            { type: "file", data: "aW1hZ2U=", mime: "image/png", name: "frame.png" },
+            { type: "file", data: "aW1hZ2U=", mime: "image/png", name: "too-large.png" },
+            { type: "file", data: "aW1hZ2U=", mime: "image/png", name: "corrupt.png" },
+            { type: "text", text: output.text },
+          ],
+        }),
+      }, { codemode: false })
+
+      const settlement = yield* settleTool(service, call("snapshot"))
+      expect(settlement.output?.content).toEqual([
+        { type: "file", uri: "data:image/jpeg;base64,bm9ybWFsaXplZA==", mime: "image/jpeg", name: "frame.png" },
+        { type: "text", text: "snapshot" },
+        { type: "text", text: "[1 image omitted: could not be decoded.]" },
+        { type: "text", text: "[1 image omitted: could not be resized below the image size limit.]" },
+      ])
+    }),
+  )
+
+  it.effect("normalizes image progress content before it is published", () =>
+    Effect.gen(function* () {
+      const service = yield* ToolRegistry.Service
+      yield* service.register({
+        progressive: Tool.make({
+          description: "Emit image progress",
+          input: Schema.Struct({ text: Schema.String }),
+          output: Schema.Struct({ text: Schema.String }),
+          execute: ({ text }, context) =>
+            context
+              .progress({
+                structured: { stage: "capture" },
+                content: [
+                  { type: "file", data: "aW1hZ2U=", mime: "image/png", name: "frame.png" },
+                  { type: "file", data: "aW1hZ2U=", mime: "image/png", name: "too-large.png" },
+                ],
+              })
+              .pipe(Effect.as({ text })),
+        }),
+      }, { codemode: false })
+
+      const updates: ToolRegistry.Progress[] = []
+      yield* settleTool(service, {
+        ...call("progressive"),
+        progress: (update) =>
+          Effect.sync(() => {
+            updates.push(update)
+          }),
+      })
+      expect(updates).toEqual([
+        {
+          structured: { stage: "capture" },
+          content: [
+            { type: "file", uri: "data:image/jpeg;base64,bm9ybWFsaXplZA==", mime: "image/jpeg", name: "frame.png" },
+            { type: "text", text: "[1 image omitted: could not be resized below the image size limit.]" },
+          ],
+        },
+      ])
     }),
   )
 

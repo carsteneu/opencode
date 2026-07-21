@@ -2,6 +2,7 @@ import type {
   ConnectionInfo,
   CredentialOAuth,
   CredentialValue,
+  IntegrationCommandMethod,
   IntegrationEnvMethod,
   IntegrationInputs,
   IntegrationKeyMethod,
@@ -16,6 +17,7 @@ import type { Registration, Transform } from "./registration.js"
 export type IntegrationOAuthAuthorization = {
   readonly url: string
   readonly instructions: string
+  readonly expiresAt?: number
 } & (
   | {
       readonly mode: "auto"
@@ -35,6 +37,10 @@ export type IntegrationOAuthMethodRegistration = {
 }
 export type IntegrationMethodRegistration =
   | IntegrationOAuthMethodRegistration
+  | {
+      readonly integrationID: string
+      readonly method: IntegrationCommandMethod
+    }
   | {
       readonly integrationID: string
       readonly method: IntegrationKeyMethod
@@ -70,7 +76,7 @@ export interface IntegrationDraft {
   }
 }
 
-export interface IntegrationDomain extends IntegrationApi<unknown> {
+export interface IntegrationDomain extends Omit<IntegrationApi<unknown>, "wellknown"> {
   readonly register: (definition: IntegrationDefinition) => Effect.Effect<Registration, never, Scope.Scope>
   readonly transform: Transform<IntegrationDraft>
   readonly reload: () => Effect.Effect<void>

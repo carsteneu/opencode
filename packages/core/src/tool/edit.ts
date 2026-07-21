@@ -7,7 +7,7 @@
 export * as EditTool from "./edit"
 
 import type { Context as PluginContext } from "@opencode-ai/plugin/v2/effect/plugin"
-import { ToolFailure } from "@opencode-ai/llm"
+import { ToolFailure } from "@opencode-ai/ai"
 import { FileDiff } from "@opencode-ai/schema/file-diff"
 import { createTwoFilesPatch, diffLines } from "diff"
 import { Effect, Schema } from "effect"
@@ -122,8 +122,8 @@ export const Plugin = {
                 return Effect.gen(function* () {
                   const permissionSource = {
                     type: "tool" as const,
-                    messageID: context.assistantMessageID,
-                    callID: context.toolCallID,
+                    messageID: context.messageID,
+                    callID: context.callID,
                   }
                   if (input.oldString === input.newString) {
                     return yield* new ToolFailure({

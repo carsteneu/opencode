@@ -1,14 +1,14 @@
-import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Global } from "@opencode-ai/core/global"
 import { run } from "@opencode-ai/tui"
-import { loadBuiltinPlugins } from "@opencode-ai/tui/builtins"
 import { Commands } from "../commands"
 import { Runtime } from "../../framework/runtime"
 import { Config } from "../../config"
-import { Effect, Option } from "effect"
-import { Server } from "../../services/server"
+import { Context, Effect, FileSystem, Option } from "effect"
+import { ServerConnection } from "../../services/server-connection"
 import { Updater } from "../../services/updater"
 import { UpdatePreflight } from "../../services/update-preflight"
+import { Npm } from "@opencode-ai/core/npm"
 
 export default Runtime.handler(Commands, (input) =>
   Effect.gen(function* () {
@@ -18,11 +18,11 @@ export default Runtime.handler(Commands, (input) =>
     yield* updater.check().pipe(Effect.forkScoped)
     const preflight = UpdatePreflight.make()
     yield* Effect.addFinalizer(() => Effect.promise(() => preflight.close()))
-    const server = yield* Server.resolve({
+    const server = yield* ServerConnection.resolve({
       server: Option.getOrUndefined(input.server),
       standalone: input.standalone,
-      onStart: (reason, existing) => {
-        if (reason === "version-mismatch" && preflight.begin(existing?.version)) return
+      onStart: (reason, previousVersion) => {
+        if (reason === "version-mismatch" && preflight.begin(previousVersion)) return
         process.stderr.write(
           reason === "version-mismatch"
             ? "Restarting background server (version mismatch)...\n"
@@ -36,16 +36,32 @@ export default Runtime.handler(Commands, (input) =>
     )
     preflight.loading()
     const config = yield* Config.Service
-    let disposeSlots: (() => void) | undefined
-    const context = yield* Effect.context()
+    const npm = yield* Npm.Service
+    const fileSystem = yield* FileSystem.FileSystem
+    const runServicePromise = Effect.runPromiseWith(Context.make(FileSystem.FileSystem, fileSystem))
+    const context = yield* Effect.context<FileSystem.FileSystem>()
     const runFork = Effect.runForkWith(context)
     const runPromise = Effect.runPromiseWith(context)
+    const service = server.service
     yield* run({
-      server,
+      server: {
+        endpoint: server.endpoint,
+        service: service
+          ? {
+              reconnect: (signal) => runServicePromise(service.reconnect(), { signal }),
+              restart: () => runServicePromise(service.restart()),
+            }
+          : undefined,
+      },
       args: { continue: input.continue, sessionID: Option.getOrUndefined(input.session) },
       config: {
+        path: config.path,
         get: () => runPromise(config.get()),
         update: (update) => runPromise(config.update(update)),
+      },
+      packages: {
+        resolve: (spec) =>
+          runPromise(npm.add(spec, { subpaths: ["tui"] }).pipe(Effect.map((result) => result.entrypoint))),
       },
       terminalHandoff: () => preflight.finish(),
       log: (level, message, tags) => {
@@ -59,14 +75,6 @@ export default Runtime.handler(Commands, (input) =>
                 : Effect.logInfo(message, tags)
         runFork(effect)
       },
-      pluginHost: {
-        async start(pluginInput) {
-          disposeSlots = await loadBuiltinPlugins(pluginInput.api, pluginInput.runtime)
-        },
-        async dispose() {
-          disposeSlots?.()
-        },
-      },
-    }).pipe(Effect.provide(AppNodeBuilder.build(Global.node)))
+    }).pipe(Effect.provide(LayerNode.compile(Global.node)))
   }),
 )

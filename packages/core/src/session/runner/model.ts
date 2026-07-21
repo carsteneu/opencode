@@ -1,14 +1,14 @@
 export * as SessionRunnerModel from "./model"
 
 import { makeLocationNode } from "../../effect/app-node"
-import { Model } from "@opencode-ai/llm"
+import { Model } from "@opencode-ai/ai"
 // ast-grep-ignore: no-star-import
-import * as AnthropicMessages from "@opencode-ai/llm/protocols/anthropic-messages"
+import * as AnthropicMessages from "@opencode-ai/ai/protocols/anthropic-messages"
 // ast-grep-ignore: no-star-import
-import * as OpenAICompatibleChat from "@opencode-ai/llm/protocols/openai-compatible-chat"
+import * as OpenAICompatibleChat from "@opencode-ai/ai/protocols/openai-compatible-chat"
 // ast-grep-ignore: no-star-import
-import * as OpenAIResponses from "@opencode-ai/llm/protocols/openai-responses"
-import { Auth, type AnyRoute } from "@opencode-ai/llm/route"
+import * as OpenAIResponses from "@opencode-ai/ai/protocols/openai-responses"
+import { Auth, type AnyRoute } from "@opencode-ai/ai/route"
 import { Context, Effect, Layer, Schema } from "effect"
 import { produce } from "immer"
 import { AISDK } from "../../aisdk"
@@ -182,20 +182,15 @@ export const fromCatalogModel = (
   credential?: Credential.Value,
   dependencies: Dependencies = {},
 ): Effect.Effect<Model, UnsupportedPackageError> => {
-  const resolved =
-    credential?.type !== "key" || credential.metadata === undefined
-      ? model
-      : produce(model, (draft) => {
-          draft.body = ProviderV2.mergeOverlay(draft.body, credential.metadata)
-        })
+  const resolved = produce(model, (draft) => {
+    if (draft.settings?.apiKey === "") delete draft.settings.apiKey
+    if (credential?.type === "key" && credential.metadata !== undefined)
+      draft.body = ProviderV2.mergeOverlay(draft.body, credential.metadata)
+  })
   const packageName = ProviderV2.packageName(resolved.package)
   const key = apiKey(resolved, credential)
 
-  if (
-    OpenAICodex.isChatGPT(credential) &&
-    !ProviderV2.isAISDK(resolved.package) &&
-    isNativeOpenAI(resolved.package)
-  ) {
+  if (OpenAICodex.isChatGPT(credential) && !ProviderV2.isAISDK(resolved.package) && isNativeOpenAI(resolved.package)) {
     return Effect.succeed(codexModel(resolved, credential, key))
   }
 
@@ -243,11 +238,10 @@ export const fromCatalogModel = (
     const module = yield* (dependencies.loadPackage ?? ProviderV2.loadPackage)(specifier).pipe(
       Effect.mapError(() => unsupported(resolved)),
     )
+    const configured = { ...resolved.settings, ...credential?.metadata }
     const settings = {
-      ...resolved.settings,
-      ...(credential?.type === "key" ? { apiKey: credential.key } : {}),
-      ...(credential?.type === "oauth" ? { apiKey: credential.access } : {}),
-      ...credential?.metadata,
+      ...(credential ? withoutNativeAuthSettings(configured) : configured),
+      ...nativeCredentialSettings(specifier, credential),
       headers: resolved.headers,
       body: resolved.body,
       limits: { context: resolved.limit.context, output: resolved.limit.output },
@@ -261,8 +255,29 @@ export const fromCatalogModel = (
 }
 
 const isNativeOpenAI = (packageName: string | undefined) =>
-  packageName === "@opencode-ai/llm/providers/openai" ||
-  packageName?.startsWith("@opencode-ai/llm/providers/openai/") === true
+  packageName === "@opencode-ai/ai/providers/openai" ||
+  packageName?.startsWith("@opencode-ai/ai/providers/openai/") === true
+
+const nativeCredentialSettings = (specifier: string, credential: Credential.Value | undefined) => {
+  if (!credential) return {}
+  if (credential.type === "key") return { apiKey: credential.key }
+  if (
+    specifier === "@opencode-ai/ai/providers/anthropic" ||
+    specifier === "@opencode-ai/ai/providers/anthropic-compatible"
+  )
+    return { authToken: credential.access }
+  if (
+    specifier === "@opencode-ai/ai/providers/google-vertex" ||
+    specifier.startsWith("@opencode-ai/ai/providers/google-vertex/")
+  )
+    return { accessToken: credential.access }
+  return { apiKey: credential.access }
+}
+
+const withoutNativeAuthSettings = (settings: Record<string, unknown>) => {
+  const { accessToken: _accessToken, apiKey: _apiKey, authToken: _authToken, ...rest } = settings
+  return rest
+}
 
 const codexModel = (
   model: ModelV2.Info,

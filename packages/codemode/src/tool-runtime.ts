@@ -9,6 +9,7 @@ import {
   outputTypeScript,
 } from "./tool-schema.js"
 import { isDefinition as isToolDefinition, type Definition } from "./tool.js"
+import type { Tools } from "./tools.js"
 import {
   CodeModeDate,
   CodeModeMap,
@@ -21,28 +22,20 @@ import {
 
 const estimateTokens = (input: string) => Math.max(0, Math.round(input.length / 4))
 
-export type HostTool<R = never> = (...args: Array<unknown>) => Effect.Effect<unknown, unknown, R>
+export type Services<T> = ServicesOf<T, []>
 
-export type HostTools<R = never> = {
-  [name: string]: HostTool<R> | Definition<R> | HostTools<R>
-}
-
-export type Services<Tools> = ServicesOf<Tools, []>
-
-type ServicesOf<Tools, Depth extends ReadonlyArray<unknown>> = Depth["length"] extends 8
+type ServicesOf<T, Depth extends ReadonlyArray<unknown>> = Depth["length"] extends 8
   ? never
-  : Tools extends (...args: Array<unknown>) => Effect.Effect<unknown, unknown, infer R>
+  : T extends {
+        readonly _tag: "CodeModeTool"
+        readonly run: (input: unknown) => Effect.Effect<unknown, unknown, infer R>
+      }
     ? R
-    : Tools extends {
-          readonly _tag: "CodeModeTool"
-          readonly run: (input: unknown) => Effect.Effect<unknown, unknown, infer R>
-        }
-      ? R
-      : Tools extends object
-        ? string extends keyof Tools
-          ? ServicesOf<Tools[string], [...Depth, unknown]>
-          : ServicesOf<Tools[keyof Tools], [...Depth, unknown]>
-        : never
+    : T extends object
+      ? string extends keyof T
+        ? ServicesOf<T[string], [...Depth, unknown]>
+        : ServicesOf<T[keyof T], [...Depth, unknown]>
+      : never
 
 export type ToolCall = {
   readonly name: string
@@ -125,8 +118,7 @@ export class ToolRuntimeError extends Error {
   }
 }
 
-const isDefinition = <R>(value: HostTool<R> | Definition<R> | HostTools<R>): value is Definition<R> =>
-  isToolDefinition<R>(value)
+const isDefinition = <R>(value: Definition<R> | Tools<R>): value is Definition<R> => isToolDefinition<R>(value)
 
 const runHost = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, ToolError, R> =>
   effect.pipe(
@@ -264,31 +256,71 @@ const copyBounded = (
   return copied
 }
 
-export const copyOut = (value: unknown, undefinedAsNull = false): unknown => {
-  if (value === undefined && undefinedAsNull) return null
+// "json" mirrors JSON.stringify (undefined object values drop, undefined array elements become
+// null, a bare undefined passes through): use it wherever data leaves as JSON, like tool
+// arguments and stringify-style formatting. "nullify" turns every undefined, including a bare
+// one, into null: use it for program results, where the consumer must never see undefined.
+export type CopyOutMode = "json" | "nullify"
+
+export const copyOut = (value: unknown, mode: CopyOutMode): unknown => {
+  if (value === undefined && mode === "nullify") return null
   if (typeof value === "number" && !Number.isFinite(value)) {
     return null
   }
   if (Array.isArray(value)) {
-    return value.map((item) => copyOut(item, undefinedAsNull))
+    // Array.from densifies holes so sparse arrays normalize at the boundary like JSON does.
+    return Array.from(value, (item) => {
+      const copied = copyOut(item, mode)
+      return copied === undefined && mode === "json" ? null : copied
+    })
   }
 
   if (value !== null && typeof value === "object" && !(value instanceof ToolReference)) {
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, copyOut(item, undefinedAsNull)]))
+    return Object.fromEntries(
+      Object.entries(value)
+        .map(([key, item]) => [key, copyOut(item, mode)] as const)
+        .filter(([, item]) => !(item === undefined && mode === "json")),
+    )
   }
 
   return value
 }
 
+// Dots in tool names are namespace separators; the last definition for a canonical path wins.
+type ToolNode<R> = {
+  definition?: Definition<R>
+  readonly children: Map<string, ToolNode<R>>
+}
+
+const toolTrie = <R>(tools: Tools<R>): ToolNode<R> => {
+  const root: ToolNode<R> = { children: new Map() }
+  const insert = (node: ToolNode<R>, group: Tools<R>): void => {
+    for (const [name, value] of Object.entries(group)) {
+      let current = node
+      for (const segment of name.split(".")) {
+        if (segment === "") throw new TypeError(`Tool name '${name}' contains an empty segment.`)
+        const child = current.children.get(segment) ?? { children: new Map() }
+        current.children.set(segment, child)
+        current = child
+      }
+      if (isDefinition(value)) current.definition = value
+      else insert(current, value)
+    }
+  }
+  insert(root, tools)
+  return root
+}
+
+const canonicalSegments = (path: ReadonlyArray<string>): ReadonlyArray<string> =>
+  path.flatMap((segment) => segment.split("."))
+
 const definitions = <R>(
-  tools: HostTools<R>,
+  node: ToolNode<R>,
   path: ReadonlyArray<string> = [],
-): Array<{ path: string; definition: Definition<R> }> =>
-  Object.entries(tools).flatMap(([name, value]) => {
-    const next = [...path, name]
-    if (isDefinition(value)) return [{ path: next.join("."), definition: value }]
-    return typeof value === "function" ? [] : definitions(value, next)
-  })
+): Array<{ path: string; definition: Definition<R> }> => [
+  ...(node.definition === undefined ? [] : [{ path: path.join("."), definition: node.definition }]),
+  ...Array.from(node.children, ([name, child]) => definitions(child, [...path, name])).flat(),
+]
 
 const describeDefinition = <R>(path: string, definition: Definition<R>): ToolDescription => ({
   path,
@@ -296,8 +328,8 @@ const describeDefinition = <R>(path: string, definition: Definition<R>): ToolDes
   signature: `${toolExpression(path)}(input: ${inputTypeScript(definition, true)}): Promise<${outputTypeScript(definition, true)}>`,
 })
 
-const visibleDefinitions = <R>(tools: HostTools<R>) =>
-  definitions(tools).map(({ path, definition }) => ({
+const visibleDefinitions = <R>(tools: Tools<R>) =>
+  definitions(toolTrie(tools)).map(({ path, definition }) => ({
     path,
     definition,
     description: describeDefinition(path, definition),
@@ -414,11 +446,11 @@ const toSearchEntry = <R>(path: string, definition: Definition<R>, description: 
     .toLowerCase(),
 })
 
-export const searchIndex = <R>(tools: HostTools<R>): ReadonlyArray<SearchEntry> =>
+export const searchIndex = <R>(tools: Tools<R>): ReadonlyArray<SearchEntry> =>
   visibleDefinitions(tools).map(({ path, definition, description }) => toSearchEntry(path, definition, description))
 
 // Budget signatures round-robin so every namespace remains visible.
-export const prepare = <R>(tools: HostTools<R>, catalogBudget = defaultCatalogBudget): DiscoveryPlan => {
+export const prepare = <R>(tools: Tools<R>, catalogBudget = defaultCatalogBudget): DiscoveryPlan => {
   if (!Number.isSafeInteger(catalogBudget) || catalogBudget < 0) {
     throw new RangeError("discovery.catalogBudget must be a non-negative safe integer")
   }
@@ -561,47 +593,30 @@ export const prepare = <R>(tools: HostTools<R>, catalogBudget = defaultCatalogBu
   }
 }
 
-const namespaceKeys = <R>(tools: HostTools<R>, path: ReadonlyArray<string>): ReadonlyArray<string> => {
-  let value: HostTool<R> | Definition<R> | HostTools<R> = tools
-  for (const segment of path) {
-    if (
-      isBlockedMember(segment) ||
-      typeof value === "function" ||
-      isDefinition(value) ||
-      !Object.hasOwn(value, segment)
-    ) {
-      throw new ToolRuntimeError("UnknownTool", `Unknown tool namespace '${path.join(".")}'.`, [
-        "Object.keys(tools) lists the available namespaces; search({ query }) finds described tools.",
-      ])
-    }
-    value = value[segment] as HostTool<R> | Definition<R> | HostTools<R>
+const lookup = <R>(root: ToolNode<R>, segments: ReadonlyArray<string>): ToolNode<R> | undefined =>
+  segments.reduce<ToolNode<R> | undefined>((node, segment) => node?.children.get(segment), root)
+
+const namespaceKeys = <R>(root: ToolNode<R>, path: ReadonlyArray<string>): ReadonlyArray<string> => {
+  const segments = canonicalSegments(path)
+  const node = lookup(root, segments)
+  if (node === undefined) {
+    throw new ToolRuntimeError("UnknownTool", `Unknown tool namespace '${segments.join(".")}'.`)
   }
-  if (typeof value === "function" || isDefinition(value)) return []
-  return Object.keys(value)
+  return Array.from(node.children.keys())
 }
 
-const resolve = <R>(tools: HostTools<R>, path: ReadonlyArray<string>): HostTool<R> | Definition<R> => {
-  let value: HostTool<R> | Definition<R> | HostTools<R> = tools
-
-  for (const segment of path) {
-    if (
-      isBlockedMember(segment) ||
-      typeof value === "function" ||
-      isDefinition(value) ||
-      !Object.hasOwn(value, segment)
-    ) {
-      throw new ToolRuntimeError("UnknownTool", `Unknown tool '${path.join(".")}'.`, [
-        "Use search({ query }) to find available described tools.",
-      ])
-    }
-    value = value[segment] as HostTool<R> | Definition<R> | HostTools<R>
+const resolve = <R>(root: ToolNode<R>, path: ReadonlyArray<string>): Definition<R> => {
+  const segments = canonicalSegments(path)
+  const node = lookup(root, segments)
+  if (node === undefined) {
+    throw new ToolRuntimeError("UnknownTool", `Unknown tool '${segments.join(".")}'.`, [
+      "Use search({ query }) to find available described tools.",
+    ])
   }
-
-  if (typeof value !== "function" && !isDefinition(value)) {
-    throw new ToolRuntimeError("UnknownTool", `Tool '${path.join(".")}' is not callable.`)
+  if (node.definition === undefined) {
+    throw new ToolRuntimeError("UnknownTool", `Tool '${segments.join(".")}' is not callable.`)
   }
-
-  return value
+  return node.definition
 }
 
 export type ToolRuntime<R = never> = {
@@ -613,12 +628,13 @@ export type ToolRuntime<R = never> = {
 }
 
 export const make = <R>(
-  tools: HostTools<R>,
+  tools: Tools<R>,
   maxToolCalls: number | undefined,
   searchIndex: ReadonlyArray<SearchEntry>,
   hooks?: ToolCallHooks<R>,
 ): ToolRuntime<R> => {
   const calls: Array<ToolCall> = []
+  const root = toolTrie(tools)
   const searchTool = makeSearchTool(searchIndex)
 
   // End hooks observe settled success or failure; interruption emits neither outcome.
@@ -686,28 +702,21 @@ export const make = <R>(
   return {
     root: new ToolReference([]),
     calls,
-    keys: (path) => namespaceKeys(tools, path),
+    keys: (path) => namespaceKeys(root, path),
     search: (args) =>
       Effect.suspend(() =>
         invokeDefinition(
           "search",
           searchTool,
-          args.map((arg) => copyOut(copyIn(arg, "Arguments for tool 'search'"))),
+          args.map((arg) => copyOut(copyIn(arg, "Arguments for tool 'search'"), "json")),
         ),
       ),
     invoke: (path, args) =>
       Effect.gen(function* () {
-        const name = path.join(".")
-        const externalArgs = args.map((arg) => copyOut(copyIn(arg, `Arguments for tool '${name}'`)))
-        const tool = resolve(tools, path)
-        if (isDefinition(tool)) return yield* invokeDefinition(name, tool, externalArgs)
-        const index = yield* recordAndObserve(name, externalArgs)
-        return yield* observeEnd(
-          Effect.gen(function* () {
-            return yield* decodeOutput(yield* runHost(Effect.suspend(() => tool(...externalArgs))), name)
-          }),
-          { index, name, input: externalArgs },
-        )
+        const name = canonicalSegments(path).join(".")
+        const externalArgs = args.map((arg) => copyOut(copyIn(arg, `Arguments for tool '${name}'`), "json"))
+        const tool = resolve(root, path)
+        return yield* invokeDefinition(name, tool, externalArgs)
       }),
   }
 }

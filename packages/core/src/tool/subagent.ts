@@ -1,9 +1,10 @@
 export * as SubagentTool from "./subagent"
 
-import { ToolFailure } from "@opencode-ai/llm"
+import { ToolFailure } from "@opencode-ai/ai"
 import type { Context as PluginContext } from "@opencode-ai/plugin/v2/effect/plugin"
 import { Effect, Schema, Scope } from "effect"
 import { AgentV2 } from "../agent"
+import { Config } from "../config"
 import { PluginRuntime } from "../plugin/runtime"
 import { PermissionV2 } from "../permission"
 import { SessionSchema } from "../session/schema"
@@ -43,6 +44,7 @@ export const Plugin = {
   effect: Effect.fn("SubagentTool.Plugin")(function* (ctx: PluginContext) {
     const runtime = yield* PluginRuntime.Service
     const agents = yield* AgentV2.Service
+    const config = yield* Config.Service
     const permission = yield* PermissionV2.Service
     const scope = yield* Scope.Scope
 
@@ -123,6 +125,23 @@ export const Plugin = {
                       (error) => new ToolFailure({ message: `Parent session not found: ${context.sessionID}`, error }),
                     ),
                   )
+                let current = parent
+                let depth = 0
+                while (current.parentID) {
+                  depth++
+                  current = yield* runtime.session
+                    .get(current.parentID)
+                    .pipe(
+                      Effect.mapError(
+                        (error) => new ToolFailure({ message: `Parent session not found: ${current.parentID}`, error }),
+                      ),
+                    )
+                }
+                const limit = Config.latest(yield* config.entries(), "experimental")?.subagent_depth ?? 1
+                if (depth >= limit)
+                  return yield* new ToolFailure({
+                    message: `Subagent depth limit reached (${limit}). Increase "experimental.subagent_depth" to allow nested subagents.`,
+                  })
                 const agent = yield* agents.resolve(input.agent)
                 if (agent === undefined) return yield* new ToolFailure({ message: `Unknown agent: ${input.agent}` })
                 if (agent.mode === "primary")
@@ -136,8 +155,8 @@ export const Plugin = {
                     agent: context.agent,
                     source: {
                       type: "tool",
-                      messageID: context.assistantMessageID,
-                      callID: context.toolCallID,
+                      messageID: context.messageID,
+                      callID: context.callID,
                     },
                   })
                   .pipe(Effect.mapError((error) => new ToolFailure({ message: `Subagent denied: ${agent.id}`, error })))
@@ -160,6 +179,9 @@ export const Plugin = {
                   )
 
                 const background = input.background === true
+                yield* context.progress({
+                  structured: { sessionID: child.id, status: "running" },
+                })
 
                 const run = Effect.gen(function* () {
                   // The child session owns its agent/model (set at create); prompt only admits input.
@@ -212,5 +234,32 @@ export const Plugin = {
         ),
       )
       .pipe(Effect.orDie)
+
+    yield* ctx.session.hook("context", (event) =>
+      Effect.gen(function* () {
+        const tool = event.tools[name]
+        if (!tool) return
+        const selected = yield* agents.resolve(event.agent)
+        if (!selected) return
+        const available = (yield* agents.list())
+          .filter(
+            (agent) =>
+              agent.mode !== "primary" &&
+              !agent.hidden &&
+              PermissionV2.evaluate(name, agent.id, selected.permissions).effect !== "deny",
+          )
+          .toSorted((a, b) => a.id.localeCompare(b.id))
+        if (available.length === 0) return
+        tool.description = [
+          tool.description,
+          "",
+          "Available subagents:",
+          ...available.map(
+            (agent) =>
+              `- ${agent.id}: ${agent.description ?? "This subagent should only be called when explicitly requested."}`,
+          ),
+        ].join("\n")
+      }),
+    )
   }),
 }

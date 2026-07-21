@@ -1,6 +1,6 @@
 import { describe, expect } from "bun:test"
-import { LLMClient, LLMEvent, Model, type LLMRequest } from "@opencode-ai/llm"
-import { OpenAIChat } from "@opencode-ai/llm/protocols"
+import { LLMClient, LLMEvent, Model, type LLMRequest } from "@opencode-ai/ai"
+import { OpenAIChat } from "@opencode-ai/ai/protocols"
 import { Config } from "@opencode-ai/core/config"
 import { Database } from "@opencode-ai/core/database/database"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
@@ -56,7 +56,7 @@ const locations = Layer.effect(
     () =>
       // The test only needs the compaction location service used by SessionV2.compact.
       // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
-      SessionCompaction.layer.pipe(
+      SessionCompaction.layer().pipe(
         Layer.provide(client),
         Layer.provide(config),
         Layer.provide(models),

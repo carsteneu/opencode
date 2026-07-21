@@ -3,7 +3,7 @@ import { Effect, Schema } from "effect"
 import { CodeMode, Tool } from "../src/index.js"
 
 // Key enumeration: Object.keys and for...in share one surface over plain objects, arrays
-// (index strings), and tool references (namespace/tool names from the host tool tree), so a
+// (index strings), and tool references (namespace/tool names from the supplied tools), so a
 // model can discover what it may call instead of guessing names from the instructions. The
 // motivating transcript: `Object.keys(tools)` failed with the generic plain-objects-only
 // message and `for (const key in tools)` was unsupported syntax, forcing blind guesses.
@@ -56,11 +56,10 @@ describe("Object.keys over tool references", () => {
     expect(await value(`return typeof search`)).toBe("function")
   })
 
-  test("an unknown namespace is an UnknownTool error pointing at the discovery idioms", async () => {
+  test("an unknown namespace is an UnknownTool error", async () => {
     const failure = await error(`return Object.keys(tools.nonexistent)`)
     expect(failure.kind).toBe("UnknownTool")
     expect(failure.message).toContain("Unknown tool namespace 'nonexistent'")
-    expect(failure.suggestions?.join(" ")).toContain("Object.keys(tools)")
   })
 
   test("Object.values/entries on a tool reference explain the working idioms", async () => {
@@ -137,7 +136,7 @@ describe("for...in", () => {
     ).toBe("only")
   })
 
-  test("enumerates namespaces and tools from the callable tool tree", async () => {
+  test("enumerates namespaces and tools from the supplied tools", async () => {
     expect(
       await value(`
       const names = []

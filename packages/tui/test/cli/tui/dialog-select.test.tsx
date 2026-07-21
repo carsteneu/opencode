@@ -1,7 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import { InputRenderable } from "@opentui/core"
-import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
-import { testRender, useRenderer } from "@opentui/solid"
+import { testRender } from "@opentui/solid"
 import { expect, test } from "bun:test"
 import { mkdir } from "node:fs/promises"
 import path from "node:path"
@@ -21,58 +20,54 @@ async function renderSelect(
   const state = path.join(root, "state")
   await mkdir(state, { recursive: true })
   const config = createTuiResolvedConfig()
-  const [
-    { ConfigProvider },
-    { ThemeProvider },
-    { OpencodeKeymapProvider, registerOpencodeKeymap },
-    { DialogProvider },
-    { DialogSelect },
-    { ToastProvider },
-  ] = await Promise.all([
-    import("../../../src/config"),
-    import("../../../src/context/theme"),
-    import("../../../src/keymap"),
-    import("../../../src/ui/dialog"),
-    import("../../../src/ui/dialog-select"),
-    import("../../../src/ui/toast"),
-  ])
+  const [{ ConfigProvider }, { ThemeProvider }, { Keymap }, { DialogProvider }, { DialogSelect }, { ToastProvider }] =
+    await Promise.all([
+      import("../../../src/config"),
+      import("../../../src/context/theme"),
+      import("../../../src/context/keymap"),
+      import("../../../src/ui/dialog"),
+      import("../../../src/ui/dialog-select"),
+      import("../../../src/ui/toast"),
+    ])
 
   function Harness() {
-    const renderer = useRenderer()
-    const keymap = createDefaultOpenTuiKeymap(renderer)
-    const off = registerOpencodeKeymap(keymap, renderer, config)
-    onCleanup(off)
+    function Select() {
+      onCleanup(Keymap.use().mode.push("modal"))
+      return (
+        <DialogSelect
+          title="Items"
+          options={options}
+          current={current}
+          actions={[
+            {
+              command: "dialog.move_session.delete",
+              title: "delete",
+              onTrigger: onRow,
+            },
+            {
+              command: "dialog.move_session.new",
+              title: "new",
+              selection: "none",
+              onTrigger: onGlobal,
+            },
+          ]}
+        />
+      )
+    }
 
     return (
       <TestTuiContexts directory={root} paths={{ home: root, state, worktree: root }}>
-        <OpencodeKeymapProvider keymap={keymap}>
-          <ConfigProvider config={config}>
+        <ConfigProvider config={config}>
+          <Keymap.Provider>
             <ThemeProvider mode="dark" source={{ discover: () => Promise.resolve({}) }}>
               <ToastProvider>
                 <DialogProvider>
-                  <DialogSelect
-                    title="Items"
-                    options={options}
-                    current={current}
-                    actions={[
-                      {
-                        command: "dialog.move_session.delete",
-                        title: "delete",
-                        onTrigger: onRow,
-                      },
-                      {
-                        command: "dialog.move_session.new",
-                        title: "new",
-                        selection: "none",
-                        onTrigger: onGlobal,
-                      },
-                    ]}
-                  />
+                  <Select />
                 </DialogProvider>
               </ToastProvider>
             </ThemeProvider>
-          </ConfigProvider>
-        </OpencodeKeymapProvider>
+          </Keymap.Provider>
+        </ConfigProvider>
       </TestTuiContexts>
     )
   }
@@ -91,14 +86,14 @@ async function mountSelect(root: string, initial: DialogSelectOption<string>[]) 
   const [
     { ConfigProvider },
     { ThemeProvider },
-    { OpencodeKeymapProvider, registerOpencodeKeymap },
+    { Keymap },
     { DialogProvider, useDialog },
     { DialogSelect },
     { ToastProvider },
   ] = await Promise.all([
     import("../../../src/config"),
     import("../../../src/context/theme"),
-    import("../../../src/keymap"),
+    import("../../../src/context/keymap"),
     import("../../../src/ui/dialog"),
     import("../../../src/ui/dialog-select"),
     import("../../../src/ui/toast"),
@@ -109,12 +104,8 @@ async function mountSelect(root: string, initial: DialogSelectOption<string>[]) 
   let replaceOptions!: (options: DialogSelectOption<string>[]) => void
 
   function Harness() {
-    const renderer = useRenderer()
-    const keymap = createDefaultOpenTuiKeymap(renderer)
-    const off = registerOpencodeKeymap(keymap, renderer, config)
     const [options, setOptions] = createSignal(initial)
     replaceOptions = setOptions
-    onCleanup(off)
 
     function Fixture() {
       const dialog = useDialog()
@@ -133,8 +124,8 @@ async function mountSelect(root: string, initial: DialogSelectOption<string>[]) 
 
     return (
       <TestTuiContexts directory={root} paths={{ home: root, state, worktree: root }}>
-        <OpencodeKeymapProvider keymap={keymap}>
-          <ConfigProvider config={config}>
+        <ConfigProvider config={config}>
+          <Keymap.Provider>
             <ThemeProvider mode="dark" source={{ discover: () => Promise.resolve({}) }}>
               <ToastProvider>
                 <DialogProvider>
@@ -142,8 +133,8 @@ async function mountSelect(root: string, initial: DialogSelectOption<string>[]) 
                 </DialogProvider>
               </ToastProvider>
             </ThemeProvider>
-          </ConfigProvider>
-        </OpencodeKeymapProvider>
+          </Keymap.Provider>
+        </ConfigProvider>
       </TestTuiContexts>
     )
   }
@@ -267,7 +258,7 @@ test("selects a repopulated option after removing the only option", async () => 
 
   try {
     select.replaceOptions([])
-    await select.app.waitForFrame((frame) => frame.includes("No results found"))
+    await select.app.waitForFrame((frame) => frame.includes("No items available"))
     select.app.mockInput.pressEnter()
     expect(select.selected).toEqual([])
 
@@ -277,6 +268,30 @@ test("selects a repopulated option after removing the only option", async () => 
     await select.app.waitFor(() => select.selected.length === 1)
 
     expect(select.selected).toEqual(["replacement"])
+  } finally {
+    select.app.renderer.destroy()
+  }
+})
+
+test("keeps the cursor index while options are temporarily empty", async () => {
+  await using tmp = await tmpdir()
+  const options = ["first", "second", "third"].map((value) => ({ title: value, value }))
+  const select = await mountSelect(tmp.path, options)
+
+  try {
+    select.app.mockInput.pressArrow("down")
+    await select.app.waitFor(() => select.moved.at(-1) === "second")
+    select.app.mockInput.pressArrow("down")
+    await select.app.waitFor(() => select.moved.at(-1) === "third")
+    select.replaceOptions([])
+    await select.app.waitForFrame((frame) => frame.includes("No items available"))
+
+    select.replaceOptions(options)
+    await select.app.waitForFrame((frame) => frame.includes("third"))
+    select.app.mockInput.pressEnter()
+    await select.app.waitFor(() => select.selected.length === 1)
+
+    expect(select.selected).toEqual(["third"])
   } finally {
     select.app.renderer.destroy()
   }

@@ -70,9 +70,7 @@ type MixedMiddlewareGroups<
   SessionLocationId extends HttpApiMiddleware.AnyId,
   SessionLocationService,
 > =
-  | ReturnType<
-      typeof makePermissionGroup<LocationId, LocationService, SessionLocationId, SessionLocationService>
-    >
+  | ReturnType<typeof makePermissionGroup<LocationId, LocationService, SessionLocationId, SessionLocationService>>
   | ReturnType<typeof makeQuestionGroup<LocationId, LocationService, SessionLocationId, SessionLocationService>>
 
 type ApiGroups<
@@ -82,7 +80,7 @@ type ApiGroups<
   FormLocationService,
   SessionLocationId extends HttpApiMiddleware.AnyId,
   SessionLocationService,
-  Event extends HttpApiGroup.Any,
+  Event extends HttpApiGroup.Constraint,
 > =
   | typeof HealthGroup
   | typeof ServerGroup
@@ -102,7 +100,7 @@ export type Api<
   FormLocationService,
   SessionLocationId extends HttpApiMiddleware.AnyId,
   SessionLocationService,
-  Event extends HttpApiGroup.Any,
+  Event extends HttpApiGroup.Constraint,
 > = HttpApi.HttpApi<
   "server",
   HttpApiGroup.AddMiddleware<
@@ -124,7 +122,7 @@ export type Api<
 
 // Protocol owns middleware placement, while Server injects concrete keys so Core service identities stay downstream.
 const makeApiFromGroup = <
-  const Group extends HttpApiGroup.Any,
+  const Group extends HttpApiGroup.Constraint,
   LocationId extends HttpApiMiddleware.AnyId,
   LocationService,
   FormLocationId extends HttpApiMiddleware.AnyId,

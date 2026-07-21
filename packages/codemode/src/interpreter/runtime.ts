@@ -10,6 +10,7 @@ import {
   ErrorConstructorReference,
   GlobalMethodReference,
   GlobalNamespace,
+  type GlobalNamespaceName,
   getArray,
   getBoolean,
   getNode,
@@ -18,6 +19,7 @@ import {
   IntrinsicReference,
   InterpreterRuntimeError,
   isRecord,
+  JsonMethodReference,
   type MemberReference,
   OptionalShortCircuit,
   PromiseCapabilityFunction,
@@ -34,7 +36,14 @@ import {
   UriFunction,
 } from "./model.js"
 import { caughtErrorValue, constructErrorValue } from "./errors.js"
-import { type CallbackRunner, invokeGlobalMethod, invokeIntrinsic } from "./methods.js"
+import {
+  arrayStatics,
+  type CallbackRunner,
+  invokeArrayFrom,
+  invokeGlobalMethod,
+  invokeGroupBy,
+  invokeIntrinsic,
+} from "./methods.js"
 import {
   constructPromise,
   invokePromiseInstanceMethod,
@@ -44,19 +53,27 @@ import {
 } from "./promises.js"
 import { containsOpaqueReference, isRuntimeReference, rejectCircularInsertion, typeofValue } from "./references.js"
 import { ScopeStack } from "./scope.js"
-import { arrayMethods, mapMethods, setMethods, spreadItems } from "../stdlib/collections.js"
+import { arrayMethods, mapMethods, mapStatics, setMethods, spreadItems } from "../stdlib/collections.js"
 import { consoleMethods, formatConsoleMessage } from "../stdlib/console.js"
-import { dateMethods } from "../stdlib/date.js"
-import { mathConstants } from "../stdlib/math.js"
+import { dateMethods, dateStatics } from "../stdlib/date.js"
+import { invokeJsonMethod, jsonStatics, type JsonMethodName } from "../stdlib/json.js"
+import { mathConstants, mathMethods } from "../stdlib/math.js"
 import { numberConstants, numberMethods, numberStatics } from "../stdlib/number.js"
-import { objectMethodsPreservingIdentity } from "../stdlib/object.js"
+import { objectMethodsPreservingIdentity, objectStatics } from "../stdlib/object.js"
 import { promiseStatics } from "../stdlib/promise.js"
-import { escapeRegexHint, regexpMethods, regexpProperties, regexFailureReason } from "../stdlib/regexp.js"
+import {
+  escapeRegexHint,
+  regexpMethods,
+  regexpProperties,
+  regexpStatics,
+  regexFailureReason,
+} from "../stdlib/regexp.js"
 import { stringMethods, stringStatics } from "../stdlib/string.js"
 import {
   urlMethods,
   urlProperties,
   urlSearchParamsMethods,
+  urlStatics,
   urlWritableProperties,
   invokeUriFunction,
   uriArgument,
@@ -82,6 +99,42 @@ import {
   CodeModeURL,
   CodeModeURLSearchParams,
 } from "../values.js"
+
+const globalStaticMembers: Partial<Record<GlobalNamespaceName, Set<string>>> = {
+  Object: objectStatics,
+  Math: mathMethods,
+  Array: arrayStatics,
+  console: consoleMethods,
+  Date: dateStatics,
+  RegExp: regexpStatics,
+  Map: mapStatics,
+  URL: urlStatics,
+}
+
+const MAX_ARRAY_LENGTH = 4_294_967_295
+
+const parseArrayIndex = (key: string | number): number | undefined => {
+  const property = String(key)
+  if (!/^(0|[1-9]\d*)$/.test(property)) return undefined
+  const index = Number(property)
+  return index < MAX_ARRAY_LENGTH ? index : undefined
+}
+
+const calleeDescription = (callee: AstNode): string => {
+  if (callee.type === "Identifier") return getString(callee, "name")
+  if (callee.type === "MemberExpression") {
+    const object = getNode(callee, "object")
+    const property = getNode(callee, "property")
+    const key =
+      callee.computed !== true && property.type === "Identifier"
+        ? getString(property, "name")
+        : property.type === "Literal" && typeof property.value === "string"
+          ? property.value
+          : undefined
+    if (object.type === "Identifier" && key !== undefined) return `${getString(object, "name")}.${key}`
+  }
+  return "The called value"
+}
 
 const instanceofValue = (lhs: unknown, rhs: unknown, node: AstNode): boolean => {
   if (rhs instanceof ErrorConstructorReference) {
@@ -144,6 +197,20 @@ const collectPatternNames = (pattern: AstNode, out: Array<string> = []): Array<s
   return out
 }
 
+const loopDeclaration = (left: AstNode, statement: "for...of" | "for...in") => {
+  if (left.type !== "VariableDeclaration") return undefined
+  const declarations = getArray(left, "declarations")
+  if (declarations.length !== 1) {
+    throw new InterpreterRuntimeError(`${statement} supports one declared binding.`, left)
+  }
+  const kind = getString(left, "kind")
+  return {
+    pattern: getNode(asNode(declarations[0], "declarations[0]"), "id"),
+    mutable: kind !== "const",
+    lexical: kind !== "var",
+  }
+}
+
 export class Interpreter<R> {
   private scopes: ScopeStack
   private readonly invokeTool: (path: ReadonlyArray<string>, args: Array<unknown>) => Effect.Effect<unknown, unknown, R>
@@ -153,6 +220,7 @@ export class Interpreter<R> {
   private readonly promises: PromiseRuntime<R>
   private readonly runner: CallbackRunner<R> = {
     invokeFunction: (fn, args) => this.invokeFunction(fn, args),
+    invokeCallable: (callable, args, node) => this.invokeCallable(callable, args, node),
     settlePromise: (promise) => this.settlePromise(promise),
   }
 
@@ -184,6 +252,8 @@ export class Interpreter<R> {
     globalScope.set("console", { mutable: false, value: new GlobalNamespace("console") })
     globalScope.set("parseInt", { mutable: false, value: new CoercionFunction("parseInt") })
     globalScope.set("parseFloat", { mutable: false, value: new CoercionFunction("parseFloat") })
+    globalScope.set("isFinite", { mutable: false, value: new CoercionFunction("isFinite") })
+    globalScope.set("isNaN", { mutable: false, value: new CoercionFunction("isNaN") })
     globalScope.set("Date", { mutable: false, value: new GlobalNamespace("Date") })
     globalScope.set("RegExp", { mutable: false, value: new GlobalNamespace("RegExp") })
     globalScope.set("Map", { mutable: false, value: new GlobalNamespace("Map") })
@@ -206,6 +276,7 @@ export class Interpreter<R> {
     // Keep top-level declarations separate so they can shadow builtins.
     this.scopes.push()
     return Effect.gen(function* () {
+      self.predeclareLexical(program.body)
       self.hoistFunctions(program.body)
       let value: unknown = undefined
       for (const [index, statement] of program.body.entries()) {
@@ -270,6 +341,8 @@ export class Interpreter<R> {
         return this.evaluateIfStatement(node)
       case "SwitchStatement":
         return this.evaluateSwitchStatement(node)
+      case "LabeledStatement":
+        return this.evaluateLabeledStatement(node)
       case "WhileStatement":
         return this.evaluateWhileStatement(node)
       case "DoWhileStatement":
@@ -302,6 +375,7 @@ export class Interpreter<R> {
     const self = this
     return Effect.gen(function* () {
       const body = getArray(node, "body")
+      self.predeclareLexical(body)
       self.hoistFunctions(body)
 
       for (const statementValue of body) {
@@ -342,6 +416,25 @@ export class Interpreter<R> {
     }
   }
 
+  private predeclareLexical(statements: Array<unknown>): void {
+    for (const statementValue of statements) {
+      if (!isRecord(statementValue) || statementValue.type !== "VariableDeclaration") continue
+      const statement = statementValue as AstNode
+      const kind = getString(statement, "kind")
+      if (kind === "var") continue
+      for (const declarationValue of getArray(statement, "declarations")) {
+        const declaration = asNode(declarationValue, "declarations")
+        for (const name of collectPatternNames(getNode(declaration, "id"))) {
+          this.scopes.reserve(name, kind !== "const", declaration)
+        }
+      }
+    }
+  }
+
+  private predeclarePattern(pattern: AstNode, mutable: boolean, node: AstNode): void {
+    for (const name of collectPatternNames(pattern)) this.scopes.reserve(name, mutable, node)
+  }
+
   private evaluateIfStatement(node: AstNode): Effect.Effect<StatementResult, unknown, R> {
     const testNode = getNode(node, "test")
     const consequentNode = getNode(node, "consequent")
@@ -358,7 +451,6 @@ export class Interpreter<R> {
 
   private evaluateSwitchStatement(node: AstNode): Effect.Effect<StatementResult, unknown, R> {
     const self = this
-    this.scopes.push()
     return Effect.gen(function* () {
       const discriminant = yield* self.evaluateExpression(getNode(node, "discriminant"))
       if (containsOpaqueReference(discriminant)) {
@@ -368,42 +460,52 @@ export class Interpreter<R> {
           "InvalidDataValue",
         )
       }
-      const cases = getArray(node, "cases").map((value, index) => asNode(value, `cases[${index}]`))
-      let defaultIndex: number | undefined
-      let selected: number | undefined
-      for (const [index, branch] of cases.entries()) {
-        const test = getOptionalNode(branch, "test")
-        if (!test) {
-          defaultIndex = index
-          continue
+      self.scopes.push()
+      return yield* Effect.gen(function* () {
+        const cases = getArray(node, "cases").map((value, index) => asNode(value, `cases[${index}]`))
+        self.predeclareLexical(cases.flatMap((branch) => getArray(branch, "consequent")))
+        let defaultIndex: number | undefined
+        let selected: number | undefined
+        for (const [index, branch] of cases.entries()) {
+          const test = getOptionalNode(branch, "test")
+          if (!test) {
+            defaultIndex = index
+            continue
+          }
+          const candidate = yield* self.evaluateExpression(test)
+          if (containsOpaqueReference(candidate)) {
+            throw new InterpreterRuntimeError(
+              "Switch case values must be data values in CodeMode.",
+              test,
+              "InvalidDataValue",
+            )
+          }
+          if (candidate === discriminant) {
+            selected = index
+            break
+          }
         }
-        const candidate = yield* self.evaluateExpression(test)
-        if (containsOpaqueReference(candidate)) {
-          throw new InterpreterRuntimeError(
-            "Switch case values must be data values in CodeMode.",
-            test,
-            "InvalidDataValue",
-          )
+        const start = selected ?? defaultIndex
+        if (start === undefined) return { kind: "none" } satisfies StatementResult
+        for (let index = start; index < cases.length; index += 1) {
+          for (const statementValue of getArray(cases[index]!, "consequent")) {
+            const result = yield* self.evaluateStatement(asNode(statementValue, "consequent"))
+            if (result.kind === "break") {
+              if (result.label === undefined) return { kind: "none" } satisfies StatementResult
+              return result
+            }
+            if (result.kind === "return" || result.kind === "continue") return result
+          }
         }
-        if (candidate === discriminant) {
-          selected = index
-          break
-        }
-      }
-      const start = selected ?? defaultIndex
-      if (start === undefined) return { kind: "none" } satisfies StatementResult
-      for (let index = start; index < cases.length; index += 1) {
-        for (const statementValue of getArray(cases[index]!, "consequent")) {
-          const result = yield* self.evaluateStatement(asNode(statementValue, "consequent"))
-          if (result.kind === "break") return { kind: "none" } satisfies StatementResult
-          if (result.kind === "return" || result.kind === "continue") return result
-        }
-      }
-      return { kind: "none" } satisfies StatementResult
-    }).pipe(Effect.ensuring(Effect.sync(() => self.scopes.pop())))
+        return { kind: "none" } satisfies StatementResult
+      }).pipe(Effect.ensuring(Effect.sync(() => self.scopes.pop())))
+    })
   }
 
-  private evaluateWhileStatement(node: AstNode): Effect.Effect<StatementResult, unknown, R> {
+  private evaluateWhileStatement(
+    node: AstNode,
+    labels?: ReadonlySet<string>,
+  ): Effect.Effect<StatementResult, unknown, R> {
     const testNode = getNode(node, "test")
     const bodyNode = getNode(node, "body")
 
@@ -413,10 +515,12 @@ export class Interpreter<R> {
         const result = yield* self.evaluateStatement(bodyNode)
 
         if (result.kind === "continue") {
+          if (result.label !== undefined && !labels?.has(result.label)) return result
           continue
         }
 
         if (result.kind === "break") {
+          if (result.label !== undefined && !labels?.has(result.label)) return result
           return { kind: "none" } satisfies StatementResult
         }
 
@@ -429,7 +533,10 @@ export class Interpreter<R> {
     })
   }
 
-  private evaluateDoWhileStatement(node: AstNode): Effect.Effect<StatementResult, unknown, R> {
+  private evaluateDoWhileStatement(
+    node: AstNode,
+    labels?: ReadonlySet<string>,
+  ): Effect.Effect<StatementResult, unknown, R> {
     const bodyNode = getNode(node, "body")
     const testNode = getNode(node, "test")
 
@@ -439,10 +546,12 @@ export class Interpreter<R> {
         const result = yield* self.evaluateStatement(bodyNode)
 
         if (result.kind === "continue") {
+          if (result.label !== undefined && !labels?.has(result.label)) return result
           continue
         }
 
         if (result.kind === "break") {
+          if (result.label !== undefined && !labels?.has(result.label)) return result
           return { kind: "none" } satisfies StatementResult
         }
 
@@ -455,7 +564,10 @@ export class Interpreter<R> {
     })
   }
 
-  private evaluateForStatement(node: AstNode): Effect.Effect<StatementResult, unknown, R> {
+  private evaluateForStatement(
+    node: AstNode,
+    labels?: ReadonlySet<string>,
+  ): Effect.Effect<StatementResult, unknown, R> {
     this.scopes.push()
     const self = this
     return Effect.gen(function* () {
@@ -463,6 +575,10 @@ export class Interpreter<R> {
       const testNode = getOptionalNode(node, "test")
       const updateNode = getOptionalNode(node, "update")
       const bodyNode = getNode(node, "body")
+
+      if (initNode?.type === "VariableDeclaration" && getString(initNode, "kind") !== "var") {
+        self.predeclareLexical([initNode])
+      }
 
       if (initNode) {
         if (initNode.type === "VariableDeclaration") {
@@ -477,37 +593,31 @@ export class Interpreter<R> {
           ? Array.from(self.scopes.current().keys())
           : []
 
-      while (testNode ? yield* self.evaluateExpression(testNode) : true) {
-        const iterationScope =
-          perIterationBindings.length > 0
-            ? new Map(
-                perIterationBindings.map((name): [string, Binding] => [name, { ...self.scopes.current().get(name)! }]),
-              )
-            : undefined
-        if (iterationScope) self.scopes.push(iterationScope)
-        const result = yield* self.evaluateStatement(bodyNode).pipe(
-          Effect.ensuring(
-            Effect.sync(() => {
-              if (iterationScope) self.scopes.pop()
-            }),
-          ),
+      const nextIteration = () => {
+        if (perIterationBindings.length === 0) return
+        const current = self.scopes.current()
+        self.scopes.pop()
+        self.scopes.push(
+          new Map(perIterationBindings.map((name): [string, Binding] => [name, { ...current.get(name)! }])),
         )
+      }
+      nextIteration()
+
+      while (testNode ? yield* self.evaluateExpression(testNode) : true) {
+        const result = yield* self.evaluateStatement(bodyNode)
 
         if (result.kind === "return") {
           return result
         }
 
         if (result.kind === "break") {
+          if (result.label !== undefined && !labels?.has(result.label)) return result
           return { kind: "none" } satisfies StatementResult
         }
 
-        if (iterationScope) {
-          const loopScope = self.scopes.current()
-          for (const name of perIterationBindings) {
-            loopScope.set(name, { ...iterationScope.get(name)! })
-          }
-        }
+        if (result.kind === "continue" && result.label !== undefined && !labels?.has(result.label)) return result
 
+        nextIteration()
         if (updateNode) {
           yield* self.evaluateExpression(updateNode)
         }
@@ -521,56 +631,62 @@ export class Interpreter<R> {
     }).pipe(Effect.ensuring(Effect.sync(() => self.scopes.pop())))
   }
 
-  private evaluateForOfStatement(node: AstNode): Effect.Effect<StatementResult, unknown, R> {
-    if (getBoolean(node, "await")) {
-      throw new InterpreterRuntimeError("for await...of is not supported.", node)
-    }
+  private evaluateForOfStatement(
+    node: AstNode,
+    labels?: ReadonlySet<string>,
+  ): Effect.Effect<StatementResult, unknown, R> {
+    const awaiting = getBoolean(node, "await")
+    const left = getNode(node, "left")
+    const declared = loopDeclaration(left, "for...of")
+    if (declared?.lexical) this.scopes.push()
 
     const self = this
     return Effect.gen(function* () {
-      const left = getNode(node, "left")
+      if (declared?.lexical) self.predeclarePattern(declared.pattern, declared.mutable, left)
       const right = yield* self.evaluateExpression(getNode(node, "right"))
       const body = getNode(node, "body")
 
       const iterable = spreadItems(right)
       if (iterable === undefined) {
-        throw new InterpreterRuntimeError("for...of requires an array, string, Map, or Set value in CodeMode.", node)
+        throw new InterpreterRuntimeError(
+          `${awaiting ? "for await...of" : "for...of"} requires an array, string, Map, Set, or URLSearchParams value in CodeMode.`,
+          node,
+        )
       }
 
-      let declaration: { readonly pattern: AstNode; readonly mutable: boolean } | undefined
       let assignment: AstNode | undefined
 
-      if (left.type === "VariableDeclaration") {
-        const declarations = getArray(left, "declarations")
-        if (declarations.length !== 1) {
-          throw new InterpreterRuntimeError("for...of supports one declared binding.", left)
-        }
-
-        const declarator = asNode(declarations[0], "declarations[0]")
-        declaration = { pattern: getNode(declarator, "id"), mutable: getString(left, "kind") !== "const" }
-      } else if (
-        left.type === "Identifier" ||
-        left.type === "MemberExpression" ||
-        left.type === "ArrayPattern" ||
-        left.type === "ObjectPattern"
+      if (
+        left.type !== "VariableDeclaration" &&
+        (left.type === "Identifier" ||
+          left.type === "MemberExpression" ||
+          left.type === "ArrayPattern" ||
+          left.type === "ObjectPattern")
       ) {
         assignment = left
-      } else {
+      } else if (left.type !== "VariableDeclaration") {
         throw new InterpreterRuntimeError("Unsupported for...of binding.", left)
       }
 
       for (const value of iterable) {
-        if (declaration) {
-          self.scopes.push()
-          yield* self.declarePattern(declaration.pattern, value, declaration.mutable, left)
-        } else if (assignment) {
-          yield* self.assignPattern(assignment, value, left)
-        }
-
-        const result = yield* self.evaluateStatement(body).pipe(
+        const resolved = awaiting
+          ? value instanceof CodeModePromise
+            ? yield* self.settlePromise(value)
+            : yield* Effect.as(Effect.yieldNow, value)
+          : value
+        const result = yield* Effect.gen(function* () {
+          if (declared) {
+            self.scopes.push()
+            if (declared.lexical) self.predeclarePattern(declared.pattern, declared.mutable, left)
+            yield* self.declarePattern(declared.pattern, resolved, declared.mutable, left, declared.lexical)
+          } else if (assignment) {
+            yield* self.assignPattern(assignment, resolved, left)
+          }
+          return yield* self.evaluateStatement(body)
+        }).pipe(
           Effect.ensuring(
             Effect.sync(() => {
-              if (declaration) self.scopes.pop()
+              if (declared) self.scopes.pop()
             }),
           ),
         )
@@ -580,16 +696,24 @@ export class Interpreter<R> {
         }
 
         if (result.kind === "break") {
-          return { kind: "none" }
+          if (result.label !== undefined && !labels?.has(result.label)) return result
+          return { kind: "none" } satisfies StatementResult
         }
 
         if (result.kind === "continue") {
+          if (result.label !== undefined && !labels?.has(result.label)) return result
           continue
         }
       }
 
-      return { kind: "none" }
-    })
+      return { kind: "none" } satisfies StatementResult
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          if (declared?.lexical) self.scopes.pop()
+        }),
+      ),
+    )
   }
 
   private enumerableKeys(value: unknown): Array<string> | undefined {
@@ -605,10 +729,17 @@ export class Interpreter<R> {
     return undefined
   }
 
-  private evaluateForInStatement(node: AstNode): Effect.Effect<StatementResult, unknown, R> {
+  private evaluateForInStatement(
+    node: AstNode,
+    labels?: ReadonlySet<string>,
+  ): Effect.Effect<StatementResult, unknown, R> {
+    const left = getNode(node, "left")
+    const declared = loopDeclaration(left, "for...in")
+    if (declared?.lexical) this.scopes.push()
+
     const self = this
     return Effect.gen(function* () {
-      const left = getNode(node, "left")
+      if (declared?.lexical) self.predeclarePattern(declared.pattern, declared.mutable, left)
       const right = yield* self.evaluateExpression(getNode(node, "right"))
       const body = getNode(node, "body")
 
@@ -620,35 +751,28 @@ export class Interpreter<R> {
         )
       }
 
-      let declaration: { readonly pattern: AstNode; readonly mutable: boolean } | undefined
       let assignmentName: string | undefined
 
-      if (left.type === "VariableDeclaration") {
-        const declarations = getArray(left, "declarations")
-        if (declarations.length !== 1) {
-          throw new InterpreterRuntimeError("for...in supports one declared binding.", left)
-        }
-
-        const declarator = asNode(declarations[0], "declarations[0]")
-        declaration = { pattern: getNode(declarator, "id"), mutable: getString(left, "kind") !== "const" }
-      } else if (left.type === "Identifier") {
+      if (left.type === "Identifier") {
         assignmentName = getString(left, "name")
-      } else {
+      } else if (left.type !== "VariableDeclaration") {
         throw new InterpreterRuntimeError("Unsupported for...in binding.", left)
       }
 
       for (const key of keys) {
-        if (declaration) {
-          self.scopes.push()
-          yield* self.declarePattern(declaration.pattern, key, declaration.mutable, left)
-        } else if (assignmentName) {
-          self.scopes.set(assignmentName, key, left)
-        }
-
-        const result = yield* self.evaluateStatement(body).pipe(
+        const result = yield* Effect.gen(function* () {
+          if (declared) {
+            self.scopes.push()
+            if (declared.lexical) self.predeclarePattern(declared.pattern, declared.mutable, left)
+            yield* self.declarePattern(declared.pattern, key, declared.mutable, left, declared.lexical)
+          } else if (assignmentName) {
+            self.scopes.set(assignmentName, key, left)
+          }
+          return yield* self.evaluateStatement(body)
+        }).pipe(
           Effect.ensuring(
             Effect.sync(() => {
-              if (declaration) self.scopes.pop()
+              if (declared) self.scopes.pop()
             }),
           ),
         )
@@ -658,36 +782,58 @@ export class Interpreter<R> {
         }
 
         if (result.kind === "break") {
-          return { kind: "none" }
+          if (result.label !== undefined && !labels?.has(result.label)) return result
+          return { kind: "none" } satisfies StatementResult
         }
 
         if (result.kind === "continue") {
+          if (result.label !== undefined && !labels?.has(result.label)) return result
           continue
         }
       }
 
-      return { kind: "none" }
-    })
+      return { kind: "none" } satisfies StatementResult
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          if (declared?.lexical) self.scopes.pop()
+        }),
+      ),
+    )
   }
 
   private evaluateBreakStatement(node: AstNode): StatementResult {
     const labelNode = getOptionalNode(node, "label")
-
-    if (labelNode) {
-      throw new InterpreterRuntimeError("Labeled break is not supported in v1.", node)
-    }
-
-    return { kind: "break" }
+    return labelNode ? { kind: "break", label: getString(labelNode, "name") } : { kind: "break" }
   }
 
   private evaluateContinueStatement(node: AstNode): StatementResult {
     const labelNode = getOptionalNode(node, "label")
+    return labelNode ? { kind: "continue", label: getString(labelNode, "name") } : { kind: "continue" }
+  }
 
-    if (labelNode) {
-      throw new InterpreterRuntimeError("Labeled continue is not supported in v1.", node)
+  private evaluateLabeledStatement(node: AstNode): Effect.Effect<StatementResult, unknown, R> {
+    const labels = new Set<string>()
+    let body = node
+    while (body.type === "LabeledStatement") {
+      labels.add(getString(getNode(body, "label"), "name"))
+      body = getNode(body, "body")
     }
 
-    return { kind: "continue" }
+    const evaluated = (() => {
+      if (body.type === "WhileStatement") return this.evaluateWhileStatement(body, labels)
+      if (body.type === "DoWhileStatement") return this.evaluateDoWhileStatement(body, labels)
+      if (body.type === "ForStatement") return this.evaluateForStatement(body, labels)
+      if (body.type === "ForOfStatement") return this.evaluateForOfStatement(body, labels)
+      if (body.type === "ForInStatement") return this.evaluateForInStatement(body, labels)
+      return this.evaluateStatement(body)
+    })()
+
+    return Effect.map(evaluated, (result) =>
+      result.kind === "break" && result.label !== undefined && labels.has(result.label)
+        ? ({ kind: "none" } satisfies StatementResult)
+        : result,
+    )
   }
 
   private evaluateThrowStatement(node: AstNode): Effect.Effect<StatementResult, unknown, R> {
@@ -751,7 +897,7 @@ export class Interpreter<R> {
 
         const init = getOptionalNode(declaration, "init")
         const value = init ? yield* self.evaluateExpression(init) : undefined
-        yield* self.declarePattern(getNode(declaration, "id"), value, kind !== "const", declaration)
+        yield* self.declarePattern(getNode(declaration, "id"), value, kind !== "const", declaration, kind !== "var")
       }
     })
   }
@@ -761,24 +907,27 @@ export class Interpreter<R> {
     value: unknown,
     mutable: boolean,
     node: AstNode,
+    initialize = false,
   ): Effect.Effect<void, unknown, R> {
     const self = this
     return Effect.gen(function* () {
       if (pattern.type === "Identifier") {
-        self.scopes.declare(getString(pattern, "name"), value, mutable, node)
+        const name = getString(pattern, "name")
+        if (initialize) self.scopes.initialize(name, value, node)
+        else self.scopes.declare(name, value, mutable, node)
         return
       }
 
       if (pattern.type === "AssignmentPattern") {
         const resolved = value === undefined ? yield* self.evaluateExpression(getNode(pattern, "right")) : value
-        yield* self.declarePattern(getNode(pattern, "left"), resolved, mutable, node)
+        yield* self.declarePattern(getNode(pattern, "left"), resolved, mutable, node, initialize)
         return
       }
 
       if (pattern.type === "ObjectPattern") {
-        if (value === null || typeof value !== "object" || Array.isArray(value) || isRuntimeReference(value)) {
+        if (value === null || typeof value !== "object" || isRuntimeReference(value)) {
           throw new InterpreterRuntimeError(
-            "Object destructuring requires a data object value.",
+            "Object destructuring requires a data object or array value.",
             pattern,
             "InvalidDataValue",
           )
@@ -793,42 +942,40 @@ export class Interpreter<R> {
             for (const [key, item] of Object.entries(value as SafeObject)) {
               if (!consumed.has(key) && !isBlockedMember(key)) rest[key] = item
             }
-            yield* self.declarePattern(getNode(property, "argument"), rest, mutable, property)
+            yield* self.declarePattern(getNode(property, "argument"), rest, mutable, property, initialize)
             continue
           }
 
-          if (
-            property.type !== "Property" ||
-            getBoolean(property, "computed") ||
-            getString(property, "kind") !== "init"
-          ) {
-            throw new InterpreterRuntimeError("Only named object destructuring properties are supported.", property)
+          const key = yield* self.destructuringPropertyKey(property)
+          if (isBlockedMember(String(key))) {
+            throw new InterpreterRuntimeError(`Property '${String(key)}' is not available in CodeMode.`, property)
           }
-
-          const keyNode = getNode(property, "key")
-          const key = keyNode.type === "Identifier" ? getString(keyNode, "name") : String(keyNode.value)
-          if (isBlockedMember(key)) {
-            throw new InterpreterRuntimeError(`Property '${key}' is not available in CodeMode.`, keyNode)
-          }
-          consumed.add(key)
-          yield* self.declarePattern(getNode(property, "value"), (value as SafeObject)[key], mutable, property)
+          consumed.add(String(key))
+          yield* self.declarePattern(
+            getNode(property, "value"),
+            self.destructuringPropertyValue(value as SafeObject | Array<unknown>, key),
+            mutable,
+            property,
+            initialize,
+          )
         }
         return
       }
 
       if (pattern.type === "ArrayPattern") {
-        if (!Array.isArray(value)) {
-          throw new InterpreterRuntimeError("Array destructuring requires an array value.", pattern)
+        const items = spreadItems(value)
+        if (items === undefined) {
+          throw new InterpreterRuntimeError("Array destructuring requires a supported iterable value.", pattern)
         }
 
         for (const [index, item] of getArray(pattern, "elements").entries()) {
           if (item === null) continue
           const element = asNode(item, `elements[${index}]`)
           if (element.type === "RestElement") {
-            yield* self.declarePattern(getNode(element, "argument"), value.slice(index), mutable, element)
+            yield* self.declarePattern(getNode(element, "argument"), items.slice(index), mutable, element, initialize)
             break
           }
-          yield* self.declarePattern(element, value[index], mutable, pattern)
+          yield* self.declarePattern(element, items[index], mutable, pattern, initialize)
         }
         return
       }
@@ -857,15 +1004,15 @@ export class Interpreter<R> {
       }
 
       if (pattern.type === "ObjectPattern") {
-        if (value === null || typeof value !== "object" || Array.isArray(value) || isRuntimeReference(value)) {
+        if (value === null || typeof value !== "object" || isRuntimeReference(value)) {
           throw new InterpreterRuntimeError(
-            "Object destructuring requires a data object value.",
+            "Object destructuring requires a data object or array value.",
             pattern,
             "InvalidDataValue",
           )
         }
 
-        const source = value as SafeObject
+        const source = value as SafeObject | Array<unknown>
         const consumed = new Set<string>()
         for (const propertyValue of getArray(pattern, "properties")) {
           const property = asNode(propertyValue, "properties")
@@ -877,42 +1024,55 @@ export class Interpreter<R> {
             yield* self.assignPattern(getNode(property, "argument"), rest, property)
             continue
           }
-          if (
-            property.type !== "Property" ||
-            getBoolean(property, "computed") ||
-            getString(property, "kind") !== "init"
-          ) {
-            throw new InterpreterRuntimeError("Only named object destructuring properties are supported.", property)
+          const key = yield* self.destructuringPropertyKey(property)
+          if (isBlockedMember(String(key))) {
+            throw new InterpreterRuntimeError(`Property '${String(key)}' is not available in CodeMode.`, property)
           }
-          const keyNode = getNode(property, "key")
-          const key = keyNode.type === "Identifier" ? getString(keyNode, "name") : String(keyNode.value)
-          if (isBlockedMember(key)) {
-            throw new InterpreterRuntimeError(`Property '${key}' is not available in CodeMode.`, keyNode)
-          }
-          consumed.add(key)
-          yield* self.assignPattern(getNode(property, "value"), source[key], property)
+          consumed.add(String(key))
+          yield* self.assignPattern(getNode(property, "value"), self.destructuringPropertyValue(source, key), property)
         }
         return
       }
 
       if (pattern.type === "ArrayPattern") {
-        if (!Array.isArray(value)) {
-          throw new InterpreterRuntimeError("Array destructuring requires an array value.", pattern)
+        const items = spreadItems(value)
+        if (items === undefined) {
+          throw new InterpreterRuntimeError("Array destructuring requires a supported iterable value.", pattern)
         }
         for (const [index, item] of getArray(pattern, "elements").entries()) {
           if (item === null) continue
           const element = asNode(item, `elements[${index}]`)
           if (element.type === "RestElement") {
-            yield* self.assignPattern(getNode(element, "argument"), value.slice(index), element)
+            yield* self.assignPattern(getNode(element, "argument"), items.slice(index), element)
             break
           }
-          yield* self.assignPattern(element, value[index], pattern)
+          yield* self.assignPattern(element, items[index], pattern)
         }
         return
       }
 
       throw new InterpreterRuntimeError(`Unsupported assignment pattern '${pattern.type}'.`, node)
     })
+  }
+
+  private destructuringPropertyKey(property: AstNode): Effect.Effect<string | number, unknown, R> {
+    if (property.type !== "Property" || getString(property, "kind") !== "init") {
+      throw new InterpreterRuntimeError("Unsupported object destructuring property.", property)
+    }
+    const keyNode = getNode(property, "key")
+    if (getBoolean(property, "computed")) {
+      return Effect.map(this.evaluateExpression(keyNode), (value) => this.toPropertyKey(value, keyNode))
+    }
+    return Effect.succeed(keyNode.type === "Identifier" ? getString(keyNode, "name") : String(keyNode.value))
+  }
+
+  private destructuringPropertyValue(source: SafeObject | Array<unknown>, key: string | number): unknown {
+    if (!Array.isArray(source)) return source[String(key)]
+    if (key === "length") return source.length
+    if (typeof key === "number") return source[key]
+    if (Object.hasOwn(source, key)) return (source as Record<string, unknown> & Array<unknown>)[key]
+    if (arrayMethods.has(key)) return new IntrinsicReference(source, key)
+    return undefined
   }
 
   private evaluateExpression(node: AstNode): Effect.Effect<unknown, unknown, R> {
@@ -997,12 +1157,19 @@ export class Interpreter<R> {
     if (errorConstructors.has(name)) {
       return Effect.map(this.evaluateCallArguments(argNodes), (args) => constructErrorValue(name, args, node))
     }
+    // Array and Object construct identically with or without new, like JS.
+    if (name === "Array") {
+      return Effect.map(this.evaluateCallArguments(argNodes), (args) => self.constructArray(args, node))
+    }
+    if (name === "Object") {
+      return Effect.map(this.evaluateCallArguments(argNodes), (args) => self.constructObject(args, node))
+    }
     if (valueConstructors.has(name)) {
       return Effect.gen(function* () {
         const args = yield* self.evaluateCallArguments(argNodes)
         switch (name) {
           case "Date":
-            return self.constructDate(args)
+            return yield* self.constructDate(args, node)
           case "RegExp":
             return self.constructRegExp(args, node)
           case "Map":
@@ -1019,17 +1186,58 @@ export class Interpreter<R> {
     throw unsupportedSyntax("NewExpression", node)
   }
 
-  private constructDate(args: Array<unknown>): CodeModeDate {
-    if (args.length === 0) return new CodeModeDate(Date.now())
+  private constructArray(args: Array<unknown>, node: AstNode): Array<unknown> {
+    if (args.length !== 1) return [...args]
+    const first = args[0]
+    if (typeof first !== "number") return [first]
+    if (!Number.isInteger(first) || first < 0 || first > 4294967295) {
+      throw new InterpreterRuntimeError("Invalid array length.", node).as("RangeError")
+    }
+    // Sparse like JS: Array(3) has holes, and combinator loops already skip them.
+    return new Array(first)
+  }
+
+  private constructObject(args: Array<unknown>, node: AstNode): unknown {
+    const first = args[0]
+    if (first === null || first === undefined) return {}
+    if (typeof first === "object") return first
+    throw new InterpreterRuntimeError(
+      `Object(${typeof first}) wrapper objects are not supported in CodeMode; use the primitive value directly.`,
+      node,
+    )
+  }
+
+  private constructDate(args: Array<unknown>, node: AstNode): Effect.Effect<CodeModeDate, unknown, R> {
+    if (args.length === 0) return Effect.succeed(new CodeModeDate(Date.now()))
     if (args.length === 1) {
       const arg = args[0]
-      if (arg instanceof CodeModeDate) return new CodeModeDate(arg.time)
-      if (typeof arg === "number") return new CodeModeDate(new Date(arg).getTime())
-      if (typeof arg === "string") return new CodeModeDate(Date.parse(arg))
-      return new CodeModeDate(Number.NaN)
+      if (arg instanceof CodeModeDate) return Effect.succeed(new CodeModeDate(arg.time))
+      return Effect.map(this.toDatePrimitive(arg, node), (value) =>
+        typeof value === "string"
+          ? new CodeModeDate(Date.parse(value))
+          : new CodeModeDate(new Date(coerceToNumber(value)).getTime()),
+      )
     }
     const parts = args.map((arg) => coerceToNumber(arg))
-    return new CodeModeDate(new Date(...(parts as [number, number])).getTime())
+    return Effect.succeed(new CodeModeDate(new Date(...(parts as [number, number])).getTime()))
+  }
+
+  private toDatePrimitive(value: unknown, node: AstNode): Effect.Effect<unknown, unknown, R> {
+    if (value === null || (typeof value !== "object" && typeof value !== "function")) return Effect.succeed(value)
+    const object = value as Record<string, unknown>
+    const self = this
+    return Effect.gen(function* () {
+      if (Object.hasOwn(object, "valueOf") && typeofValue(object.valueOf) === "function") {
+        const result = yield* self.runner.invokeCallable(object.valueOf, [], node)
+        if (result === null || (typeof result !== "object" && typeof result !== "function")) return result
+      }
+      if (!Object.hasOwn(object, "toString")) return coerceToString(value)
+      if (typeofValue(object.toString) === "function") {
+        const result = yield* self.runner.invokeCallable(object.toString, [], node)
+        if (result === null || (typeof result !== "object" && typeof result !== "function")) return result
+      }
+      throw new InterpreterRuntimeError("Cannot convert object to primitive value.", node).as("TypeError")
+    })
   }
 
   private constructRegExp(args: Array<unknown>, node: AstNode): CodeModeRegExp {
@@ -1041,7 +1249,7 @@ export class Interpreter<R> {
       throw new InterpreterRuntimeError(
         `RegExp flags must be a string of flag characters (e.g. "g", "gi"), not ${flagsArg === null ? "null" : typeof flagsArg}.`,
         node,
-      )
+      ).as("SyntaxError")
     }
     const flags = flagsArg ?? (first instanceof CodeModeRegExp ? first.regex.flags : "")
     try {
@@ -1174,9 +1382,11 @@ export class Interpreter<R> {
       throw new InterpreterRuntimeError("Binary operators require data values in CodeMode.", node, "InvalidDataValue")
     }
     // Null-prototype data needs explicit primitive coercion; identity and `in` retain raw objects.
-    // Dates use string coercion for `+` and epoch time elsewhere.
+    // Dates use their default string hint for addition and loose equality, and epoch time elsewhere.
     const coerceOperand = (operand: unknown): unknown => {
-      if (operand instanceof CodeModeDate) return operator === "+" ? coerceToString(operand) : operand.time
+      if (operand instanceof CodeModeDate) {
+        return operator === "+" || operator === "==" || operator === "!=" ? coerceToString(operand) : operand.time
+      }
       return operand !== null && typeof operand === "object" ? coerceToString(operand) : operand
     }
     const bothObjects = lhs !== null && typeof lhs === "object" && rhs !== null && typeof rhs === "object"
@@ -1250,6 +1460,7 @@ export class Interpreter<R> {
   private evaluateUnaryExpression(node: AstNode): Effect.Effect<unknown, unknown, R> {
     const operator = getString(node, "operator")
     const argument = getNode(node, "argument")
+    if (operator === "delete") return this.evaluateDeleteExpression(argument)
     // Undeclared names short-circuit, but declared TDZ bindings must still throw.
     if (operator === "typeof" && argument.type === "Identifier" && !this.scopes.resolve(getString(argument, "name"))) {
       return Effect.succeed("undefined")
@@ -1257,6 +1468,7 @@ export class Interpreter<R> {
     return Effect.map(this.evaluateExpression(argument), (value) => {
       if (operator === "typeof") return typeofValue(value)
       if (operator === "!") return !value
+      if (operator === "void") return undefined
       if (containsOpaqueReference(value)) {
         throw new InterpreterRuntimeError("Unary operators require data values in CodeMode.", node, "InvalidDataValue")
       }
@@ -1369,10 +1581,23 @@ export class Interpreter<R> {
       throw new InterpreterRuntimeError(`Unsupported update operator '${operator}'.`, node)
     }
 
+    // CodeMode numeric coercion, not host Number(): null-prototype data objects would make
+    // the host throw during ToPrimitive, and opaque runtime references must reject clearly.
+    const operand = (current: unknown): number => {
+      if (containsOpaqueReference(current)) {
+        throw new InterpreterRuntimeError(
+          `'${operator}' requires a data value in CodeMode.`,
+          argument,
+          "InvalidDataValue",
+        )
+      }
+      return coerceToNumber(current)
+    }
+
     if (argument.type === "Identifier") {
       return Effect.sync(() => {
         const name = getString(argument, "name")
-        const current = Number(this.scopes.get(name, argument))
+        const current = operand(this.scopes.get(name, argument))
         const next = current + increment
         this.scopes.set(name, next, argument)
         return prefix ? next : current
@@ -1381,7 +1606,7 @@ export class Interpreter<R> {
 
     if (argument.type === "MemberExpression") {
       return this.modifyMember(argument, (current) => {
-        const value = Number(current)
+        const value = operand(current)
         const next = value + increment
         return Effect.succeed({ write: true, next, result: prefix ? next : value })
       })
@@ -1401,7 +1626,19 @@ export class Interpreter<R> {
       if ((callable === null || callable === undefined) && node.optional === true) return OptionalShortCircuit
 
       const args = yield* self.evaluateCallArguments(argNodes)
+      return yield* self.invokeCallable(callable, args, node, callee)
+    })
+  }
 
+  // The single dispatch for every invocation: call expressions and callbacks share it.
+  private invokeCallable(
+    callable: unknown,
+    args: Array<unknown>,
+    node: AstNode,
+    callee: AstNode = node,
+  ): Effect.Effect<unknown, unknown, R> {
+    const self = this
+    return Effect.gen(function* () {
       if (callable instanceof ToolReference) {
         if (callable.path.length === 0) throw new InterpreterRuntimeError("The tools root is not callable.", callee)
         return yield* self.createToolCallPromise(callable.path, args)
@@ -1426,10 +1663,19 @@ export class Interpreter<R> {
         if (callable.namespace === "Object" && objectMethodsPreservingIdentity.has(callable.name)) {
           return invokeGlobalMethod(callable, args, node)
         }
-        if (callable.namespace === "Array" && (callable.name === "from" || callable.name === "of")) {
+        if (callable.namespace === "Array" && callable.name === "from") {
+          return yield* invokeArrayFrom(self.runner, args, node)
+        }
+        if ((callable.namespace === "Object" || callable.namespace === "Map") && callable.name === "groupBy") {
+          return yield* invokeGroupBy(self.runner, callable.namespace, args, node)
+        }
+        if (callable.namespace === "Array" && callable.name === "of") {
           return invokeGlobalMethod(callable, args, node)
         }
         return boundedData(invokeGlobalMethod(callable, args, node), `${callable.namespace}.${callable.name} result`)
+      }
+      if (callable instanceof JsonMethodReference) {
+        return yield* invokeJsonMethod(self.runner, callable.name, args, node)
       }
       if (callable instanceof CoercionFunction) {
         return boundedData(invokeCoercion(callable, args, node), `${callable.name} result`)
@@ -1443,9 +1689,28 @@ export class Interpreter<R> {
       if (callable instanceof ErrorConstructorReference) {
         return constructErrorValue(callable.name, args, node)
       }
+      if (callable instanceof GlobalNamespace) {
+        // Real JS permits calling Array, Object, Date, and RegExp without new.
+        if (callable.name === "Array") return self.constructArray(args, node)
+        if (callable.name === "Object") return self.constructObject(args, node)
+        // ISO instead of the host's locale string: CodeMode date strings are
+        // deterministic and must not leak the host timezone.
+        if (callable.name === "Date") return new Date().toISOString()
+        if (callable.name === "RegExp") return self.constructRegExp(args, node)
+        if (typeofValue(callable) === "function") {
+          throw new InterpreterRuntimeError(`Constructor ${callable.name} requires 'new'.`, node).as("TypeError")
+        }
+        throw new InterpreterRuntimeError(`${callable.name} is not a function.`, node).as("TypeError")
+      }
+      if (callable instanceof PromiseNamespace) {
+        throw new InterpreterRuntimeError("Constructor Promise requires 'new'.", node).as("TypeError")
+      }
       if (callable instanceof PromiseCapabilityFunction) {
         callable.settle(args[0])
         return undefined
+      }
+      if (callable === undefined || callable === null) {
+        throw new InterpreterRuntimeError(`${calleeDescription(callee)} is not a function.`, callee).as("TypeError")
       }
       throw new InterpreterRuntimeError("Only tools are callable in CodeMode.", callee)
     })
@@ -1505,10 +1770,10 @@ export class Interpreter<R> {
       }
       for (const [index, parameter] of fn.parameters.entries()) {
         if (parameter.type === "RestElement") {
-          yield* invocation.declarePattern(getNode(parameter, "argument"), args.slice(index), true, parameter)
+          yield* invocation.declarePattern(getNode(parameter, "argument"), args.slice(index), true, parameter, true)
           break
         }
-        yield* invocation.declarePattern(parameter, args[index], true, parameter)
+        yield* invocation.declarePattern(parameter, args[index], true, parameter, true)
       }
 
       if (fn.body.type === "BlockStatement") {
@@ -1604,7 +1869,8 @@ export class Interpreter<R> {
     return Effect.gen(function* () {
       for (const elementValue of elements) {
         if (elementValue === null) {
-          values.push(undefined)
+          // A literal elision is a real hole, like JS: extend length without an own index.
+          values.length += 1
           continue
         }
         const element = asNode(elementValue, "elements")
@@ -1668,6 +1934,7 @@ export class Interpreter<R> {
 
   private getMemberReference(
     node: AstNode,
+    operation: "read" | "delete" = "read",
   ): Effect.Effect<
     | MemberReference
     | ToolReference
@@ -1675,6 +1942,7 @@ export class Interpreter<R> {
     | PromiseInstanceMethodReference
     | IntrinsicReference
     | GlobalMethodReference
+    | JsonMethodReference
     | ComputedValue
     | typeof OptionalShortCircuit
     | undefined,
@@ -1698,8 +1966,8 @@ export class Interpreter<R> {
           : self.toPropertyKey(yield* self.evaluateExpression(propertyNode), propertyNode)
 
       if (objectValue instanceof ToolReference) {
-        if (typeof key !== "string" || isBlockedMember(key)) {
-          throw new InterpreterRuntimeError("Tool paths must use safe string property names.", propertyNode)
+        if (typeof key !== "string") {
+          throw new InterpreterRuntimeError("Tool paths must use string property names.", propertyNode)
         }
         return new ToolReference([...objectValue.path, key])
       }
@@ -1715,22 +1983,28 @@ export class Interpreter<R> {
       }
 
       if (objectValue instanceof GlobalNamespace) {
-        if (typeof key !== "string" || isBlockedMember(key)) {
-          throw new InterpreterRuntimeError(
-            `${objectValue.name}.${String(key)} is not available in CodeMode.`,
-            propertyNode,
-          )
+        if (typeof key === "string" && isBlockedMember(key)) {
+          throw new InterpreterRuntimeError(`${objectValue.name}.${key} is not available in CodeMode.`, propertyNode)
         }
+        if (typeof key !== "string") return new ComputedValue(undefined)
         if (objectValue.name === "Math" && mathConstants.has(key)) {
           return new ComputedValue((Math as unknown as Record<string, number>)[key])
         }
-        return new GlobalMethodReference(objectValue.name, key)
+        if (objectValue.name === "JSON") {
+          if (jsonStatics.has(key)) return new JsonMethodReference(key as JsonMethodName)
+          return new ComputedValue(undefined)
+        }
+        if (globalStaticMembers[objectValue.name]?.has(key)) {
+          return new GlobalMethodReference(objectValue.name, key)
+        }
+        // Unknown static members read as undefined so feature detection works like native JS.
+        return new ComputedValue(undefined)
       }
 
       if (typeof objectValue === "string") {
         if (key === "length") return new ComputedValue(objectValue.length)
-        if (typeof key === "number") return new ComputedValue(objectValue[key])
-        if (typeof key === "string" && /^\d+$/.test(key)) return new ComputedValue(objectValue[Number(key)])
+        const index = parseArrayIndex(key)
+        if (index !== undefined) return new ComputedValue(objectValue[index])
         if (typeof key === "string" && stringMethods.has(key)) return new IntrinsicReference(objectValue, key)
         return new ComputedValue(undefined)
       }
@@ -1740,12 +2014,21 @@ export class Interpreter<R> {
         return new ComputedValue(undefined)
       }
 
-      if (objectValue instanceof CoercionFunction && typeof key === "string" && !isBlockedMember(key)) {
+      if (objectValue instanceof CoercionFunction) {
+        if (typeof key === "string" && isBlockedMember(key)) {
+          throw new InterpreterRuntimeError(`${objectValue.name}.${key} is not available in CodeMode.`, propertyNode)
+        }
+        if (typeof key !== "string") return new ComputedValue(undefined)
         if (objectValue.name === "Number" && numberConstants.has(key)) {
           return new ComputedValue((Number as unknown as Record<string, number>)[key])
         }
-        if (objectValue.name === "Number" && numberStatics.has(key)) return new GlobalMethodReference("Number", key)
-        if (objectValue.name === "String" && stringStatics.has(key)) return new GlobalMethodReference("String", key)
+        if (objectValue.name === "Number" && numberStatics.has(key)) {
+          return new GlobalMethodReference("Number", key)
+        }
+        if (objectValue.name === "String" && stringStatics.has(key)) {
+          return new GlobalMethodReference("String", key)
+        }
+        return new ComputedValue(undefined)
       }
 
       if (objectValue instanceof CodeModeDate) {
@@ -1753,6 +2036,7 @@ export class Interpreter<R> {
         return new ComputedValue(undefined)
       }
       if (objectValue instanceof CodeModeRegExp) {
+        if (key === "lastIndex") return { target: objectValue, key }
         if (typeof key === "string" && regexpProperties.has(key)) {
           return new ComputedValue((objectValue.regex as unknown as Record<string, unknown>)[key])
         }
@@ -1814,18 +2098,15 @@ export class Interpreter<R> {
       }
 
       if (Array.isArray(objectValue)) {
-        if (
-          key !== "length" &&
-          !(typeof key === "string" && arrayMethods.has(key)) &&
-          typeof key !== "number" &&
-          !/^\d+$/.test(key)
-        ) {
+        if (operation === "delete") return { target: objectValue, key }
+        const index = parseArrayIndex(key)
+        if (key !== "length" && !(typeof key === "string" && arrayMethods.has(key)) && index === undefined) {
           if (typeof key === "string" && Object.hasOwn(objectValue, key)) {
             return new ComputedValue((objectValue as Record<string, unknown> & Array<unknown>)[key])
           }
           return new ComputedValue(undefined)
         }
-        return { target: objectValue, key }
+        return { target: objectValue, key: index ?? key }
       }
 
       return { target: objectValue as SafeObject, key }
@@ -1842,15 +2123,16 @@ export class Interpreter<R> {
         reference instanceof PromiseMethodReference ||
         reference instanceof PromiseInstanceMethodReference ||
         reference instanceof IntrinsicReference ||
-        reference instanceof GlobalMethodReference
+        reference instanceof GlobalMethodReference ||
+        reference instanceof JsonMethodReference
       )
         return reference
       if (Array.isArray(reference.target)) {
-        if (typeof reference.key === "string" && arrayMethods.has(reference.key)) {
-          return new IntrinsicReference(reference.target, reference.key)
-        }
-        return reference.key === "length" ? reference.target.length : reference.target[Number(reference.key)]
+        if (reference.key === "length") return reference.target.length
+        if (typeof reference.key === "string") return new IntrinsicReference(reference.target, reference.key)
+        return reference.target[reference.key]
       }
+      if (reference.target instanceof CodeModeRegExp) return reference.target.lastIndex
       if (reference.target instanceof CodeModeURL) {
         return (reference.target.url as unknown as Record<string, unknown>)[String(reference.key)]
       }
@@ -1860,6 +2142,33 @@ export class Interpreter<R> {
 
   private writeMember(node: AstNode, value: unknown): Effect.Effect<unknown, unknown, R> {
     return this.modifyMember(node, () => Effect.succeed({ write: true, next: value, result: value }))
+  }
+
+  private evaluateDeleteExpression(argument: AstNode): Effect.Effect<boolean, unknown, R> {
+    const target = argument.type === "ChainExpression" ? getNode(argument, "expression") : argument
+    if (target.type !== "MemberExpression") {
+      throw new InterpreterRuntimeError("Only data fields may be deleted in CodeMode.", argument)
+    }
+    return Effect.map(this.getMemberReference(target, "delete"), (reference) => {
+      if (reference === OptionalShortCircuit) return true
+      if (
+        reference instanceof ComputedValue ||
+        reference === undefined ||
+        reference instanceof ToolReference ||
+        reference instanceof PromiseMethodReference ||
+        reference instanceof PromiseInstanceMethodReference ||
+        reference instanceof IntrinsicReference ||
+        reference instanceof GlobalMethodReference ||
+        reference instanceof JsonMethodReference ||
+        reference.target instanceof CodeModeURL
+      ) {
+        throw new InterpreterRuntimeError("Only data fields may be deleted in CodeMode.", target, "InvalidDataValue")
+      }
+      if (reference.target instanceof CodeModeRegExp) {
+        return Reflect.deleteProperty(reference.target.regex, reference.key)
+      }
+      return Reflect.deleteProperty(reference.target, reference.key)
+    })
   }
 
   // Resolve side-effecting object and key expressions exactly once.
@@ -1878,7 +2187,8 @@ export class Interpreter<R> {
         reference instanceof PromiseMethodReference ||
         reference instanceof PromiseInstanceMethodReference ||
         reference instanceof IntrinsicReference ||
-        reference instanceof GlobalMethodReference
+        reference instanceof GlobalMethodReference ||
+        reference instanceof JsonMethodReference
       ) {
         throw new InterpreterRuntimeError("Only data fields may be assigned in CodeMode.", node)
       }
@@ -1889,30 +2199,33 @@ export class Interpreter<R> {
           throw new InterpreterRuntimeError("Array methods cannot be assigned in CodeMode.", node)
         }
       }
-      const key = Array.isArray(reference.target) ? Number(reference.key) : String(reference.key)
-      const current =
-        reference.target instanceof CodeModeURL
-          ? (reference.target.url as unknown as Record<string, unknown>)[key]
-          : (reference.target as Record<PropertyKey, unknown>)[key]
-      const { write, next, result } = yield* compute(current)
+      const key = Array.isArray(reference.target) ? reference.key : String(reference.key)
+      const { write, next, result } = yield* compute(self.readReferenceValue(reference, key))
       if (write) self.assignToReference(reference, key, next, node)
       return result
     })
   }
 
+  private readReferenceValue(reference: MemberReference, key: number | string): unknown {
+    if (reference.target instanceof CodeModeURL) {
+      return (reference.target.url as unknown as Record<string, unknown>)[key]
+    }
+    if (reference.target instanceof CodeModeRegExp) return reference.target.lastIndex
+    return (reference.target as Record<PropertyKey, unknown>)[key]
+  }
+
   private assignToReference(reference: MemberReference, key: number | string, next: unknown, node: AstNode): void {
     if (Array.isArray(reference.target)) {
       const target = reference.target
-      const index = key as number
-      if (!Number.isInteger(index) || index < 0) {
+      if (typeof key !== "number" || parseArrayIndex(key) === undefined) {
         throw new InterpreterRuntimeError(
-          "Array assignment index must be a non-negative integer.",
+          "Array assignment index must be a valid array index.",
           node,
           "InvalidDataValue",
         )
       }
       rejectCircularInsertion(target, next, "Array assignment result", node)
-      target[index] = next
+      target[key] = next
       return
     }
     if (reference.target instanceof CodeModeURL) {
@@ -1928,6 +2241,10 @@ export class Interpreter<R> {
         if (error instanceof InterpreterRuntimeError || error instanceof ToolRuntimeError) throw error
         throw new InterpreterRuntimeError(`URL.${property} received an invalid value.`, node).as("TypeError")
       }
+    }
+    if (reference.target instanceof CodeModeRegExp) {
+      reference.target.lastIndex = next
+      return
     }
     const target = reference.target as SafeObject
     const objectKey = key as string

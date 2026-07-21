@@ -21,6 +21,7 @@ import { Money } from "./money.js"
 import { Snapshot } from "./snapshot.js"
 import { TokenUsage } from "./token-usage.js"
 import { SessionPending } from "./session-pending.js"
+import { Project } from "./project.js"
 
 export { FileAttachment }
 
@@ -69,6 +70,7 @@ export const Moved = Event.durable({
   schema: {
     ...Base,
     location: Location.Ref,
+    projectID: Project.ID.pipe(optional),
     subpath: RelativePath.pipe(optional),
   },
 })
@@ -83,6 +85,18 @@ export const Renamed = Event.durable({
   },
 })
 export type Renamed = typeof Renamed.Type
+
+export const UsageRecorded = Event.durable({
+  type: "session.usage.recorded",
+  ...options,
+  schema: {
+    ...Base,
+    source: Schema.Literals(["title", "compaction"]),
+    cost: Money.USD,
+    tokens: TokenUsage.Info,
+  },
+})
+export type UsageRecorded = typeof UsageRecorded.Type
 
 export const UsageUpdated = Event.ephemeral({
   type: "session.usage.updated",
@@ -262,6 +276,8 @@ export namespace Step {
       error: SessionError.Error,
       cost: Money.USD.pipe(optional),
       tokens: TokenUsage.Info.pipe(optional),
+      snapshot: Snapshot.ID.pipe(optional),
+      files: Schema.Array(RelativePath).pipe(optional),
     },
   })
   export type Failed = typeof Failed.Type
@@ -567,8 +583,10 @@ export const Definitions = Event.inventory(
   RevertEvent.Committed,
 )
 
+// UsageRecorded is durable but internal: excluded from Definitions so it never reaches the public manifest.
 export const DurableDefinitions = Event.inventory(
   ...Definitions.filter((definition) => definition.durability === "durable"),
+  UsageRecorded,
 )
 
 export const Durable = Schema.Union(DurableDefinitions, { mode: "oneOf" })
@@ -576,6 +594,8 @@ export const Durable = Schema.Union(DurableDefinitions, { mode: "oneOf" })
   .annotate({ identifier: "Session.Event.Durable" })
 export type DurableEvent = typeof Durable.Type
 
-export const All = Schema.Union(Definitions, { mode: "oneOf" }).pipe(Schema.toTaggedUnion("type"))
+export const All = Schema.Union(Event.inventory(...Definitions, UsageRecorded), { mode: "oneOf" }).pipe(
+  Schema.toTaggedUnion("type"),
+)
 export type Event = typeof All.Type
 export type Type = Event["type"]

@@ -3,7 +3,7 @@ import { createStore } from "solid-js/store"
 import { TextAttributes } from "@opentui/core"
 import { useTheme } from "../../../context/theme"
 import { SplitBorder } from "../../../ui/border"
-import { useBindings, useOpencodeModeStack } from "../../../keymap"
+import { Keymap } from "../../../context/keymap"
 import { SubagentsTab } from "./subagents-tab"
 import { ShellTab } from "./shell-tab"
 
@@ -22,6 +22,7 @@ interface Tab {
 const ComposerContext = createContext<{
   register: (tab: Tab) => () => void
   active: (id: string) => boolean
+  close: () => void
 }>()
 
 export function useComposerTab() {
@@ -38,7 +39,7 @@ export type ComposerProps = {
 }
 
 export function Composer(props: ComposerProps) {
-  const { theme } = useTheme()
+  const { themeV2 } = useTheme().contextual("elevated")
 
   const [store, setStore] = createStore({
     tabs: {} as Record<string, Tab>,
@@ -73,12 +74,13 @@ export function Composer(props: ComposerProps) {
     active(id: string) {
       return props.open && store.active === id
     },
+    close,
   }
 
-  const modeStack = useOpencodeModeStack()
+  const keymap = Keymap.use()
   createEffect(() => {
     if (!props.open) return
-    const popMode = modeStack.push("composer")
+    const popMode = keymap.mode.push("composer")
     onCleanup(popMode)
   })
 
@@ -89,18 +91,18 @@ export function Composer(props: ComposerProps) {
     setStore("active", tabs[(idx + dir + tabs.length) % tabs.length].id)
   }
 
-  useBindings(() => ({
+  Keymap.createLayer(() => ({
     mode: "composer",
     enabled: () => props.open,
-    bindings: [
-      { key: "left", desc: "Previous tab", group: "Composer", cmd: () => switchTab(-1) },
-      { key: "right", desc: "Next tab", group: "Composer", cmd: () => switchTab(1) },
-      { key: "escape", desc: "Close composer", group: "Composer", cmd: close },
+    commands: [
+      { bind: "left", title: "Previous tab", group: "Composer", run: () => switchTab(-1) },
+      { bind: "right", title: "Next tab", group: "Composer", run: () => switchTab(1) },
+      { bind: "escape", title: "Close composer", group: "Composer", run: close },
       {
-        key: "<leader>down",
-        desc: "Toggle composer",
+        bind: "<leader>down",
+        title: "Toggle composer",
         group: "Composer",
-        cmd: close,
+        run: close,
       },
     ],
   }))
@@ -111,8 +113,8 @@ export function Composer(props: ComposerProps) {
         <box
           {...SplitBorder}
           border={["left"]}
-          borderColor={theme.border}
-          backgroundColor={theme.backgroundPanel}
+          borderColor={themeV2.border.default}
+          backgroundColor={themeV2.background.default}
           paddingLeft={1}
           paddingRight={2}
           paddingTop={1}
@@ -123,7 +125,7 @@ export function Composer(props: ComposerProps) {
               <Show
                 when={tabList().length > 1}
                 fallback={
-                  <text fg={theme.text} attributes={TextAttributes.BOLD}>
+                  <text fg={themeV2.text.default} attributes={TextAttributes.BOLD}>
                     {tabList()[0]?.label ?? ""}
                   </text>
                 }
@@ -134,7 +136,7 @@ export function Composer(props: ComposerProps) {
                       const isActive = createMemo(() => store.active === t.id)
                       return (
                         <text
-                          fg={isActive() ? theme.text : theme.textMuted}
+                          fg={isActive() ? themeV2.text.default : themeV2.text.subdued}
                           attributes={isActive() ? TextAttributes.BOLD : undefined}
                         >
                           {t.label}
@@ -144,7 +146,7 @@ export function Composer(props: ComposerProps) {
                   </For>
                 </box>
               </Show>
-              <text fg={theme.textMuted} onMouseUp={close}>
+              <text fg={themeV2.text.subdued} onMouseUp={close}>
                 esc
               </text>
             </box>
@@ -154,19 +156,19 @@ export function Composer(props: ComposerProps) {
               <For each={footerHints()}>
                 {(hint) => (
                   <text>
-                    <span style={{ fg: theme.text }}>
+                    <span style={{ fg: themeV2.text.default }}>
                       <b>{hint.label}</b>{" "}
                     </span>
-                    <span style={{ fg: theme.textMuted }}>{hint.shortcut}</span>
+                    <span style={{ fg: themeV2.text.subdued }}>{hint.shortcut}</span>
                   </text>
                 )}
               </For>
               <Show when={tabList().length > 1}>
                 <text>
-                  <span style={{ fg: theme.text }}>
+                  <span style={{ fg: themeV2.text.default }}>
                     <b>tabs</b>{" "}
                   </span>
-                  <span style={{ fg: theme.textMuted }}>←/→</span>
+                  <span style={{ fg: themeV2.text.subdued }}>←/→</span>
                 </text>
               </Show>
             </box>

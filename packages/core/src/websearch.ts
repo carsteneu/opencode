@@ -11,7 +11,6 @@ import { makeLocationNode } from "./effect/app-node"
 import { EventV2 } from "./event"
 import { Form } from "./form"
 import { Global } from "./global"
-import { truthy } from "./flag/flag"
 import { State } from "./state"
 
 export const ID = WebSearch.ID
@@ -236,3 +235,8 @@ export const node = makeLocationNode({
   layer,
   deps: [Config.node, ConfigGlobal.node, EventV2.node, Form.node, Global.node],
 })
+
+function truthy(key: string) {
+  const value = process.env[key]?.toLowerCase()
+  return value === "true" || value === "1"
+}

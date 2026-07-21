@@ -176,6 +176,7 @@ export const OpenAIPlugin = define({
       draft.method.update(browser)
       draft.method.update(headless)
     })
+    yield* load()
     yield* ctx.catalog.transform((evt) => {
       for (const item of evt.provider.list()) {
         if (!ProviderV2.isAISDK(item.provider.package)) continue
@@ -194,6 +195,10 @@ export const OpenAIPlugin = define({
         // ChatGPT-plan tokens only authorize codex-eligible models, and the
         // subscription covers usage, so hide the rest and zero the cost.
         evt.model.update(item.provider.id, model.id, (draft) => {
+          if (Schema.is(Schema.Struct({ mode: Schema.Literal("pro") }))(draft.body?.reasoning)) {
+            draft.enabled = false
+            return
+          }
           if (!OpenAICodex.eligible(draft.modelID ?? draft.id)) {
             draft.enabled = false
             return
@@ -209,7 +214,6 @@ export const OpenAIPlugin = define({
       Stream.runForEach(refresh),
       Effect.forkScoped({ startImmediately: true }),
     )
-    yield* refresh().pipe(Effect.forkScoped)
     yield* ctx.aisdk.hook(
       "sdk",
       Effect.fn(function* (evt) {

@@ -1,7 +1,7 @@
 export * as WebSearchTool from "./websearch"
 
 import type { Context as PluginContext } from "@opencode-ai/plugin/v2/effect/plugin"
-import { ToolFailure } from "@opencode-ai/llm"
+import { ToolFailure } from "@opencode-ai/ai"
 import { Effect, Schema } from "effect"
 import { PermissionV2 } from "../permission"
 import { WebSearch } from "../websearch"
@@ -48,7 +48,7 @@ export const Plugin = {
                   metadata: input,
                   sessionID: context.sessionID,
                   agent: context.agent,
-                  source: { type: "tool", messageID: context.assistantMessageID, callID: context.toolCallID },
+                  source: { type: "tool", messageID: context.messageID, callID: context.callID },
                 })
                 const result = yield* websearch.query({ ...input, sessionID: context.sessionID })
                 return {

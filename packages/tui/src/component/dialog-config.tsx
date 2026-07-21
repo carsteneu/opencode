@@ -40,14 +40,6 @@ const settings: Setting[] = [
     labels: ["off", "on"],
   },
   {
-    title: "Tips",
-    category: "Appearance",
-    path: ["hints", "tips"],
-    default: true,
-    values: [false, true],
-    labels: ["off", "on"],
-  },
-  {
     title: "Onboarding",
     category: "Appearance",
     path: ["hints", "onboarding"],
@@ -214,6 +206,30 @@ const settings: Setting[] = [
     values: [false, true],
     labels: ["off", "on"],
   },
+  {
+    title: "Copy on select",
+    category: "Terminal",
+    path: ["terminal", "copy_on_select"],
+    default: process.platform !== "win32",
+    values: [false, true],
+    labels: ["off", "on"],
+  },
+  {
+    title: "DevTools",
+    category: "Debug",
+    path: ["debug", "devtools"],
+    default: false,
+    values: [false, true],
+    labels: ["off", "on"],
+  },
+  {
+    title: "Timing",
+    category: "Debug",
+    path: ["debug", "timing"],
+    default: false,
+    values: [false, true],
+    labels: ["off", "on"],
+  },
 ]
 
 export function DialogConfig() {
@@ -281,16 +297,16 @@ export function DialogConfig() {
       footerHints={[{ title: "←/→", label: "change" }]}
       bindings={[
         {
-          key: "left",
-          desc: "Previous value",
+          bind: "left",
+          title: "Previous value",
           group: "Settings",
-          cmd: () => void change(-1),
+          run: () => void change(-1),
         },
         {
-          key: "right",
-          desc: "Next value",
+          bind: "right",
+          title: "Next value",
           group: "Settings",
-          cmd: () => void change(1),
+          run: () => void change(1),
         },
       ]}
     />

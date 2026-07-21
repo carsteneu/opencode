@@ -3,10 +3,13 @@ export * as ConfigGlobal from "./config/global"
 
 import { makeLocationNode } from "./effect/app-node"
 import path from "path"
+import { isDeepStrictEqual } from "node:util"
 import { type ParseError, parse } from "jsonc-parser"
-import { Context, Effect, Fiber, Layer, Option, PubSub, Schema, Stream } from "effect"
+import { Context, Effect, Fiber, Layer, Option, PubSub, Schema, Semaphore, Stream } from "effect"
 import { Permission } from "@opencode-ai/schema/permission"
 import { Config as ConfigSchema } from "@opencode-ai/schema/config"
+import { Integration } from "@opencode-ai/schema/integration"
+import { Credential } from "./credential"
 import { EventV2 } from "./event"
 import { Watcher } from "./filesystem/watcher"
 import { FSUtil } from "./fs-util"
@@ -17,6 +20,7 @@ import { ConfigAgent } from "./config/agent"
 import { ConfigAttachments } from "./config/attachments"
 import { ConfigCompaction } from "./config/compaction"
 import { ConfigCommand } from "./config/command"
+import { ConfigExperimental } from "./config/experimental"
 import { ConfigFormatter } from "./config/formatter"
 import { ConfigLSP } from "./config/lsp"
 import { ConfigMCP } from "./config/mcp"
@@ -30,6 +34,7 @@ import { ConfigVariable } from "./config/variable"
 import { ConfigWatcher } from "./config/watcher"
 import { ConfigV1 } from "./v1/config/config"
 import { ConfigMigrateV1 } from "./v1/config/migrate"
+import { WellKnown } from "./wellknown"
 
 export class Info extends Schema.Class<Info>("Config.Info")({
   $schema: Schema.optional(Schema.String).annotate({
@@ -111,6 +116,7 @@ export class Info extends Schema.Class<Info>("Config.Info")({
     description: "Ordered plugin enablement directives and external package declarations",
   }),
   providers: Schema.Record(Schema.String, ConfigProvider.Info).pipe(Schema.optional),
+  experimental: ConfigExperimental.Info.pipe(Schema.optional),
 }) {}
 
 export class Document extends Schema.Class<Document>("Config.Document")({
@@ -152,9 +158,16 @@ export interface Interface {
   readonly entries: () => Effect.Effect<Entry[]>
 }
 
+export const Options = Schema.Struct({
+  project: Schema.optional(Schema.Boolean),
+  file: Schema.optional(Schema.String),
+  content: Schema.optional(Schema.String),
+})
+export type Options = typeof Options.Type
+
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/Config") {}
 
-const layer = Layer.effect(
+export const layer = (options?: Options) => Layer.effect(
   Service,
   Effect.gen(function* () {
     const fs = yield* FSUtil.Service
@@ -162,27 +175,66 @@ const layer = Layer.effect(
     const location = yield* Location.Service
     const watcher = yield* Watcher.Service
     const events = yield* EventV2.Service
+    const credentials = yield* Credential.Service
+    const wellknown = yield* WellKnown.Service
     const names = ["opencode.json", "opencode.jsonc"]
+    const reloadLock = Semaphore.makeUnsafe(1)
     const decodeOptions = { errors: "all", onExcessProperty: "ignore", propertyOrder: "original" } as const
     const decodeInfo = Schema.decodeUnknownOption(Info, decodeOptions)
     const decodeV1Info = Schema.decodeUnknownOption(ConfigV1.Info, decodeOptions)
+
+    const parseInfo = (text: string) => {
+      const errors: ParseError[] = []
+      const input: unknown = parse(text, errors, { allowTrailingComma: true })
+      if (errors.length) return
+      return Option.getOrUndefined(
+        ConfigMigrateV1.isV1(input)
+          ? decodeV1Info(input).pipe(Option.map(ConfigMigrateV1.migrate), Option.flatMap(decodeInfo))
+          : decodeInfo(input),
+      )
+    }
 
     const loadFile = Effect.fnUntraced(function* (filepath: string) {
       const text = yield* fs.readFileStringSafe(filepath)
       if (!text) return
       const substituted = yield* ConfigVariable.substitute({ type: "path", path: filepath, text })
-
-      const errors: ParseError[] = []
-      const input: unknown = parse(substituted, errors, { allowTrailingComma: true })
-      if (errors.length) return
-
-      const info = Option.getOrUndefined(
-        ConfigMigrateV1.isV1(input)
-          ? decodeV1Info(input).pipe(Option.map(ConfigMigrateV1.migrate), Option.flatMap(decodeInfo))
-          : decodeInfo(input),
-      )
+      const info = parseInfo(substituted)
       if (!info) return
       return new Document({ type: "document", path: filepath, info })
+    })
+
+    const loadWellknown = Effect.fn("Config.loadWellknown")(function* () {
+      const entries = yield* wellknown
+        .entries()
+        .pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("failed to discover wellknown config", { error }).pipe(Effect.as([] as const)),
+          ),
+        )
+      return yield* Effect.forEach(entries, (entry) =>
+        Effect.gen(function* () {
+          const auth = entry.manifest.auth
+          if (!auth) return []
+          const credential = (yield* credentials.list(entry.integrationID)).findLast(
+            (credential) => credential.value.type === "key",
+          )
+          if (!credential || credential.value.type !== "key") return []
+          const variables = { [auth.env]: credential.value.key }
+          const configs = yield* wellknown.resolve(entry, variables).pipe(Effect.orDie)
+          return yield* Effect.forEach(configs, (config) =>
+            ConfigVariable.substitute({
+              type: "virtual",
+              source: entry.origin,
+              dir: entry.origin,
+              text: JSON.stringify(config),
+              env: variables,
+            }).pipe(
+              Effect.map(parseInfo),
+              Effect.map((info) => (info ? new Document({ type: "document", info }) : undefined)),
+            ),
+          ).pipe(Effect.map((documents) => documents.filter((document) => document !== undefined)))
+        }),
+      ).pipe(Effect.map((documents) => documents.flat()))
     })
 
     const loadDirectory = Effect.fnUntraced(function* (directory: AbsolutePath) {
@@ -199,14 +251,14 @@ const layer = Layer.effect(
       const globalAgentsDirectory = AbsolutePath.make(path.join(global.home, ".agents"))
       const globalClaudeDirectory = AbsolutePath.make(path.join(global.home, ".claude"))
       const locationIsGlobal = path.resolve(location.directory) === path.resolve(global.config)
-      const discovered = locationIsGlobal
+      const discovered = locationIsGlobal || options?.project === false
         ? []
         : yield* fs
             .up({
               targets: [".opencode", ".claude", ".agents", ...names.toReversed()],
               start: location.directory,
             })
-          .pipe(Effect.orDie)
+            .pipe(Effect.orDie)
 
       // We load certain files from a few other folders in the ecosystem
       const claude = [
@@ -248,8 +300,40 @@ const layer = Layer.effect(
         Effect.map((entries) => entries.flat()),
       )
 
+      const file = options?.file
+      const explicit = file
+        ? yield* loadFile(path.resolve(file)).pipe(
+            Effect.map((config) => [
+              ...(config ? [config] : []),
+              new File({ type: "file", path: AbsolutePath.make(path.resolve(file)) }),
+            ]),
+            Effect.orDie,
+          )
+        : []
+      const content = options?.content
+        ? yield* ConfigVariable.substitute({
+            type: "virtual",
+            source: "OPENCODE_CONFIG_CONTENT",
+            dir: location.directory,
+            text: options.content,
+          }).pipe(
+            Effect.map(parseInfo),
+            Effect.map((info) => (info ? [new Document({ type: "document", info })] : [])),
+            Effect.orDie,
+          )
+        : []
+
       const supplementary = yield* Effect.forEach(directories, loadDirectory).pipe(Effect.orDie)
-      return [...claude, ...agents, ...(supplementary[0] ?? []), ...direct, ...supplementary.slice(1).flat()]
+      return [
+        ...claude,
+        ...agents,
+        ...(supplementary[0] ?? []),
+        ...explicit,
+        ...direct,
+        ...supplementary.slice(1).flat(),
+        ...(yield* loadWellknown().pipe(Effect.orDie)),
+        ...content,
+      ]
     })
 
     const initial = yield* discover()
@@ -281,16 +365,60 @@ const layer = Layer.effect(
       }
     })
 
-    yield* Stream.fromPubSub(updates).pipe(
-      Stream.debounce("100 millis"),
-      Stream.runForEach((update) =>
+    const reload = Effect.fn("Config.reload")(() =>
+      reloadLock.withPermit(
         Effect.gen(function* () {
           const next = yield* discover()
+          if (isDeepStrictEqual(configs, next)) return
           configs = next
           yield* reconcile(next)
           yield* events.publish(ConfigSchema.Event.Updated, {})
-        }).pipe(Effect.catchCause((cause) => Effect.logError("failed to reload config", { path: update.path, cause }))),
+        }),
       ),
+    )
+
+    yield* Stream.fromPubSub(updates).pipe(
+      Stream.debounce("100 millis"),
+      Stream.runForEach((update) =>
+        reload().pipe(
+          Effect.catchCause((cause) => Effect.logError("failed to reload config", { path: update.path, cause })),
+        ),
+      ),
+      Effect.forkScoped({ startImmediately: true }),
+    )
+    yield* events.subscribe(Integration.Event.ConnectionUpdated).pipe(
+      Stream.filterEffect((event) =>
+        wellknown.entries().pipe(
+          Effect.map((entries) => entries.some((entry) => entry.integrationID === event.data.integrationID)),
+          Effect.catch(() => Effect.succeed(false)),
+        ),
+      ),
+      Stream.runForEach(() =>
+        reload().pipe(Effect.catchCause((cause) => Effect.logError("failed to reload wellknown config", { cause }))),
+      ),
+      Effect.forkScoped({ startImmediately: true }),
+    )
+    yield* events.subscribe(WellKnown.Event.Updated).pipe(
+      Stream.runForEach(() =>
+        reload().pipe(Effect.catchCause((cause) => Effect.logError("failed to reload wellknown sources", { cause }))),
+      ),
+      Effect.forkScoped({ startImmediately: true }),
+    )
+    yield* Effect.sleep("10 minutes").pipe(
+      Effect.andThen(
+        Effect.suspend(() => {
+          if (!wellknown.snapshot().length) return Effect.void
+          return Effect.gen(function* () {
+            const changed = yield* wellknown.refresh().pipe(
+              Effect.catch((error) =>
+                Effect.logWarning("failed to refresh wellknown manifests", { error }).pipe(Effect.as(false)),
+              ),
+            )
+            if (!changed) yield* reload()
+          }).pipe(Effect.catchCause((cause) => Effect.logWarning("failed to refresh wellknown config", { cause })))
+        }),
+      ),
+      Effect.forever,
       Effect.forkScoped({ startImmediately: true }),
     )
     yield* reconcile(initial)
@@ -303,8 +431,12 @@ const layer = Layer.effect(
   }),
 )
 
-export const node = makeLocationNode({
-  service: Service,
-  layer,
-  deps: [Watcher.node, EventV2.node, FSUtil.node, Global.node, Location.node],
-})
+export function configured(options?: Options) {
+  return makeLocationNode({
+    service: Service,
+    layer: layer(options),
+    deps: [Watcher.node, EventV2.node, FSUtil.node, Global.node, Location.node, Credential.node, WellKnown.node],
+  })
+}
+
+export const node = configured()

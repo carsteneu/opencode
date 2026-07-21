@@ -7,15 +7,18 @@ import { Runtime } from "./framework/runtime"
 import { Observability } from "@opencode-ai/core/observability"
 import { Updater } from "./services/updater"
 import { InstallationChannel, InstallationVersion, InstallationLocal } from "@opencode-ai/core/installation/version"
-import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Global } from "@opencode-ai/core/global"
 import { AppProcess } from "@opencode-ai/core/process"
 import { Config } from "./config"
+import { Npm } from "@opencode-ai/core/npm"
 
 const Handlers = Runtime.handlers(Commands, {
   $: () => import("./commands/handlers/default"),
   api: () => import("./commands/handlers/api"),
+  auth: {
+    connect: () => import("./commands/handlers/auth/connect"),
+  },
   debug: {
     agents: () => import("./commands/handlers/debug/agents"),
   },
@@ -27,6 +30,9 @@ const Handlers = Runtime.handlers(Commands, {
     add: () => import("./commands/handlers/mcp/add"),
     auth: () => import("./commands/handlers/mcp/auth"),
     logout: () => import("./commands/handlers/mcp/logout"),
+  },
+  plugin: {
+    list: () => import("./commands/handlers/plugin/list"),
   },
   migrate: () => import("./commands/handlers/migrate"),
   mini: () => import("./commands/handlers/mini"),
@@ -54,8 +60,21 @@ Effect.logInfo("cli starting", {
   Effect.annotateLogs({ role: "cli" }),
   Effect.provide(Config.layer),
   Effect.provide(Updater.layer),
-  Effect.provide(AppNodeBuilder.build(LayerNode.group([Global.node, AppProcess.node]))),
-  Effect.provide(Observability.layer),
+  Effect.provide(
+    LayerNode.compile(LayerNode.group([Global.node, AppProcess.node, Npm.node]), [
+      [
+        Global.node,
+        Global.layerWith(process.env.OPENCODE_CONFIG_DIR ? { config: process.env.OPENCODE_CONFIG_DIR } : {}),
+      ],
+    ]),
+  ),
+  Effect.provide(
+    Observability.layer({
+      endpoint: process.env.OTEL_EXPORTER_OTLP_ENDPOINT,
+      headers: process.env.OTEL_EXPORTER_OTLP_HEADERS,
+      client: process.env.OPENCODE_CLIENT ?? "cli",
+    }),
+  ),
   Effect.provide(NodeServices.layer),
   Effect.scoped,
   Effect.tap(() => Effect.sync(() => process.exit(process.exitCode ?? 0))),

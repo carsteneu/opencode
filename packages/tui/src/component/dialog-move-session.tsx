@@ -5,6 +5,7 @@ import path from "path"
 import { DialogSelect, type DialogSelectOption } from "../ui/dialog-select"
 import { useDialog } from "../ui/dialog"
 import { useClient } from "../context/client"
+import { Keymap } from "../context/keymap"
 import { useTheme } from "../context/theme"
 import { useData } from "../context/data"
 import { abbreviateHome } from "../runtime"
@@ -13,15 +14,15 @@ import { Locale } from "../util/locale"
 import { errorMessage } from "../util/error"
 import { isRecord } from "../util/record"
 import { useToast } from "../ui/toast"
-import { useCommandShortcut } from "../keymap"
-import { useProject } from "../context/project"
 import { Spinner } from "./spinner"
 import { DialogWorkspaceFileChanges } from "./dialog-workspace-file-changes"
 import type { ProjectDirectoriesOutput } from "@opencode-ai/client"
 import { useRoute } from "../context/route"
 import { DialogProjectCopyName } from "./dialog-project-copy-name"
 
-export type MoveSessionSelection = { type: "directory"; directory: string; subdirectory: boolean } | { type: "new"; name: string }
+export type MoveSessionSelection =
+  | { type: "directory"; directory: string; subdirectory: boolean }
+  | { type: "new"; name: string }
 type ProjectDirectory = ProjectDirectoriesOutput[number]
 
 type DialogMoveSessionProps = {
@@ -37,18 +38,18 @@ export function DialogMoveSession(props: DialogMoveSessionProps) {
   const dialog = useDialog()
   const client = useClient()
   const dimensions = useTerminalDimensions()
-  const { theme } = useTheme()
+  const { themeV2 } = useTheme().contextual("elevated")
   const sessionData = useData()
-  const projectContext = useProject()
   const route = useRoute()
   const toast = useToast()
   const paths = useTuiPaths()
+  const shortcuts = Keymap.useShortcuts()
+  const location = createMemo(() => sessionData.location.info())
   const [working, setWorking] = createSignal(Boolean(props.initialRemoving))
   const [toDelete, setToDelete] = createSignal<string>()
   const [removing, setRemoving] = createSignal(props.initialRemoving)
   const [replacementCurrent, setReplacementCurrent] = createSignal<string>()
   const [loadError, setLoadError] = createSignal<unknown>()
-  const deleteHint = useCommandShortcut("dialog.move_session.delete")
   onMount(() => dialog.setSize("xlarge"))
 
   function reopen(initialRemoving?: string) {
@@ -61,15 +62,15 @@ export function DialogMoveSession(props: DialogMoveSessionProps) {
   // swallow it and let the directory list render without a current marker.
   // Once the current project is known, a mismatch is a guaranteed miss.
   const [loadedProject] = createResource(
-    () => (projectContext.project() === undefined ? props.projectID : undefined),
+    () => (location()?.project.id === props.projectID ? undefined : props.projectID),
     (projectID) =>
       client.api.project
-        .current({ location: { directory: projectContext.instance.directory() || paths.cwd } })
+        .current({ location: { directory: location()?.directory || paths.cwd } })
         .then((project) => (project.id === projectID ? project.directory : undefined))
         .catch(() => undefined),
   )
   const currentCheckout = createMemo(() => {
-    if (projectContext.project() === props.projectID) return projectContext.instance.path().worktree
+    if (location()?.project.id === props.projectID) return location()?.project.directory
     return loadedProject()
   })
 
@@ -77,14 +78,14 @@ export function DialogMoveSession(props: DialogMoveSessionProps) {
     () => (props.initialRemoving ? undefined : props.projectID),
     async (projectID, info): Promise<ReadonlyArray<ProjectDirectory> | undefined> => {
       try {
-        const location = { directory: projectContext.instance.directory() || paths.cwd }
+        const requestLocation = { directory: location()?.directory || paths.cwd }
         await client.api.projectCopy.refresh({
           projectID,
-          location,
+          location: requestLocation,
         })
         const directories = await client.api.project.directories({
           projectID,
-          location,
+          location: requestLocation,
         })
         setLoadError(undefined)
         return directories
@@ -120,7 +121,7 @@ export function DialogMoveSession(props: DialogMoveSessionProps) {
     if (showError()) return []
     const data = directoryData()
     const current = currentRoot()?.directory
-    if (directories.loading && !data && !current) return [{ title: "Loading project directories...", value: undefined }]
+    if (directories.loading && !data && !current) return []
     const roots = [...(data ?? [])]
     if (current && !roots.some((item) => item.directory === current)) roots.unshift({ directory: current })
     roots.sort((a, b) => {
@@ -130,13 +131,12 @@ export function DialogMoveSession(props: DialogMoveSessionProps) {
       if (!a.strategy && !b.strategy) return a.directory.length - b.directory.length
       return 0
     })
-    if (roots.length === 0) return [{ title: "No project directories found", value: undefined }]
+    if (roots.length === 0) return []
 
     const subdirectories = sessionData.session
       .list()
       .filter(
-        (session) =>
-          session.projectID === props.projectID && session.subpath && ![".", "/"].includes(session.subpath),
+        (session) => session.projectID === props.projectID && session.subpath && ![".", "/"].includes(session.subpath),
       )
       .map((session) => session.location.directory)
       .filter((directory) => !roots.some((root) => root.directory === directory))
@@ -172,16 +172,18 @@ export function DialogMoveSession(props: DialogMoveSessionProps) {
       return {
         title,
         titleView: isRemoving ? (
-          <span style={{ fg: theme.error }}>Deleting {item.location}</span>
+          <span style={{ fg: themeV2.text.feedback.error.default }}>Deleting {item.location}</span>
         ) : deleting ? (
-          <span style={{ fg: theme.text }}>Press {deleteHint()} again to confirm</span>
+          <span style={{ fg: themeV2.text.action.destructive.default }}>
+            Press {shortcuts.get("dialog.move_session.delete")} again to confirm
+          </span>
         ) : suffix ? (
           <>
             {visible.slice(0, split)}
-            <span style={{ fg: theme.textMuted }}>{visible.slice(split)}</span>
+            <span style={{ fg: themeV2.text.subdued }}>{visible.slice(split)}</span>
           </>
         ) : undefined,
-        bg: deleting ? theme.error : undefined,
+        bg: deleting ? themeV2.background.action.destructive.default : undefined,
         value: {
           type: "directory",
           directory: item.location,
@@ -203,7 +205,7 @@ export function DialogMoveSession(props: DialogMoveSessionProps) {
 
   async function removedCurrent(current: boolean) {
     if (!current) return false
-    const fallback = projectContext.data.project.mainDir
+    const fallback = directoryData()?.findLast((item) => item.strategy === undefined)?.directory
     if (fallback) setReplacementCurrent(fallback)
     if (route.data.type === "session") {
       route.navigate({ type: "home" })
@@ -235,7 +237,7 @@ export function DialogMoveSession(props: DialogMoveSessionProps) {
     const error = await client.api.projectCopy
       .remove({
         projectID: props.projectID,
-        location: { directory: projectContext.instance.directory() || paths.cwd },
+        location: { directory: location()?.directory || paths.cwd },
         directory: selected.directory,
         force: false,
       })
@@ -262,7 +264,7 @@ export function DialogMoveSession(props: DialogMoveSessionProps) {
         const forcedError = await client.api.projectCopy
           .remove({
             projectID: props.projectID,
-            location: { directory: projectContext.instance.directory() || paths.cwd },
+            location: { directory: location()?.directory || paths.cwd },
             directory: selected.directory,
             force: true,
           })
@@ -314,7 +316,7 @@ export function DialogMoveSession(props: DialogMoveSessionProps) {
         title="Move session"
         titleView={
           <box flexDirection="row" gap={1}>
-            <text fg={theme.text} attributes={TextAttributes.BOLD}>
+            <text fg={themeV2.text.default} attributes={TextAttributes.BOLD}>
               Move session
             </text>
             <Show when={working() || directories.loading || loadedProject.loading}>
@@ -326,13 +328,27 @@ export function DialogMoveSession(props: DialogMoveSessionProps) {
         options={options()}
         emptyView={
           showError() ? (
-            <box paddingLeft={4} paddingRight={4}>
-              <text fg={theme.error} attributes={TextAttributes.BOLD}>
+            <box paddingLeft={4} paddingRight={4} paddingTop={1}>
+              <text fg={themeV2.text.feedback.error.default} attributes={TextAttributes.BOLD}>
                 Could not load project directories
               </text>
-              <text fg={theme.textMuted}>{errorMessage(loadError())}</text>
+              <text fg={themeV2.text.subdued}>{errorMessage(loadError())}</text>
+              <text fg={themeV2.text.subdued}>Close and reopen Move session to try again.</text>
             </box>
-          ) : undefined
+          ) : directories.loading || loadedProject.loading ? (
+            <box paddingLeft={4} paddingRight={4} paddingTop={1}>
+              <text fg={themeV2.text.subdued}>Loading project directories…</text>
+            </box>
+          ) : (
+            <box paddingLeft={4} paddingRight={4} paddingTop={1}>
+              <text fg={themeV2.text.subdued}>No project directories available</text>
+            </box>
+          )
+        }
+        noMatchView={
+          <box paddingLeft={4} paddingRight={4} paddingTop={1}>
+            <text fg={themeV2.text.subdued}>No project directories found</text>
+          </box>
         }
         locked={showError() || directories.loading || loadedProject.loading || Boolean(removing())}
         current={current()}

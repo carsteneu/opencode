@@ -497,6 +497,7 @@ const layer = Layer.effectDiscard(
           .set({
             directory: event.data.location.directory,
             path: event.data.subpath,
+            ...(event.data.projectID ? { project_id: event.data.projectID } : {}),
             workspace_id: event.data.location.workspaceID ? WorkspaceV2.ID.make(event.data.location.workspaceID) : null,
             time_updated: DateTime.toEpochMillis(event.created),
           })
@@ -608,6 +609,7 @@ const layer = Layer.effectDiscard(
         .run()
         .pipe(Effect.orDie),
     )
+    yield* events.project(SessionEvent.UsageRecorded, (event) => applyUsage(db, event.data.sessionID, event.data))
     yield* events.project(SessionEvent.Forked, (event) => projectFork(db, event))
     yield* events.project(SessionEvent.InputPromoted, (event) =>
       Effect.gen(function* () {
@@ -780,7 +782,7 @@ const layer = Layer.effectDiscard(
         yield* InstructionState.reset(db, event.data.sessionID)
       }),
     )
-    yield* events.subscribe([SessionEvent.Step.Ended, SessionEvent.Step.Failed]).pipe(
+    yield* events.subscribe([SessionEvent.Step.Ended, SessionEvent.Step.Failed, SessionEvent.UsageRecorded]).pipe(
       Stream.runForEach((event) => {
         if (
           event.type === SessionEvent.Step.Failed.type &&

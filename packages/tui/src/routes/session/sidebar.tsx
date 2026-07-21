@@ -2,15 +2,15 @@ import { useData } from "../../context/data"
 import { createMemo, Show } from "solid-js"
 import { useTheme } from "../../context/theme"
 import { useConfig } from "../../config"
-import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { usePluginRuntime } from "../../plugin/runtime"
+import { PluginSlot } from "../../plugin/context"
 
 import { getScrollAcceleration } from "../../util/scroll"
 
 export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
   const pluginRuntime = usePluginRuntime()
   const data = useData()
-  const { theme } = useTheme()
+  const { themeV2 } = useTheme().contextual("elevated")
   const config = useConfig().data
   const session = createMemo(() => data.session.get(props.sessionID))
   const scrollAcceleration = createMemo(() => getScrollAcceleration(config))
@@ -18,7 +18,7 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
   return (
     <Show when={session()}>
       <box
-        backgroundColor={theme.backgroundPanel}
+        backgroundColor={themeV2.background.default}
         width={42}
         height="100%"
         paddingTop={1}
@@ -32,8 +32,8 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
           scrollAcceleration={scrollAcceleration()}
           verticalScrollbarOptions={{
             trackOptions: {
-              backgroundColor: theme.background,
-              foregroundColor: theme.borderActive,
+              backgroundColor: themeV2.background.default,
+              foregroundColor: themeV2.scrollbar.default,
             },
           }}
         >
@@ -45,35 +45,20 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
               title={session()!.title}
             >
               <box paddingRight={1}>
-                <text fg={theme.text}>
+                <text fg={themeV2.text.default}>
                   <b>{session()!.title}</b>
                 </text>
                 <Show when={session()!.location.workspaceID}>
-                  <text fg={theme.textMuted}>
-                    {session()!.location.workspaceID}
-                  </text>
+                  <text fg={themeV2.text.subdued}>{session()!.location.workspaceID}</text>
                 </Show>
               </box>
             </pluginRuntime.Slot>
-            <pluginRuntime.Slot name="sidebar_content" session_id={props.sessionID} />
+            <PluginSlot name="sidebar.content" input={{ sessionID: props.sessionID }} />
           </box>
         </scrollbox>
 
         <box flexShrink={0} gap={1} paddingTop={1}>
-          <pluginRuntime.Slot
-            name="sidebar_footer"
-            mode="single_winner"
-            session_id={props.sessionID}
-            directory={session()?.location.directory ?? ""}
-          >
-            <text fg={theme.textMuted}>
-              <span style={{ fg: theme.success }}>•</span> <b>Open</b>
-              <span style={{ fg: theme.text }}>
-                <b>Code</b>
-              </span>{" "}
-              <span>{InstallationVersion}</span>
-            </text>
-          </pluginRuntime.Slot>
+          <PluginSlot name="sidebar.footer" />
         </box>
       </box>
     </Show>

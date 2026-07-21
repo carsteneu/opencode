@@ -1,7 +1,7 @@
 export * as SessionTitle from "./title"
 
-import { LLM, LLMClient, LLMError, LLMEvent, Message, type LLMRequest } from "@opencode-ai/llm"
-import { Context, DateTime, Effect, Layer, Stream } from "effect"
+import { LLM, LLMClient, LLMError, LLMEvent, Message, type LLMRequest } from "@opencode-ai/ai"
+import { Context, Effect, Layer, Stream } from "effect"
 import { AgentV2 } from "../agent"
 import { Database } from "../database/database"
 import { EventV2 } from "../event"
@@ -9,12 +9,15 @@ import { makeLocationNode } from "../effect/app-node"
 import { llmClient } from "../effect/app-node-platform"
 import { SessionEvent } from "./event"
 import { SessionHistory } from "./history"
+import { SessionModelHeaders } from "./model-headers"
 import { SessionRunnerModel } from "./runner/model"
 import { SessionSchema } from "./schema"
+import { SessionUsage } from "./usage"
 
 const MAX_LENGTH = 100
 
 type Dependencies = {
+  readonly headers?: SessionModelHeaders.Options
   readonly events: EventV2.Interface
   readonly llm: {
     readonly stream: (request: LLMRequest) => Stream.Stream<LLMEvent, LLMError>
@@ -50,10 +53,21 @@ const make = (dependencies: Dependencies) => {
     if (!resolved) return
     const chunks: string[] = []
     let failed = false
+    let usage: SessionUsage.Recorded | undefined
+    const recordUsage = Effect.suspend(() =>
+      usage
+        ? dependencies.events.publish(SessionEvent.UsageRecorded, {
+            sessionID: session.id,
+            source: "title",
+            ...usage,
+          })
+        : Effect.void,
+    )
     const streamed = yield* dependencies.llm
       .stream(
         LLM.request({
           model: resolved.model,
+          http: { headers: SessionModelHeaders.make(session, dependencies.headers) },
           system: agent.system,
           messages: [Message.user(firstUser.text)],
           tools: [],
@@ -63,11 +77,17 @@ const make = (dependencies: Dependencies) => {
         Stream.runForEach((event) => {
           if (LLMEvent.is.providerError(event)) failed = true
           if (LLMEvent.is.textDelta(event)) chunks.push(event.text)
+          if (LLMEvent.is.stepFinish(event)) {
+            const step = SessionUsage.record(event.usage, resolved.cost)
+            usage = usage ? SessionUsage.add(usage, step) : step
+          }
           return Effect.void
         }),
         Effect.as(true),
         Effect.catchTag("LLM.Error", () => Effect.succeed(false)),
+        Effect.onInterrupt(() => recordUsage.pipe(Effect.asVoid)),
       )
+    yield* recordUsage
     if (!streamed || failed) return
     const title = chunks
       .join("")
@@ -83,7 +103,7 @@ const make = (dependencies: Dependencies) => {
   return { generateForFirstPrompt }
 }
 
-export const layer = Layer.effect(
+export const layer = (options?: SessionModelHeaders.Options) => Layer.effect(
   Service,
   Effect.gen(function* () {
     const events = yield* EventV2.Service
@@ -91,15 +111,19 @@ export const layer = Layer.effect(
     const agents = yield* AgentV2.Service
     const models = yield* SessionRunnerModel.Service
     const database = yield* Database.Service
-    const title = make({ events, llm, agents, models })
+    const title = make({ events, llm, agents, models, headers: options })
     return Service.of({
       generateForFirstPrompt: (session) => title.generateForFirstPrompt(database.db, session),
     })
   }),
 )
 
-export const node = makeLocationNode({
-  service: Service,
-  layer,
-  deps: [EventV2.node, llmClient, AgentV2.node, SessionRunnerModel.node, Database.node],
-})
+export function configured(options?: SessionModelHeaders.Options) {
+  return makeLocationNode({
+    service: Service,
+    layer: layer(options),
+    deps: [EventV2.node, llmClient, AgentV2.node, SessionRunnerModel.node, Database.node],
+  })
+}
+
+export const node = configured()

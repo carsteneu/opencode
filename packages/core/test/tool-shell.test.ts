@@ -2,7 +2,7 @@ import fs from "fs/promises"
 import { realpathSync } from "node:fs"
 import path from "path"
 import { describe, expect, test } from "bun:test"
-import { DateTime, Duration, Effect, Fiber, Layer, Scope, Stream } from "effect"
+import { DateTime, Deferred, Duration, Effect, Fiber, Layer, Scope, Stream } from "effect"
 import { Money } from "@opencode-ai/schema/money"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -166,6 +166,10 @@ const overflowCommand = (bytes: number) =>
   isWindows
     ? `[Console]::Out.Write(('x' * ${bytes})); Start-Sleep -Milliseconds 100`
     : `head -c ${bytes} /dev/zero | tr '\\0' 'x'`
+const progressOverflowCommand = (bytes: number, release: string) =>
+  isWindows
+    ? `[Console]::Out.Write(('x' * ${bytes})); while (!(Test-Path -LiteralPath '${release}')) { Start-Sleep -Milliseconds 50 }`
+    : `head -c ${bytes} /dev/zero | tr '\\0' 'x'; while [ ! -e '${release}' ]; do sleep 0.05; done`
 
 const withSession = <A, E, R>(directory: string, body: (registry: ToolRegistry.Interface) => Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
@@ -413,6 +417,51 @@ describe("ShellTool", () => {
     ),
   )
 
+  it.live(
+    "reports bounded output progress for a running command",
+    () =>
+      Effect.acquireUseRelease(
+        Effect.promise(() => tmpdir()),
+        (tmp) => {
+          reset()
+          const release = "shell-progress-release"
+          const releasePath = path.join(tmp.path, release)
+          return withSession(tmp.path, (registry) =>
+            Effect.gen(function* () {
+              const observed = yield* Deferred.make<ToolRegistry.Progress>()
+              yield* settleTool(registry, {
+                ...call(
+                  { command: progressOverflowCommand(ShellTool.MAX_CAPTURE_BYTES + 1024, release) },
+                  "call-progress",
+                ),
+                progress: (update) =>
+                  Effect.gen(function* () {
+                    if (update.structured.truncated !== true) return
+                    const content = update.content[0]
+                    if (content?.type !== "text") return
+                    if (content.text.indexOf("\n\n[output truncated; full output saved to:") !== ShellTool.MAX_CAPTURE_BYTES)
+                      return
+                    yield* Deferred.succeed(observed, update)
+                    yield* Effect.promise(() => fs.writeFile(releasePath, ""))
+                  }),
+              })
+
+              const progress = yield* Deferred.await(observed)
+              expect(progress.structured).toEqual({ truncated: true })
+              const content = progress.content[0]
+              expect(content?.type).toBe("text")
+              if (content?.type !== "text") return
+              expect(content.text.indexOf("\n\n[output truncated; full output saved to:")).toBe(
+                ShellTool.MAX_CAPTURE_BYTES,
+              )
+            }).pipe(Effect.ensuring(Effect.promise(() => fs.writeFile(releasePath, "")).pipe(Effect.ignore))),
+          )
+        },
+        (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]().then(() => undefined)),
+      ),
+    { timeout: 15_000 },
+  )
+
   it.live("returns a useful timeout settlement", () =>
     Effect.acquireUseRelease(
       Effect.promise(() => tmpdir()),
@@ -572,7 +621,6 @@ test("keeps locked deferred parity TODOs visible", async () => {
     "Replace token-based command-argument external-directory advisories with parser-based detection.",
     "Restore PowerShell and cmd-specific invocation/path handling on Windows.",
     "Add plugin shell.env environment augmentation once V2 plugin hooks exist.",
-    "Add durable/live progress metadata streaming for long-running commands once V2 tool invocation progress context is wired.",
     "Persist job status and define restart recovery before exposing remote observation.",
     "Revisit process-group cleanup and platform coverage with shell-specific tests if current AppProcess semantics do not fully cover it.",
     "Revisit binary output handling if stdout/stderr decoding is text-only.",

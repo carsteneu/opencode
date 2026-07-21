@@ -1,12 +1,12 @@
 import { useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { batch, createContext, createEffect, onCleanup, Show, useContext, type JSX, type ParentProps } from "solid-js"
+import { Keymap } from "../context/keymap"
 import { useTheme } from "../context/theme"
 import { MouseButton, Renderable, RGBA } from "@opentui/core"
 import { createStore } from "solid-js/store"
 import { useToast } from "./toast"
-import { Flag } from "@opencode-ai/core/flag/flag"
-import { useBindings, useOpencodeModeStack } from "../keymap"
 import { useClipboard } from "../context/clipboard"
+import { useConfig } from "../config"
 
 export function Dialog(
   props: ParentProps<{
@@ -16,7 +16,7 @@ export function Dialog(
   }>,
 ) {
   const dimensions = useTerminalDimensions()
-  const { theme } = useTheme()
+  const { themeV2 } = useTheme().contextual("elevated")
   const renderer = useRenderer()
 
   let dismiss = false
@@ -59,7 +59,7 @@ export function Dialog(
         }}
         width={width()}
         maxWidth={dimensions().width - 2}
-        backgroundColor={theme.backgroundPanel}
+        backgroundColor={themeV2.background.default}
         paddingTop={1}
       >
         {props.children}
@@ -79,11 +79,11 @@ function init() {
   })
 
   const renderer = useRenderer()
-  const modeStack = useOpencodeModeStack()
+  const keymap = Keymap.use()
 
   createEffect(() => {
     if (store.stack.length === 0) return
-    const popMode = modeStack.push("modal")
+    const popMode = keymap.mode.push("modal")
     onCleanup(popMode)
   })
 
@@ -106,14 +106,15 @@ function init() {
     }, 1)
   }
 
-  useBindings(() => ({
+  Keymap.createLayer(() => ({
+    mode: "modal",
     enabled: store.stack.length > 0 && !renderer.getSelection()?.getSelectedText(),
-    bindings: [
+    commands: [
       {
-        key: "escape",
-        desc: "Close dialog",
+        bind: "escape",
+        title: "Close dialog",
         group: "Dialog",
-        cmd: () => {
+        run: () => {
           if (renderer.getSelection()) {
             renderer.clearSelection()
           }
@@ -124,10 +125,10 @@ function init() {
         },
       },
       {
-        key: "ctrl+c",
-        desc: "Close dialog",
+        bind: "ctrl+c",
+        title: "Close dialog",
         group: "Dialog",
-        cmd: () => {
+        run: () => {
           if (renderer.getSelection()) {
             renderer.clearSelection()
           }
@@ -196,6 +197,8 @@ export function DialogProvider(props: ParentProps) {
   const renderer = useRenderer()
   const toast = useToast()
   const clipboard = useClipboard()
+  const config = useConfig()
+  const copyOnSelectEnabled = () => config.data.terminal?.copy_on_select ?? process.platform !== "win32"
 
   function copySelection() {
     const text = renderer.getSelection()?.getSelectedText()
@@ -215,14 +218,14 @@ export function DialogProvider(props: ParentProps) {
         position="absolute"
         zIndex={3000}
         onMouseDown={(evt: { button: number; preventDefault(): void; stopPropagation(): void }) => {
-          if (!Flag.OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT) return
+          if (copyOnSelectEnabled()) return
           if (evt.button !== MouseButton.RIGHT) return
 
           if (!copySelection()) return
           evt.preventDefault()
           evt.stopPropagation()
         }}
-        onMouseUp={!Flag.OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT ? copySelection : undefined}
+        onMouseUp={copyOnSelectEnabled() ? copySelection : undefined}
       >
         <Show when={value.stack.length}>
           <Dialog onClose={() => value.clear()} size={value.size} centered={value.centered}>

@@ -28,18 +28,19 @@ import { QuestionV2 } from "./question"
 import { Shell } from "./shell"
 import { Reference } from "./reference"
 import { WebSearch } from "./websearch"
-import { ReferenceGuidance } from "./reference/guidance"
+import { ReferenceInstructions } from "./reference/instructions"
 import { SessionRunnerLLM } from "./session/runner/llm"
 import { SessionRunnerModel } from "./session/runner/model"
 import { SessionCompaction } from "./session/compaction"
 import { SessionTitle } from "./session/title"
 import { SkillV2 } from "./skill"
-import { SkillGuidance } from "./skill/guidance"
+import { SkillInstructions } from "./skill/instructions"
 import { Snapshot } from "./snapshot"
 import { InstructionDiscovery } from "./instruction-discovery"
 import { InstructionBuiltIns } from "./instructions/builtins"
 import { InstructionEntry } from "./session/instruction-entry"
 import { SessionInstructions } from "./session/instructions"
+import { SessionGenerateNode } from "./session/generate-node"
 import { McpTool } from "./tool/mcp"
 import { ReadToolFileSystem } from "./tool/read-filesystem"
 import { ToolRegistry } from "./tool/registry"
@@ -77,12 +78,13 @@ const locationServiceNodes = [
   ToolRegistry.node,
   ToolRegistry.toolsNode,
   Image.node,
-  SkillGuidance.node,
-  ReferenceGuidance.node,
+  SkillInstructions.node,
+  ReferenceInstructions.node,
   InstructionEntry.node,
   Form.node,
   QuestionV2.node,
   Generate.node,
+  SessionGenerateNode.node,
   ReadToolFileSystem.node,
   McpTool.node,
   SessionInstructions.node,
