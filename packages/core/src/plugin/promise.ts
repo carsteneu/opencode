@@ -204,10 +204,7 @@ export function fromPromise(plugin: Plugin) {
                   id: definition.id,
                   name: definition.name,
                   execute: (input, execution) =>
-                    Effect.tryPromise({
-                      try: (signal) => definition.execute(input, { ...execution, signal }),
-                      catch: (cause) => cause,
-                    }),
+                    attempt((signal) => definition.execute(input, { ...execution, signal })),
                 }),
               ),
           },
@@ -294,30 +291,32 @@ function adaptIntegration(definition: IntegrationDefinition) {
       return {
         ...methodInfo,
         authorize: (inputs: Parameters<typeof authorize>[0]) =>
-          Effect.tryPromise({ try: () => authorize(inputs), catch: (cause) => cause }).pipe(
+          attempt(() => authorize(inputs)).pipe(
             Effect.map((authorization) => {
               if (authorization.mode === "auto") {
                 return {
                   ...authorization,
-                  callback: Effect.tryPromise({ try: () => authorization.callback, catch: (cause) => cause }),
+                  callback: attempt(() => authorization.callback),
                 }
               }
               return {
                 ...authorization,
-                callback: (code: string) =>
-                  Effect.tryPromise({ try: () => authorization.callback(code), catch: (cause) => cause }),
+                callback: (code: string) => attempt(() => authorization.callback(code)),
               }
             }),
           ),
         ...(refresh
           ? {
-              refresh: (credential: Parameters<typeof refresh>[0]) =>
-                Effect.tryPromise({ try: () => refresh(credential), catch: (cause) => cause }),
+              refresh: (credential: Parameters<typeof refresh>[0]) => attempt(() => refresh(credential)),
             }
           : {}),
       }
     }),
   }
+}
+
+function attempt<A>(evaluate: (signal: AbortSignal) => PromiseLike<A>) {
+  return Effect.tryPromise({ try: evaluate, catch: (cause) => cause })
 }
 
 function model(input: { readonly id: string; readonly providerID: string; readonly variant?: string }) {

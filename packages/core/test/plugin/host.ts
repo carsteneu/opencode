@@ -350,20 +350,20 @@ export function webSearchHost(websearch: WebSearch.Interface): Plugin.Context["w
 function registerIntegration(draft: Integration.Draft, definition: IntegrationDefinition) {
   const integrationID = Integration.ID.make(definition.id)
   draft.update(integrationID, (integration) => (integration.name = definition.name))
-  for (const item of definition.methods ?? []) {
-    if (item.type === "env") {
-      draft.method.update(methodImplementation({ integrationID: definition.id, method: item }))
+  for (const method of definition.methods ?? []) {
+    if (method.type === "env") {
+      draft.method.update(methodImplementation({ integrationID: definition.id, method }))
       continue
     }
-    if (item.type === "key") {
-      draft.method.update(methodImplementation({ integrationID: definition.id, method: item }))
+    if (method.type === "key") {
+      draft.method.update(methodImplementation({ integrationID: definition.id, method }))
       continue
     }
-    const { authorize, refresh, credentialLabel, ...method } = item
+    const { authorize, refresh, credentialLabel, ...info } = method
     draft.method.update(
       methodImplementation({
         integrationID: definition.id,
-        method,
+        method: info,
         authorize,
         ...(refresh ? { refresh } : {}),
         ...(credentialLabel ? { label: credentialLabel } : {}),

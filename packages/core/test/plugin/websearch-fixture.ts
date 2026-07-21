@@ -11,18 +11,18 @@ import { Integration } from "@opencode-ai/core/integration"
 import { WebSearch } from "@opencode-ai/core/websearch"
 import { testEffect } from "../lib/effect"
 
-export interface WebSearchRequest {
+interface WebSearchRequest {
   readonly url: string
   readonly headers: Record<string, string>
   readonly body: unknown
 }
 
 export const requests: WebSearchRequest[] = []
-export const response = { body: "" }
+let responseBody = ""
 
 export function resetWebSearchFixture(body: string) {
   requests.length = 0
-  response.body = body
+  responseBody = body
 }
 
 const http = Layer.succeed(
@@ -35,7 +35,7 @@ const http = Layer.succeed(
         headers: request.headers,
         body: JSON.parse(new TextDecoder().decode(request.body.body)),
       })
-      return HttpClientResponse.fromWeb(request, new Response(response.body, { status: 200 }))
+      return HttpClientResponse.fromWeb(request, new Response(responseBody, { status: 200 }))
     }),
   ),
 )
@@ -43,14 +43,7 @@ const http = Layer.succeed(
 export const webSearchIntegrationTest = testEffect(
   Layer.merge(
     AppNodeBuilder.build(
-      LayerNode.group([
-        Integration.node,
-        Credential.node,
-        EventV2.node,
-        Form.node,
-        ConfigGlobal.node,
-        WebSearch.node,
-      ]),
+      LayerNode.group([Integration.node, Credential.node, EventV2.node, Form.node, ConfigGlobal.node, WebSearch.node]),
       [
         [Config.node, Layer.succeed(Config.Service, Config.Service.of({ entries: () => Effect.succeed([]) }))],
         [

@@ -33,7 +33,7 @@ export type Result = WebSearch.Result
 
 export interface ProviderImplementation extends Provider {
   readonly execute: (
-    input: WebSearch.ProviderInput,
+    input: ProviderInput,
     context: { readonly sessionID?: string },
   ) => Effect.Effect<ProviderOutput, unknown>
 }
@@ -43,9 +43,12 @@ export class ProviderRequiredError extends Schema.TaggedErrorClass<ProviderRequi
   {},
 ) {}
 
-export class ProviderNotFoundError extends Schema.TaggedErrorClass<ProviderNotFoundError>()("WebSearch.ProviderNotFound", {
-  providerID: ID,
-}) {}
+export class ProviderNotFoundError extends Schema.TaggedErrorClass<ProviderNotFoundError>()(
+  "WebSearch.ProviderNotFound",
+  {
+    providerID: ID,
+  },
+) {}
 
 export class CancelledError extends Schema.TaggedErrorClass<CancelledError>()("WebSearch.Cancelled", {}) {}
 
@@ -54,20 +57,14 @@ export class RequestError extends Schema.TaggedErrorClass<RequestError>()("WebSe
   cause: Schema.Defect(),
 }) {}
 
-export type Error =
-  | ProviderRequiredError
-  | ProviderNotFoundError
-  | CancelledError
-  | RequestError
+export type Error = ProviderRequiredError | ProviderNotFoundError | CancelledError | RequestError
 
 export interface QueryInput extends Input {
   readonly sessionID?: string
 }
 
 export interface Interface {
-  readonly register: (
-    provider: ProviderImplementation,
-  ) => Effect.Effect<State.Registration, never, Scope.Scope>
+  readonly register: (provider: ProviderImplementation) => Effect.Effect<State.Registration, never, Scope.Scope>
   readonly list: () => Effect.Effect<readonly Provider[]>
   readonly selected: () => Effect.Effect<ID | undefined>
   readonly select: (providerID: ID) => Effect.Effect<void, ProviderNotFoundError>
@@ -110,10 +107,12 @@ const layer = Layer.effect(
     }
 
     const globalProviderID = Effect.fn("WebSearch.globalProviderID")(function* () {
-      const entries = (yield* config.entries()).filter(
-        (entry) => entry.type === "document" && entry.path && path.dirname(entry.path) === globalConfigPath,
-      )
-      return Config.latest(entries, "websearch")?.provider
+      return Config.latest(
+        (yield* config.entries()).filter(
+          (entry) => entry.type === "document" && entry.path && path.dirname(entry.path) === globalConfigPath,
+        ),
+        "websearch",
+      )?.provider
     })
 
     const selected = Effect.fn("WebSearch.selected")(function* () {
@@ -214,8 +213,7 @@ const layer = Layer.effect(
       }),
       selected,
       select: Effect.fn("WebSearch.select")(function* (providerID) {
-        const provider = state.get().providers.get(providerID)
-        if (!provider) return yield* new ProviderNotFoundError({ providerID })
+        if (!state.get().providers.has(providerID)) return yield* new ProviderNotFoundError({ providerID })
         yield* saveProvider(providerID)
       }),
       query: Effect.fn("WebSearch.query")(function* (input) {

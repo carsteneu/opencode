@@ -36,7 +36,6 @@ import { useClient } from "./client"
 import { createEffect, createSignal, onCleanup } from "solid-js"
 
 export type DataSessionStatus = "idle" | "running"
-type Data = Plugin.Context["data"]
 
 const messageIDFromEvent = (eventID: string) => eventID.replace(/^evt_/, "msg_")
 
@@ -58,7 +57,7 @@ type LocationData = {
   provider?: ProviderV2Info[]
   reference?: ReferenceInfo[]
   websearch?: WebSearchProvider[]
-  websearchSelected?: string | null
+  websearchSelected?: WebSearchProvider["id"] | null
   // Currently running shell commands for this location, keyed by shell id. Entries are removed
   // once the command exits or is deleted, so this only ever holds in-flight shells.
   shell?: Record<string, ShellInfo>
@@ -876,8 +875,6 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
           ])
           break
         case "config.updated":
-          void result.location.websearch.refresh(event.location)
-          break
         case "websearch.updated":
           void result.location.websearch.refresh(event.location)
           break

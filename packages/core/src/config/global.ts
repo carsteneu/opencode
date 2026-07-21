@@ -10,7 +10,7 @@ import { Global } from "../global"
 import { EffectFlock } from "../util/effect-flock"
 
 export interface Interface {
-  readonly update: (path: JSONPath, value: unknown) => Effect.Effect<void, FSUtil.Error | EffectFlock.LockError>
+  readonly update: (jsonPath: JSONPath, value: unknown) => Effect.Effect<void, FSUtil.Error | EffectFlock.LockError>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/ConfigGlobal") {}
@@ -26,11 +26,11 @@ const layer = Layer.effect(
       update: Effect.fn("ConfigGlobal.update")(function* (jsonPath, value) {
         yield* flock.withLock(
           Effect.gen(function* () {
-            const existing = yield* Effect.filter(
+            const existingFiles = yield* Effect.filter(
               ["opencode.jsonc", "opencode.json"].map((name) => path.join(global.config, name)),
               fs.existsSafe,
             )
-            const filepath = existing[0] ?? path.join(global.config, "opencode.json")
+            const filepath = existingFiles[0] ?? path.join(global.config, "opencode.json")
             const text = (yield* fs.readFileStringSafe(filepath)) ?? "{}"
             const next = applyEdits(
               text,

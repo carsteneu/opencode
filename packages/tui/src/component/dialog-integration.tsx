@@ -97,11 +97,7 @@ export function DialogIntegration(
               ? () => <text fg={themeV2.text.feedback.success.default}>✓</text>
               : undefined,
           onSelect: () => {
-            if (props.connectionOnly) {
-              if (credentials.length) return manageConnections(integration, methods, dialog, props.onConnected)
-              return selectMethod(integration, methods, dialog, props.onConnected)
-            }
-            if (provider) return manageWebSearch(provider, dialog, integration, methods)
+            if (!props.connectionOnly && provider) return manageWebSearch(provider, dialog, integration, methods)
             if (credentials.length) return manageConnections(integration, methods, dialog, props.onConnected)
             return selectMethod(integration, methods, dialog, props.onConnected)
           },
