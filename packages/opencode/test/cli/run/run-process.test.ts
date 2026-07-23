@@ -9,7 +9,8 @@ import { reply } from "../../lib/llm-server"
 import { cliIt } from "../../lib/cli-process"
 
 describe("opencode run (non-interactive subprocess)", () => {
-  // Happy path: prompt completes, output reaches stdout, process exits 0.
+  // Happy path: prompt completes, its response-stream finalizer preserves the
+  // request InstanceRef, output reaches stdout, and the process exits 0.
   // If this fails, all the others likely will too — debug here first.
   cliIt.concurrent(
     "exits 0 and writes the response to stdout on a successful prompt",
@@ -19,6 +20,7 @@ describe("opencode run (non-interactive subprocess)", () => {
         const result = yield* opencode.run("say hi")
         opencode.expectExit(result, 0)
         expect(result.stdout).toBe("hello from the test llm\n")
+        expect(result.stderr).not.toContain("InstanceRef not provided")
       }),
     60_000,
   )

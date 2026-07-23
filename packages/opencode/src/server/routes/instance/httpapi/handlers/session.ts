@@ -2,6 +2,7 @@ import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Agent } from "@/agent/agent"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { EffectBridge } from "@/effect/bridge"
 import { Command } from "@/command"
 import { Permission } from "@/permission"
 import { SessionShare } from "@/share/session"
@@ -304,8 +305,13 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
         })
         .pipe(Effect.mapError(() => new HttpApiError.BadRequest({})))
       const body = Stream.make(JSON.stringify(message)).pipe(Stream.encodeText)
-      const settledBody =
-        ctx.payload.noReply === true ? body : body.pipe(Stream.ensuring(runState.settle(ctx.params.sessionID)))
+      if (ctx.payload.noReply === true) {
+        return HttpServerResponse.stream(body, {
+          contentType: "application/json",
+        })
+      }
+      const bridge = yield* EffectBridge.make()
+      const settledBody = body.pipe(Stream.ensuring(bridge.run(runState.settle(ctx.params.sessionID))))
       return HttpServerResponse.stream(settledBody, {
         contentType: "application/json",
       })
