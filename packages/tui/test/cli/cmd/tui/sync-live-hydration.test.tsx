@@ -29,6 +29,78 @@ const assistant = {
   time: { created: 1, completed: 2 },
 }
 
+const user = {
+  id: "msg_user",
+  sessionID,
+  role: "user" as const,
+  time: { created: 0 },
+  summary: {
+    title: "kept title",
+    body: "kept body",
+    diffs: [{ file: "src/index.ts", patch: "PATCH_SENTINEL", additions: 1, deletions: 0, status: "modified" as const }],
+  },
+  agent: "build",
+  model: { providerID: "test", modelID: "model" },
+}
+
+test("message hydration and live events retain diff metadata without patch text", async () => {
+  await using tmp = await tmpdir()
+  await Bun.write(`${tmp.path}/kv.json`, "{}")
+
+  const headers: Array<string | null> = []
+  const { app, emit, sync } = await mount((url, request) => {
+    if (url.pathname === `/session/${sessionID}`) return json(session)
+    if (url.pathname === `/session/${sessionID}/message`) {
+      headers.push(request.headers.get("x-opencode-message-patches"))
+      if (url.searchParams.has("before")) return json([])
+      return json([{ info: user, parts: [] }])
+    }
+    if (url.pathname === `/session/${sessionID}/todo` || url.pathname === `/session/${sessionID}/diff`) return json([])
+    return undefined
+  }, tmp.path)
+
+  try {
+    await sync.session.sync(sessionID)
+    expect(headers).toEqual(["omit"])
+    const hydrated = sync.data.message[sessionID]?.[0]
+    expect(hydrated).toMatchObject({ id: user.id, summary: { title: "kept title", body: "kept body" } })
+    if (hydrated?.role !== "user") throw new Error("Expected user message")
+    expect(hydrated.summary?.diffs).toEqual([{ file: "src/index.ts", additions: 1, deletions: 0, status: "modified" }])
+
+    emit(
+      global({
+        id: "evt_user",
+        type: "message.updated",
+        properties: {
+          sessionID,
+          info: {
+            ...user,
+            summary: {
+              ...user.summary,
+              title: "live title",
+              diffs: [{ ...user.summary.diffs[0], patch: "LIVE_PATCH_SENTINEL" }],
+            },
+          },
+        },
+      }),
+    )
+    await wait(
+      () =>
+        sync.data.message[sessionID]?.[0]?.role === "user" &&
+        sync.data.message[sessionID][0].summary?.title === "live title",
+    )
+    const updated = sync.data.message[sessionID]?.[0]
+    if (updated?.role !== "user") throw new Error("Expected user message")
+    expect(updated.summary?.title).toBe("live title")
+    expect(updated.summary?.diffs[0]?.patch).toBeUndefined()
+
+    await sync.session.loadOlder(sessionID)
+    expect(headers).toEqual(["omit", "omit"])
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
 function global(payload: GlobalEvent["payload"]): GlobalEvent {
   return { directory: "/tmp/other", project: "proj_test", payload }
 }

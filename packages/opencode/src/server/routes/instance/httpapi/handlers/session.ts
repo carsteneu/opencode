@@ -39,6 +39,7 @@ import {
 } from "../groups/session"
 import { PermissionNotFoundError } from "../errors"
 import * as SessionError from "./session-errors"
+import { TuiPayload } from "@/server/shared/tui-payload"
 
 const tryParseJson = (text: string) =>
   Effect.try({
@@ -108,6 +109,10 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       params: { sessionID: SessionID }
       query: typeof MessagesQuery.Type
     }) {
+      const request = yield* HttpServerRequest.HttpServerRequest
+      const output = <T extends { readonly info: { readonly role: string } }>(items: readonly T[]) =>
+        request.headers[TuiPayload.HEADER] === TuiPayload.OMIT ? TuiPayload.messages(items) : items
+
       if (ctx.query.before && ctx.query.limit === undefined) return yield* new HttpApiError.BadRequest({})
       if (ctx.query.before) {
         const before = ctx.query.before
@@ -118,7 +123,8 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       }
       yield* requireSession(ctx.params.sessionID)
       if (ctx.query.limit === undefined || ctx.query.limit === 0) {
-        return yield* SessionError.mapStorageNotFound(session.messages({ sessionID: ctx.params.sessionID }))
+        const items = yield* SessionError.mapStorageNotFound(session.messages({ sessionID: ctx.params.sessionID }))
+        return output(items)
       }
 
       const page = yield* SessionError.mapStorageNotFound(
@@ -128,15 +134,14 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
           before: ctx.query.before,
         }),
       )
-      if (!page.cursor) return page.items
+      if (!page.cursor) return output(page.items)
 
-      const request = yield* HttpServerRequest.HttpServerRequest
       // toURL() honors the Host + x-forwarded-proto headers, so the Link
       // header echoes the real origin instead of a hard-coded localhost.
       const url = Option.getOrElse(HttpServerRequest.toURL(request), () => new URL(request.url, "http://localhost"))
       url.searchParams.set("limit", ctx.query.limit.toString())
       url.searchParams.set("before", page.cursor)
-      return HttpServerResponse.jsonUnsafe(page.items, {
+      return HttpServerResponse.jsonUnsafe(output(page.items), {
         headers: {
           "Access-Control-Expose-Headers": "Link, X-Next-Cursor",
           Link: `<${url.toString()}>; rel="next"`,

@@ -5,6 +5,7 @@ import { GlobalBus } from "@/bus/global"
 import type { GlobalEvent } from "@opencode-ai/sdk/v2"
 import { ServerAuth } from "@/server/auth"
 import type { ConfigV1 } from "@opencode-ai/core/v1/config/config"
+import { TuiPayload } from "@/server/shared/tui-payload"
 
 type Network = { port: number; hostname: string; mdns?: boolean; cors?: string[] }
 type ChildInput = Network & { ipcEvents?: boolean }
@@ -26,7 +27,10 @@ export async function runTuiServerChild(input: ChildInput) {
   const done = Promise.withResolvers<void>()
   let stopping = false
   const forwardEvent = (event: unknown) => {
-    process.send?.({ type: "event", event } satisfies ChildMessage)
+    if (!isGlobalEvent(event)) return
+    const projected = TuiPayload.event(event)
+    if (!projected) return
+    process.send?.({ type: "event", event: projected } satisfies ChildMessage)
   }
   if (input.ipcEvents) GlobalBus.on("event", forwardEvent)
 

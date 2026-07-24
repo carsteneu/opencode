@@ -38,6 +38,32 @@ const emptyConsoleState: ConsoleState = {
   switchableOrgCount: 0,
 }
 
+const messagePatchHeaders = { "x-opencode-message-patches": "omit" }
+
+function messageInfo(info: Message): Message {
+  if (info.role !== "user") return info
+  const diffs = info.summary?.diffs
+  if (!Array.isArray(diffs) || !diffs.some((diff) => diff.patch !== undefined)) return info
+  return {
+    ...info,
+    summary: {
+      ...info.summary,
+      diffs: diffs.map((diff) => {
+        if (diff.patch === undefined) return diff
+        const metadata = { ...diff }
+        delete metadata.patch
+        return metadata
+      }),
+    },
+  }
+}
+
+function messageMetadata<T extends { info: Message }>(message: T): T {
+  const info = messageInfo(message.info)
+  if (info === message.info) return message
+  return { ...message, info }
+}
+
 function search<T>(items: T[], target: string, key: (item: T) => string) {
   let left = 0
   let right = items.length - 1
@@ -360,31 +386,32 @@ export const {
         }
 
         case "message.updated": {
-          touchMessage(event.properties.info.sessionID, event.properties.info.id)
-          const messages = store.message[event.properties.info.sessionID]
+          const info = messageInfo(event.properties.info)
+          touchMessage(info.sessionID, info.id)
+          const messages = store.message[info.sessionID]
           if (!messages) {
-            setStore("message", event.properties.info.sessionID, [event.properties.info])
+            setStore("message", info.sessionID, [info])
             break
           }
-          const result = search(messages, event.properties.info.id, (m) => m.id)
+          const result = search(messages, info.id, (m) => m.id)
           if (result.found) {
-            setStore("message", event.properties.info.sessionID, result.index, reconcile(event.properties.info))
+            setStore("message", info.sessionID, result.index, reconcile(info))
             break
           }
           setStore(
             "message",
-            event.properties.info.sessionID,
+            info.sessionID,
             produce((draft) => {
-              draft.splice(result.index, 0, event.properties.info)
+              draft.splice(result.index, 0, info)
             }),
           )
-          const updated = store.message[event.properties.info.sessionID]
-          if (updated.length > 100 && !olderLoadedSessions.has(event.properties.info.sessionID)) {
+          const updated = store.message[info.sessionID]
+          if (updated.length > 100 && !olderLoadedSessions.has(info.sessionID)) {
             const oldest = updated[0]
             batch(() => {
               setStore(
                 "message",
-                event.properties.info.sessionID,
+                info.sessionID,
                 produce((draft) => {
                   draft.shift()
                 }),
@@ -651,10 +678,13 @@ export const {
             const before = Buffer.from(JSON.stringify({ id: oldest.id, time: oldest.time.created })).toString(
               "base64url",
             )
-            const response = await sdk.client.session.messages({ sessionID, limit: 50, before })
-            const items = (response.data ?? []).filter(
-              (message) => !store.message[sessionID]?.some((item) => item.id === message.info.id),
+            const response = await sdk.client.session.messages(
+              { sessionID, limit: 50, before },
+              { headers: messagePatchHeaders },
             )
+            const items = (response.data ?? [])
+              .map(messageMetadata)
+              .filter((message) => !store.message[sessionID]?.some((item) => item.id === message.info.id))
             if (items.length === 0) {
               olderExhausted.add(sessionID)
               return 0
@@ -693,7 +723,7 @@ export const {
           const task = (async () => {
             const [session, messages, todo, diff] = await Promise.all([
               sdk.client.session.get({ sessionID }, { throwOnError: true }),
-              sdk.client.session.messages({ sessionID, limit: 100 }),
+              sdk.client.session.messages({ sessionID, limit: 100 }, { headers: messagePatchHeaders }),
               sdk.client.session.todo({ sessionID }),
               sdk.client.session.diff({ sessionID }),
             ])
@@ -703,8 +733,9 @@ export const {
                 if (match.found) draft.session[match.index] = session.data!
                 if (!match.found) draft.session.splice(match.index, 0, session.data!)
                 draft.todo[sessionID] = todo.data ?? []
+                const hydratedMessages = (messages.data ?? []).map(messageMetadata)
                 const currentMessages = draft.message[sessionID] ?? []
-                const infos = (messages.data ?? []).flatMap((message) => {
+                const infos = hydratedMessages.flatMap((message) => {
                   if (!tracker.messages.has(message.info.id)) return [message.info]
                   const current = currentMessages.find((item) => item.id === message.info.id)
                   return current ? [current] : []
@@ -717,7 +748,7 @@ export const {
                 const removed = infos.slice(0, -100)
                 const visible = infos.slice(-100)
                 const visibleIDs = new Set(visible.map((message) => message.id))
-                for (const message of messages.data ?? []) {
+                for (const message of hydratedMessages) {
                   if (!visibleIDs.has(message.info.id)) {
                     delete draft.part[message.info.id]
                     continue

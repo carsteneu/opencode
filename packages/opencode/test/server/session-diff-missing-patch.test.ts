@@ -24,6 +24,7 @@ import { resetDatabase } from "../fixture/db"
 import { disposeAllInstances, TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { httpApiLayer, requestInDirectory } from "./httpapi-layer"
+import { TuiPayload } from "@/server/shared/tui-payload"
 
 const it = testEffect(Layer.mergeAll(LayerNode.compile(LayerNode.group([Session.node, Storage.node])), httpApiLayer))
 
@@ -66,23 +67,68 @@ describe("session diff with missing patch (#26574)", () => {
   )
 
   it.instance(
-    "GET /session/<id>/diff returns requested turn diffs",
+    "TUI message hydration omits patches without changing the requested turn diff",
     () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
         const session = yield* withSession({ title: "turn-diff" })
+        yield* Session.use.updateMessage({
+          id: MessageID.ascending(),
+          sessionID: session.id,
+          role: "user",
+          time: { created: 1 },
+          agent: "build",
+          model: { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("model") },
+        } satisfies SessionV1.User)
         const messageID = MessageID.ascending()
+        const patch = "@@ -1 +1 @@\n-old\n+new"
         yield* Session.use.updateMessage({
           id: messageID,
           sessionID: session.id,
           role: "user",
-          time: { created: Date.now() },
+          time: { created: 2 },
           agent: "build",
           model: { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("model") },
           summary: {
-            diffs: [{ file: "turn.ts", additions: 1, deletions: 0, status: "modified" }],
+            title: "turn title",
+            body: "turn body",
+            diffs: [{ file: "turn.ts", patch, additions: 1, deletions: 0, status: "modified" }],
           },
         } satisfies SessionV1.User)
+
+        const messagesPath = `${pathFor(SessionPaths.messages, { sessionID: session.id })}?limit=1`
+        const tuiResponse = yield* requestInDirectory(messagesPath, test.directory, {
+          headers: { [TuiPayload.HEADER]: TuiPayload.OMIT },
+        })
+        expect(tuiResponse.status).toBe(200)
+        const tuiMessages = (yield* tuiResponse.json) as SessionV1.WithParts[]
+        expect(tuiMessages[0]?.info).toMatchObject({
+          id: messageID,
+          summary: {
+            title: "turn title",
+            body: "turn body",
+            diffs: [{ file: "turn.ts", additions: 1, deletions: 0, status: "modified" }],
+          },
+        })
+        if (tuiMessages[0]?.info.role !== "user") throw new Error("Expected user message")
+        expect(tuiMessages[0].info.summary?.diffs[0]?.patch).toBeUndefined()
+
+        const initialResponse = yield* requestInDirectory(
+          `${pathFor(SessionPaths.messages, { sessionID: session.id })}?limit=100`,
+          test.directory,
+          { headers: { [TuiPayload.HEADER]: TuiPayload.OMIT } },
+        )
+        expect(initialResponse.status).toBe(200)
+        const initialMessages = (yield* initialResponse.json) as SessionV1.WithParts[]
+        const initialMessage = initialMessages.find((message) => message.info.id === messageID)?.info
+        if (initialMessage?.role !== "user") throw new Error("Expected user message")
+        expect(initialMessage.summary?.diffs[0]?.patch).toBeUndefined()
+
+        const regularResponse = yield* requestInDirectory(messagesPath, test.directory)
+        expect(regularResponse.status).toBe(200)
+        const regularMessages = (yield* regularResponse.json) as SessionV1.WithParts[]
+        if (regularMessages[0]?.info.role !== "user") throw new Error("Expected user message")
+        expect(regularMessages[0].info.summary?.diffs[0]?.patch).toBe(patch)
 
         const response = yield* requestInDirectory(
           `${pathFor(SessionPaths.diff, { sessionID: session.id })}?messageID=${messageID}`,
@@ -90,7 +136,9 @@ describe("session diff with missing patch (#26574)", () => {
         )
 
         expect(response.status).toBe(200)
-        expect(yield* response.json).toEqual([{ file: "turn.ts", additions: 1, deletions: 0, status: "modified" }])
+        expect(yield* response.json).toEqual([
+          { file: "turn.ts", patch, additions: 1, deletions: 0, status: "modified" },
+        ])
       }),
     { git: true, config: { formatter: false, lsp: false } },
   )
