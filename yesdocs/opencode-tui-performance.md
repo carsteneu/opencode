@@ -20,14 +20,14 @@ This is a community build, not an upstream OpenCode release.
 
 | Component | Version or commit | Source |
 | --- | --- | --- |
-| Current public OpenCode prerelease | `1.18.4-patched.94` | [tag](https://github.com/carsteneu/opencode/tree/1.18.4-patched.94) |
-| Previous public OpenCode prerelease | `1.18.4-patched.92`, commit `2b0c17144a29bbe40f5cf033ce67cece30ecbae0` | [tag](https://github.com/carsteneu/opencode/tree/1.18.4-patched.92) |
+| Current public OpenCode prerelease | `1.18.4-patched.96` | [tag](https://github.com/carsteneu/opencode/tree/1.18.4-patched.96) |
+| Previous public OpenCode prerelease | `1.18.4-patched.94`, commit `54b8c2495c035e978d2e3b3a69b6b760f36c79a0` | [tag](https://github.com/carsteneu/opencode/tree/1.18.4-patched.94) |
 | Currently deployed OpenCode build | `1.18.4-patched.93`, commit `0112a57387a445e77a7b8568fd75466eb9be202d` | Local historical tag |
-| OpenTUI renderer in all three builds | OpenTUI 0.4.5 plus patches, commit `75f0721104b67027155dae967b44e67173b04756` | [tag](https://github.com/carsteneu/opentui/tree/opencode-1.18.4-patched.92) |
-| Current public Linux binary | `.94`, x86_64, SHA-256 `36562b3a41c7d373d256bf8c35c6f5a72e7b6cb5c96c94539477cd078f82d1f7` | [release](https://github.com/carsteneu/opencode/releases/tag/1.18.4-patched.94) |
+| OpenTUI renderer in all binary builds | OpenTUI 0.4.5 plus patches, commit `75f0721104b67027155dae967b44e67173b04756` | [tag](https://github.com/carsteneu/opentui/tree/opencode-1.18.4-patched.92) |
+| Current public Linux binary | `.96`, x86_64, SHA-256 `e531925bf6205828e1caea3b4e46f29fa538864fe067a83dcfe446a6bbff2307` | [release](https://github.com/carsteneu/opencode/releases/tag/1.18.4-patched.96) |
 | Currently deployed Linux binary | `.93`, x86_64, SHA-256 `4e4caeab4e85867306403aba3fcf313aaa54888c74b145149cbf04b0a2a9969e` | Locally verified |
 
-At the release tag, the OpenCode branch is 51 commits ahead of its then-current `dev` base, commit
+At the `.94` release tag, the OpenCode branch was 51 commits ahead of its then-current `dev` base, commit
 `0a601cf334b2cf5ac4e420cb2f3a4248b4414c17`. The focused diff is 58 files with 2,821 additions and 432
 deletions. That includes 14 test files and 3 historical measurement documents. The separate OpenTUI fork
 changes 28 files with 1,796 additions and 96 deletions relative to OpenTUI 0.4.5.
@@ -43,6 +43,18 @@ in this repository.
 The `.94` prerelease contains the same OpenCode runtime changes as `.93`, adds this performance report to the
 tagged source, and rebuilds the Linux binary with the `.94` version identifier. It adds no further OpenTUI
 changes.
+
+The `.95` source boundary removes patch bodies from TUI-specific message hydration and private IPC events while
+retaining file, status, addition, deletion, title, and body metadata. Full patches remain available through the
+existing per-message diff endpoint. It also drops durable `sync` events before private IPC because the TUI
+already ignored them. Provider requests, persisted session data, and Anthropic/OpenAI cache input remain
+unchanged. `.95` is a source tag and has no separate binary release.
+
+The `.96` prerelease merges the current upstream `dev` through the fork's `dev` branch, including 41 upstream
+commits added after the `.94` base. Upstream still reports version 1.18.4, so the fork suffix advances without
+changing package versions. The merge includes the upstream Mistral prompt-cache fixes and Mistral SDK 3.0.51.
+The existing OpenTUI artifacts were hash-checked before and after dependency installation and remained
+byte-identical.
 
 ## Results at a glance
 
@@ -474,9 +486,13 @@ The `.93` follow-up additionally passed focused subprocess, HTTP session-settlem
 plus the package typecheck. The built artifact passed its version smoke test, was byte-compared with the
 installed binary, and completed the independent local-provider run described above.
 
+The `.96` integration passed typechecks for OpenCode, TUI, Core, and LLM. Its focused validation included 418
+OpenCode tests, 22 TUI tests, and 4 Mistral SDK patch tests with no failures. The Linux x86_64 binary passed its
+embedded version smoke test and reports `1.18.4-patched.96`.
+
 ## Packaging and reproducibility caveat
 
-The `.92`, `.93`, and `.94` binaries contain the patched OpenTUI Core JavaScript, Solid integration, and
+The `.92`, `.93`, `.94`, and `.96` binaries contain the patched OpenTUI Core JavaScript, Solid integration, and
 matching native `libopentui.so`.
 
 The OpenCode lockfile still names the released OpenTUI 0.4.5 packages. A fresh `bun install` therefore resolves
@@ -492,7 +508,7 @@ asset.
 ## Limits of the conclusions
 
 - The strongest controlled stock comparisons use OpenCode 1.18.1 and patched `.89` or `.90`, not stock 1.18.4
-  and patched `.92`, `.93`, or `.94`.
+  and patched `.92`, `.93`, `.94`, or `.96`.
 - The `.91` to `.92` Atop comparison is observational. The idle sample lengths differ, and the active workloads
   were not matched.
 - CPU varies with provider chunk rate, response structure, terminal dimensions, visible tools, session length,
@@ -514,8 +530,8 @@ Some lower-level command transcripts and the full investigation journal remain l
 published historical documents above retain the methods, aggregate results, and decisions used by this report.
 
 The current prerelease is available at
-[OpenCode 1.18.4-patched.94](https://github.com/carsteneu/opencode/releases/tag/1.18.4-patched.94). The renderer
+[OpenCode 1.18.4-patched.96](https://github.com/carsteneu/opencode/releases/tag/1.18.4-patched.96). The renderer
 source is preserved in the
 [OpenTUI `opencode-1.18.4-patched.92` tag](https://github.com/carsteneu/opentui/tree/opencode-1.18.4-patched.92).
-The `.93` OpenCode follow-up remains the currently deployed binary; `.94` publishes the same runtime changes
-with this report included in its tagged source.
+The `.93` OpenCode follow-up remains the currently deployed binary. `.96` adds the TUI history payload reduction
+and the current upstream integration to the public patch set.
