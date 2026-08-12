@@ -2,9 +2,12 @@ const binary = "__opencode_uint8array__"
 const error = "__opencode_error__"
 
 export function stringify(value: unknown) {
-  return JSON.stringify(value, (_key, item) => {
-    if (item instanceof Uint8Array) return { [binary]: Buffer.from(item).toString("base64") }
-    if (item instanceof Error) return { [error]: item.message, name: item.name, stack: item.stack }
+  return JSON.stringify(value, function (key, item) {
+    // Buffer.toJSON runs before the replacer, so inspect the holder's original
+    // value to preserve Buffer and Uint8Array through the same binary envelope.
+    const original = this[key]
+    if (original instanceof Uint8Array) return { [binary]: Buffer.from(original).toString("base64") }
+    if (original instanceof Error) return { [error]: original.message, name: original.name, stack: original.stack }
     return item
   })
 }

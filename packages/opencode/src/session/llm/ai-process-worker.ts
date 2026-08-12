@@ -1,10 +1,12 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
 import { createOpenAI } from "@ai-sdk/openai"
 import { createAnthropic } from "@ai-sdk/anthropic"
-import { jsonSchema, streamText, tool } from "ai"
+import { jsonSchema, streamText, tool, type Tool, wrapLanguageModel } from "ai"
 import { LLMWorkerIPC } from "./ipc"
 import type { AIProcessInput } from "./ai-process-client"
 import type { SharedV3ProviderOptions } from "@ai-sdk/provider"
+import { applyRuntimeFetch } from "@/provider/runtime-fetch"
+import { LLMMessageTransform } from "./message-transform"
 
 // @ts-ignore AI SDK uses this global flag to suppress provider warnings on stdout.
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -50,38 +52,64 @@ void (async () => {
 })()
 
 const write = (value: unknown) => process.stdout.write(LLMWorkerIPC.stringify(value) + "\n")
+const options = applyRuntimeFetch({ ...input.options })
 const model = (() => {
   if (input.package === "@ai-sdk/openai") {
-    const provider = createOpenAI(input.options)
-    return input.endpoint === "responses" ||
-      (!input.endpoint && /^gpt-[5-9]/.test(input.model) && !input.model.startsWith("gpt-5-mini"))
-      ? provider.responses(input.model)
-      : provider.chat(input.model)
+    const provider = createOpenAI(options)
+    return provider.responses(input.model)
   }
-  if (input.package === "@ai-sdk/anthropic") return createAnthropic(input.options)(input.model)
+  if (input.package === "@ai-sdk/anthropic") return createAnthropic(options)(input.model)
   return createOpenAICompatible({
     name: input.provider,
-    ...input.options,
-    baseURL: String(input.options.baseURL),
+    ...options,
+    baseURL: String(options.baseURL),
   })(input.model)
 })()
+type ToolRequest =
+  | { action: "execute"; name: string; input: unknown; callID: string }
+  | { action: "model-output"; name: string; input: unknown; output: unknown; callID: string }
+type ToolModelOutput = Awaited<ReturnType<NonNullable<Tool["toModelOutput"]>>>
+const requestTool = (message: ToolRequest) =>
+  new Promise<unknown>((resolve, reject) => {
+    const id = requestID++
+    pending.set(id, { resolve, reject })
+    write({ type: "tool", id, ...message })
+  })
 const tools = Object.fromEntries(
   Object.entries(input.tools).map(([name, item]) => [
     name,
-    tool({
+    tool<unknown, unknown>({
+      type: item.type,
       description: item.description,
+      title: item.title,
+      providerOptions: item.providerOptions,
       inputSchema: jsonSchema(item.inputSchema as Parameters<typeof jsonSchema>[0]),
+      outputSchema: item.outputSchema
+        ? jsonSchema(item.outputSchema as Parameters<typeof jsonSchema>[0])
+        : undefined,
+      inputExamples: item.inputExamples,
+      needsApproval: item.needsApproval,
+      strict: item.strict,
       execute: (value, context) =>
-        new Promise((resolve, reject) => {
-          const id = requestID++
-          pending.set(id, { resolve, reject })
-          write({ type: "tool", id, name, input: value, callID: context.toolCallId })
-        }),
+        requestTool({ action: "execute", name, input: value, callID: context.toolCallId }),
+      toModelOutput: item.toModelOutput
+        ? async (options) =>
+            (await requestTool({
+              action: "model-output",
+              name,
+              input: options.input,
+              output: options.output,
+              callID: options.toolCallId,
+            })) as ToolModelOutput
+        : undefined,
     }),
   ]),
 )
 const result = streamText({
-  model,
+  model: wrapLanguageModel({
+    model,
+    middleware: [LLMMessageTransform.middleware(input.modelInfo, input.messageTransformOptions)],
+  }),
   abortSignal: abort.signal,
   messages: input.messages,
   tools,

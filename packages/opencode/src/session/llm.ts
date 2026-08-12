@@ -30,6 +30,7 @@ import { LLMAISDK } from "./llm/ai-sdk"
 import { LLMNativeRuntime } from "./llm/native-runtime"
 import { LLMRequestPrep } from "./llm/request"
 import { LLMAIProcess } from "./llm/ai-process-client"
+import { LLMMessageTransform } from "./llm/message-transform"
 
 export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
 
@@ -293,39 +294,22 @@ const live: Layer.Layer<
         })
       }
 
-      const isolated = !cfg.experimental?.openTelemetry && LLMAIProcess.supported(input.model, item)
-      yield* Effect.logInfo("llm runtime selected", {
-        "llm.runtime": isolated ? "ai-process" : "ai-sdk",
-        "llm.provider": input.model.providerID,
-        "llm.model": input.model.id,
-      })
-      if (isolated) {
-        const tools = Object.fromEntries(
-          Object.entries(prepared.tools).map(([name, tool]) => [
-            name,
-            { description: tool.description ?? "", inputSchema: LLMAIProcess.inputSchema(tool) },
-          ]),
-        )
-        return {
-          type: "ai-process" as const,
-          stream: LLMAIProcess.stream(
-            {
+      const processOptions =
+        !cfg.experimental?.openTelemetry && LLMAIProcess.enabled()
+          ? LLMAIProcess.providerOptions(input.model, item)
+          : undefined
+      const processTools = processOptions ? LLMAIProcess.prepareTools(prepared.tools) : undefined
+      const processInput =
+        processOptions && processTools
+          ? {
               provider: input.model.providerID,
               package: input.model.api.npm,
               model: input.model.api.id,
-              endpoint: "endpoint" in input.model.api ? String(input.model.api.endpoint) : undefined,
-              options: {
-                ...item.options,
-                apiKey: item.options.apiKey ?? item.key,
-                baseURL: item.options.baseURL ?? input.model.api.url,
-                headers: { ...item.options.headers, ...input.model.headers },
-              },
-              messages: ProviderTransform.message(
-                prepared.messages,
-                input.model,
-                prepared.messageTransformOptions,
-              ),
-              tools,
+              options: processOptions,
+              modelInfo: input.model,
+              messageTransformOptions: prepared.messageTransformOptions,
+              messages: prepared.messages,
+              tools: processTools,
               activeTools: Object.keys(prepared.tools).filter((name) => name !== "invalid"),
               toolChoice: input.toolChoice,
               temperature: prepared.params.temperature,
@@ -335,7 +319,19 @@ const live: Layer.Layer<
               providerOptions: ProviderTransform.providerOptions(input.model, prepared.params.options),
               headers: prepared.headers,
               maxRetries: input.retries ?? 0,
-            },
+            }
+          : undefined
+      const isolated = processInput !== undefined && LLMAIProcess.inputSupported(processInput)
+      yield* Effect.logInfo("llm runtime selected", {
+        "llm.runtime": isolated ? "ai-process" : "ai-sdk",
+        "llm.provider": input.model.providerID,
+        "llm.model": input.model.id,
+      })
+      if (isolated && processInput) {
+        return {
+          type: "ai-process" as const,
+          stream: LLMAIProcess.stream(
+            processInput,
             prepared.tools,
             prepared.messages,
             input.abort,
@@ -393,22 +389,7 @@ const live: Layer.Layer<
           messages: prepared.messages,
           model: wrapLanguageModel({
             model: language,
-            middleware: [
-              {
-                specificationVersion: "v3" as const,
-                async transformParams(args) {
-                  if (args.type === "stream") {
-                    // @ts-expect-error
-                    args.params.prompt = ProviderTransform.message(
-                      args.params.prompt,
-                      input.model,
-                      prepared.messageTransformOptions,
-                    )
-                  }
-                  return args.params
-                },
-              },
-            ],
+            middleware: [LLMMessageTransform.middleware(input.model, prepared.messageTransformOptions)],
           }),
           experimental_telemetry: {
             isEnabled: cfg.experimental?.openTelemetry,
