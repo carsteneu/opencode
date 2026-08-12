@@ -31,7 +31,6 @@ import {
   addDefaultParsers,
   TextAttributes,
   RGBA,
-  type MarkdownRenderable,
   type TextRenderable,
 } from "@opentui/core"
 import { Prompt, type PromptRef } from "../../component/prompt"
@@ -1844,7 +1843,6 @@ function TextPart(props: { last: boolean; part: TextPart; message: AssistantMess
   const ctx = use()
   const sync = useSync()
   const { theme, syntax } = useTheme()
-  const [markdown, setMarkdown] = createSignal<MarkdownRenderable>()
   let previousRawLength: number | undefined
   let previousContent = ""
   let previousRevision: number | undefined
@@ -1865,14 +1863,13 @@ function TextPart(props: { last: boolean; part: TextPart; message: AssistantMess
     previousRevision = delta?.revision
     return { content: next, appended }
   })
-  usePartialRender(markdown)
   return (
     <Show when={content().content}>
       <box ref={(el: BoxRenderable) => alwaysSeparate.add(el)} paddingLeft={3} marginTop={1} flexShrink={0}>
         <markdown
-          ref={setMarkdown}
           syntaxStyle={syntax()}
           streaming={props.message.time.completed === undefined}
+          retainedRendering={true}
           internalBlockMode="top-level"
           contentUpdate={content()}
           tableOptions={{ style: "grid" }}
