@@ -498,8 +498,20 @@ matching native `libopentui.so`.
 The OpenCode lockfile still names the released OpenTUI 0.4.5 packages. A fresh `bun install` therefore resolves
 stock OpenTUI 0.4.5, not the fork commit. Reproducing the measured renderer requires building the tagged OpenTUI
 fork, placing its matching JavaScript and native artifacts into the OpenCode dependency tree, and then building
-OpenCode without reinstalling those dependencies. The source tags document exact provenance, but a normal clone
-and install is not yet a one-command reproduction of the binary.
+OpenCode without reinstalling those dependencies.
+
+The repository now includes a guarded synchronization command for that overlay step:
+
+```sh
+bun run script/sync-opentui-overlay.ts --source=/path/to/opentui --apply
+bun run script/sync-opentui-overlay.ts --source=/path/to/opentui --check
+```
+
+The command requires the OpenTUI checkout to be clean and exactly at the tagged commit. It verifies the complete
+Core, Solid, and Linux x64 native artifact trees against pinned hashes, checks that the installed dependency slot
+is still OpenTUI 0.4.5, and replaces only the current worktree's Bun store targets. The tagged OpenTUI artifacts
+must still be built first. Build OpenCode with `--skip-install` afterward so dependency installation cannot replace
+the verified overlay.
 
 The native ABI also changed for partial-region rendering. Patched JavaScript and the matching native library
 must be distributed together for every platform. The release currently provides only the tested Linux x86_64
