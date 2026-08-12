@@ -93,7 +93,13 @@ import { getRevertDiffFiles } from "../../util/revert-diff"
 import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut, useOpencodeKeymap } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
 import { LocationProvider } from "../../context/location"
-import { projectSessionImages, sessionImagePreviewHeight, toolSessionImages } from "../../util/session-image"
+import {
+  projectSessionImages,
+  selectAutoSessionImageKeys,
+  sessionImageKey,
+  sessionImagePreviewHeight,
+  toolSessionImages,
+} from "../../util/session-image"
 
 addDefaultParsers(parsers.parsers)
 
@@ -200,6 +206,8 @@ const sessionGlobalUnfocusedBindingCommands = ["session.first", "session.last"] 
 
 const context = createContext<{
   width: number
+  height: number
+  autoImageKeys: ReadonlySet<string>
   sessionID: string
   conceal: () => boolean
   thinkingMode: () => ThinkingMode
@@ -300,6 +308,20 @@ export function Session() {
   const visibleMessages = createMemo(() => messageWindow().visible)
   const hiddenMessages = createMemo(() => messageWindow().hidden)
   const lastAssistant = createMemo(() => messageWindow().projected.findLast((message) => message.role === "assistant"))
+  const autoImageKeys = createMemo(() =>
+    selectAutoSessionImageKeys(
+      visibleMessages()
+        .slice(-WINDOW_LADDER[0])
+        .flatMap((message) =>
+          (sync.data.part[message.id] ?? []).flatMap((part) => {
+            if (part.type !== "tool") return []
+            const images = toolSessionImages(part)
+            if (images.length === 0) return []
+            return [{ partID: part.id, images }]
+          }),
+        ),
+    ),
+  )
 
   // Reset the window whenever the session changes so long histories don't
   // render fully on the first frame of a new session.
@@ -1283,6 +1305,12 @@ export function Session() {
           get width() {
             return contentWidth()
           },
+          get height() {
+            return dimensions().height
+          },
+          get autoImageKeys() {
+            return autoImageKeys()
+          },
           sessionID: route.sessionID,
           conceal,
           thinkingMode,
@@ -1942,20 +1970,20 @@ function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMess
 
 export function SessionToolImages(props: { part: ToolPart }) {
   const images = createMemo(() => {
-    const result = toolSessionImages(props.part.state)
+    const result = toolSessionImages(props.part)
     if (result.length > 0) return result
     return undefined
   })
 
-  return <Show when={images()}>{(items) => <ToolImagePreviews images={items()} />}</Show>
+  return <Show when={images()}>{(items) => <ToolImagePreviews partID={props.part.id} images={items()} />}</Show>
 }
 
-function ToolImagePreviews(props: { images: ReturnType<typeof toolSessionImages> }) {
+function ToolImagePreviews(props: { partID: string; images: ReturnType<typeof toolSessionImages> }) {
+  const ctx = use()
   const dialog = useDialog()
-  const dimensions = useTerminalDimensions()
   const { theme } = useTheme()
   const projected = createMemo(() => projectSessionImages(props.images))
-  const height = createMemo(() => sessionImagePreviewHeight(dimensions().height))
+  const height = createMemo(() => sessionImagePreviewHeight(ctx.height))
   const supported = supportsNativeImages()
 
   return (
@@ -1972,6 +2000,7 @@ function ToolImagePreviews(props: { images: ReturnType<typeof toolSessionImages>
       <For each={projected().visible}>
         {(image, index) => {
           const [failed, setFailed] = createSignal(false)
+          const eager = createMemo(() => ctx.autoImageKeys.has(sessionImageKey(props.partID, image.uri)))
           return (
             <box
               width={height() * 2}
@@ -1987,10 +2016,10 @@ function ToolImagePreviews(props: { images: ReturnType<typeof toolSessionImages>
               }}
             >
               <Show
-                when={supported && !failed()}
+                when={supported && eager() && !failed()}
                 fallback={
                   <text fg={theme.textMuted} wrapMode="word">
-                    Preview unavailable
+                    {supported ? "Open image" : "Preview unavailable"}
                   </text>
                 }
               >

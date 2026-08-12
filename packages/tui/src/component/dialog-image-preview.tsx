@@ -1,6 +1,6 @@
 import { TextAttributes } from "@opentui/core"
 import { Dynamic } from "solid-js/web"
-import { createMemo, createSignal, Show } from "solid-js"
+import { createEffect, createMemo, createSignal, on, Show } from "solid-js"
 import { useTerminalDimensions } from "@opentui/solid"
 import { useTheme } from "../context/theme"
 import { useBindings } from "../keymap"
@@ -14,16 +14,24 @@ export function DialogImagePreview(props: { images: readonly SessionImage[]; ini
   const { theme } = useTheme()
   const [index, setIndex] = createSignal(Math.max(0, Math.min(props.images.length - 1, props.initial)))
   const [failed, setFailed] = createSignal(false)
-  const current = createMemo(() => props.images[index()])
+  const currentIndex = createMemo(() => Math.max(0, Math.min(props.images.length - 1, index())))
+  const current = createMemo(() => props.images[currentIndex()])
   const height = createMemo(() => Math.max(3, dimensions().height - Math.floor(dimensions().height / 4) - 5))
   const supported = supportsNativeImages()
 
   dialog.setSize("xlarge")
 
+  createEffect(
+    on(
+      () => current()?.uri,
+      () => setFailed(false),
+    ),
+  )
+
   const move = (direction: number) => {
     if (props.images.length < 2) return
     setFailed(false)
-    setIndex((value) => (value + direction + props.images.length) % props.images.length)
+    setIndex((currentIndex() + direction + props.images.length) % props.images.length)
   }
 
   useBindings(() => ({
@@ -39,7 +47,7 @@ export function DialogImagePreview(props: { images: readonly SessionImage[]; ini
         <box paddingLeft={2} paddingRight={2} paddingBottom={1} gap={1}>
           <box flexDirection="row" justifyContent="space-between">
             <text attributes={TextAttributes.BOLD} fg={theme.text}>
-              Image {index() + 1} of {props.images.length}
+              Image {currentIndex() + 1} of {props.images.length}
             </text>
             <text fg={theme.textMuted} onMouseUp={() => dialog.clear()}>
               esc
@@ -68,7 +76,7 @@ export function DialogImagePreview(props: { images: readonly SessionImage[]; ini
               {props.images.length > 1 ? "← previous" : ""}
             </text>
             <text fg={failed() ? theme.error : theme.textMuted} wrapMode="none" truncate>
-              {!supported || failed() ? image().uri : image().label}
+              {image().label}
             </text>
             <text fg={theme.textMuted} onMouseUp={() => move(1)}>
               {props.images.length > 1 ? "next →" : ""}
