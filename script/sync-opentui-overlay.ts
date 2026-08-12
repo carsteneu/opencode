@@ -4,13 +4,13 @@ import { randomUUID } from "node:crypto"
 import { cp, realpath, rename, rm } from "node:fs/promises"
 import path from "node:path"
 
-const expectedCommit = "75f0721104b67027155dae967b44e67173b04756"
-const expectedTag = "opencode-1.18.4-patched.92"
-const expectedVersion = "0.4.5"
+const expectedCommit = "568db413e7bc3a110981d2e54ddb7ebb8e906075"
+const expectedTag = "opencode-1.18.16-patched.98"
+const expectedVersion = "0.5.1"
 const expectedHashes = {
-  core: "c16de4f4b577451416462e877d0ee4fdee745f0e3dff1e33688f25bf96b796ce",
-  solid: "1981b6f9f17043ffa5ca617806e004d8742ee2ddc6e244426fa09f650f258e81",
-  native: "48ae932e0d6b619ed3d4396580d7913f7c2c434e9cb5fe30dd421193bb079c86",
+  core: "e15a4537e890882bee62068cb91b7cc5206dc5ea5fbc0b8def2e7f00a0c9d39b",
+  solid: "294dcc12fb498a5a8427bea3b7fc30b89ff1b37b39c76e93f2dbb47247330617",
+  native: "e459247a3ac0e92fd68011fc60a77f09ba5d6dfa18dab31ed4b62cf2fa136639",
 }
 const usage = "Usage: bun run script/sync-opentui-overlay.ts --source=<opentui-root> [--check | --apply]"
 const args = process.argv.slice(2)
