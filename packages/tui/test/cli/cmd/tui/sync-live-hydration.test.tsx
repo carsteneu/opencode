@@ -111,7 +111,8 @@ test("live messages use creation time with an ID tie-break", async () => {
   const { app, emit, sync } = await mount(undefined, tmp.path)
   const messages = [
     { ...assistant, id: "msg_a", time: { created: 30, completed: 31 } },
-    { ...assistant, id: "msg_z", time: { created: 10, completed: 11 } },
+    { ...assistant, id: "msg_z", time: { created: 2, completed: 3 } },
+    { ...assistant, id: "msg_c", time: { created: 10, completed: 11 } },
     { ...assistant, id: "msg_m", time: { created: 20, completed: 21 } },
     { ...assistant, id: "msg_b", time: { created: 20, completed: 21 } },
   ]
@@ -122,7 +123,13 @@ test("live messages use creation time with an ID tie-break", async () => {
     }
     await wait(() => sync.data.message[sessionID]?.length === messages.length)
 
-    expect(sync.data.message[sessionID].map((message) => message.id)).toEqual(["msg_z", "msg_b", "msg_m", "msg_a"])
+    expect(sync.data.message[sessionID].map((message) => message.id)).toEqual([
+      "msg_z",
+      "msg_c",
+      "msg_b",
+      "msg_m",
+      "msg_a",
+    ])
   } finally {
     app.renderer.destroy()
   }

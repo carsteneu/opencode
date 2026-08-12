@@ -105,6 +105,38 @@ export const alwaysSeparate = new WeakSet<BoxRenderable>()
 
 type RetryAction = Extract<SessionStatus, { type: "retry" }>["action"]
 
+type MessageOrder = Pick<UserMessage, "id" | "role" | "time"> | Pick<AssistantMessage, "id" | "role" | "time">
+
+export function projectMessageWindow<T extends MessageOrder>(
+  messages: readonly T[],
+  windowSize: number,
+  revertMessageID?: string,
+) {
+  const revertIndex = revertMessageID ? messages.findIndex((message) => message.id === revertMessageID) : -1
+  const projected = revertIndex === -1 ? messages : messages.slice(0, revertIndex + 1)
+  const visible = projected.length > windowSize ? projected.slice(-windowSize) : projected
+  const completed = messages.findLastIndex((message) => message.role === "assistant" && message.time.completed)
+  const pending = messages.findLastIndex(
+    (message, index) => index > completed && message.role === "assistant" && !message.time.completed,
+  )
+  const queued = new Set(
+    pending === -1
+      ? []
+      : messages.slice(pending + 1).flatMap((message) => (message.role === "user" ? [message.id] : [])),
+  )
+  return {
+    projected,
+    visible,
+    hidden: projected.length - visible.length,
+    revertIndex,
+    queued,
+  }
+}
+
+export function shouldExpandMessageWindow(hidden: number, contentHeight: number, containerHeight: number) {
+  return hidden > 0 && containerHeight > 0 && contentHeight <= containerHeight
+}
+
 function goUpsellKeys(action: RetryAction) {
   if (!action) return
   if (!GO_UPSELL_PROVIDERS.has(action.provider)) return
@@ -249,18 +281,9 @@ export function Session() {
   })
   const visible = createMemo(() => !session()?.parentID && permissions().length === 0 && questions().length === 0)
   const disabled = createMemo(() => permissions().length > 0 || questions().length > 0)
+  const dimensions = useTerminalDimensions()
 
-  const pending = createMemo(() => {
-    const completed = messages().findLastIndex((message) => message.role === "assistant" && message.time.completed)
-    const pending = messages().findLastIndex(
-      (message, index) => index > completed && message.role === "assistant" && !message.time.completed,
-    )
-    return pending === -1 ? undefined : pending
-  })
-
-  const lastAssistant = createMemo(() => {
-    return messages().findLast((x) => x.role === "assistant")
-  })
+  const revertMessageID = createMemo(() => session()?.revert?.messageID)
 
   // Windowed message rendering + infinite scroll-up paging.
   // F is the expand ladder (messages mounted to the DOM). When the user scrolls
@@ -270,12 +293,10 @@ export function Session() {
   // to the bottom.
   const WINDOW_LADDER = [10, 30, 50, 100]
   const [windowSize, setWindowSize] = createSignal(WINDOW_LADDER[0])
-  const visibleMessages = createMemo(() => {
-    const all = messages()
-    const size = windowSize()
-    return all.length > size ? all.slice(-size) : all
-  })
-  const hiddenMessages = createMemo(() => messages().length - visibleMessages().length)
+  const messageWindow = createMemo(() => projectMessageWindow(messages(), windowSize(), revertMessageID()))
+  const visibleMessages = createMemo(() => messageWindow().visible)
+  const hiddenMessages = createMemo(() => messageWindow().hidden)
+  const lastAssistant = createMemo(() => messageWindow().projected.findLast((message) => message.role === "assistant"))
 
   // Reset the window whenever the session changes so long histories don't
   // render fully on the first frame of a new session.
@@ -305,12 +326,35 @@ export function Session() {
     }, 80)
   }
 
+  // A fixed 10-message window can be shorter than a tall terminal. In that
+  // state OpenTUI has no scroll movement to report, so expand by one ladder
+  // step after layout until the viewport is filled or history is exhausted.
+  createEffect(() => {
+    const sessionID = route.sessionID
+    const size = windowSize()
+    const hidden = hiddenMessages()
+    const height = dimensions().height
+    if (hidden === 0) return
+    const timer = setTimeout(() => {
+      if (!scroll || scroll.isDestroyed) return
+      if (route.sessionID !== sessionID || windowSize() !== size || dimensions().height !== height) return
+      if (!shouldExpandMessageWindow(hiddenMessages(), scroll.scrollHeight, scroll.height)) return
+      expandRenderWindow()
+    }, 80)
+    onCleanup(() => clearTimeout(timer))
+  })
+
   // React only to actual scrollbar changes. Top of content expands the
   // window or loads older messages; bottom shrinks it to the ladder floor.
   const updateRenderWindow = () => {
     if (!scroll || scroll.isDestroyed) return
     if (Date.now() - lastExpandAt < 400) return
-    if (scroll.scrollHeight <= scroll.height) return
+    if (scroll.scrollHeight <= scroll.height) {
+      if (shouldExpandMessageWindow(hiddenMessages(), scroll.scrollHeight, scroll.height)) {
+        expandRenderWindow()
+      }
+      return
+    }
     if (scroll.scrollTop <= 2) {
       if (hiddenMessages() > 0) {
         expandRenderWindow()
@@ -325,7 +369,6 @@ export function Session() {
     }
   }
 
-  const dimensions = useTerminalDimensions()
   const [sidebar, setSidebar] = kv.signal<"auto" | "hide">("sidebar", "auto")
   const [sidebarOpen, setSidebarOpen] = createSignal(false)
   const [conceal, setConceal] = createSignal(true)
@@ -1197,7 +1240,6 @@ export function Session() {
   }))
 
   const revertInfo = createMemo(() => session()?.revert)
-  const revertMessageID = createMemo(() => revertInfo()?.messageID)
   const revertMessageIndex = createMemo(() => {
     const messageID = revertMessageID()
     if (!messageID) return -1
@@ -1337,11 +1379,6 @@ export function Session() {
                           )
                         })()}
                       </Match>
-                      <Match
-                        when={revert()?.messageID && revertMessageIndex() !== -1 && index() >= revertMessageIndex()}
-                      >
-                        <></>
-                      </Match>
                       <Match when={message.role === "user"}>
                         <UserMessage
                           index={index()}
@@ -1357,7 +1394,7 @@ export function Session() {
                           }}
                           message={message as UserMessage}
                           parts={sync.data.part[message.id] ?? []}
-                          pending={pending()}
+                          queued={messageWindow().queued.has(message.id)}
                         />
                       </Match>
                       <Match when={message.role === "assistant"}>
@@ -1444,7 +1481,7 @@ function UserMessage(props: {
   parts: Part[]
   onMouseUp: () => void
   index: number
-  pending?: number
+  queued: boolean
 }) {
   const ctx = use()
   const local = useLocal()
@@ -1462,7 +1499,7 @@ function UserMessage(props: {
   const files = createMemo(() => props.parts.flatMap((x) => (x.type === "file" ? [x] : [])))
   const { theme } = useTheme()
   const [hover, setHover] = createSignal(false)
-  const queued = createMemo(() => props.pending !== undefined && props.index > props.pending)
+  const queued = createMemo(() => props.queued)
   const color = createMemo(() => local.agent.color(props.message.agent))
   const queuedFg = createMemo(() => selectedForeground(theme, color()))
   const metadataVisible = createMemo(() => queued() || ctx.showTimestamps())

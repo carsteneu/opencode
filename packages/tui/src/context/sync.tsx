@@ -64,24 +64,33 @@ function messageMetadata<T extends { info: Message }>(message: T): T {
   return { ...message, info }
 }
 
-function search<T>(items: T[], target: string, key: (item: T) => string) {
+function searchBy<T>(items: T[], compare: (item: T) => number) {
   let left = 0
   let right = items.length - 1
   while (left <= right) {
     const middle = Math.floor((left + right) / 2)
-    const value = key(items[middle])
-    if (value === target) return { found: true, index: middle }
-    if (value < target) left = middle + 1
+    const order = compare(items[middle])
+    if (order === 0) return { found: true, index: middle }
+    if (order < 0) left = middle + 1
     else right = middle - 1
   }
   return { found: false, index: left }
+}
+
+function search<T>(items: T[], target: string, key: (item: T) => string) {
+  return searchBy(items, (item) => {
+    const value = key(item)
+    return value === target ? 0 : value < target ? -1 : 1
+  })
 }
 
 function compareMessage(a: Message, b: Message) {
   return a.time.created - b.time.created || a.id.localeCompare(b.id)
 }
 
-const messageKey = (message: Message) => message.time.created + message.id
+function searchMessage(messages: Message[], target: Message) {
+  return searchBy(messages, (message) => compareMessage(message, target))
+}
 
 export const {
   context: SyncContext,
@@ -399,7 +408,7 @@ export const {
             setStore("message", info.sessionID, [info])
             break
           }
-          const result = search(messages, messageKey(event.properties.info), messageKey)
+          const result = searchMessage(messages, info)
           if (result.found) {
             setStore("message", info.sessionID, result.index, reconcile(info))
             break
