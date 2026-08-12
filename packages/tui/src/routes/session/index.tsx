@@ -87,10 +87,13 @@ import { getScrollAcceleration } from "../../util/scroll"
 import { collapseToolOutput } from "../../util/collapse-tool-output"
 import { usePluginRuntime } from "../../plugin/runtime"
 import { DialogRetryAction } from "../../component/dialog-retry-action"
+import { DialogImagePreview } from "../../component/dialog-image-preview"
+import { nativeImageComponent, supportsNativeImages } from "../../component/native-image"
 import { getRevertDiffFiles } from "../../util/revert-diff"
 import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut, useOpencodeKeymap } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
 import { LocationProvider } from "../../context/location"
+import { projectSessionImages, sessionImagePreviewHeight, toolSessionImages } from "../../util/session-image"
 
 addDefaultParsers(parsers.parsers)
 
@@ -1882,55 +1885,137 @@ function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMess
   }
 
   return (
-    <Show when={!shouldHide()}>
-      <Switch>
-        <Match when={display() === "bash"}>
-          <Shell {...toolprops} />
-        </Match>
-        <Match when={display() === "glob"}>
-          <Glob {...toolprops} />
-        </Match>
-        <Match when={display() === "read"}>
-          <Read {...toolprops} />
-        </Match>
-        <Match when={display() === "grep"}>
-          <Grep {...toolprops} />
-        </Match>
-        <Match when={display() === "webfetch"}>
-          <WebFetch {...toolprops} />
-        </Match>
-        <Match when={display() === "websearch"}>
-          <WebSearch {...toolprops} />
-        </Match>
-        <Match when={display() === "write"}>
-          <Write {...toolprops} />
-        </Match>
-        <Match when={display() === "edit"}>
-          <Edit {...toolprops} />
-        </Match>
-        <Match when={display() === "task"}>
-          <Task {...toolprops} />
-        </Match>
-        <Match when={display() === "execute"}>
-          <Execute {...toolprops} />
-        </Match>
-        <Match when={display() === "apply_patch"}>
-          <ApplyPatch {...toolprops} />
-        </Match>
-        <Match when={display() === "todowrite"}>
-          <TodoWrite {...toolprops} />
-        </Match>
-        <Match when={display() === "question"}>
-          <Question {...toolprops} />
-        </Match>
-        <Match when={display() === "skill"}>
-          <Skill {...toolprops} />
-        </Match>
-        <Match when={true}>
-          <GenericTool {...toolprops} />
-        </Match>
-      </Switch>
-    </Show>
+    <>
+      <Show when={!shouldHide()}>
+        <Switch>
+          <Match when={display() === "bash"}>
+            <Shell {...toolprops} />
+          </Match>
+          <Match when={display() === "glob"}>
+            <Glob {...toolprops} />
+          </Match>
+          <Match when={display() === "read"}>
+            <Read {...toolprops} />
+          </Match>
+          <Match when={display() === "grep"}>
+            <Grep {...toolprops} />
+          </Match>
+          <Match when={display() === "webfetch"}>
+            <WebFetch {...toolprops} />
+          </Match>
+          <Match when={display() === "websearch"}>
+            <WebSearch {...toolprops} />
+          </Match>
+          <Match when={display() === "write"}>
+            <Write {...toolprops} />
+          </Match>
+          <Match when={display() === "edit"}>
+            <Edit {...toolprops} />
+          </Match>
+          <Match when={display() === "task"}>
+            <Task {...toolprops} />
+          </Match>
+          <Match when={display() === "execute"}>
+            <Execute {...toolprops} />
+          </Match>
+          <Match when={display() === "apply_patch"}>
+            <ApplyPatch {...toolprops} />
+          </Match>
+          <Match when={display() === "todowrite"}>
+            <TodoWrite {...toolprops} />
+          </Match>
+          <Match when={display() === "question"}>
+            <Question {...toolprops} />
+          </Match>
+          <Match when={display() === "skill"}>
+            <Skill {...toolprops} />
+          </Match>
+          <Match when={true}>
+            <GenericTool {...toolprops} />
+          </Match>
+        </Switch>
+      </Show>
+      <SessionToolImages part={props.part} />
+    </>
+  )
+}
+
+export function SessionToolImages(props: { part: ToolPart }) {
+  const images = createMemo(() => {
+    const result = toolSessionImages(props.part.state)
+    if (result.length > 0) return result
+    return undefined
+  })
+
+  return <Show when={images()}>{(items) => <ToolImagePreviews images={items()} />}</Show>
+}
+
+function ToolImagePreviews(props: { images: ReturnType<typeof toolSessionImages> }) {
+  const dialog = useDialog()
+  const dimensions = useTerminalDimensions()
+  const { theme } = useTheme()
+  const projected = createMemo(() => projectSessionImages(props.images))
+  const height = createMemo(() => sessionImagePreviewHeight(dimensions().height))
+  const supported = supportsNativeImages()
+
+  return (
+    <box
+      ref={(element: BoxRenderable) => alwaysSeparate.add(element)}
+      flexDirection="row"
+      flexShrink={0}
+      paddingTop={1}
+      paddingLeft={3}
+      paddingRight={2}
+      paddingBottom={1}
+      gap={1}
+    >
+      <For each={projected().visible}>
+        {(image, index) => {
+          const [failed, setFailed] = createSignal(false)
+          return (
+            <box
+              width={height() * 2}
+              height={height()}
+              flexBasis={height() * 2}
+              flexShrink={1}
+              alignItems="center"
+              justifyContent="center"
+              onMouseUp={(event) => {
+                if (event.button !== 0) return
+                event.stopPropagation()
+                dialog.replace(() => <DialogImagePreview images={props.images} initial={index()} />)
+              }}
+            >
+              <Show
+                when={supported && !failed()}
+                fallback={
+                  <text fg={theme.textMuted} wrapMode="word">
+                    Preview unavailable
+                  </text>
+                }
+              >
+                <Dynamic
+                  component={nativeImageComponent}
+                  source={image.uri}
+                  fit="cover"
+                  protocol="auto"
+                  width="100%"
+                  height="100%"
+                  onError={() => setFailed(true)}
+                />
+              </Show>
+            </box>
+          )
+        }}
+      </For>
+      <Show when={projected().hidden > 0}>
+        <box width={8} height={height()} flexShrink={1} alignItems="center" justifyContent="center">
+          <text fg={theme.textMuted} wrapMode="none" truncate>
+            +{projected().hidden} more
+          </text>
+        </box>
+      </Show>
+    </box>
   )
 }
 
