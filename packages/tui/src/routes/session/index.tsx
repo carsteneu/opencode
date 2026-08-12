@@ -207,6 +207,7 @@ const sessionGlobalUnfocusedBindingCommands = ["session.first", "session.last"] 
 const context = createContext<{
   width: number
   height: number
+  idle: boolean
   autoImageKeys: ReadonlySet<string>
   sessionID: string
   conceal: () => boolean
@@ -1308,6 +1309,9 @@ export function Session() {
           get height() {
             return dimensions().height
           },
+          get idle() {
+            return (sync.data.session_status[route.sessionID]?.type ?? "idle") === "idle"
+          },
           get autoImageKeys() {
             return autoImageKeys()
           },
@@ -2016,7 +2020,7 @@ function ToolImagePreviews(props: { partID: string; images: ReturnType<typeof to
               }}
             >
               <Show
-                when={supported && eager() && !failed()}
+                when={supported && ctx.idle && eager() && !failed()}
                 fallback={
                   <text fg={theme.textMuted} wrapMode="word">
                     {supported ? "Open image" : "Preview unavailable"}
