@@ -49,7 +49,7 @@ describe("session images", () => {
             messageID: "msg_test",
             type: "file",
             mime: "image/png",
-            filename: "result.png",
+            filename: "  result\n.png\u0007  ",
             url: uri,
           },
           {
@@ -66,7 +66,7 @@ describe("session images", () => {
     )
 
     expect(images).toEqual([
-      { uri, label: "result.png", source: "attachment" },
+      { uri, label: "result .png", source: "attachment" },
       { uri: signed, label: "signed.webp", source: "attachment" },
     ])
   })
@@ -127,8 +127,8 @@ describe("session images", () => {
     }))
     const selected = selectAutoSessionImageKeys(parts)
 
-    expect(selected.size).toBe(3)
-    expect([...selected]).toEqual(parts.slice(-3).map((part) => sessionImageKey(part.partID, part.images[0]!.uri)))
+    expect(selected.size).toBe(1)
+    expect([...selected]).toEqual(parts.slice(-1).map((part) => sessionImageKey(part.partID, part.images[0]!.uri)))
   })
 
   test("requires a click before loading remote structured attachments", () => {

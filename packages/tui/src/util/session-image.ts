@@ -24,7 +24,7 @@ export function toolSessionImages(part: ToolPart): SessionImage[] {
       return [
         {
           uri,
-          label: attachment.filename?.slice(0, 120) || "Tool image",
+          label: imageLabel(attachment.filename),
           source: "attachment",
         },
       ]
@@ -48,7 +48,7 @@ export function sessionImageKey(partID: string, uri: string) {
 
 export function selectAutoSessionImageKeys(
   parts: readonly { partID: string; images: readonly SessionImage[] }[],
-  limit = 3,
+  limit = 1,
 ) {
   if (limit <= 0) return new Set<string>()
   return new Set(
@@ -92,6 +92,11 @@ function imageUri(value: string) {
   const url = URL.parse(value)
   if (!url || url.protocol !== "https:" || url.username || url.password) return
   return value
+}
+
+function imageLabel(value: string | undefined) {
+  const label = value?.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 120)
+  return label || "Tool image"
 }
 
 function jsonRecord(value: string) {
