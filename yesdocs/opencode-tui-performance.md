@@ -18,16 +18,16 @@ solution.
 
 This is a community build, not an upstream OpenCode release.
 
-| Component | Version or commit | Source |
-| --- | --- | --- |
-| Current OpenCode prerelease | `1.18.16-patched.99`, image implementation commit `cafe20a5b845efe46413944dce920f5a9017e704` | [tag](https://github.com/carsteneu/opencode/tree/1.18.16-patched.99) |
-| Currently deployed OpenCode build | `1.18.16-patched.99` | Same build as the prerelease asset |
-| Previous public OpenCode prerelease | `1.18.16-patched.97`, commit `418cce689ab74759b643ade316136ac25e207153` | [tag](https://github.com/carsteneu/opencode/tree/1.18.16-patched.97) |
-| Previous public OpenCode prerelease | `1.18.4-patched.96`, commit `78f2f6aaf51137ea477491d9416daaf50bc6afcd` | [tag](https://github.com/carsteneu/opencode/tree/1.18.4-patched.96) |
-| OpenTUI renderer through `.97` | OpenTUI 0.4.5 plus patches, commit `75f0721104b67027155dae967b44e67173b04756` | [tag](https://github.com/carsteneu/opentui/tree/opencode-1.18.4-patched.92) |
-| OpenTUI renderer in `.98` and `.99` | OpenTUI 0.5.1 plus ported patches, commit `568db413e7bc3a110981d2e54ddb7ebb8e906075` | Tag `opencode-1.18.16-patched.98` |
-| Current Linux binary | `.99`, x86_64, SHA-256 `8d287af7ab16b6125855391f67885ea6db45c794459c10d74d056efd083a63ba` | [release](https://github.com/carsteneu/opencode/releases/tag/1.18.16-patched.99) |
-| Previous deployed Linux binary | `.98`, x86_64, SHA-256 `ac232165e886079e193a752493618d03ac03281fc584753fb8a15c634bf0eec4` | Backup `opencode-1.18.16-patched.98.bak` |
+| Component                                | Version or commit                                                                                                                                  | Source                                                                      |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| Currently deployed OpenCode build        | `1.18.16-patched.100`, image history commit `fc410068398140070a315cbda31796a6e746ee2d`, download commit `e15af30c01f8089a5c6e3874d703c72b2dbc27f1` | Local `working` build; public tag pending                                   |
+| Current public OpenCode prerelease       | `1.18.16-patched.99`, image implementation commit `1529acaa96396b15fd3bd65f9f61c63a091a4010`                                                       | [tag](https://github.com/carsteneu/opencode/tree/1.18.16-patched.99)        |
+| Previous public OpenCode prerelease      | `1.18.16-patched.97`, commit `418cce689ab74759b643ade316136ac25e207153`                                                                            | [tag](https://github.com/carsteneu/opencode/tree/1.18.16-patched.97)        |
+| Previous public OpenCode prerelease      | `1.18.4-patched.96`, commit `78f2f6aaf51137ea477491d9416daaf50bc6afcd`                                                                             | [tag](https://github.com/carsteneu/opencode/tree/1.18.4-patched.96)         |
+| OpenTUI renderer through `.97`           | OpenTUI 0.4.5 plus patches, commit `75f0721104b67027155dae967b44e67173b04756`                                                                      | [tag](https://github.com/carsteneu/opentui/tree/opencode-1.18.4-patched.92) |
+| OpenTUI renderer in `.98` through `.100` | OpenTUI 0.5.1 plus ported patches, commit `568db413e7bc3a110981d2e54ddb7ebb8e906075`                                                               | Tag `opencode-1.18.16-patched.98`                                           |
+| Current Linux binary                     | `.100`, x86_64, SHA-256 `1910ed4eabb0b3354c2571a82c1ad6c6478cf623a780826c99136243c0266a05`                                                         | Local deployed artifact                                                     |
+| Previous deployed Linux binary           | `.99`, x86_64, SHA-256 `ae875439a8e4493f38b0f8ecd3a9df69ad25603943ff986b14394071b7b02c5c`                                                          | Backup `opencode-1.18.16-patched.99-before-100.bak`                         |
 
 At the `.94` release tag, the OpenCode branch was 51 commits ahead of its then-current `dev` base, commit
 `0a601cf334b2cf5ac4e420cb2f3a4248b4414c17`. The focused diff is 58 files with 2,821 additions and 432
@@ -91,9 +91,12 @@ OpenAI cache input.
 The `.99` prerelease makes generated-image presentation generic. Completed assistant text is parsed for standard
 Markdown image syntax, for example `![Generated image](<https://example.com/image.png>)`; no Yesmem CAP name or
 tool-specific output convention is required. The newest eligible Markdown image is loaded eagerly when the
-session is idle and displayed at the full chat-column width with aspect-ratio-preserving fit. Older images and
-additional images remain compact and can be opened explicitly. Structured tool attachments continue to use the
-existing guarded path.
+session is idle and displayed at the full chat-column width with aspect-ratio-preserving fit. Once loaded, it
+remains mounted during later turns and while scrolling for as long as its message remains in the mounted history
+window. At the bottom this is the newest ten messages; scrolling upward expands the existing 10, 30, 50, and 100
+message ladder. Exactly one native image remains active session-wide, so a newer image replaces the older active
+preview rather than multiplying decoded image memory. Additional images remain compact and can be opened
+explicitly. Structured tool attachments continue to use the existing guarded path.
 
 Image extraction and loading happen only after the assistant message and text part are complete. They do not
 rewrite the Markdown, message, provider request, tool schema, or stored transcript, so OpenAI and Anthropic
@@ -102,43 +105,63 @@ HTTPS image referenced by assistant Markdown can be fetched automatically from i
 still rejects credentials, private and special-purpose addresses, unsafe redirects, oversized headers, encoded
 bodies, and decoded images.
 
+The locally deployed `.100` build replaces long-lived native image history with a bounded two-level path. After
+an 80 ms viewport settle, at most one eligible image in the exact viewport is loaded as a native image, and only
+while the session is idle. Its rendered pixels are captured into a static `FrameBufferRenderable`; the native
+decoder is then released whenever streaming resumes, a dialog opens, the image leaves eligibility, or another
+image becomes active. Up to four nearby static snapshots can be rendered without `ImageRenderable`, so earlier
+images remain visible during later turns and scrolling without disabling partial rendering.
+
+The snapshot store is an LRU capped at 64 entries and 327,680 terminal cells, which is 5 MiB of raw RGBA cell
+data at 16 bytes per cell. Each snapshot is capped at 160 by 48 cells and 8,192 cells. An evicted image is loaded
+again when its Markdown reaches the viewport. Automatic inline previews reject sources above four million
+decoded pixels; the explicit dialog retains the broader guarded decoder limits. Additional images within one
+message remain available through the dialog rather than multiplying inline native decoders.
+
+The `.100` image dialog also adds a configurable `dialog.image.save` action, bound to `s` by default and
+available by mouse. It writes the original encoded bytes, not the terminal snapshot, to `~/Downloads`. Already
+loaded dialog bytes are reused, filenames are sanitized and derived from the detected image format, existing
+files and symlinks are never overwritten, and parallel saves receive deterministic suffixes. A complete hidden
+temporary file is published atomically under its final name, so aborts or write failures cannot expose a partial
+download. The source still passes through the same HTTPS, redirect, address, MIME, timeout, and size checks.
+
 ## Results at a glance
 
 The strongest end-to-end result comes from a controlled comparison with the official OpenCode 1.18.1 binary.
 Both variants processed exactly 240 provider chunks and 18,960 text bytes in the same terminal, power profile,
 and eight-second measurement window.
 
-| Metric | Stock 1.18.1 | Patched `.89` | Reduction |
-| --- | ---: | ---: | ---: |
-| Task time, TUI plus local server | 40,040.53 ms | 19,560.13 ms | 51.1% |
-| Mean aggregate CPU during the window | 500.5% | 244.5% | 51.1% |
-| User cycles | 16.208 billion | 8.490 billion | 47.6% |
-| Instructions | 15.845 billion | 9.305 billion | 41.3% |
-| Instructions per text byte | 835,695 | 490,793 | 41.3% |
+| Metric                               |   Stock 1.18.1 | Patched `.89` | Reduction |
+| ------------------------------------ | -------------: | ------------: | --------: |
+| Task time, TUI plus local server     |   40,040.53 ms |  19,560.13 ms |     51.1% |
+| Mean aggregate CPU during the window |         500.5% |        244.5% |     51.1% |
+| User cycles                          | 16.208 billion | 8.490 billion |     47.6% |
+| Instructions                         | 15.845 billion | 9.305 billion |     41.3% |
+| Instructions per text byte           |        835,695 |       490,793 |     41.3% |
 
 The later `.90` build added stable Markdown tail reconciliation, explicit append provenance, cheaper history
 selection, and snapshot reuse. In a separate controlled workload in which 240 paragraphs became stable, a
 comparison of stock OpenCode 1.18.1 with patched `.90` produced these results:
 
-| Metric | Stock 1.18.1 | Patched `.90` | Reduction |
-| --- | ---: | ---: | ---: |
-| Task time | 28,858 ms | 20,817 ms | 27.9% |
-| User cycles | 15.463 billion | 8.013 billion | 48.2% |
-| Instructions | 14.990 billion | 7.905 billion | 47.3% |
+| Metric       |   Stock 1.18.1 | Patched `.90` | Reduction |
+| ------------ | -------------: | ------------: | --------: |
+| Task time    |      28,858 ms |     20,817 ms |     27.9% |
+| User cycles  | 15.463 billion | 8.013 billion |     48.2% |
+| Instructions | 14.990 billion | 7.905 billion |     47.3% |
 
 These two workloads are different. Their percentages must not be added or treated as measurements of the same
-thing. The `.92`, `.93`, and `.94` builds retain these optimizations, but there is no controlled comparison of
-these builds with stock OpenCode 1.18.4 yet.
+thing. The `.92` through `.100` builds retain these optimizations, but there is no controlled comparison of
+stock OpenCode 1.18.16 with the complete `.100` patch set yet.
 
 An operational Atop sample also showed a large improvement after the `.92` deployment:
 
 | Field sample in balanced power mode | Patched `.91` | Patched `.92` |
-| --- | ---: | ---: |
-| Idle sessions | 4 | 4 |
-| Observation length | 60 minutes | 7 minutes |
-| Mean CPU per session | 65.65% | 2.62% |
-| Median CPU per session | 51.86% | 2.53% |
-| Relative change in the mean |  | 96.0% lower |
+| ----------------------------------- | ------------: | ------------: |
+| Idle sessions                       |             4 |             4 |
+| Observation length                  |    60 minutes |     7 minutes |
+| Mean CPU per session                |        65.65% |         2.62% |
+| Median CPU per session              |        51.86% |         2.53% |
+| Relative change in the mean         |               |   96.0% lower |
 
 Here, 100% means one fully occupied logical CPU core. The `.92` field window is much shorter. The active-session
 samples also performed different work, so those data are useful operational evidence, not a controlled causal
@@ -189,10 +212,10 @@ raw Atop archive is a local operational artifact and is not included in this rep
 
 ## Patch map
 
-| Repository | Main responsibilities in this patch set |
-| --- | --- |
-| OpenCode | Process separation, worker lifecycle, model and UI delta coalescing, append provenance, private IPC events, bounded public SSE, windowed messages, history paging, step-boundary reuse, lazy startup services, logging, and profiling support |
-| OpenTUI | Retained partial rendering, native dirty-region diffing, render-list reuse, generation guards, incremental Markdown and native text appends, same-line layout safety, highlight coalescing, and scrollbar event composition |
+| Repository | Main responsibilities in this patch set                                                                                                                                                                                                       |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| OpenCode   | Process separation, worker lifecycle, model and UI delta coalescing, append provenance, private IPC events, bounded public SSE, windowed messages, history paging, step-boundary reuse, lazy startup services, logging, and profiling support |
+| OpenTUI    | Retained partial rendering, native dirty-region diffing, render-list reuse, generation guards, incremental Markdown and native text appends, same-line layout safety, highlight coalescing, and scrollbar event composition                   |
 
 OpenCode decides when data can be batched, when an update is a proven append, and how much session history is
 active. OpenTUI uses that information to avoid parser, layout, tree-walk, buffer, and terminal work. The measured
@@ -212,11 +235,11 @@ have to traverse or materialize the value.
 
 An independent parser test made this cost visible. It ran 5,000 one-character updates in fresh Bun processes:
 
-| Parser path | Median CPU time | Allocation-triggered GC |
-| --- | ---: | ---: |
-| Full growing paragraph | 4,515 ms | 3 of 3 runs at about 29.6 MB |
-| New-character control | 134 ms | 0 of 3 runs |
-| Patched plain-prose append path | 129 ms | 0 of 3 runs |
+| Parser path                     | Median CPU time |      Allocation-triggered GC |
+| ------------------------------- | --------------: | ---------------------------: |
+| Full growing paragraph          |        4,515 ms | 3 of 3 runs at about 29.6 MB |
+| New-character control           |          134 ms |                  0 of 3 runs |
+| Patched plain-prose append path |          129 ms |                  0 of 3 runs |
 
 The 97.1% reduction in median parser CPU time applies to this synthetic plain-prose hotspot, not to the entire
 application. Complex Markdown still takes the conservative parser path.
@@ -374,11 +397,11 @@ The patch set attacks both lifetime and startup size:
 
 The plugin compiler change had three independent measurements:
 
-| Measurement | Before | After | Reduction |
-| --- | ---: | ---: | ---: |
-| Unminified plugin-host chunk | 3,696,602 bytes | 188,149 bytes | 94.9% |
-| Cold TUI heap self size | 101,099,428 bytes | 92,683,361 bytes | 8.3% |
-| Cold TUI `FunctionExecutable` count | 44,829 | 39,487 | 11.9% |
+| Measurement                         |            Before |            After | Reduction |
+| ----------------------------------- | ----------------: | ---------------: | --------: |
+| Unminified plugin-host chunk        |   3,696,602 bytes |    188,149 bytes |     94.9% |
+| Cold TUI heap self size             | 101,099,428 bytes | 92,683,361 bytes |      8.3% |
+| Cold TUI `FunctionExecutable` count |            44,829 |           39,487 |     11.9% |
 
 With a deterministic provider and two builds that differed only in the lazy-import change, TUI task time fell
 by 20.9%, user cycles by 22.9%, and instructions by 19.8%. The unchanged server process differed by 4.5%, which
@@ -490,15 +513,15 @@ checks continue through the original in-process path.
 
 Several plausible ideas either did not help or made the product worse:
 
-| Experiment | Result | Decision |
-| --- | --- | --- |
-| In an earlier build, increase the UI delta window from 100 ms to 250 ms | No repeatable CPU gain and visibly less fluid output | Rejected |
-| Cache completed assistant message JSX | No measurable gain across empty, 2-message, and 10-message histories | Reverted |
-| Batch eight spinner character calls into one native call | 73% faster microbenchmark, but only 1.7 percentage points of CPU utilization in a noisy live test | Removed |
-| Cache arrays in the partial renderer | Passed tests but did not lower real CPU | Removed |
-| Disable JSC activity-timer garbage collection | About 7% more instructions per stream byte | Rejected |
-| Reduce SQLite page cache from 64 MiB to 16 MiB | About 3 MiB lower process RSS in history paging, but about 40% slower | Rejected |
-| Force SQLite `mmap_size=0` | It was already zero in both SQLite clients | No change |
+| Experiment                                                              | Result                                                                                            | Decision  |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | --------- |
+| In an earlier build, increase the UI delta window from 100 ms to 250 ms | No repeatable CPU gain and visibly less fluid output                                              | Rejected  |
+| Cache completed assistant message JSX                                   | No measurable gain across empty, 2-message, and 10-message histories                              | Reverted  |
+| Batch eight spinner character calls into one native call                | 73% faster microbenchmark, but only 1.7 percentage points of CPU utilization in a noisy live test | Removed   |
+| Cache arrays in the partial renderer                                    | Passed tests but did not lower real CPU                                                           | Removed   |
+| Disable JSC activity-timer garbage collection                           | About 7% more instructions per stream byte                                                        | Rejected  |
+| Reduce SQLite page cache from 64 MiB to 16 MiB                          | About 3 MiB lower process RSS in history paging, but about 40% slower                             | Rejected  |
+| Force SQLite `mmap_size=0`                                              | It was already zero in both SQLite clients                                                        | No change |
 
 The target frame rate was reduced from 60 to 30 and spinner frames are precomputed. These are useful baseline
 controls, but they are not presented as the root-cause fix. Most of the measured improvement comes from removing
@@ -564,21 +587,35 @@ test, reports `1.18.16-patched.98`, contains the retained-render and image-previ
 Core, Solid, and native artifact hashes after packaging. Independent renderer and security reviews found no
 remaining release blocker.
 
-The `.99` integration passed the complete TUI suite with 218 tests passed, 1 existing skip, and no failures,
+The `.99` integration passed the complete TUI suite with 221 tests passed, 1 existing skip, and no failures,
 plus the TUI and OpenCode package typechecks. The full embedded Web UI and Linux x86_64 package build completed,
 the pinned OpenTUI Core, Solid, and native hashes matched before and after packaging, and the final binary passed
 its version smoke test. The installed artifact and release asset are byte-identical, report
 `1.18.16-patched.99`, and have SHA-256
-`8d287af7ab16b6125855391f67885ea6db45c794459c10d74d056efd083a63ba`. The target terminal was also validated
+`ae875439a8e4493f38b0f8ecd3a9df69ad25603943ff986b14394071b7b02c5c`. The target terminal was also validated
 interactively with standard assistant Markdown image output at full chat width.
+
+The `.100` integration passed the complete TUI suite with 240 tests passed, 1 existing skip, and no failures,
+plus the TUI and OpenCode package typechecks. Focused tests cover native-to-static lifecycle, bounded snapshot
+eviction, viewport reload, exact original-byte downloads, format-derived filenames, traversal sanitization,
+exclusive collision handling, existing symlinks, parallel saves, abort cleanup, configurable keybindings, and
+saving the currently selected image. Targeted linting reported no warnings or errors in the changed source and
+tests. Two independent reviews found no remaining Linux release blocker.
+
+The full embedded Web UI and Linux x86_64 package build completed from OpenCode commit
+`e15af30c01f8089a5c6e3874d703c72b2dbc27f1`. The pinned OpenTUI Core, Solid, and native hashes matched after
+packaging. The final artifact and atomically installed binary are byte-identical, report
+`1.18.16-patched.100`, and have SHA-256
+`1910ed4eabb0b3354c2571a82c1ad6c6478cf623a780826c99136243c0266a05`. The previous `.99` binary is retained
+unchanged as `opencode-1.18.16-patched.99-before-100.bak`.
 
 ## Packaging and reproducibility caveat
 
 The `.92`, `.93`, `.94`, `.96`, and `.97` binaries contain the patched OpenTUI 0.4.5 Core JavaScript, Solid
-integration, and matching native `libopentui.so`. The `.98` and `.99` builds contain the corresponding patched
+integration, and matching native `libopentui.so`. The `.98` through `.100` builds contain the corresponding patched
 OpenTUI 0.5.1 artifacts.
 
-The `.98` and `.99` OpenCode lockfiles name the released OpenTUI 0.5.1 packages. A fresh `bun install` therefore resolves
+The `.98` through `.100` OpenCode lockfiles name the released OpenTUI 0.5.1 packages. A fresh `bun install` therefore resolves
 stock OpenTUI 0.5.1, not the additional fork commits. Reproducing the deployed renderer requires building the
 tagged OpenTUI fork, placing its matching JavaScript and native artifacts into the OpenCode dependency tree, and
 then building OpenCode without reinstalling those dependencies.
@@ -596,7 +633,7 @@ is still OpenTUI 0.5.1, and replaces only the current worktree's Bun store targe
 must still be built first. Build OpenCode with `--skip-install` afterward so dependency installation cannot replace
 the verified overlay.
 
-The `.98` and `.99` artifact hashes are:
+The `.98` through `.100` artifact hashes are:
 
 - Core: `e15a4537e890882bee62068cb91b7cc5206dc5ea5fbc0b8def2e7f00a0c9d39b`
 - Solid: `294dcc12fb498a5a8427bea3b7fc30b89ff1b37b39c76e93f2dbb47247330617`
@@ -608,8 +645,8 @@ asset.
 
 ## Limits of the conclusions
 
-- The strongest controlled stock comparisons use OpenCode 1.18.1 and patched `.89` or `.90`, not stock 1.18.4
-  and patched `.92`, `.93`, `.94`, or `.96`.
+- The strongest controlled stock comparisons use OpenCode 1.18.1 and patched `.89` or `.90`. There is no
+  controlled stock OpenCode 1.18.16 versus patched `.100` benchmark yet.
 - The `.91` to `.92` Atop comparison is observational. The idle sample lengths differ, and the active workloads
   were not matched.
 - CPU varies with provider chunk rate, response structure, terminal dimensions, visible tools, session length,
@@ -630,9 +667,10 @@ The following documents contain the original measurements and intermediate decis
 Some lower-level command transcripts and the full investigation journal remain local operational records. The
 published historical documents above retain the methods, aggregate results, and decisions used by this report.
 
-The current prerelease is available at
+The current public prerelease is available at
 [OpenCode 1.18.16-patched.99](https://github.com/carsteneu/opencode/releases/tag/1.18.16-patched.99). The renderer
 source is preserved in the
 [OpenTUI `opencode-1.18.16-patched.98` tag](https://github.com/carsteneu/opentui/tree/opencode-1.18.16-patched.98).
-The `.98` OpenCode binary is preserved as the local rollback build. `.99` retains the complete performance and
-stability patch set and adds generic, full-width Markdown image presentation without a Yesmem-specific protocol.
+The locally deployed `.100` build is not yet published as a tag or release. The `.99` OpenCode binary is
+preserved as the local rollback build. `.100` retains the complete performance and stability patch set, adds
+bounded static image history, and provides generic original-image downloads without a Yesmem-specific protocol.
