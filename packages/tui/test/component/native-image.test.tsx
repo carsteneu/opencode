@@ -13,6 +13,7 @@ const pixel =
 
 test("uses the OpenTUI Dynamic reconciler to create and dispose a native image", async () => {
   let loaded: { width: number; height: number } | undefined
+  let source: Uint8Array | undefined
   const app = await testRender(
     () => (
       <SessionNativeImage
@@ -21,6 +22,9 @@ test("uses the OpenTUI Dynamic reconciler to create and dispose a native image",
         protocol="auto"
         width={4}
         height={2}
+        onSource={(value) => {
+          source = value
+        }}
         onLoad={(image) => {
           loaded = { width: image.width, height: image.height }
         }}
@@ -34,9 +38,11 @@ test("uses the OpenTUI Dynamic reconciler to create and dispose a native image",
   expect(image.image?.width).toBe(1)
   expect(image.image?.height).toBe(1)
   expect(loaded).toEqual({ width: 1, height: 1 })
+  expect(source).toEqual(Buffer.from(pixel.slice(pixel.indexOf(",") + 1), "base64"))
 
   const decoded = image.image!
   app.renderer.destroy()
+  expect(source).toBeUndefined()
   expect(() => decoded.info()).toThrow("NativeImage is disposed")
 })
 

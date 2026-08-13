@@ -206,6 +206,7 @@ export const Definitions = {
   "dialog.select.home": keybind("home", "Move to first dialog item"),
   "dialog.select.end": keybind("end", "Move to last dialog item"),
   "dialog.select.submit": keybind("return", "Submit selected dialog item"),
+  "dialog.image.save": keybind("s", "Save image"),
   "dialog.prompt.submit": keybind("return", "Submit dialog prompt"),
   "dialog.mcp.toggle": keybind("space", "Toggle MCP in MCP dialog"),
   "dialog.move_session.new": keybind("ctrl+m", "New project copy"),

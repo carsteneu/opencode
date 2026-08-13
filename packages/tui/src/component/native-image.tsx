@@ -13,6 +13,7 @@ export function SessionNativeImage(props: {
   width: number | string
   height: number | string
   maxPixels?: number
+  onSource?: (source: Uint8Array | undefined) => void
   onLoad?: (image: NativeImage) => void
   onError?: (error: unknown) => void
   onRelease?: () => void
@@ -25,6 +26,7 @@ export function SessionNativeImage(props: {
       release: () => {
         controller.abort()
         setSource(undefined)
+        props.onSource?.(undefined)
       },
     }
     activeImage?.release()
@@ -33,6 +35,7 @@ export function SessionNativeImage(props: {
     void loadSessionImageSource(props.source, controller.signal, props.maxPixels).then(
       (result) => {
         if (controller.signal.aborted || activeImage !== lease) return
+        props.onSource?.(result)
         setSource(result)
       },
       (error) => {
