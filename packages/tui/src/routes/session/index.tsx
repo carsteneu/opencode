@@ -111,6 +111,7 @@ import {
   type SessionImageSourceAcquirer,
   type SessionImageSourceReader,
 } from "../../util/session-image-source"
+import { sessionImageProjectDirectory } from "../../util/session-image-save"
 
 addDefaultParsers(parsers.parsers)
 
@@ -2151,9 +2152,17 @@ function SessionImagePreviews(props: { partID: string; images: readonly SessionI
   const ctx = use()
   const dialog = useDialog()
   const renderer = useRenderer()
+  const paths = useTuiPaths()
   const { theme } = useTheme()
   const projected = createMemo(() => projectSessionImages(props.images))
   const supported = supportsNativeImages()
+  const projectDirectory = createMemo(() =>
+    sessionImageProjectDirectory({
+      worktree: ctx.sync.path.worktree,
+      directory: ctx.sync.path.directory,
+      cwd: paths.cwd,
+    }),
+  )
 
   return (
     <box
@@ -2226,6 +2235,7 @@ function SessionImagePreviews(props: { partID: string; images: readonly SessionI
                   <DialogImagePreview
                     images={props.images}
                     initial={index()}
+                    projectDirectory={projectDirectory()}
                     loadSource={ctx.loadImageSource}
                     acquireSource={ctx.acquireImageSource}
                   />

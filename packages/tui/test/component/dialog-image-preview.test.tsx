@@ -1,9 +1,10 @@
 /** @jsxImportSource @opentui/solid */
+import { TextareaRenderable } from "@opentui/core"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { testRender, useRenderer } from "@opentui/solid"
 import { expect, test } from "bun:test"
 import path from "node:path"
-import { mkdir, readFile } from "node:fs/promises"
+import { access, mkdir, readFile } from "node:fs/promises"
 import { onCleanup } from "solid-js"
 import type { TuiKeybind } from "../../src/config/keybind"
 import { tmpdir } from "../fixture/fixture"
@@ -53,6 +54,7 @@ async function mount(root: string, keybinds: Partial<TuiKeybind.Keybinds> = {}) 
                   <DialogProvider>
                     <DialogImagePreview
                       initial={0}
+                      projectDirectory={root}
                       images={[
                         { key: "markdown:0", uri: pixel, label: "first", source: "markdown" },
                         { key: "markdown:1", uri: transparentPixel, label: "second", source: "markdown" },
@@ -71,7 +73,7 @@ async function mount(root: string, keybinds: Partial<TuiKeybind.Keybinds> = {}) 
   return testRender(() => <Harness />, { height: 20, kittyKeyboard: true, useThread: false, width: 80 })
 }
 
-test("saves the currently selected image to Downloads without re-encoding", async () => {
+test("saves the currently selected image to the project img directory without re-encoding", async () => {
   await using tmp = await tmpdir()
   const app = await mount(tmp.path)
   try {
@@ -79,13 +81,19 @@ test("saves the currently selected image to Downloads without re-encoding", asyn
     app.mockInput.pressArrow("right")
     await Bun.sleep(20)
     app.mockInput.pressKey("s")
-    const target = path.join(tmp.path, "Downloads", "second.png")
+    await wait(() => app.renderer.currentFocusedEditor instanceof TextareaRenderable)
+    const textarea = app.renderer.currentFocusedEditor
+    if (!(textarea instanceof TextareaRenderable)) throw new Error("expected focused save directory prompt")
+    expect(textarea.plainText).toBe(path.join(tmp.path, "img"))
+    app.mockInput.pressEnter()
+
+    const target = path.join(tmp.path, "img", "second.png")
     await wait(() => Bun.file(target).exists())
 
     expect(await readFile(target)).toEqual(
       Buffer.from(transparentPixel.slice(transparentPixel.indexOf(",") + 1), "base64"),
     )
-    expect(await Bun.file(path.join(tmp.path, "Downloads", "first.png")).exists()).toBe(false)
+    expect(await Bun.file(path.join(tmp.path, "img", "first.png")).exists()).toBe(false)
   } finally {
     app.renderer.destroy()
   }
@@ -95,15 +103,59 @@ test("uses the configured image save keybinding", async () => {
   await using tmp = await tmpdir()
   const app = await mount(tmp.path, { "dialog.image.save": "ctrl+y" })
   try {
-    const target = path.join(tmp.path, "Downloads", "first.png")
+    const target = path.join(tmp.path, "img", "first.png")
     await Bun.sleep(300)
     app.mockInput.pressKey("s")
     await Bun.sleep(30)
     expect(await Bun.file(target).exists()).toBe(false)
+    expect(app.renderer.currentFocusedEditor).not.toBeInstanceOf(TextareaRenderable)
 
     app.mockInput.pressKey("y", { ctrl: true })
+    await wait(() => app.renderer.currentFocusedEditor instanceof TextareaRenderable)
+    app.mockInput.pressEnter()
     await wait(() => Bun.file(target).exists())
     expect(await Bun.file(target).exists()).toBe(true)
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("resolves a custom relative directory from the project", async () => {
+  await using tmp = await tmpdir()
+  const app = await mount(tmp.path)
+  try {
+    await Bun.sleep(300)
+    app.mockInput.pressKey("s")
+    await wait(() => app.renderer.currentFocusedEditor instanceof TextareaRenderable)
+    const textarea = app.renderer.currentFocusedEditor
+    if (!(textarea instanceof TextareaRenderable)) throw new Error("expected focused save directory prompt")
+    textarea.setText(path.join("art", "generated"))
+    app.mockInput.pressEnter()
+
+    const target = path.join(tmp.path, "art", "generated", "first.png")
+    await wait(() => Bun.file(target).exists())
+    expect(await readFile(target)).toEqual(Buffer.from(pixel.slice(pixel.indexOf(",") + 1), "base64"))
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("canceling the save directory dialog performs no filesystem work", async () => {
+  await using tmp = await tmpdir()
+  const app = await mount(tmp.path)
+  try {
+    await Bun.sleep(300)
+    app.mockInput.pressKey("s")
+    await wait(() => app.renderer.currentFocusedEditor instanceof TextareaRenderable)
+    app.mockInput.pressEscape()
+    await Bun.sleep(30)
+
+    expect(
+      await access(path.join(tmp.path, "img")).then(
+        () => true,
+        () => false,
+      ),
+    ).toBe(false)
   } finally {
     app.renderer.destroy()
   }

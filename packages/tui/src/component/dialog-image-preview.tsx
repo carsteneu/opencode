@@ -6,10 +6,12 @@ import { useTuiConfig } from "../config"
 import { useTheme } from "../context/theme"
 import { useTuiPaths } from "../context/runtime"
 import { useBindings, useCommandShortcut } from "../keymap"
+import { abbreviateHome } from "../runtime"
 import { useDialog } from "../ui/dialog"
+import { DialogPrompt } from "../ui/dialog-prompt"
 import { useToast } from "../ui/toast"
 import type { SessionImage } from "../util/session-image"
-import { saveSessionImage } from "../util/session-image-save"
+import { resolveSessionImageDirectory, saveSessionImage } from "../util/session-image-save"
 import type { SessionImageSourceAcquirer, SessionImageSourceReader } from "../util/session-image-source"
 import { SessionNativeImage, supportsNativeImages } from "./native-image"
 
@@ -18,25 +20,22 @@ const MAX_DIALOG_SESSION_IMAGE_PIXELS = 8 * 1024 * 1024
 export function DialogImagePreview(props: {
   images: readonly SessionImage[]
   initial: number
+  projectDirectory: string
   loadSource?: SessionImageSourceReader
   acquireSource?: SessionImageSourceAcquirer
 }) {
   const dialog = useDialog()
-  const toast = useToast()
-  const paths = useTuiPaths()
   const tuiConfig = useTuiConfig()
   const dimensions = useTerminalDimensions()
   const { theme } = useTheme()
   const [index, setIndex] = createSignal(Math.max(0, Math.min(props.images.length - 1, props.initial)))
   const [failed, setFailed] = createSignal(false)
-  const [saving, setSaving] = createSignal(false)
   const [source, setSource] = createSignal<{ uri: string; data: Uint8Array }>()
   const currentIndex = createMemo(() => Math.max(0, Math.min(props.images.length - 1, index())))
   const current = createMemo(() => props.images[currentIndex()])
   const height = createMemo(() => Math.max(3, dimensions().height - Math.floor(dimensions().height / 4) - 5))
   const supported = supportsNativeImages()
   const saveShortcut = useCommandShortcut("dialog.image.save")
-  let saveController: AbortController | undefined
 
   dialog.setSize("xlarge")
 
@@ -58,38 +57,17 @@ export function DialogImagePreview(props: {
 
   const save = () => {
     const image = current()
-    if (!image || saving()) return
-    saveController?.abort()
-    const controller = new AbortController()
-    saveController = controller
-    setSaving(true)
+    if (!image) return
     const loaded = source()
-    void saveSessionImage(
-      image,
-      path.join(paths.home, "Downloads"),
-      controller.signal,
-      loaded?.uri === image.uri ? loaded.data : undefined,
-      props.loadSource,
-    )
-      .then(
-        (target) => {
-          if (controller.signal.aborted) return
-          const display = target.startsWith(paths.home + path.sep) ? `~${target.slice(paths.home.length)}` : target
-          toast.show({ message: `Saved image to ${display}`, variant: "success" })
-        },
-        (error) => {
-          if (controller.signal.aborted) return
-          toast.error(error)
-        },
-      )
-      .finally(() => {
-        if (saveController !== controller) return
-        saveController = undefined
-        setSaving(false)
-      })
+    dialog.replace(() => (
+      <DialogImageSave
+        image={image}
+        projectDirectory={props.projectDirectory}
+        source={loaded?.uri === image.uri ? loaded.data : undefined}
+        loadSource={props.loadSource}
+      />
+    ))
   }
-
-  onCleanup(() => saveController?.abort())
 
   useBindings(() => ({
     priority: 1,
@@ -110,8 +88,8 @@ export function DialogImagePreview(props: {
               Image {currentIndex() + 1} of {props.images.length}
             </text>
             <box flexDirection="row" gap={2}>
-              <text fg={saving() ? theme.textMuted : theme.text} onMouseUp={save}>
-                {saving() ? "saving..." : `${saveShortcut() || "click"} save`}
+              <text fg={theme.text} onMouseUp={save}>
+                {saveShortcut() || "click"} save
               </text>
               <text fg={theme.textMuted} onMouseUp={() => dialog.clear()}>
                 esc
@@ -152,5 +130,64 @@ export function DialogImagePreview(props: {
         </box>
       )}
     </Show>
+  )
+}
+
+function DialogImageSave(props: {
+  image: SessionImage
+  projectDirectory: string
+  source?: Uint8Array
+  loadSource?: SessionImageSourceReader
+}) {
+  const dialog = useDialog()
+  const toast = useToast()
+  const paths = useTuiPaths()
+  const { theme } = useTheme()
+  const [saving, setSaving] = createSignal(false)
+  let saveController: AbortController | undefined
+
+  const save = (input: string) => {
+    if (saving()) return
+    const controller = new AbortController()
+    saveController = controller
+    setSaving(true)
+    void Promise.resolve()
+      .then(() => resolveSessionImageDirectory(input, props.projectDirectory, paths.home))
+      .then((directory) => saveSessionImage(props.image, directory, controller.signal, props.source, props.loadSource))
+      .then(
+        (target) => {
+          if (controller.signal.aborted) return
+          saveController = undefined
+          toast.show({ message: `Saved image to ${abbreviateHome(target, paths.home)}`, variant: "success" })
+          dialog.clear()
+        },
+        (error) => {
+          if (controller.signal.aborted) return
+          toast.error(error)
+        },
+      )
+      .finally(() => {
+        if (saveController !== controller) return
+        saveController = undefined
+        setSaving(false)
+      })
+  }
+
+  onCleanup(() => saveController?.abort())
+
+  return (
+    <DialogPrompt
+      title="Save image"
+      value={path.join(props.projectDirectory, "img")}
+      busy={saving()}
+      busyText="Saving image..."
+      description={() => (
+        <text fg={theme.textMuted}>
+          Directory. Relative paths use {abbreviateHome(props.projectDirectory, paths.home)}; the filename is generated
+          automatically.
+        </text>
+      )}
+      onConfirm={save}
+    />
   )
 }

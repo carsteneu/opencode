@@ -7,6 +7,21 @@ import type { SessionImageSourceReader } from "./session-image-source"
 
 const imageExtension = /\.(png|jpe?g|webp|gif)$/i
 
+export function sessionImageProjectDirectory(input: { worktree?: string; directory?: string; cwd: string }) {
+  if (input.worktree && input.worktree !== "/") return input.worktree
+  return input.directory || input.cwd
+}
+
+export function resolveSessionImageDirectory(input: string, projectDirectory: string, home: string) {
+  const value = input.trim()
+  if (!value) throw new Error("Image save directory is required")
+  if (value.includes("\0")) throw new Error("Image save directory is invalid")
+  if (value === "~") return path.normalize(home)
+  if (value.startsWith("~/") || value.startsWith("~\\")) return path.resolve(home, value.slice(2))
+  if (path.isAbsolute(value)) return path.normalize(value)
+  return path.resolve(projectDirectory, value)
+}
+
 export async function saveSessionImage(
   image: SessionImage,
   directory: string,

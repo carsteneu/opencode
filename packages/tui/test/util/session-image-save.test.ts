@@ -2,7 +2,12 @@ import { afterEach, describe, expect, test } from "bun:test"
 import path from "node:path"
 import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { saveSessionImage, sessionImageFilename } from "../../src/util/session-image-save"
+import {
+  resolveSessionImageDirectory,
+  saveSessionImage,
+  sessionImageFilename,
+  sessionImageProjectDirectory,
+} from "../../src/util/session-image-save"
 
 const pixel =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
@@ -13,6 +18,33 @@ afterEach(async () => {
 })
 
 describe("session image saving", () => {
+  test("chooses the active project root with directory and startup fallbacks", () => {
+    expect(
+      sessionImageProjectDirectory({
+        worktree: "/workspace/project",
+        directory: "/workspace/project/packages/tui",
+        cwd: "/startup",
+      }),
+    ).toBe("/workspace/project")
+    expect(sessionImageProjectDirectory({ worktree: "/", directory: "/workspace/plain", cwd: "/startup" })).toBe(
+      "/workspace/plain",
+    )
+    expect(sessionImageProjectDirectory({ worktree: "", directory: "", cwd: "/startup" })).toBe("/startup")
+  })
+
+  test("resolves save directories against the project without shell expansion", () => {
+    const project = path.join(path.sep, "workspace", "project")
+    const home = path.join(path.sep, "home", "chief")
+
+    expect(resolveSessionImageDirectory(" img ", project, home)).toBe(path.join(project, "img"))
+    expect(resolveSessionImageDirectory("~/Pictures", project, home)).toBe(path.join(home, "Pictures"))
+    expect(resolveSessionImageDirectory("~", project, home)).toBe(home)
+    expect(resolveSessionImageDirectory("$HOME/img", project, home)).toBe(path.join(project, "$HOME", "img"))
+    expect(resolveSessionImageDirectory("~other/img", project, home)).toBe(path.join(project, "~other", "img"))
+    expect(() => resolveSessionImageDirectory("   ", project, home)).toThrow("Image save directory is required")
+    expect(() => resolveSessionImageDirectory("bad\0path", project, home)).toThrow("Image save directory is invalid")
+  })
+
   test("derives a safe filename from the image label and actual image bytes", () => {
     const data = Buffer.from(pixel.slice(pixel.indexOf(",") + 1), "base64")
     expect(
