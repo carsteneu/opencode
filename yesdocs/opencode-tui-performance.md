@@ -20,15 +20,14 @@ This is a community build, not an upstream OpenCode release.
 
 | Component | Version or commit | Source |
 | --- | --- | --- |
-| Current public OpenCode prerelease | `1.18.16-patched.97` | [tag](https://github.com/carsteneu/opencode/tree/1.18.16-patched.97) |
-| Currently deployed OpenCode build | `1.18.16-patched.98`, commit `94d6806d35acc81abd63ca0a4253099fbbdb35f2` | Local tag, not published |
+| Current OpenCode prerelease | `1.18.16-patched.99`, image implementation commit `cafe20a5b845efe46413944dce920f5a9017e704` | [tag](https://github.com/carsteneu/opencode/tree/1.18.16-patched.99) |
+| Currently deployed OpenCode build | `1.18.16-patched.99` | Same build as the prerelease asset |
+| Previous public OpenCode prerelease | `1.18.16-patched.97`, commit `418cce689ab74759b643ade316136ac25e207153` | [tag](https://github.com/carsteneu/opencode/tree/1.18.16-patched.97) |
 | Previous public OpenCode prerelease | `1.18.4-patched.96`, commit `78f2f6aaf51137ea477491d9416daaf50bc6afcd` | [tag](https://github.com/carsteneu/opencode/tree/1.18.4-patched.96) |
-| Previous deployed OpenCode build | `1.18.4-patched.96`, commit `78f2f6aaf51137ea477491d9416daaf50bc6afcd` | Preserved as local binary backup |
 | OpenTUI renderer through `.97` | OpenTUI 0.4.5 plus patches, commit `75f0721104b67027155dae967b44e67173b04756` | [tag](https://github.com/carsteneu/opentui/tree/opencode-1.18.4-patched.92) |
-| OpenTUI renderer in `.98` | OpenTUI 0.5.1 plus ported patches, commit `568db413e7bc3a110981d2e54ddb7ebb8e906075` | Local tag `opencode-1.18.16-patched.98` |
-| Current public Linux binary | `.97`, x86_64, SHA-256 `ac4d0073b3edffa6ee8fc154eef57d63c8274351bbe364b3e9e7d29cec3df474` | [release](https://github.com/carsteneu/opencode/releases/tag/1.18.16-patched.97) |
-| Currently deployed Linux binary | `.98`, x86_64, SHA-256 `ac232165e886079e193a752493618d03ac03281fc584753fb8a15c634bf0eec4` | Installed locally, not released |
-| Previous deployed Linux binary | `.96`, x86_64, SHA-256 `e531925bf6205828e1caea3b4e46f29fa538864fe067a83dcfe446a6bbff2307` | Backup `opencode-1.18.4-patched.96.bak` |
+| OpenTUI renderer in `.98` and `.99` | OpenTUI 0.5.1 plus ported patches, commit `568db413e7bc3a110981d2e54ddb7ebb8e906075` | Tag `opencode-1.18.16-patched.98` |
+| Current Linux binary | `.99`, x86_64, SHA-256 `8d287af7ab16b6125855391f67885ea6db45c794459c10d74d056efd083a63ba` | [release](https://github.com/carsteneu/opencode/releases/tag/1.18.16-patched.99) |
+| Previous deployed Linux binary | `.98`, x86_64, SHA-256 `ac232165e886079e193a752493618d03ac03281fc584753fb8a15c634bf0eec4` | Backup `opencode-1.18.16-patched.98.bak` |
 
 At the `.94` release tag, the OpenCode branch was 51 commits ahead of its then-current `dev` base, commit
 `0a601cf334b2cf5ac4e420cb2f3a4248b4414c17`. The focused diff is 58 files with 2,821 additions and 432
@@ -88,6 +87,20 @@ Data URIs to 8 MiB, response headers to 16 KiB, and native decoding remains limi
 100 MiB, with either dimension limited to 16,384 pixels. These changes are confined to completed tool output
 presentation and do not modify model requests, tool injection, persisted provider messages, or Anthropic and
 OpenAI cache input.
+
+The `.99` prerelease makes generated-image presentation generic. Completed assistant text is parsed for standard
+Markdown image syntax, for example `![Generated image](<https://example.com/image.png>)`; no Yesmem CAP name or
+tool-specific output convention is required. The newest eligible Markdown image is loaded eagerly when the
+session is idle and displayed at the full chat-column width with aspect-ratio-preserving fit. Older images and
+additional images remain compact and can be opened explicitly. Structured tool attachments continue to use the
+existing guarded path.
+
+Image extraction and loading happen only after the assistant message and text part are complete. They do not
+rewrite the Markdown, message, provider request, tool schema, or stored transcript, so OpenAI and Anthropic
+cache-sensitive request bytes remain outside this presentation path. As a privacy tradeoff, the newest remote
+HTTPS image referenced by assistant Markdown can be fetched automatically from its origin. The hardened loader
+still rejects credentials, private and special-purpose addresses, unsafe redirects, oversized headers, encoded
+bodies, and decoded images.
 
 ## Results at a glance
 
@@ -551,13 +564,21 @@ test, reports `1.18.16-patched.98`, contains the retained-render and image-previ
 Core, Solid, and native artifact hashes after packaging. Independent renderer and security reviews found no
 remaining release blocker.
 
+The `.99` integration passed the complete TUI suite with 218 tests passed, 1 existing skip, and no failures,
+plus the TUI and OpenCode package typechecks. The full embedded Web UI and Linux x86_64 package build completed,
+the pinned OpenTUI Core, Solid, and native hashes matched before and after packaging, and the final binary passed
+its version smoke test. The installed artifact and release asset are byte-identical, report
+`1.18.16-patched.99`, and have SHA-256
+`8d287af7ab16b6125855391f67885ea6db45c794459c10d74d056efd083a63ba`. The target terminal was also validated
+interactively with standard assistant Markdown image output at full chat width.
+
 ## Packaging and reproducibility caveat
 
 The `.92`, `.93`, `.94`, `.96`, and `.97` binaries contain the patched OpenTUI 0.4.5 Core JavaScript, Solid
-integration, and matching native `libopentui.so`. The deployed `.98` build contains the corresponding patched
+integration, and matching native `libopentui.so`. The `.98` and `.99` builds contain the corresponding patched
 OpenTUI 0.5.1 artifacts.
 
-The `.98` OpenCode lockfile names the released OpenTUI 0.5.1 packages. A fresh `bun install` therefore resolves
+The `.98` and `.99` OpenCode lockfiles name the released OpenTUI 0.5.1 packages. A fresh `bun install` therefore resolves
 stock OpenTUI 0.5.1, not the additional fork commits. Reproducing the deployed renderer requires building the
 tagged OpenTUI fork, placing its matching JavaScript and native artifacts into the OpenCode dependency tree, and
 then building OpenCode without reinstalling those dependencies.
@@ -575,7 +596,7 @@ is still OpenTUI 0.5.1, and replaces only the current worktree's Bun store targe
 must still be built first. Build OpenCode with `--skip-install` afterward so dependency installation cannot replace
 the verified overlay.
 
-The `.98` artifact hashes are:
+The `.98` and `.99` artifact hashes are:
 
 - Core: `e15a4537e890882bee62068cb91b7cc5206dc5ea5fbc0b8def2e7f00a0c9d39b`
 - Solid: `294dcc12fb498a5a8427bea3b7fc30b89ff1b37b39c76e93f2dbb47247330617`
@@ -610,9 +631,8 @@ Some lower-level command transcripts and the full investigation journal remain l
 published historical documents above retain the methods, aggregate results, and decisions used by this report.
 
 The current prerelease is available at
-[OpenCode 1.18.16-patched.97](https://github.com/carsteneu/opencode/releases/tag/1.18.16-patched.97). The renderer
+[OpenCode 1.18.16-patched.99](https://github.com/carsteneu/opencode/releases/tag/1.18.16-patched.99). The renderer
 source is preserved in the
-[OpenTUI `opencode-1.18.4-patched.92` tag](https://github.com/carsteneu/opentui/tree/opencode-1.18.4-patched.92).
-The `.96` OpenCode build is preserved as the rollback binary. `.97` adds the OpenCode 1.18.16 integration,
-chronological history corrections, worker request-parity guarantees, and reproducible OpenTUI overlay tooling to
-the public patch set. `.98` is deployed locally and remains unpublished.
+[OpenTUI `opencode-1.18.16-patched.98` tag](https://github.com/carsteneu/opentui/tree/opencode-1.18.16-patched.98).
+The `.98` OpenCode binary is preserved as the local rollback build. `.99` retains the complete performance and
+stability patch set and adds generic, full-width Markdown image presentation without a Yesmem-specific protocol.
