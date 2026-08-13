@@ -18,16 +18,16 @@ solution.
 
 This is a community build, not an upstream OpenCode release.
 
-| Component                                | Version or commit                                                                            | Source                                                                      |
-| ---------------------------------------- | -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| Currently deployed OpenCode build        | `1.18.16-patched.103`, save-directory commit `311f0776bd46746768ff5c6ca257af24ccfc9761`      | Local `working` build; public tag pending                                   |
-| Current public OpenCode prerelease       | `1.18.16-patched.99`, image implementation commit `1529acaa96396b15fd3bd65f9f61c63a091a4010` | [tag](https://github.com/carsteneu/opencode/tree/1.18.16-patched.99)        |
-| Previous public OpenCode prerelease      | `1.18.16-patched.97`, commit `418cce689ab74759b643ade316136ac25e207153`                      | [tag](https://github.com/carsteneu/opencode/tree/1.18.16-patched.97)        |
-| Previous public OpenCode prerelease      | `1.18.4-patched.96`, commit `78f2f6aaf51137ea477491d9416daaf50bc6afcd`                       | [tag](https://github.com/carsteneu/opencode/tree/1.18.4-patched.96)         |
-| OpenTUI renderer through `.97`           | OpenTUI 0.4.5 plus patches, commit `75f0721104b67027155dae967b44e67173b04756`                | [tag](https://github.com/carsteneu/opentui/tree/opencode-1.18.4-patched.92) |
-| OpenTUI renderer in `.98` through `.103` | OpenTUI 0.5.1 plus ported patches, commit `568db413e7bc3a110981d2e54ddb7ebb8e906075`         | Tag `opencode-1.18.16-patched.98`                                           |
-| Current Linux binary                     | `.103`, x86_64, SHA-256 `5a2866276559ed6d5f47426f672ad2fa50c4f33b16043f5c9e14ff486ca8c79d`   | Local deployed artifact                                                     |
-| Previous deployed Linux binary           | `.102`, x86_64, SHA-256 `f3142ca748ad7681552b63dc8139db97c6ca82a3498a87eb1ce954d786eea835`   | Backup `opencode-1.18.16-patched.102-before-103.bak`                        |
+| Component                                | Version or commit                                                                          | Source                                                                      |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------- |
+| Currently deployed OpenCode build        | `1.18.16-patched.103`, save-directory commit `311f0776bd46746768ff5c6ca257af24ccfc9761`    | Local `working` build; public tag pending                                   |
+| Current public OpenCode prerelease       | `1.18.16-patched.103`, save-directory commit `311f0776bd46746768ff5c6ca257af24ccfc9761`    | [tag](https://github.com/carsteneu/opencode/tree/1.18.16-patched.103)       |
+| Previous public OpenCode prerelease      | `1.18.16-patched.97`, commit `418cce689ab74759b643ade316136ac25e207153`                    | [tag](https://github.com/carsteneu/opencode/tree/1.18.16-patched.97)        |
+| Previous public OpenCode prerelease      | `1.18.4-patched.96`, commit `78f2f6aaf51137ea477491d9416daaf50bc6afcd`                     | [tag](https://github.com/carsteneu/opencode/tree/1.18.4-patched.96)         |
+| OpenTUI renderer through `.97`           | OpenTUI 0.4.5 plus patches, commit `75f0721104b67027155dae967b44e67173b04756`              | [tag](https://github.com/carsteneu/opentui/tree/opencode-1.18.4-patched.92) |
+| OpenTUI renderer in `.98` through `.103` | OpenTUI 0.5.1 plus ported patches, commit `568db413e7bc3a110981d2e54ddb7ebb8e906075`       | Tag `opencode-1.18.16-patched.98`                                           |
+| Current Linux binary                     | `.103`, x86_64, SHA-256 `5a2866276559ed6d5f47426f672ad2fa50c4f33b16043f5c9e14ff486ca8c79d` | Local deployed artifact                                                     |
+| Previous deployed Linux binary           | `.102`, x86_64, SHA-256 `f3142ca748ad7681552b63dc8139db97c6ca82a3498a87eb1ce954d786eea835` | Backup `opencode-1.18.16-patched.102-before-103.bak`                        |
 
 At the `.94` release tag, the OpenCode branch was 51 commits ahead of its then-current `dev` base, commit
 `0a601cf334b2cf5ac4e420cb2f3a4248b4414c17`. The focused diff is 58 files with 2,821 additions and 432
@@ -740,10 +740,9 @@ Some lower-level command transcripts and the full investigation journal remain l
 published historical documents above retain the methods, aggregate results, and decisions used by this report.
 
 The current public prerelease is available at
-[OpenCode 1.18.16-patched.99](https://github.com/carsteneu/opencode/releases/tag/1.18.16-patched.99). The renderer
+[OpenCode 1.18.16-patched.103](https://github.com/carsteneu/opencode/releases/tag/1.18.16-patched.103). The renderer
 source is preserved in the
 [OpenTUI `opencode-1.18.16-patched.98` tag](https://github.com/carsteneu/opentui/tree/opencode-1.18.16-patched.98).
-The locally deployed `.103` build is not yet published as a tag or release. The `.102` OpenCode binary is
-preserved as the local rollback build. `.103` retains the complete performance and stability patch set, bounded
-sharp native viewport residency, and generic original-image downloads, while adding project-rooted save
-directory selection.
+The `.102` OpenCode binary is preserved as the local rollback build. `.103` retains the complete performance
+and stability patch set, bounded sharp native viewport residency, and generic original-image downloads, while
+adding project-rooted save directory selection.
