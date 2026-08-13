@@ -8,8 +8,20 @@ const pixel =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
 
 test("uses the OpenTUI Dynamic reconciler to create and dispose a native image", async () => {
+  let loaded: { width: number; height: number } | undefined
   const app = await testRender(
-    () => <SessionNativeImage source={pixel} fit="fit" protocol="auto" width={4} height={2} />,
+    () => (
+      <SessionNativeImage
+        source={pixel}
+        fit="fit"
+        protocol="auto"
+        width={4}
+        height={2}
+        onLoad={(image) => {
+          loaded = { width: image.width, height: image.height }
+        }}
+      />
+    ),
     { width: 10, height: 6, useThread: false },
   )
 
@@ -17,6 +29,7 @@ test("uses the OpenTUI Dynamic reconciler to create and dispose a native image",
   await image.loadPromise
   expect(image.image?.width).toBe(1)
   expect(image.image?.height).toBe(1)
+  expect(loaded).toEqual({ width: 1, height: 1 })
 
   const decoded = image.image!
   app.renderer.destroy()

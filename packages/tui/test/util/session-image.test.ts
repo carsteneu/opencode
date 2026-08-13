@@ -1,16 +1,20 @@
 import { describe, expect, test } from "bun:test"
 import type { ToolPart } from "@opencode-ai/sdk/v2"
 import {
+  markdownSessionImages,
   projectSessionImages,
   selectAutoSessionImageKeys,
   sessionImageKey,
   sessionImagePreviewHeight,
+  textPartSessionImages,
   toolSessionImages,
 } from "../../src/util/session-image"
 
 type Completed = Extract<ToolPart["state"], { status: "completed" }>
 
-function completed(input: Pick<Completed, "output" | "attachments"> & { id?: string; tool?: string }): ToolPart {
+function completed(
+  input: Partial<Pick<Completed, "output" | "attachments">> & { id?: string; tool?: string },
+): ToolPart {
   return {
     id: input.id ?? "part_tool",
     sessionID: "ses_test",
@@ -24,118 +28,154 @@ function completed(input: Pick<Completed, "output" | "attachments"> & { id?: str
       title: "Generated image",
       metadata: {},
       time: { start: 1, end: 2 },
-      output: input.output,
+      output: input.output ?? "",
       attachments: input.attachments,
     },
   }
 }
 
-function capOutput(url: string, name = "generate_image") {
-  return JSON.stringify({ cap_name: name, output: JSON.stringify({ url }) })
-}
-
 describe("session images", () => {
-  test("prefers structured image attachments and removes a duplicate CAP result", () => {
-    const uri = "https://v3b.fal.media/files/image.png"
-    const signed = "https://example.com/download?token=1"
-    const images = toolSessionImages(
-      completed({
-        tool: "yesmem_execute_cap",
-        output: capOutput(uri),
-        attachments: [
-          {
-            id: "part_image",
-            sessionID: "ses_test",
-            messageID: "msg_test",
-            type: "file",
-            mime: "image/png",
-            filename: "  result\n.png\u0007  ",
-            url: uri,
-          },
-          {
-            id: "part_signed_image",
-            sessionID: "ses_test",
-            messageID: "msg_test",
-            type: "file",
-            mime: "image/webp",
-            filename: "signed.webp",
-            url: signed,
-          },
-        ],
-      }),
-    )
-
-    expect(images).toEqual([
-      { key: "attachment:part_image", uri, label: "result .png", source: "attachment" },
-      { key: "attachment:part_signed_image", uri: signed, label: "signed.webp", source: "attachment" },
-    ])
-  })
-
-  test("accepts only the trusted generate_image CAP result and preserves its URL bytes", () => {
-    const uri = "https://example.com/render.png?signature=abc!();:#preview"
-    expect(toolSessionImages(completed({ tool: "yesmem_execute_cap", output: capOutput(uri) }))).toEqual([
-      { key: "output", uri, label: "Generated image", source: "output" },
-    ])
-
-    expect(
-      toolSessionImages(
-        completed({ tool: "yesmem_execute_cap", output: capOutput("http://example.com/insecure.png") }),
-      ),
-    ).toEqual([])
-    expect(toolSessionImages(completed({ tool: "yesmem_execute_cap", output: capOutput(uri, "other_cap") }))).toEqual(
-      [],
-    )
-  })
-
-  test("never mines image URLs from arbitrary tool output", () => {
+  test("keeps structured image attachments generic", () => {
+    const uri = "https://example.com/download?token=1"
     expect(
       toolSessionImages(
         completed({
-          tool: "bash",
-          output: [
-            "https://example.com/image.png",
-            "http://127.0.0.1:8080/admin.png",
-            "http://169.254.169.254/latest/meta-data/iam.png",
-          ].join("\n"),
+          attachments: [
+            {
+              id: "part_image",
+              sessionID: "ses_test",
+              messageID: "msg_test",
+              type: "file",
+              mime: "image/webp",
+              filename: "  result\n.webp\u0007  ",
+              url: uri,
+            },
+          ],
+        }),
+      ),
+    ).toEqual([{ key: "attachment:part_image", uri, label: "result .webp", source: "attachment" }])
+  })
+
+  test("does not recognize Yesmem output or mine arbitrary tool output", () => {
+    const uri = "https://example.com/image.png"
+    expect(
+      toolSessionImages(
+        completed({
+          tool: "yesmem_execute_cap",
+          output: JSON.stringify({ cap_name: "generate_image", output: JSON.stringify({ url: uri }) }),
         }),
       ),
     ).toEqual([])
-
-    expect(
-      toolSessionImages({
-        id: "part_pending",
-        sessionID: "ses_test",
-        messageID: "msg_test",
-        type: "tool",
-        callID: "call_test",
-        tool: "yesmem_execute_cap",
-        state: { status: "pending", input: {}, raw: capOutput("https://example.com/image.png") },
-      }),
-    ).toEqual([])
+    expect(toolSessionImages(completed({ tool: "bash", output: `result: ${uri}` }))).toEqual([])
   })
 
-  test("bounds eager image loading across all mounted tool parts", () => {
-    const parts = Array.from({ length: 20 }, (_, index) => ({
-      partID: `part_${index}`,
+  test("extracts standard Markdown images and preserves signed URL bytes", () => {
+    const signed = "https://example.com/render.png?signature=abc!();:%2Bb&x=1#preview"
+    const reference = "https://cdn.example.com/result.webp?token=a+b&expires=123"
+    const content = [
+      `![Generated result](<${signed}> \"preview\")`,
+      "![Reference result][asset]",
+      "",
+      `[asset]: <${reference}>`,
+    ].join("\n")
+
+    expect(markdownSessionImages(content)).toEqual([
+      { key: "markdown:0", uri: signed, label: "Generated result", source: "markdown" },
+      { key: "markdown:1", uri: reference, label: "Reference result", source: "markdown" },
+    ])
+    expect(content).toContain(`<${signed}>`)
+  })
+
+  test("honors Markdown semantics instead of matching image-looking text", () => {
+    const uri = "https://example.com/ignored.png"
+    const content = [
+      `\\![escaped](${uri})`,
+      `\`![inline code](${uri})\``,
+      "```md",
+      `![fenced code](${uri})`,
+      "```",
+      "~~~md",
+      `![tilde code](${uri})`,
+      "~~~",
+      `    ![indented code](${uri})`,
+      `<img src=\"${uri}\">`,
+      `[plain link](${uri})`,
+    ].join("\n")
+
+    expect(markdownSessionImages(content)).toEqual([])
+  })
+
+  test("projects only a durably completed text part", () => {
+    const text = "![Result](https://example.com/result.png)"
+    const completedPart = { text, time: { start: 1, end: 2 } }
+    expect(textPartSessionImages({ text, time: { start: 1 } }, true)).toEqual([])
+    expect(textPartSessionImages(completedPart, false)).toEqual([])
+    const images = textPartSessionImages(completedPart, true)
+    expect(images).toHaveLength(1)
+    expect(textPartSessionImages(completedPart, true)).toBe(images)
+    expect(textPartSessionImages({ text }, false)).toEqual([])
+    expect(textPartSessionImages({ text }, true)).toHaveLength(1)
+  })
+
+  test("finds reference images in nested Markdown structures", () => {
+    const content = [
+      "> ![quote][quote-image]",
+      "",
+      "- ![list](https://example.com/list.png)",
+      "",
+      "| preview |",
+      "| --- |",
+      "| ![table](https://example.com/table.png) |",
+      "",
+      "[quote-image]: https://example.com/quote.png",
+    ].join("\n")
+
+    expect(markdownSessionImages(content).map((image) => image.uri)).toEqual([
+      "https://example.com/quote.png",
+      "https://example.com/list.png",
+      "https://example.com/table.png",
+    ])
+  })
+
+  test("filters unsafe sources, removes duplicates, and bounds the result", () => {
+    const accepted = Array.from({ length: 30 }, (_, index) => `![Image ${index}](https://example.com/${index}.png)`)
+    const content = [
+      "![HTTP](http://example.com/image.png)",
+      "![Local](https://127.0.0.1/image.png)",
+      "![File](file:///etc/passwd)",
+      "![Duplicate](https://example.com/0.png)",
+      ...accepted,
+    ].join("\n")
+    const images = markdownSessionImages(content)
+
+    expect(images).toHaveLength(24)
+    expect(new Set(images.map((image) => image.uri)).size).toBe(24)
+    expect(images[0].uri).toBe("https://example.com/0.png")
+    expect(markdownSessionImages("![Inline](data:image/png;base64,aGVsbG8=)")).toHaveLength(1)
+  })
+
+  test("selects only the newest Markdown or inline attachment for eager loading", () => {
+    const markdown = {
+      partID: "part_markdown",
       images: [
         {
-          key: `output:${index}`,
-          uri: `https://example.com/${index}.png`,
-          label: `Image ${index}`,
-          source: "output" as const,
+          key: "markdown:0",
+          uri: "https://example.com/image.png",
+          label: "Markdown",
+          source: "markdown" as const,
         },
       ],
-    }))
-    const selected = selectAutoSessionImageKeys(parts)
-
-    expect(selected.size).toBe(1)
-    expect([...selected]).toEqual(parts.slice(-1).map((part) => sessionImageKey(part.partID, part.images[0].key)))
-  })
-
-  test("requires a click before loading remote structured attachments", () => {
+    }
     const remote = {
       partID: "part_remote",
-      images: [{ key: "remote", uri: "https://example.com/image.png", label: "Remote", source: "attachment" as const }],
+      images: [
+        {
+          key: "remote",
+          uri: "https://example.com/attachment.png",
+          label: "Remote attachment",
+          source: "attachment" as const,
+        },
+      ],
     }
     const inline = {
       partID: "part_inline",
@@ -143,28 +183,32 @@ describe("session images", () => {
         {
           key: "inline",
           uri: "data:image/png;base64,aGVsbG8=",
-          label: "Inline",
+          label: "Inline attachment",
           source: "attachment" as const,
         },
       ],
     }
 
-    expect([...selectAutoSessionImageKeys([remote, inline])]).toEqual([
+    expect([...selectAutoSessionImageKeys([markdown, remote])]).toEqual([
+      sessionImageKey(markdown.partID, markdown.images[0].key),
+    ])
+    expect([...selectAutoSessionImageKeys([markdown, remote, inline])]).toEqual([
       sessionImageKey(inline.partID, inline.images[0].key),
     ])
   })
 
-  test("bounds transcript thumbnails and reports hidden images", () => {
-    const images = ["a", "b", "c", "d"].map((uri) => ({
+  test("projects one full-width image and sizes it without cropping", () => {
+    const images = ["a", "b", "c"].map((uri) => ({
       key: uri,
       uri,
       label: uri,
-      source: "output" as const,
+      source: "markdown" as const,
     }))
 
-    expect(projectSessionImages(images)).toEqual({ visible: images.slice(0, 3), hidden: 1 })
-    expect(sessionImagePreviewHeight(12)).toBe(4)
-    expect(sessionImagePreviewHeight(24)).toBe(6)
-    expect(sessionImagePreviewHeight(80)).toBe(8)
+    expect(projectSessionImages(images)).toEqual({ visible: images.slice(0, 1), hidden: 2 })
+    expect(sessionImagePreviewHeight(24, 80)).toBe(23)
+    expect(sessionImagePreviewHeight(40, 120, 1, 1, 2)).toBe(60)
+    expect(sessionImagePreviewHeight(24, 80, 1, 10, 2)).toBe(48)
+    expect(sessionImagePreviewHeight(3, 10)).toBe(3)
   })
 })

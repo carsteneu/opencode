@@ -1,5 +1,5 @@
 import { getComponentCatalogue, Dynamic, type JSX } from "@opentui/solid"
-import type { ImageSource } from "@opentui/core"
+import type { ImageSource, NativeImage } from "@opentui/core"
 import { createEffect, createSignal, onCleanup, Show } from "solid-js"
 import { loadSessionImageSource } from "../util/session-image-load"
 
@@ -12,6 +12,7 @@ export function SessionNativeImage(props: {
   protocol: "auto"
   width: number | string
   height: number | string
+  onLoad?: (image: NativeImage) => void
   onError?: (error: unknown) => void
 }) {
   const [source, setSource] = createSignal<ImageSource>()
@@ -56,6 +57,7 @@ export function SessionNativeImage(props: {
           protocol={props.protocol}
           width={props.width}
           height={props.height}
+          onLoad={props.onLoad}
           onError={props.onError}
         />
       )}

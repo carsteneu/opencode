@@ -96,6 +96,8 @@ import {
   selectAutoSessionImageKeys,
   sessionImageKey,
   sessionImagePreviewHeight,
+  type SessionImage,
+  textPartSessionImages,
   toolSessionImages,
 } from "../../util/session-image"
 
@@ -307,20 +309,23 @@ export function Session() {
   const visibleMessages = createMemo(() => messageWindow().visible)
   const hiddenMessages = createMemo(() => messageWindow().hidden)
   const lastAssistant = createMemo(() => messageWindow().projected.findLast((message) => message.role === "assistant"))
-  const autoImageKeys = createMemo(() =>
-    selectAutoSessionImageKeys(
-      visibleMessages()
-        .slice(-WINDOW_LADDER[0])
-        .flatMap((message) =>
-          (sync.data.part[message.id] ?? []).flatMap((part) => {
-            if (part.type !== "tool") return []
-            const images = toolSessionImages(part)
-            if (images.length === 0) return []
-            return [{ partID: part.id, images }]
-          }),
-        ),
-    ),
-  )
+  // A mounted terminal image requires full-frame composition, so historical images stay compact and click-only.
+  const autoImageKeys = createMemo(() => {
+    const message = lastAssistant()
+    if (!message) return new Set<string>()
+    return selectAutoSessionImageKeys(
+      (sync.data.part[message.id] ?? []).flatMap((part) => {
+        const images =
+          part.type === "text"
+            ? textPartSessionImages(part, message.time.completed !== undefined)
+            : part.type === "tool"
+              ? toolSessionImages(part)
+              : []
+        if (images.length === 0) return []
+        return [{ partID: part.id, images }]
+      }),
+    )
+  })
 
   // Reset the window whenever the session changes so long histories don't
   // render fully on the first frame of a new session.
@@ -1862,21 +1867,28 @@ function TextPart(props: { last: boolean; part: TextPart; message: AssistantMess
     previousRevision = delta?.revision
     return { content: next, appended }
   })
+  const images = createMemo(() => {
+    const result = textPartSessionImages(props.part, props.message.time.completed !== undefined)
+    if (result.length > 0) return result
+  })
   return (
     <Show when={content().content}>
-      <box ref={(el: BoxRenderable) => alwaysSeparate.add(el)} paddingLeft={3} marginTop={1} flexShrink={0}>
-        <markdown
-          syntaxStyle={syntax()}
-          streaming={props.message.time.completed === undefined}
-          retainedRendering={true}
-          internalBlockMode="top-level"
-          contentUpdate={content()}
-          tableOptions={{ style: "grid" }}
-          conceal={ctx.conceal()}
-          fg={theme.markdownText}
-          bg={theme.background}
-        />
-      </box>
+      <>
+        <box ref={(el: BoxRenderable) => alwaysSeparate.add(el)} paddingLeft={3} marginTop={1} flexShrink={0}>
+          <markdown
+            syntaxStyle={syntax()}
+            streaming={props.message.time.completed === undefined}
+            retainedRendering={true}
+            internalBlockMode="top-level"
+            contentUpdate={content()}
+            tableOptions={{ style: "grid" }}
+            conceal={ctx.conceal()}
+            fg={theme.markdownText}
+            bg={theme.background}
+          />
+        </box>
+        <Show when={images()}>{(items) => <SessionImagePreviews partID={props.part.id} images={items()} />}</Show>
+      </>
     </Show>
   )
 }
@@ -1975,21 +1987,21 @@ export function SessionToolImages(props: { part: ToolPart }) {
     return undefined
   })
 
-  return <Show when={images()}>{(items) => <ToolImagePreviews partID={props.part.id} images={items()} />}</Show>
+  return <Show when={images()}>{(items) => <SessionImagePreviews partID={props.part.id} images={items()} />}</Show>
 }
 
-function ToolImagePreviews(props: { partID: string; images: ReturnType<typeof toolSessionImages> }) {
+function SessionImagePreviews(props: { partID: string; images: readonly SessionImage[] }) {
   const ctx = use()
   const dialog = useDialog()
+  const renderer = useRenderer()
   const { theme } = useTheme()
   const projected = createMemo(() => projectSessionImages(props.images))
-  const height = createMemo(() => sessionImagePreviewHeight(ctx.height))
   const supported = supportsNativeImages()
 
   return (
     <box
       ref={(element: BoxRenderable) => alwaysSeparate.add(element)}
-      flexDirection="row"
+      flexDirection="column"
       flexShrink={0}
       paddingTop={1}
       paddingLeft={3}
@@ -2000,13 +2012,27 @@ function ToolImagePreviews(props: { partID: string; images: ReturnType<typeof to
       <For each={projected().visible}>
         {(image, index) => {
           const [failed, setFailed] = createSignal(false)
+          const [sourceSize, setSourceSize] = createSignal<{ width: number; height: number }>()
           const eager = createMemo(() => ctx.autoImageKeys.has(sessionImageKey(props.partID, image.key)))
+          const active = createMemo(() => supported && ctx.idle && dialog.stack.length === 0 && eager() && !failed())
+          const height = createMemo(() => {
+            const resolution = renderer.resolution
+            const cellWidth = resolution && renderer.terminalWidth > 0 ? resolution.width / renderer.terminalWidth : 0
+            const cellHeight =
+              resolution && renderer.terminalHeight > 0 ? resolution.height / renderer.terminalHeight : 0
+            return sessionImagePreviewHeight(
+              ctx.height,
+              ctx.width - 5,
+              sourceSize()?.width,
+              sourceSize()?.height,
+              cellWidth > 0 && cellHeight > 0 ? cellHeight / cellWidth : 2,
+            )
+          })
           return (
             <box
-              width={height() * 2}
-              height={height()}
-              flexBasis={height() * 2}
-              flexShrink={1}
+              width="100%"
+              height={active() ? height() : 1}
+              flexShrink={0}
               alignItems="center"
               justifyContent="center"
               onMouseUp={(event) => {
@@ -2016,19 +2042,20 @@ function ToolImagePreviews(props: { partID: string; images: ReturnType<typeof to
               }}
             >
               <Show
-                when={supported && ctx.idle && dialog.stack.length === 0 && eager() && !failed()}
+                when={active()}
                 fallback={
-                  <text fg={theme.textMuted} wrapMode="word">
+                  <text fg={theme.textMuted} wrapMode="none" truncate>
                     {supported ? "Open image" : "Preview unavailable"}
                   </text>
                 }
               >
                 <SessionNativeImage
                   source={image.uri}
-                  fit="cover"
+                  fit="fit"
                   protocol="auto"
                   width="100%"
                   height="100%"
+                  onLoad={(loaded) => setSourceSize({ width: loaded.width, height: loaded.height })}
                   onError={() => setFailed(true)}
                 />
               </Show>
@@ -2037,11 +2064,9 @@ function ToolImagePreviews(props: { partID: string; images: ReturnType<typeof to
         }}
       </For>
       <Show when={projected().hidden > 0}>
-        <box width={8} height={height()} flexShrink={1} alignItems="center" justifyContent="center">
-          <text fg={theme.textMuted} wrapMode="none" truncate>
-            +{projected().hidden} more
-          </text>
-        </box>
+        <text fg={theme.textMuted} wrapMode="none" truncate>
+          +{projected().hidden} more, open image to browse
+        </text>
       </Show>
     </box>
   )
