@@ -1,6 +1,6 @@
 # OpenCode TUI Performance and Stability Patch Set
 
-Status: 2026-08-12
+Status: 2026-08-13
 
 This document describes an unofficial performance and stability patch set for OpenCode and OpenTUI. The work
 started with a practical problem: several OpenCode sessions could consume a surprising amount of CPU while text
@@ -21,10 +21,13 @@ This is a community build, not an upstream OpenCode release.
 | Component | Version or commit | Source |
 | --- | --- | --- |
 | Current public OpenCode prerelease | `1.18.16-patched.97` | [tag](https://github.com/carsteneu/opencode/tree/1.18.16-patched.97) |
+| Local OpenCode release candidate | `1.18.16-patched.98` | Built and verified locally, not published or deployed |
 | Previous public OpenCode prerelease | `1.18.4-patched.96`, commit `78f2f6aaf51137ea477491d9416daaf50bc6afcd` | [tag](https://github.com/carsteneu/opencode/tree/1.18.4-patched.96) |
 | Currently deployed OpenCode build | `1.18.4-patched.96`, commit `78f2f6aaf51137ea477491d9416daaf50bc6afcd` | Locally verified |
-| OpenTUI renderer in all binary builds | OpenTUI 0.4.5 plus patches, commit `75f0721104b67027155dae967b44e67173b04756` | [tag](https://github.com/carsteneu/opentui/tree/opencode-1.18.4-patched.92) |
+| OpenTUI renderer through `.97` | OpenTUI 0.4.5 plus patches, commit `75f0721104b67027155dae967b44e67173b04756` | [tag](https://github.com/carsteneu/opentui/tree/opencode-1.18.4-patched.92) |
+| OpenTUI renderer in the `.98` candidate | OpenTUI 0.5.1 plus ported patches, commit `568db413e7bc3a110981d2e54ddb7ebb8e906075` | Local tag `opencode-1.18.16-patched.98` |
 | Current public Linux binary | `.97`, x86_64, SHA-256 `ac4d0073b3edffa6ee8fc154eef57d63c8274351bbe364b3e9e7d29cec3df474` | [release](https://github.com/carsteneu/opencode/releases/tag/1.18.16-patched.97) |
+| Local `.98` Linux candidate | `.98`, x86_64, SHA-256 `ac232165e886079e193a752493618d03ac03281fc584753fb8a15c634bf0eec4` | Built and verified locally, not released |
 | Currently deployed Linux binary | `.96`, x86_64, SHA-256 `e531925bf6205828e1caea3b4e46f29fa538864fe067a83dcfe446a6bbff2307` | Locally verified |
 
 At the `.94` release tag, the OpenCode branch was 51 commits ahead of its then-current `dev` base, commit
@@ -64,6 +67,27 @@ normal path, preserves supported tool metadata and output conversion across IPC,
 when configuration cannot be serialized. A request-body parity test verifies byte-identical Anthropic and OpenAI
 cache input across normal and worker execution. The release also adds a guarded script for reproducing the
 patched OpenTUI dependency overlay.
+
+The local `.98` candidate moves the renderer base from OpenTUI 0.4.5 to OpenTUI 0.5.1. The retained partial
+rendering and incremental streaming paths were ported instead of discarded. They are now explicit opt-in paths
+with additional composition guards for opaque backgrounds, clipping, ancestor opacity, and later overlapping
+renderables. This preserves the CPU work while gaining the current OpenTUI image renderer and its Kitty, Sixel,
+and terminal-block fallbacks.
+
+OpenCode uses that renderer for completed structured image attachments and the trusted `generate_image` Yesmem
+CAP result. Arbitrary tool output is never searched for URLs. Up to 24 sources are retained, three thumbnail
+positions are shown, and only the newest trusted output or inline attachment among the last ten visible messages
+is loaded eagerly. Only one preview is decoded at a time, eager inline thumbnails are suspended while a session
+is busy, remote attachments require a click, and the dialog never prints signed URLs.
+
+Remote bytes are loaded in OpenCode rather than by the renderer. The loader accepts HTTPS without URL
+credentials, validates every resolved address, connects only through the checked lookup result, and revalidates
+up to three redirects. It enforces one 15 second deadline and rejects private, loopback, link-local,
+translated, documentation, and other special-purpose addresses. Remote encoded bodies are limited to 16 MiB,
+Data URIs to 8 MiB, response headers to 16 KiB, and native decoding remains limited to 25 million pixels and
+100 MiB, with either dimension limited to 16,384 pixels. These changes are confined to completed tool output
+presentation and do not modify model requests, tool injection, persisted provider messages, or Anthropic and
+OpenAI cache input.
 
 ## Results at a glance
 
@@ -109,6 +133,19 @@ benchmark. The active `.91` process tree averaged 179.20% over 20 full one-minut
 process tree averaged 15.98% over three intervals. Correcting for the worker being active for only 92 of 180
 seconds and subtracting the idle baseline gives a duration-normalized `.92` estimate of 28.76%, or 83.9% lower.
 This active result should be treated as directional.
+
+The OpenTUI 0.5.1 port also has a narrow renderer microbenchmark. It rendered a route-like Markdown stream with
+39 fixed history rows and 1,000 same-line updates under the balanced power profile. The retained path committed
+one full frame and 999 partial frames. The comparison path committed 1,000 full frames.
+
+| OpenTUI 0.5.1 renderer microbenchmark | Mean of three runs |
+| ------------------------------------- | -----------------: |
+| Full-frame baseline                   |          197.95 ms |
+| Retained `.98` path                   |          123.50 ms |
+| Reduction                             |              37.6% |
+
+This is a synthetic renderer result, not an end-to-end OpenCode speedup. A non-interleaved check against the old
+patched OpenTUI 0.4.5 path was also favorable, but it is not used as a release claim.
 
 ## Measurement method
 
@@ -504,15 +541,26 @@ model-process tests, 6 provider timeout tests, and 29 TUI history, hydration, an
 The OpenTUI overlay hashes were verified before and after packaging. Two independent Linux x86_64 builds were
 byte-identical, passed the embedded version smoke test, and report `1.18.16-patched.97`.
 
+The `.98` candidate passed all 215 TUI tests with 1 existing skip, plus the TUI and OpenCode package typechecks.
+Its focused image and lifecycle suite passed 15 tests. OpenTUI Core passed 5,384 tests with 23 skips, Solid passed
+271 tests, and the native Zig suite passed 1,868 tests with 6 skips. OpenTUI formatting, linting, Core build, and
+Solid build also passed. The supplied FAL image was loaded through the hardened network path as a 964,609-byte
+PNG. A render integration test proves that OpenTUI creates an `ImageRenderable`, releases its native image on
+unmount, and keeps only one session image source active. The final Linux x86_64 binary passed its version smoke
+test, reports `1.18.16-patched.98`, contains the retained-render and image-preview paths, and preserves the pinned
+Core, Solid, and native artifact hashes after packaging. Independent renderer and security reviews found no
+remaining release blocker.
+
 ## Packaging and reproducibility caveat
 
-The `.92`, `.93`, `.94`, `.96`, and `.97` binaries contain the patched OpenTUI Core JavaScript, Solid integration,
-and matching native `libopentui.so`.
+The `.92`, `.93`, `.94`, `.96`, and `.97` binaries contain the patched OpenTUI 0.4.5 Core JavaScript, Solid
+integration, and matching native `libopentui.so`. The local `.98` candidate contains the corresponding patched
+OpenTUI 0.5.1 artifacts.
 
-The OpenCode lockfile still names the released OpenTUI 0.4.5 packages. A fresh `bun install` therefore resolves
-stock OpenTUI 0.4.5, not the fork commit. Reproducing the measured renderer requires building the tagged OpenTUI
-fork, placing its matching JavaScript and native artifacts into the OpenCode dependency tree, and then building
-OpenCode without reinstalling those dependencies.
+The `.98` OpenCode lockfile names the released OpenTUI 0.5.1 packages. A fresh `bun install` therefore resolves
+stock OpenTUI 0.5.1, not the additional fork commits. Reproducing the candidate renderer requires building the
+tagged OpenTUI fork, placing its matching JavaScript and native artifacts into the OpenCode dependency tree, and
+then building OpenCode without reinstalling those dependencies.
 
 The repository now includes a guarded synchronization command for that overlay step:
 
@@ -523,9 +571,15 @@ bun run script/sync-opentui-overlay.ts --source=/path/to/opentui --check
 
 The command requires the OpenTUI checkout to be clean and exactly at the tagged commit. It verifies the complete
 Core, Solid, and Linux x64 native artifact trees against pinned hashes, checks that the installed dependency slot
-is still OpenTUI 0.4.5, and replaces only the current worktree's Bun store targets. The tagged OpenTUI artifacts
+is still OpenTUI 0.5.1, and replaces only the current worktree's Bun store targets. The tagged OpenTUI artifacts
 must still be built first. Build OpenCode with `--skip-install` afterward so dependency installation cannot replace
 the verified overlay.
+
+The `.98` artifact hashes are:
+
+- Core: `e15a4537e890882bee62068cb91b7cc5206dc5ea5fbc0b8def2e7f00a0c9d39b`
+- Solid: `294dcc12fb498a5a8427bea3b7fc30b89ff1b37b39c76e93f2dbb47247330617`
+- Linux x64 native: `e459247a3ac0e92fd68011fc60a77f09ba5d6dfa18dab31ed4b62cf2fa136639`
 
 The native ABI also changed for partial-region rendering. Patched JavaScript and the matching native library
 must be distributed together for every platform. The release currently provides only the tested Linux x86_64
@@ -561,4 +615,4 @@ source is preserved in the
 [OpenTUI `opencode-1.18.4-patched.92` tag](https://github.com/carsteneu/opentui/tree/opencode-1.18.4-patched.92).
 The `.96` OpenCode build remains the currently deployed binary. `.97` adds the OpenCode 1.18.16 integration,
 chronological history corrections, worker request-parity guarantees, and reproducible OpenTUI overlay tooling to
-the public patch set.
+the public patch set. `.98` remains a local release candidate pending an explicit publish and deployment decision.
