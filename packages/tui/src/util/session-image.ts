@@ -4,8 +4,15 @@ import { isSessionDataImageUri, sessionImageIdentity, validSessionImageUri } fro
 
 const supportedMime = new Set(["image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"])
 const maxSources = 24
+// A one-row viewport wobble can move two competing center distances by two rows.
+const nativeHysteresisRows = 2
 const markdown = new Marked()
 const textPartImages = new WeakMap<object, { text: string; images: SessionImage[] }>()
+
+export const SESSION_IMAGE_NATIVE_LIMIT = 2
+export const SESSION_IMAGE_NATIVE_RETAIN_VIEWPORTS = 0.75
+export const SESSION_IMAGE_PREFETCH_LIMIT = 2
+export const SESSION_IMAGE_PREFETCH_VIEWPORTS = 1
 
 export type SessionImage = {
   key: string
@@ -88,25 +95,81 @@ export function selectViewportSessionImageKeys(
   viewportHeight: number,
   limit = 1,
   overscan = 1,
+  direction = 0,
 ) {
   if (limit <= 0 || viewportHeight <= 0) return new Set<string>()
+  return new Set(
+    rankViewportSessionImages(images, viewportY, viewportHeight, overscan, Math.sign(direction))
+      .slice(0, limit)
+      .map((image) => image.key),
+  )
+}
+
+export function planSessionImageResidency(
+  images: readonly { key: string; y: number; height: number }[],
+  viewportY: number,
+  viewportHeight: number,
+  previous: ReadonlySet<string>,
+  input: { limit?: number; retainViewports?: number; direction?: number } = {},
+) {
+  const limit = Math.min(input.limit ?? SESSION_IMAGE_NATIVE_LIMIT, SESSION_IMAGE_NATIVE_LIMIT)
+  if (limit <= 0 || viewportHeight <= 0) return new Set<string>()
+  const viewportEnd = viewportY + viewportHeight
+  const visible = new Set(
+    images
+      .filter((image) => rangesOverlap(image.y, image.y + Math.max(1, image.height), viewportY, viewportEnd))
+      .map((image) => image.key),
+  )
+  const direction = Math.sign(input.direction ?? 0)
+  return new Set(
+    rankViewportSessionImages(
+      images,
+      viewportY,
+      viewportHeight,
+      Math.max(0, input.retainViewports ?? SESSION_IMAGE_NATIVE_RETAIN_VIEWPORTS),
+      direction,
+      previous,
+    )
+      .filter((image) => visible.has(image.key) || previous.has(image.key))
+      .slice(0, limit)
+      .map((image) => image.key),
+  )
+}
+
+function rankViewportSessionImages(
+  images: readonly { key: string; y: number; height: number }[],
+  viewportY: number,
+  viewportHeight: number,
+  overscan: number,
+  direction = 0,
+  previous?: ReadonlySet<string>,
+) {
   const viewportEnd = viewportY + viewportHeight
   const overscanSize = viewportHeight * Math.max(0, overscan)
   const overscanStart = viewportY - overscanSize
   const overscanEnd = viewportEnd + overscanSize
-  return new Set(
-    images
-      .filter((image) => image.y + Math.max(1, image.height) >= overscanStart && image.y <= overscanEnd)
-      .toSorted((a, b) => {
-        const distance = rangeDistance(a.y, a.y + Math.max(1, a.height), viewportY, viewportEnd)
-        const nextDistance = rangeDistance(b.y, b.y + Math.max(1, b.height), viewportY, viewportEnd)
-        const center = Math.abs(a.y + Math.max(1, a.height) / 2 - (viewportY + viewportHeight / 2))
-        const nextCenter = Math.abs(b.y + Math.max(1, b.height) / 2 - (viewportY + viewportHeight / 2))
-        return distance - nextDistance || center - nextCenter || b.y - a.y
-      })
-      .slice(0, limit)
-      .map((image) => image.key),
-  )
+  const viewportCenter = viewportY + viewportHeight / 2
+  return images
+    .filter((image) => rangesOverlap(image.y, image.y + Math.max(1, image.height), overscanStart, overscanEnd))
+    .toSorted((a, b) => {
+      const aEnd = a.y + Math.max(1, a.height)
+      const bEnd = b.y + Math.max(1, b.height)
+      const aVisible = rangesOverlap(a.y, aEnd, viewportY, viewportEnd)
+      const bVisible = rangesOverlap(b.y, bEnd, viewportY, viewportEnd)
+      if (aVisible !== bVisible) return aVisible ? -1 : 1
+      const distance = rangeDistance(a.y, aEnd, viewportY, viewportEnd)
+      const nextDistance = rangeDistance(b.y, bEnd, viewportY, viewportEnd)
+      if (distance !== nextDistance) return distance - nextDistance
+      const center = Math.abs(a.y + Math.max(1, a.height) / 2 - viewportCenter)
+      const nextCenter = Math.abs(b.y + Math.max(1, b.height) / 2 - viewportCenter)
+      const centerRank = center - (aVisible && previous?.has(a.key) ? nativeHysteresisRows : 0)
+      const nextCenterRank = nextCenter - (bVisible && previous?.has(b.key) ? nativeHysteresisRows : 0)
+      if (centerRank !== nextCenterRank) return centerRank - nextCenterRank
+      if (aVisible && previous?.has(a.key) !== previous?.has(b.key)) return previous?.has(a.key) ? -1 : 1
+      const directional = direction > 0 ? b.y - a.y : a.y - b.y
+      if (directional !== 0) return directional
+      return a.key < b.key ? -1 : a.key > b.key ? 1 : 0
+    })
 }
 
 export function projectSessionImages(images: readonly SessionImage[], limit = 1) {
@@ -119,12 +182,11 @@ export function projectSessionImages(images: readonly SessionImage[], limit = 1)
 
 export function sessionImagePreviewActive(input: {
   supported: boolean
-  idle: boolean
   dialogOpen: boolean
-  eager: boolean
+  resident: boolean
   failed: boolean
 }) {
-  return input.supported && input.idle && !input.dialogOpen && input.eager && !input.failed
+  return input.supported && !input.dialogOpen && input.resident && !input.failed
 }
 
 export function sessionImagePreviewHeight(
@@ -150,7 +212,11 @@ function imageLabel(value: string | undefined, fallback: string) {
 }
 
 function rangeDistance(start: number, end: number, viewportStart: number, viewportEnd: number) {
-  if (end < viewportStart) return viewportStart - end
-  if (start > viewportEnd) return start - viewportEnd
+  if (end <= viewportStart) return viewportStart - end
+  if (start >= viewportEnd) return start - viewportEnd
   return 0
+}
+
+function rangesOverlap(start: number, end: number, viewportStart: number, viewportEnd: number) {
+  return end > viewportStart && start < viewportEnd
 }

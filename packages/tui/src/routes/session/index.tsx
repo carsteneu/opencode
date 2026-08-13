@@ -87,14 +87,16 @@ import { usePluginRuntime } from "../../plugin/runtime"
 import { DialogRetryAction } from "../../component/dialog-retry-action"
 import { DialogImagePreview } from "../../component/dialog-image-preview"
 import { SessionNativeImage, supportsNativeImages } from "../../component/native-image"
-import { SessionStaticImage } from "../../component/static-image"
 import { getRevertDiffFiles } from "../../util/revert-diff"
 import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut, useOpencodeKeymap } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
 import { LocationProvider } from "../../context/location"
 import {
+  planSessionImageResidency,
   projectSessionImages,
   selectViewportSessionImageKeys,
+  SESSION_IMAGE_PREFETCH_LIMIT,
+  SESSION_IMAGE_PREFETCH_VIEWPORTS,
   sessionImageAuto,
   sessionImagePreviewActive,
   sessionImageKey,
@@ -104,11 +106,11 @@ import {
   toolSessionImages,
 } from "../../util/session-image"
 import {
-  captureSessionImageSnapshot,
-  SESSION_IMAGE_SNAPSHOT_MAX_HEIGHT,
-  SessionImageSnapshotStore,
-  type SessionImageSnapshot,
-} from "../../util/session-image-snapshot"
+  SessionImageSourceStore,
+  type SessionImageSource,
+  type SessionImageSourceAcquirer,
+  type SessionImageSourceReader,
+} from "../../util/session-image-source"
 
 addDefaultParsers(parsers.parsers)
 
@@ -118,10 +120,8 @@ const GO_UPSELL_ACCOUNT_RATE_LIMIT_LAST_SEEN_AT = "go_upsell_account_rate_limit_
 const GO_UPSELL_ACCOUNT_RATE_LIMIT_DONT_SHOW = "go_upsell_account_rate_limit_dont_show"
 const GO_UPSELL_WINDOW = 86_400_000 // 24 hrs
 const GO_UPSELL_PROVIDERS = new Set(["opencode", "opencode-go"])
-const MAX_NATIVE_SESSION_IMAGES = 1
-const MAX_STATIC_SESSION_IMAGES = 4
 const MAX_INLINE_SESSION_IMAGE_PIXELS = 4 * 1024 * 1024
-const SESSION_IMAGE_LOAD_DEBOUNCE = 80
+const SESSION_IMAGE_PREFETCH_DEBOUNCE = 100
 
 export const alwaysSeparate = new WeakSet<BoxRenderable>()
 
@@ -160,81 +160,141 @@ export function shouldExpandMessageWindow(hidden: number, contentHeight: number,
 }
 
 function createSessionImageState(getScroll: () => ScrollBoxRenderable | undefined) {
-  const elements = new Map<string, BoxRenderable>()
-  const snapshots = new SessionImageSnapshotStore()
-  const [layoutRevision, setLayoutRevision] = createSignal(0)
-  const [loadRevision, setLoadRevision] = createSignal(0)
-  const [snapshotRevision, setSnapshotRevision] = createSignal(0)
+  const elements = new Map<
+    string,
+    { element: BoxRenderable; source: string; onSource: (source: SessionImageSource) => void }
+  >()
+  const sources = new SessionImageSourceStore()
+  const prefetches = new Map<string, { source: string; controller: AbortController }>()
+  const [residentKeys, setResidentKeys] = createSignal<ReadonlySet<string>>(new Set())
   let refreshTimer: ReturnType<typeof setTimeout> | undefined
-  let loadTimer: ReturnType<typeof setTimeout> | undefined
+  let prefetchTimer: ReturnType<typeof setTimeout> | undefined
+  let scrollTop: number | undefined
+  let direction = 0
   let disposed = false
 
   const refresh = () => {
     if (disposed) return
-    if (refreshTimer === undefined) {
-      refreshTimer = setTimeout(() => {
-        refreshTimer = undefined
-        setLayoutRevision((revision) => revision + 1)
-      }, 0)
-    }
-    if (loadTimer !== undefined) clearTimeout(loadTimer)
-    loadTimer = setTimeout(() => {
-      loadTimer = undefined
-      setLoadRevision((revision) => revision + 1)
-    }, SESSION_IMAGE_LOAD_DEBOUNCE)
+    if (refreshTimer !== undefined) return
+    refreshTimer = setTimeout(() => {
+      const scroll = getScroll()
+      refreshTimer = undefined
+      if (!scroll || scroll.isDestroyed || scroll.viewport.isDestroyed) {
+        setResidentKeys(new Set<string>())
+        if (prefetchTimer !== undefined) clearTimeout(prefetchTimer)
+        prefetchTimer = undefined
+        scrollTop = undefined
+        direction = 0
+        reconcilePrefetch(new Set<string>())
+        return
+      }
+      const geometry = [...elements]
+        .filter(([, entry]) => !entry.element.isDestroyed)
+        .map(([key, entry]) => ({ key, y: entry.element.y, height: entry.element.height }))
+      const delta = scrollTop === undefined ? 0 : scroll.scrollTop - scrollTop
+      if (delta !== 0) direction = delta
+      scrollTop = scroll.scrollTop
+      const current = residentKeys()
+      const next = planSessionImageResidency(geometry, scroll.viewport.y, scroll.viewport.height, current, {
+        direction,
+      })
+      setResidentKeys(sameKeys(current, next) ? current : next)
+      if (prefetchTimer !== undefined) clearTimeout(prefetchTimer)
+      prefetchTimer = setTimeout(() => {
+        prefetchTimer = undefined
+        const currentScroll = getScroll()
+        if (!currentScroll || currentScroll.isDestroyed || currentScroll.viewport.isDestroyed) return
+        reconcilePrefetch(
+          selectViewportSessionImageKeys(
+            [...elements]
+              .filter(([, entry]) => !entry.element.isDestroyed)
+              .map(([key, entry]) => ({ key, y: entry.element.y, height: entry.element.height })),
+            currentScroll.viewport.y,
+            currentScroll.viewport.height,
+            SESSION_IMAGE_PREFETCH_LIMIT,
+            SESSION_IMAGE_PREFETCH_VIEWPORTS,
+            direction,
+          ),
+        )
+      }, SESSION_IMAGE_PREFETCH_DEBOUNCE)
+    }, 0)
   }
-  const register = (key: string, element: BoxRenderable) => {
-    elements.set(key, element)
+  const register = (
+    key: string,
+    source: string,
+    element: BoxRenderable,
+    onSource: (source: SessionImageSource) => void,
+  ) => {
+    const entry = { element, source, onSource }
+    elements.set(key, entry)
+    const cached = sources.peek(source)
+    if (cached) onSource(cached)
     refresh()
     return () => {
-      if (elements.get(key) !== element) return
+      if (elements.get(key) !== entry) return
       elements.delete(key)
       refresh()
     }
   }
-  const geometry = () =>
-    [...elements]
-      .filter(([, element]) => !element.isDestroyed)
-      .map(([key, element]) => ({ key, y: element.y, height: element.height }))
-  const keys = (revision: () => number, limit: number, overscan = 1) =>
-    createMemo(() => {
-      revision()
-      const scroll = getScroll()
-      if (!scroll || scroll.isDestroyed || scroll.viewport.isDestroyed) return new Set<string>()
-      return selectViewportSessionImageKeys(geometry(), scroll.viewport.y, scroll.viewport.height, limit, overscan)
+
+  const reconcilePrefetch = (keys: ReadonlySet<string>) => {
+    prefetches.forEach((prefetch, key) => {
+      const entry = elements.get(key)
+      if (keys.has(key) && entry?.source === prefetch.source) return
+      prefetch.controller.abort()
+      prefetches.delete(key)
     })
-  const autoKeys = keys(loadRevision, MAX_NATIVE_SESSION_IMAGES, 0)
-  const visibleKeys = keys(layoutRevision, MAX_STATIC_SESSION_IMAGES)
+    keys.forEach((key) => {
+      if (prefetches.has(key)) return
+      const entry = elements.get(key)
+      if (!entry) return
+      const controller = new AbortController()
+      prefetches.set(key, { source: entry.source, controller })
+      void sources.load(entry.source, controller.signal, MAX_INLINE_SESSION_IMAGE_PIXELS).then(
+        (source) => {
+          if (controller.signal.aborted || elements.get(key) !== entry) return
+          entry.onSource(source)
+        },
+        () => undefined,
+      )
+    })
+  }
+
+  const clear = () => {
+    if (refreshTimer !== undefined) clearTimeout(refreshTimer)
+    refreshTimer = undefined
+    reconcilePrefetch(new Set<string>())
+    sources.clear()
+    if (prefetchTimer !== undefined) clearTimeout(prefetchTimer)
+    prefetchTimer = undefined
+    scrollTop = undefined
+    direction = 0
+    setResidentKeys(new Set<string>())
+  }
 
   onCleanup(() => {
     disposed = true
     if (refreshTimer !== undefined) clearTimeout(refreshTimer)
-    if (loadTimer !== undefined) clearTimeout(loadTimer)
+    if (prefetchTimer !== undefined) clearTimeout(prefetchTimer)
     elements.clear()
-    snapshots.dispose()
+    prefetches.forEach((prefetch) => prefetch.controller.abort())
+    prefetches.clear()
+    sources.dispose()
   })
 
   return {
-    autoKeys,
-    visibleKeys,
+    residentKeys,
     register,
     refresh,
-    getSnapshot: (key: string) => {
-      snapshotRevision()
-      return snapshots.get(key)
-    },
-    touchSnapshot: (key: string) => {
-      snapshots.touch(key)
-    },
-    putSnapshot: (snapshot: SessionImageSnapshot) => {
-      snapshots.put(snapshot)
-      setSnapshotRevision((revision) => revision + 1)
-    },
-    clear: () => {
-      snapshots.clear()
-      setSnapshotRevision((revision) => revision + 1)
-    },
+    loadSource: (value: string, signal?: AbortSignal, maxPixels?: number) => sources.load(value, signal, maxPixels),
+    acquireSource: (value: string, signal?: AbortSignal, maxPixels?: number) =>
+      sources.acquire(value, signal, maxPixels),
+    clear,
   }
+}
+
+function sameKeys(a: ReadonlySet<string>, b: ReadonlySet<string>) {
+  return a.size === b.size && [...a].every((key) => b.has(key))
 }
 
 function goUpsellKeys(action: RetryAction) {
@@ -298,14 +358,16 @@ const sessionGlobalUnfocusedBindingCommands = ["session.first", "session.last"] 
 const context = createContext<{
   width: number
   height: number
-  idle: boolean
-  autoImageKeys: ReadonlySet<string>
-  visibleImageKeys: ReadonlySet<string>
-  registerImage: (key: string, element: BoxRenderable) => () => void
+  residentImageKeys: ReadonlySet<string>
+  registerImage: (
+    key: string,
+    source: string,
+    element: BoxRenderable,
+    onSource: (source: SessionImageSource) => void,
+  ) => () => void
   refreshImages: () => void
-  getImageSnapshot: (key: string) => SessionImageSnapshot | undefined
-  touchImageSnapshot: (key: string) => void
-  putImageSnapshot: (snapshot: SessionImageSnapshot) => void
+  loadImageSource: SessionImageSourceReader
+  acquireImageSource: SessionImageSourceAcquirer
   sessionID: string
   conceal: () => boolean
   thinkingMode: () => ThinkingMode
@@ -407,9 +469,9 @@ export function Session() {
   const visibleMessages = createMemo(() => messageWindow().visible)
   const hiddenMessages = createMemo(() => messageWindow().hidden)
   const lastAssistant = createMemo(() => messageWindow().projected.findLast((message) => message.role === "assistant"))
-  // Keep the high-fidelity native renderer exclusive and idle-only. Completed
-  // previews are retained as bounded terminal-cell snapshots so streaming can
-  // continue using partial frames and history does not retain decoded images.
+  // Keep only viewport-resident images decoded. Encoded sources are cached
+  // separately so revisiting history restores full quality without a visible
+  // low-resolution transition.
   const sessionImages = createSessionImageState(() => scroll)
 
   createEffect(() => {
@@ -1406,20 +1468,13 @@ export function Session() {
           get height() {
             return dimensions().height
           },
-          get idle() {
-            return (sync.data.session_status[route.sessionID]?.type ?? "idle") === "idle"
-          },
-          get autoImageKeys() {
-            return sessionImages.autoKeys()
-          },
-          get visibleImageKeys() {
-            return sessionImages.visibleKeys()
+          get residentImageKeys() {
+            return sessionImages.residentKeys()
           },
           registerImage: sessionImages.register,
           refreshImages: sessionImages.refresh,
-          getImageSnapshot: sessionImages.getSnapshot,
-          touchImageSnapshot: sessionImages.touchSnapshot,
-          putImageSnapshot: sessionImages.putSnapshot,
+          loadImageSource: sessionImages.loadSource,
+          acquireImageSource: sessionImages.acquireSource,
           sessionID: route.sessionID,
           conceal,
           thinkingMode,
@@ -2114,23 +2169,18 @@ function SessionImagePreviews(props: { partID: string; images: readonly SessionI
       <For each={projected().visible}>
         {(image, index) => {
           const [failed, setFailed] = createSignal(false)
+          const [ready, setReady] = createSignal(false)
           const [sourceSize, setSourceSize] = createSignal<{ width: number; height: number }>()
           const [element, setElement] = createSignal<BoxRenderable>()
           const key = sessionImageKey(props.partID, image.key)
           const auto = sessionImageAuto(image)
-          const snapshot = createMemo(() => ctx.getImageSnapshot(key))
-          const visibleSnapshot = createMemo(() => (ctx.visibleImageKeys.has(key) ? snapshot() : undefined))
-          // A failed re-promotion keeps its snapshot and retries only after the image leaves and re-enters the viewport.
-          const [retryBlocked, setRetryBlocked] = createSignal(false)
-          const [lastSnapshotHeight, setLastSnapshotHeight] = createSignal<number>()
-          const eager = createMemo(() => ctx.autoImageKeys.has(key))
+          const resident = createMemo(() => ctx.residentImageKeys.has(key))
           const active = createMemo(() =>
             sessionImagePreviewActive({
               supported,
-              idle: ctx.idle,
               dialogOpen: dialog.stack.length > 0,
-              eager: eager(),
-              failed: failed() || retryBlocked(),
+              resident: resident(),
+              failed: failed(),
             }),
           )
           const cellAspectRatio = createMemo(() => {
@@ -2140,91 +2190,77 @@ function SessionImagePreviews(props: { partID: string; images: readonly SessionI
               resolution && renderer.terminalHeight > 0 ? resolution.height / renderer.terminalHeight : 0
             return cellWidth > 0 && cellHeight > 0 ? cellHeight / cellWidth : 2
           })
+          const updateSourceSize = (source: SessionImageSource) => {
+            const current = sourceSize()
+            if (current?.width === source.width && current.height === source.height) return
+            setSourceSize({ width: source.width, height: source.height })
+            ctx.refreshImages()
+          }
           const height = createMemo(() =>
-            Math.min(
-              SESSION_IMAGE_SNAPSHOT_MAX_HEIGHT,
-              sessionImagePreviewHeight(
-                ctx.height,
-                ctx.width - 5,
-                sourceSize()?.width,
-                sourceSize()?.height,
-                cellAspectRatio(),
-              ),
+            sessionImagePreviewHeight(
+              ctx.height,
+              ctx.width - 5,
+              sourceSize()?.width,
+              sourceSize()?.height,
+              cellAspectRatio(),
             ),
           )
-          const previewHeight = createMemo(() => snapshot()?.height ?? lastSnapshotHeight() ?? height())
-          createEffect(() => {
-            const current = snapshot()
-            if (current) setLastSnapshotHeight(current.height)
-          })
-          createEffect(on(eager, () => setRetryBlocked(false), { defer: true }))
-          createEffect(() => {
-            if (!visibleSnapshot()) return
-            ctx.touchImageSnapshot(key)
-          })
           createEffect(() => {
             const current = element()
-            if (!supported || !auto || failed() || !current) return
-            onCleanup(ctx.registerImage(key, current))
+            if (!supported || !auto || !current) return
+            onCleanup(ctx.registerImage(key, image.uri, current, updateSourceSize))
           })
+          createEffect(on(resident, (current) => !current && setFailed(false), { defer: true }))
           return (
             <box
               ref={(current: BoxRenderable) => setElement(current)}
               width="100%"
-              height={supported && auto && !failed() ? previewHeight() : 1}
+              height={supported && auto ? height() : 1}
               flexShrink={0}
               alignItems="center"
               justifyContent="center"
               onMouseUp={(event) => {
                 if (event.button !== 0) return
                 event.stopPropagation()
-                dialog.replace(() => <DialogImagePreview images={props.images} initial={index()} />)
+                dialog.replace(() => (
+                  <DialogImagePreview
+                    images={props.images}
+                    initial={index()}
+                    loadSource={ctx.loadImageSource}
+                    acquireSource={ctx.acquireImageSource}
+                  />
+                ))
               }}
             >
-              <Show
-                when={active()}
-                fallback={
-                  <Show
-                    when={visibleSnapshot()}
-                    fallback={
-                      <text fg={theme.textMuted} wrapMode="none" truncate>
-                        {supported ? "Open image" : "Preview unavailable"}
-                      </text>
-                    }
-                  >
-                    {(current) => <SessionStaticImage snapshot={current()} />}
-                  </Show>
-                }
-              >
+              <Show when={!active() || !ready()}>
+                <text fg={failed() ? theme.error : theme.textMuted} wrapMode="none" truncate>
+                  {failed() || !supported ? "Preview unavailable" : active() ? "Loading image..." : "Open image"}
+                </text>
+              </Show>
+              <box position="absolute" top={0} left={0} width="100%" height="100%">
                 <SessionNativeImage
-                  source={image.uri}
+                  source={active() ? image.uri : undefined}
+                  load={ctx.acquireImageSource}
                   fit="fit"
                   protocol="auto"
                   width="100%"
                   height="100%"
                   maxPixels={MAX_INLINE_SESSION_IMAGE_PIXELS}
-                  onLoad={(image) => {
-                    setSourceSize({ width: image.width, height: image.height })
-                    try {
-                      ctx.putImageSnapshot(
-                        captureSessionImageSnapshot(key, image, {
-                          availableWidth: ctx.width - 5,
-                          availableHeight: height(),
-                          cellAspectRatio: cellAspectRatio(),
-                        }),
-                      )
-                    } catch {
-                      setFailed(true)
-                    }
-                    ctx.refreshImages()
+                  onSource={(source) => {
+                    if (!source) return
+                    updateSourceSize(source)
+                  }}
+                  onLoad={() => {
+                    setReady(true)
                   }}
                   onError={() => {
-                    if (snapshot()) setRetryBlocked(true)
-                    else setFailed(true)
+                    setFailed(true)
+                    setReady(false)
                     ctx.refreshImages()
                   }}
+                  onRelease={() => setReady(false)}
                 />
-              </Show>
+              </box>
             </box>
           )
         }}

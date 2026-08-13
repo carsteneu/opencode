@@ -10,9 +10,17 @@ import { useDialog } from "../ui/dialog"
 import { useToast } from "../ui/toast"
 import type { SessionImage } from "../util/session-image"
 import { saveSessionImage } from "../util/session-image-save"
+import type { SessionImageSourceAcquirer, SessionImageSourceReader } from "../util/session-image-source"
 import { SessionNativeImage, supportsNativeImages } from "./native-image"
 
-export function DialogImagePreview(props: { images: readonly SessionImage[]; initial: number }) {
+const MAX_DIALOG_SESSION_IMAGE_PIXELS = 8 * 1024 * 1024
+
+export function DialogImagePreview(props: {
+  images: readonly SessionImage[]
+  initial: number
+  loadSource?: SessionImageSourceReader
+  acquireSource?: SessionImageSourceAcquirer
+}) {
   const dialog = useDialog()
   const toast = useToast()
   const paths = useTuiPaths()
@@ -61,6 +69,7 @@ export function DialogImagePreview(props: { images: readonly SessionImage[]; ini
       path.join(paths.home, "Downloads"),
       controller.signal,
       loaded?.uri === image.uri ? loaded.data : undefined,
+      props.loadSource,
     )
       .then(
         (target) => {
@@ -119,11 +128,13 @@ export function DialogImagePreview(props: { images: readonly SessionImage[]; ini
           >
             <SessionNativeImage
               source={image().uri}
+              load={props.acquireSource}
               fit="fit"
               protocol="auto"
               width="100%"
               height={height()}
-              onSource={(data) => setSource(data ? { uri: image().uri, data } : undefined)}
+              maxPixels={MAX_DIALOG_SESSION_IMAGE_PIXELS}
+              onSource={(source) => setSource(source ? { uri: image().uri, data: source.data } : undefined)}
               onError={() => setFailed(true)}
             />
           </Show>

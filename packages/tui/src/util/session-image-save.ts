@@ -3,6 +3,7 @@ import { link, mkdir, rm, writeFile } from "node:fs/promises"
 import { imageInfo } from "@opentui/core"
 import type { SessionImage } from "./session-image"
 import { isSessionDataImageUri, loadSessionImageSource } from "./session-image-load"
+import type { SessionImageSourceReader } from "./session-image-source"
 
 const imageExtension = /\.(png|jpe?g|webp|gif)$/i
 
@@ -11,8 +12,11 @@ export async function saveSessionImage(
   directory: string,
   signal?: AbortSignal,
   source?: Uint8Array,
+  loadSource?: SessionImageSourceReader,
 ) {
-  const data = source ?? (await loadSessionImageSource(image.uri, signal))
+  const data =
+    source ??
+    (loadSource ? (await loadSource(image.uri, signal)).data : await loadSessionImageSource(image.uri, signal))
   signal?.throwIfAborted()
   const filename = sessionImageFilename(image, data)
   await mkdir(directory, { recursive: true })

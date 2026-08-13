@@ -198,14 +198,13 @@ describe("session images", () => {
     expect(selectViewportSessionImageKeys(images, 40, 0).size).toBe(0)
   })
 
-  test("allows a settled native preview only while idle", () => {
-    const base = { supported: true, dialogOpen: false, eager: true, failed: false }
+  test("keeps a resident native preview independent of session activity", () => {
+    const base = { supported: true, dialogOpen: false, resident: true, failed: false }
 
-    expect(sessionImagePreviewActive({ ...base, idle: true })).toBeTrue()
-    expect(sessionImagePreviewActive({ ...base, idle: false })).toBeFalse()
-    expect(sessionImagePreviewActive({ ...base, idle: true, eager: false })).toBeFalse()
-    expect(sessionImagePreviewActive({ ...base, idle: true, dialogOpen: true })).toBeFalse()
-    expect(sessionImagePreviewActive({ ...base, idle: true, failed: true })).toBeFalse()
+    expect(sessionImagePreviewActive(base)).toBeTrue()
+    expect(sessionImagePreviewActive({ ...base, resident: false })).toBeFalse()
+    expect(sessionImagePreviewActive({ ...base, dialogOpen: true })).toBeFalse()
+    expect(sessionImagePreviewActive({ ...base, failed: true })).toBeFalse()
   })
 
   test("projects one full-width image and sizes it without cropping", () => {
