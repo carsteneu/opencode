@@ -78,20 +78,34 @@ export function sessionImageKey(partID: string, imageKey: string) {
   return `${partID}\0${imageKey}`
 }
 
-export function selectAutoSessionImageKeys(
-  parts: readonly { partID: string; images: readonly SessionImage[] }[],
+export function sessionImageAuto(image: SessionImage) {
+  return image.source === "markdown" || isSessionDataImageUri(image.uri)
+}
+
+export function selectViewportSessionImageKeys(
+  images: readonly { key: string; y: number; height: number }[],
+  viewportY: number,
+  viewportHeight: number,
   limit = 1,
+  overscan = 1,
 ) {
-  if (limit <= 0) return new Set<string>()
+  if (limit <= 0 || viewportHeight <= 0) return new Set<string>()
+  const viewportEnd = viewportY + viewportHeight
+  const overscanSize = viewportHeight * Math.max(0, overscan)
+  const overscanStart = viewportY - overscanSize
+  const overscanEnd = viewportEnd + overscanSize
   return new Set(
-    parts
-      .flatMap((part) =>
-        part.images
-          .slice(0, 1)
-          .filter((image) => image.source === "markdown" || isSessionDataImageUri(image.uri))
-          .map((image) => sessionImageKey(part.partID, image.key)),
-      )
-      .slice(-limit),
+    images
+      .filter((image) => image.y + Math.max(1, image.height) >= overscanStart && image.y <= overscanEnd)
+      .toSorted((a, b) => {
+        const distance = rangeDistance(a.y, a.y + Math.max(1, a.height), viewportY, viewportEnd)
+        const nextDistance = rangeDistance(b.y, b.y + Math.max(1, b.height), viewportY, viewportEnd)
+        const center = Math.abs(a.y + Math.max(1, a.height) / 2 - (viewportY + viewportHeight / 2))
+        const nextCenter = Math.abs(b.y + Math.max(1, b.height) / 2 - (viewportY + viewportHeight / 2))
+        return distance - nextDistance || center - nextCenter || b.y - a.y
+      })
+      .slice(0, limit)
+      .map((image) => image.key),
   )
 }
 
@@ -106,12 +120,12 @@ export function projectSessionImages(images: readonly SessionImage[], limit = 1)
 export function sessionImagePreviewActive(input: {
   supported: boolean
   idle: boolean
-  loaded: boolean
   dialogOpen: boolean
   eager: boolean
   failed: boolean
+  demoted: boolean
 }) {
-  return input.supported && !input.dialogOpen && input.eager && !input.failed && (input.idle || input.loaded)
+  return input.supported && input.idle && !input.dialogOpen && input.eager && !input.failed && !input.demoted
 }
 
 export function sessionImagePreviewHeight(
@@ -134,4 +148,10 @@ function imageLabel(value: string | undefined, fallback: string) {
     .trim()
     .slice(0, 120)
   return label || fallback
+}
+
+function rangeDistance(start: number, end: number, viewportStart: number, viewportEnd: number) {
+  if (end < viewportStart) return viewportStart - end
+  if (start > viewportEnd) return start - viewportEnd
+  return 0
 }

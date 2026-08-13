@@ -3,8 +3,8 @@ import type { ToolPart } from "@opencode-ai/sdk/v2"
 import {
   markdownSessionImages,
   projectSessionImages,
-  selectAutoSessionImageKeys,
-  sessionImageKey,
+  selectViewportSessionImageKeys,
+  sessionImageAuto,
   sessionImagePreviewActive,
   sessionImagePreviewHeight,
   textPartSessionImages,
@@ -155,59 +155,56 @@ describe("session images", () => {
     expect(markdownSessionImages("![Inline](data:image/png;base64,aGVsbG8=)")).toHaveLength(1)
   })
 
-  test("selects only the newest Markdown or inline attachment for eager loading", () => {
-    const markdown = {
-      partID: "part_markdown",
-      images: [
-        {
-          key: "markdown:0",
-          uri: "https://example.com/image.png",
-          label: "Markdown",
-          source: "markdown" as const,
-        },
-      ],
-    }
-    const remote = {
-      partID: "part_remote",
-      images: [
-        {
-          key: "remote",
-          uri: "https://example.com/attachment.png",
-          label: "Remote attachment",
-          source: "attachment" as const,
-        },
-      ],
-    }
-    const inline = {
-      partID: "part_inline",
-      images: [
-        {
-          key: "inline",
-          uri: "data:image/png;base64,aGVsbG8=",
-          label: "Inline attachment",
-          source: "attachment" as const,
-        },
-      ],
-    }
-
-    expect([...selectAutoSessionImageKeys([markdown, remote])]).toEqual([
-      sessionImageKey(markdown.partID, markdown.images[0].key),
-    ])
-    expect([...selectAutoSessionImageKeys([markdown, remote, inline])]).toEqual([
-      sessionImageKey(inline.partID, inline.images[0].key),
-    ])
-    expect([...selectAutoSessionImageKeys([markdown, { partID: "part_pending", images: [] }])]).toEqual([
-      sessionImageKey(markdown.partID, markdown.images[0].key),
-    ])
+  test("automatically previews Markdown and inline attachments but not remote attachments", () => {
+    expect(
+      sessionImageAuto({
+        key: "markdown:0",
+        uri: "https://example.com/image.png",
+        label: "Markdown",
+        source: "markdown",
+      }),
+    ).toBeTrue()
+    expect(
+      sessionImageAuto({
+        key: "inline",
+        uri: "data:image/png;base64,aGVsbG8=",
+        label: "Inline attachment",
+        source: "attachment",
+      }),
+    ).toBeTrue()
+    expect(
+      sessionImageAuto({
+        key: "remote",
+        uri: "https://example.com/attachment.png",
+        label: "Remote attachment",
+        source: "attachment",
+      }),
+    ).toBeFalse()
   })
 
-  test("keeps an already loaded preview active while a later turn is busy", () => {
-    const base = { supported: true, dialogOpen: false, eager: true, failed: false }
+  test("selects one native image near the viewport across a 12-image history", () => {
+    const images = Array.from({ length: 12 }, (_, index) => ({
+      key: `image-${index}`,
+      y: index * 10,
+      height: 6,
+    }))
 
-    expect(sessionImagePreviewActive({ ...base, idle: false, loaded: false })).toBeFalse()
-    expect(sessionImagePreviewActive({ ...base, idle: true, loaded: false })).toBeTrue()
-    expect(sessionImagePreviewActive({ ...base, idle: false, loaded: true })).toBeTrue()
-    expect(sessionImagePreviewActive({ ...base, idle: false, loaded: true, dialogOpen: true })).toBeFalse()
+    expect([...selectViewportSessionImageKeys(images, 40, 20)]).toEqual(["image-5"])
+    expect([...selectViewportSessionImageKeys(images, 90, 20)]).toEqual(["image-10"])
+    expect(selectViewportSessionImageKeys(images, 40, 20).size).toBe(1)
+    expect(selectViewportSessionImageKeys(images, 40, 20, 4).size).toBe(4)
+    expect([...selectViewportSessionImageKeys([{ key: "overscan", y: 25, height: 5 }], 40, 20)]).toEqual(["overscan"])
+    expect(selectViewportSessionImageKeys([{ key: "overscan", y: 25, height: 5 }], 40, 20, 1, 0).size).toBe(0)
+    expect(selectViewportSessionImageKeys(images, 40, 0).size).toBe(0)
+  })
+
+  test("allows a native preview only while idle and before it is demoted", () => {
+    const base = { supported: true, dialogOpen: false, eager: true, failed: false, demoted: false }
+
+    expect(sessionImagePreviewActive({ ...base, idle: true })).toBeTrue()
+    expect(sessionImagePreviewActive({ ...base, idle: false })).toBeFalse()
+    expect(sessionImagePreviewActive({ ...base, idle: true, demoted: true })).toBeFalse()
+    expect(sessionImagePreviewActive({ ...base, idle: true, dialogOpen: true })).toBeFalse()
   })
 
   test("projects one full-width image and sizes it without cropping", () => {

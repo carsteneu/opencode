@@ -6,6 +6,9 @@ import {
   validSessionImageUri,
 } from "../../src/util/session-image-load"
 
+const pixel =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+
 describe("session image loading", () => {
   test("accepts bounded images without changing signed URL bytes", () => {
     const signed = "https://v3b.fal.media/files/image.png?token=abc!();:#preview"
@@ -67,5 +70,15 @@ describe("session image loading", () => {
 
   test("decodes a bounded inline image to bytes", async () => {
     expect(await loadSessionImageSource("data:image/png;base64,aGVsbG8=")).toEqual(Buffer.from("hello"))
+  })
+
+  test("enforces the decoded pixel limit before creating an inline preview", async () => {
+    expect(await loadSessionImageSource(pixel, undefined, 1)).toBeInstanceOf(Uint8Array)
+    const error = await loadSessionImageSource(pixel, undefined, 0).then(
+      () => undefined,
+      (reason) => reason,
+    )
+    expect(error).toBeInstanceOf(Error)
+    expect(error).toHaveProperty("message", "Image is too large for an inline preview")
   })
 })

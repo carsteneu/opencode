@@ -1,6 +1,7 @@
 import { lookup } from "node:dns/promises"
 import { request } from "node:https"
 import { isIP } from "node:net"
+import { imageInfo } from "@opentui/core"
 
 const dataImagePrefix = /^data:image\/(?:png|jpe?g|webp|gif);base64,/i
 const dataImagePayload = /^[a-z0-9+/]+={0,2}$/i
@@ -51,16 +52,30 @@ export function sessionImageIdentity(value: string) {
   return `data:${value.length}:${value.slice(0, 64)}:${value.slice(-64)}`
 }
 
-export async function loadSessionImageSource(value: string, signal?: AbortSignal) {
+export async function loadSessionImageSource(value: string, signal?: AbortSignal, maxPixels?: number) {
   const uri = validSessionImageUri(value)
   if (!uri) throw new Error("Invalid image source")
   signal?.throwIfAborted()
-  if (!isSessionDataImageUri(uri)) {
-    const deadline = AbortSignal.timeout(requestTimeout)
-    return loadRemoteImage(URL.parse(uri)!, signal ? AbortSignal.any([signal, deadline]) : deadline, 0)
-  }
-  const data = Buffer.from(uri.slice(uri.indexOf(",") + 1), "base64")
+  const data = isSessionDataImageUri(uri)
+    ? Buffer.from(uri.slice(uri.indexOf(",") + 1), "base64")
+    : await loadRemoteImage(
+        URL.parse(uri)!,
+        signal ? AbortSignal.any([signal, AbortSignal.timeout(requestTimeout)]) : AbortSignal.timeout(requestTimeout),
+        0,
+      )
   signal?.throwIfAborted()
+  if (maxPixels !== undefined) {
+    const info = imageInfo(data)
+    if (
+      !Number.isSafeInteger(maxPixels) ||
+      maxPixels < 1 ||
+      info.width <= 0 ||
+      info.height <= 0 ||
+      info.width > Math.floor(maxPixels / info.height)
+    ) {
+      throw new Error("Image is too large for an inline preview")
+    }
+  }
   return data
 }
 

@@ -12,8 +12,10 @@ export function SessionNativeImage(props: {
   protocol: "auto"
   width: number | string
   height: number | string
+  maxPixels?: number
   onLoad?: (image: NativeImage) => void
   onError?: (error: unknown) => void
+  onRelease?: () => void
 }) {
   const [source, setSource] = createSignal<ImageSource>()
 
@@ -28,7 +30,7 @@ export function SessionNativeImage(props: {
     activeImage?.release()
     activeImage = lease
 
-    void loadSessionImageSource(props.source, controller.signal).then(
+    void loadSessionImageSource(props.source, controller.signal, props.maxPixels).then(
       (result) => {
         if (controller.signal.aborted || activeImage !== lease) return
         setSource(result)
@@ -44,6 +46,7 @@ export function SessionNativeImage(props: {
     onCleanup(() => {
       lease.release()
       if (activeImage === lease) activeImage = undefined
+      props.onRelease?.()
     })
   })
 

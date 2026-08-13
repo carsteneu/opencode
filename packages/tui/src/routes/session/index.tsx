@@ -87,13 +87,15 @@ import { usePluginRuntime } from "../../plugin/runtime"
 import { DialogRetryAction } from "../../component/dialog-retry-action"
 import { DialogImagePreview } from "../../component/dialog-image-preview"
 import { SessionNativeImage, supportsNativeImages } from "../../component/native-image"
+import { SessionStaticImage } from "../../component/static-image"
 import { getRevertDiffFiles } from "../../util/revert-diff"
 import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut, useOpencodeKeymap } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
 import { LocationProvider } from "../../context/location"
 import {
   projectSessionImages,
-  selectAutoSessionImageKeys,
+  selectViewportSessionImageKeys,
+  sessionImageAuto,
   sessionImagePreviewActive,
   sessionImageKey,
   sessionImagePreviewHeight,
@@ -101,6 +103,12 @@ import {
   textPartSessionImages,
   toolSessionImages,
 } from "../../util/session-image"
+import {
+  captureSessionImageSnapshot,
+  SESSION_IMAGE_SNAPSHOT_MAX_HEIGHT,
+  SessionImageSnapshotStore,
+  type SessionImageSnapshot,
+} from "../../util/session-image-snapshot"
 
 addDefaultParsers(parsers.parsers)
 
@@ -110,6 +118,10 @@ const GO_UPSELL_ACCOUNT_RATE_LIMIT_LAST_SEEN_AT = "go_upsell_account_rate_limit_
 const GO_UPSELL_ACCOUNT_RATE_LIMIT_DONT_SHOW = "go_upsell_account_rate_limit_dont_show"
 const GO_UPSELL_WINDOW = 86_400_000 // 24 hrs
 const GO_UPSELL_PROVIDERS = new Set(["opencode", "opencode-go"])
+const MAX_NATIVE_SESSION_IMAGES = 1
+const MAX_STATIC_SESSION_IMAGES = 4
+const MAX_INLINE_SESSION_IMAGE_PIXELS = 4 * 1024 * 1024
+const SESSION_IMAGE_LOAD_DEBOUNCE = 80
 
 export const alwaysSeparate = new WeakSet<BoxRenderable>()
 
@@ -147,25 +159,89 @@ export function shouldExpandMessageWindow(hidden: number, contentHeight: number,
   return hidden > 0 && containerHeight > 0 && contentHeight <= containerHeight
 }
 
-export function selectVisibleSessionImageKeys(
-  messages: readonly MessageOrder[],
-  parts: Readonly<Record<string, readonly Part[] | undefined>>,
-) {
-  return selectAutoSessionImageKeys(
-    messages.flatMap((message) => {
-      if (message.role !== "assistant") return []
-      return (parts[message.id] ?? []).flatMap((part) => {
-        const images =
-          part.type === "text"
-            ? textPartSessionImages(part, message.time.completed !== undefined)
-            : part.type === "tool"
-              ? toolSessionImages(part)
-              : []
-        if (images.length === 0) return []
-        return [{ partID: part.id, images }]
-      })
-    }),
-  )
+function createSessionImageState(getScroll: () => ScrollBoxRenderable | undefined) {
+  const elements = new Map<string, { element: BoxRenderable; eligible: () => boolean }>()
+  const snapshots = new SessionImageSnapshotStore()
+  const [layoutRevision, setLayoutRevision] = createSignal(0)
+  const [loadRevision, setLoadRevision] = createSignal(0)
+  const [snapshotRevision, setSnapshotRevision] = createSignal(0)
+  let refreshTimer: ReturnType<typeof setTimeout> | undefined
+  let loadTimer: ReturnType<typeof setTimeout> | undefined
+  let disposed = false
+
+  const refresh = () => {
+    if (disposed) return
+    if (refreshTimer === undefined) {
+      refreshTimer = setTimeout(() => {
+        refreshTimer = undefined
+        setLayoutRevision((revision) => revision + 1)
+      }, 0)
+    }
+    if (loadTimer !== undefined) clearTimeout(loadTimer)
+    loadTimer = setTimeout(() => {
+      loadTimer = undefined
+      setLoadRevision((revision) => revision + 1)
+    }, SESSION_IMAGE_LOAD_DEBOUNCE)
+  }
+  const register = (key: string, element: BoxRenderable, eligible: () => boolean) => {
+    const entry = { element, eligible }
+    elements.set(key, entry)
+    refresh()
+    return () => {
+      if (elements.get(key) !== entry) return
+      elements.delete(key)
+      refresh()
+    }
+  }
+  const geometry = (eligible = false) =>
+    [...elements]
+      .filter(([, entry]) => !entry.element.isDestroyed && (!eligible || entry.eligible()))
+      .map(([key, entry]) => ({ key, y: entry.element.y, height: entry.element.height }))
+  const keys = (revision: () => number, limit: number, overscan = 1, eligible = false) =>
+    createMemo(() => {
+      revision()
+      const scroll = getScroll()
+      if (!scroll || scroll.isDestroyed || scroll.viewport.isDestroyed) return new Set<string>()
+      return selectViewportSessionImageKeys(
+        geometry(eligible),
+        scroll.viewport.y,
+        scroll.viewport.height,
+        limit,
+        overscan,
+      )
+    })
+  const autoKeys = keys(loadRevision, MAX_NATIVE_SESSION_IMAGES, 0, true)
+  const visibleKeys = keys(layoutRevision, MAX_STATIC_SESSION_IMAGES)
+
+  onCleanup(() => {
+    disposed = true
+    if (refreshTimer !== undefined) clearTimeout(refreshTimer)
+    if (loadTimer !== undefined) clearTimeout(loadTimer)
+    elements.clear()
+    snapshots.dispose()
+  })
+
+  return {
+    autoKeys,
+    visibleKeys,
+    register,
+    refresh,
+    getSnapshot: (key: string) => {
+      snapshotRevision()
+      return snapshots.get(key)
+    },
+    touchSnapshot: (key: string) => {
+      snapshots.touch(key)
+    },
+    putSnapshot: (snapshot: SessionImageSnapshot) => {
+      snapshots.put(snapshot)
+      setSnapshotRevision((revision) => revision + 1)
+    },
+    clear: () => {
+      snapshots.clear()
+      setSnapshotRevision((revision) => revision + 1)
+    },
+  }
 }
 
 function goUpsellKeys(action: RetryAction) {
@@ -231,6 +307,12 @@ const context = createContext<{
   height: number
   idle: boolean
   autoImageKeys: ReadonlySet<string>
+  visibleImageKeys: ReadonlySet<string>
+  registerImage: (key: string, element: BoxRenderable, eligible: () => boolean) => () => void
+  refreshImages: () => void
+  getImageSnapshot: (key: string) => SessionImageSnapshot | undefined
+  touchImageSnapshot: (key: string) => void
+  putImageSnapshot: (snapshot: SessionImageSnapshot) => void
   sessionID: string
   conceal: () => boolean
   thinkingMode: () => ThinkingMode
@@ -316,6 +398,7 @@ export function Session() {
   const visible = createMemo(() => !session()?.parentID && permissions().length === 0 && questions().length === 0)
   const disabled = createMemo(() => permissions().length > 0 || questions().length > 0)
   const dimensions = useTerminalDimensions()
+  let scroll: ScrollBoxRenderable
 
   const revertMessageID = createMemo(() => session()?.revert?.messageID)
 
@@ -331,18 +414,28 @@ export function Session() {
   const visibleMessages = createMemo(() => messageWindow().visible)
   const hiddenMessages = createMemo(() => messageWindow().hidden)
   const lastAssistant = createMemo(() => messageWindow().projected.findLast((message) => message.role === "assistant"))
-  // Keep one native image across the mounted message window. This preserves
-  // the preview through later turns without multiplying decoded image memory.
-  const autoImageKeys = createMemo(() => selectVisibleSessionImageKeys(visibleMessages(), sync.data.part))
+  // Keep the high-fidelity native renderer exclusive and idle-only. Completed
+  // previews are retained as bounded terminal-cell snapshots so streaming can
+  // continue using partial frames and history does not retain decoded images.
+  const sessionImages = createSessionImageState(() => scroll)
+
+  createEffect(() => {
+    dimensions()
+    visibleMessages()
+    sessionImages.refresh()
+  })
 
   // Reset the window whenever the session changes so long histories don't
   // render fully on the first frame of a new session.
   createEffect(
     on(
       () => route.sessionID,
-      (prev, next) => {
-        if (prev !== undefined && prev !== next) setWindowSize(WINDOW_LADDER[0])
-        return next
+      (current, previous) => {
+        if (previous !== undefined && current !== previous) {
+          setWindowSize(WINDOW_LADDER[0])
+          sessionImages.clear()
+        }
+        return current
       },
     ),
   )
@@ -384,6 +477,7 @@ export function Session() {
   // React only to actual scrollbar changes. Top of content expands the
   // window or loads older messages; bottom shrinks it to the ladder floor.
   const updateRenderWindow = () => {
+    sessionImages.refresh()
     if (!scroll || scroll.isDestroyed) return
     if (Date.now() - lastExpandAt < 400) return
     if (scroll.scrollHeight <= scroll.height) {
@@ -496,7 +590,6 @@ export function Session() {
   )
 
   let seeded = false
-  let scroll: ScrollBoxRenderable
   let prompt: PromptRef | undefined
   const bind = (r: PromptRef | undefined) => {
     prompt = r
@@ -1324,8 +1417,16 @@ export function Session() {
             return (sync.data.session_status[route.sessionID]?.type ?? "idle") === "idle"
           },
           get autoImageKeys() {
-            return autoImageKeys()
+            return sessionImages.autoKeys()
           },
+          get visibleImageKeys() {
+            return sessionImages.visibleKeys()
+          },
+          registerImage: sessionImages.register,
+          refreshImages: sessionImages.refresh,
+          getImageSnapshot: sessionImages.getSnapshot,
+          touchImageSnapshot: sessionImages.touchSnapshot,
+          putImageSnapshot: sessionImages.putSnapshot,
           sessionID: route.sessionID,
           conceal,
           thinkingMode,
@@ -2020,36 +2121,68 @@ function SessionImagePreviews(props: { partID: string; images: readonly SessionI
       <For each={projected().visible}>
         {(image, index) => {
           const [failed, setFailed] = createSignal(false)
-          const [loaded, setLoaded] = createSignal(false)
           const [sourceSize, setSourceSize] = createSignal<{ width: number; height: number }>()
-          const eager = createMemo(() => ctx.autoImageKeys.has(sessionImageKey(props.partID, image.key)))
+          const [element, setElement] = createSignal<BoxRenderable>()
+          const key = sessionImageKey(props.partID, image.key)
+          const auto = sessionImageAuto(image)
+          const snapshot = createMemo(() => ctx.getImageSnapshot(key))
+          const visibleSnapshot = createMemo(() => (ctx.visibleImageKeys.has(key) ? snapshot() : undefined))
+          const [demoted, setDemoted] = createSignal(snapshot() !== undefined)
+          const [lastSnapshotHeight, setLastSnapshotHeight] = createSignal<number>()
+          const eager = createMemo(() => ctx.autoImageKeys.has(key))
           const active = createMemo(() =>
             sessionImagePreviewActive({
               supported,
               idle: ctx.idle,
-              loaded: loaded(),
               dialogOpen: dialog.stack.length > 0,
               eager: eager(),
               failed: failed(),
+              demoted: demoted(),
             }),
           )
-          const height = createMemo(() => {
+          const cellAspectRatio = createMemo(() => {
             const resolution = renderer.resolution
             const cellWidth = resolution && renderer.terminalWidth > 0 ? resolution.width / renderer.terminalWidth : 0
             const cellHeight =
               resolution && renderer.terminalHeight > 0 ? resolution.height / renderer.terminalHeight : 0
-            return sessionImagePreviewHeight(
-              ctx.height,
-              ctx.width - 5,
-              sourceSize()?.width,
-              sourceSize()?.height,
-              cellWidth > 0 && cellHeight > 0 ? cellHeight / cellWidth : 2,
-            )
+            return cellWidth > 0 && cellHeight > 0 ? cellHeight / cellWidth : 2
+          })
+          const height = createMemo(() =>
+            Math.min(
+              SESSION_IMAGE_SNAPSHOT_MAX_HEIGHT,
+              sessionImagePreviewHeight(
+                ctx.height,
+                ctx.width - 5,
+                sourceSize()?.width,
+                sourceSize()?.height,
+                cellAspectRatio(),
+              ),
+            ),
+          )
+          const previewHeight = createMemo(() => snapshot()?.height ?? lastSnapshotHeight() ?? height())
+          createEffect(() => {
+            const current = snapshot()
+            if (current) setLastSnapshotHeight(current.height)
+            if (!ctx.idle && current) {
+              setDemoted(true)
+              return
+            }
+            if (!current && eager() && ctx.idle && !failed()) setDemoted(false)
+          })
+          createEffect(() => {
+            if (!visibleSnapshot()) return
+            ctx.touchImageSnapshot(key)
+          })
+          createEffect(() => {
+            const current = element()
+            if (!supported || !auto || failed() || !current) return
+            onCleanup(ctx.registerImage(key, current, () => !snapshot() || !demoted()))
           })
           return (
             <box
+              ref={(current: BoxRenderable) => setElement(current)}
               width="100%"
-              height={active() ? height() : 1}
+              height={supported && auto && !failed() ? previewHeight() : 1}
               flexShrink={0}
               alignItems="center"
               justifyContent="center"
@@ -2062,9 +2195,16 @@ function SessionImagePreviews(props: { partID: string; images: readonly SessionI
               <Show
                 when={active()}
                 fallback={
-                  <text fg={theme.textMuted} wrapMode="none" truncate>
-                    {supported ? "Open image" : "Preview unavailable"}
-                  </text>
+                  <Show
+                    when={visibleSnapshot()}
+                    fallback={
+                      <text fg={theme.textMuted} wrapMode="none" truncate>
+                        {supported ? "Open image" : "Preview unavailable"}
+                      </text>
+                    }
+                  >
+                    {(current) => <SessionStaticImage snapshot={current()} />}
+                  </Show>
                 }
               >
                 <SessionNativeImage
@@ -2073,14 +2213,27 @@ function SessionImagePreviews(props: { partID: string; images: readonly SessionI
                   protocol="auto"
                   width="100%"
                   height="100%"
+                  maxPixels={MAX_INLINE_SESSION_IMAGE_PIXELS}
                   onLoad={(image) => {
-                    setLoaded(true)
                     setSourceSize({ width: image.width, height: image.height })
+                    try {
+                      ctx.putImageSnapshot(
+                        captureSessionImageSnapshot(key, image, {
+                          availableWidth: ctx.width - 5,
+                          availableHeight: height(),
+                          cellAspectRatio: cellAspectRatio(),
+                        }),
+                      )
+                    } catch {
+                      setFailed(true)
+                    }
+                    ctx.refreshImages()
                   }}
                   onError={() => {
-                    setLoaded(false)
                     setFailed(true)
+                    ctx.refreshImages()
                   }}
+                  onRelease={() => setDemoted(true)}
                 />
               </Show>
             </box>
