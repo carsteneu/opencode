@@ -160,7 +160,7 @@ export function shouldExpandMessageWindow(hidden: number, contentHeight: number,
 }
 
 function createSessionImageState(getScroll: () => ScrollBoxRenderable | undefined) {
-  const elements = new Map<string, { element: BoxRenderable; eligible: () => boolean }>()
+  const elements = new Map<string, BoxRenderable>()
   const snapshots = new SessionImageSnapshotStore()
   const [layoutRevision, setLayoutRevision] = createSignal(0)
   const [loadRevision, setLoadRevision] = createSignal(0)
@@ -183,34 +183,27 @@ function createSessionImageState(getScroll: () => ScrollBoxRenderable | undefine
       setLoadRevision((revision) => revision + 1)
     }, SESSION_IMAGE_LOAD_DEBOUNCE)
   }
-  const register = (key: string, element: BoxRenderable, eligible: () => boolean) => {
-    const entry = { element, eligible }
-    elements.set(key, entry)
+  const register = (key: string, element: BoxRenderable) => {
+    elements.set(key, element)
     refresh()
     return () => {
-      if (elements.get(key) !== entry) return
+      if (elements.get(key) !== element) return
       elements.delete(key)
       refresh()
     }
   }
-  const geometry = (eligible = false) =>
+  const geometry = () =>
     [...elements]
-      .filter(([, entry]) => !entry.element.isDestroyed && (!eligible || entry.eligible()))
-      .map(([key, entry]) => ({ key, y: entry.element.y, height: entry.element.height }))
-  const keys = (revision: () => number, limit: number, overscan = 1, eligible = false) =>
+      .filter(([, element]) => !element.isDestroyed)
+      .map(([key, element]) => ({ key, y: element.y, height: element.height }))
+  const keys = (revision: () => number, limit: number, overscan = 1) =>
     createMemo(() => {
       revision()
       const scroll = getScroll()
       if (!scroll || scroll.isDestroyed || scroll.viewport.isDestroyed) return new Set<string>()
-      return selectViewportSessionImageKeys(
-        geometry(eligible),
-        scroll.viewport.y,
-        scroll.viewport.height,
-        limit,
-        overscan,
-      )
+      return selectViewportSessionImageKeys(geometry(), scroll.viewport.y, scroll.viewport.height, limit, overscan)
     })
-  const autoKeys = keys(loadRevision, MAX_NATIVE_SESSION_IMAGES, 0, true)
+  const autoKeys = keys(loadRevision, MAX_NATIVE_SESSION_IMAGES, 0)
   const visibleKeys = keys(layoutRevision, MAX_STATIC_SESSION_IMAGES)
 
   onCleanup(() => {
@@ -308,7 +301,7 @@ const context = createContext<{
   idle: boolean
   autoImageKeys: ReadonlySet<string>
   visibleImageKeys: ReadonlySet<string>
-  registerImage: (key: string, element: BoxRenderable, eligible: () => boolean) => () => void
+  registerImage: (key: string, element: BoxRenderable) => () => void
   refreshImages: () => void
   getImageSnapshot: (key: string) => SessionImageSnapshot | undefined
   touchImageSnapshot: (key: string) => void
@@ -2127,7 +2120,8 @@ function SessionImagePreviews(props: { partID: string; images: readonly SessionI
           const auto = sessionImageAuto(image)
           const snapshot = createMemo(() => ctx.getImageSnapshot(key))
           const visibleSnapshot = createMemo(() => (ctx.visibleImageKeys.has(key) ? snapshot() : undefined))
-          const [demoted, setDemoted] = createSignal(snapshot() !== undefined)
+          // A failed re-promotion keeps its snapshot and retries only after the image leaves and re-enters the viewport.
+          const [retryBlocked, setRetryBlocked] = createSignal(false)
           const [lastSnapshotHeight, setLastSnapshotHeight] = createSignal<number>()
           const eager = createMemo(() => ctx.autoImageKeys.has(key))
           const active = createMemo(() =>
@@ -2136,8 +2130,7 @@ function SessionImagePreviews(props: { partID: string; images: readonly SessionI
               idle: ctx.idle,
               dialogOpen: dialog.stack.length > 0,
               eager: eager(),
-              failed: failed(),
-              demoted: demoted(),
+              failed: failed() || retryBlocked(),
             }),
           )
           const cellAspectRatio = createMemo(() => {
@@ -2163,12 +2156,8 @@ function SessionImagePreviews(props: { partID: string; images: readonly SessionI
           createEffect(() => {
             const current = snapshot()
             if (current) setLastSnapshotHeight(current.height)
-            if (!ctx.idle && current) {
-              setDemoted(true)
-              return
-            }
-            if (!current && eager() && ctx.idle && !failed()) setDemoted(false)
           })
+          createEffect(on(eager, () => setRetryBlocked(false), { defer: true }))
           createEffect(() => {
             if (!visibleSnapshot()) return
             ctx.touchImageSnapshot(key)
@@ -2176,7 +2165,7 @@ function SessionImagePreviews(props: { partID: string; images: readonly SessionI
           createEffect(() => {
             const current = element()
             if (!supported || !auto || failed() || !current) return
-            onCleanup(ctx.registerImage(key, current, () => !snapshot() || !demoted()))
+            onCleanup(ctx.registerImage(key, current))
           })
           return (
             <box
@@ -2230,10 +2219,10 @@ function SessionImagePreviews(props: { partID: string; images: readonly SessionI
                     ctx.refreshImages()
                   }}
                   onError={() => {
-                    setFailed(true)
+                    if (snapshot()) setRetryBlocked(true)
+                    else setFailed(true)
                     ctx.refreshImages()
                   }}
-                  onRelease={() => setDemoted(true)}
                 />
               </Show>
             </box>

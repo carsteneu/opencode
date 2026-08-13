@@ -65,8 +65,10 @@ test("keeps only one native session image source active", async () => {
   }
 })
 
-test("unmounts a native image when a later turn becomes busy", async () => {
+test("uses a snapshot temporarily and restores the native image after settling", async () => {
   const [idle, setIdle] = createSignal(true)
+  const [eager, setEager] = createSignal(true)
+  let loaded = 0
   let released = 0
   const app = await testRender(
     () => (
@@ -75,9 +77,8 @@ test("unmounts a native image when a later turn becomes busy", async () => {
           supported: true,
           idle: idle(),
           dialogOpen: false,
-          eager: true,
+          eager: eager(),
           failed: false,
-          demoted: false,
         })}
         fallback={<SessionStaticImage snapshot={snapshot()} />}
       >
@@ -87,6 +88,7 @@ test("unmounts a native image when a later turn becomes busy", async () => {
           protocol="auto"
           width={4}
           height={2}
+          onLoad={() => loaded++}
           onRelease={() => released++}
         />
       </Show>
@@ -97,13 +99,38 @@ test("unmounts a native image when a later turn becomes busy", async () => {
   try {
     const image = await waitForImage(app.renderer.root)
     await image.loadPromise
+    expect(loaded).toBe(1)
 
-    setIdle(false)
+    setEager(false)
     await Bun.sleep(20)
 
     expect(findImages(app.renderer.root)).toHaveLength(0)
     expect(find(app.renderer.root, SessionStaticImageRenderable)).toHaveLength(1)
     expect(released).toBe(1)
+
+    setEager(true)
+    const restored = await waitForImage(app.renderer.root)
+    await restored.loadPromise
+    expect(findImages(app.renderer.root)).toHaveLength(1)
+    expect(find(app.renderer.root, SessionStaticImageRenderable)).toHaveLength(0)
+    expect(loaded).toBe(2)
+    expect(released).toBe(1)
+
+    setIdle(false)
+    await Bun.sleep(100)
+    expect(findImages(app.renderer.root)).toHaveLength(0)
+    expect(find(app.renderer.root, SessionStaticImageRenderable)).toHaveLength(1)
+    expect(loaded).toBe(2)
+    expect(released).toBe(2)
+
+    setIdle(true)
+    const resumed = await waitForImage(app.renderer.root)
+    await resumed.loadPromise
+    await Bun.sleep(100)
+    expect(findImages(app.renderer.root)).toHaveLength(1)
+    expect(find(app.renderer.root, SessionStaticImageRenderable)).toHaveLength(0)
+    expect(loaded).toBe(3)
+    expect(released).toBe(2)
   } finally {
     app.renderer.destroy()
   }

@@ -123,9 +123,8 @@ export function sessionImagePreviewActive(input: {
   dialogOpen: boolean
   eager: boolean
   failed: boolean
-  demoted: boolean
 }) {
-  return input.supported && input.idle && !input.dialogOpen && input.eager && !input.failed && !input.demoted
+  return input.supported && input.idle && !input.dialogOpen && input.eager && !input.failed
 }
 
 export function sessionImagePreviewHeight(
