@@ -14,7 +14,6 @@ import {
   untrack,
   useContext,
 } from "solid-js"
-import { Dynamic } from "solid-js/web"
 import path from "node:path"
 import { mkdir, writeFile } from "node:fs/promises"
 import { useRoute, useRouteData } from "../../context/route"
@@ -47,7 +46,7 @@ import type {
 import { useLocal } from "../../context/local"
 import { Locale } from "../../util/locale"
 import { webSearchProviderLabel } from "../../util/tool-display"
-import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
+import { Dynamic, useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import { useSDK } from "../../context/sdk"
 import { useEditorContext } from "../../context/editor"
 import { openEditor } from "../../editor"
@@ -87,7 +86,7 @@ import { collapseToolOutput } from "../../util/collapse-tool-output"
 import { usePluginRuntime } from "../../plugin/runtime"
 import { DialogRetryAction } from "../../component/dialog-retry-action"
 import { DialogImagePreview } from "../../component/dialog-image-preview"
-import { nativeImageComponent, supportsNativeImages } from "../../component/native-image"
+import { SessionNativeImage, supportsNativeImages } from "../../component/native-image"
 import { getRevertDiffFiles } from "../../util/revert-diff"
 import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut, useOpencodeKeymap } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
@@ -2001,7 +2000,7 @@ function ToolImagePreviews(props: { partID: string; images: ReturnType<typeof to
       <For each={projected().visible}>
         {(image, index) => {
           const [failed, setFailed] = createSignal(false)
-          const eager = createMemo(() => ctx.autoImageKeys.has(sessionImageKey(props.partID, image.uri)))
+          const eager = createMemo(() => ctx.autoImageKeys.has(sessionImageKey(props.partID, image.key)))
           return (
             <box
               width={height() * 2}
@@ -2017,15 +2016,14 @@ function ToolImagePreviews(props: { partID: string; images: ReturnType<typeof to
               }}
             >
               <Show
-                when={supported && ctx.idle && eager() && !failed()}
+                when={supported && ctx.idle && dialog.stack.length === 0 && eager() && !failed()}
                 fallback={
                   <text fg={theme.textMuted} wrapMode="word">
                     {supported ? "Open image" : "Preview unavailable"}
                   </text>
                 }
               >
-                <Dynamic
-                  component={nativeImageComponent}
+                <SessionNativeImage
                   source={image.uri}
                   fit="cover"
                   protocol="auto"

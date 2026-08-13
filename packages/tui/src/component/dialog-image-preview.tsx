@@ -1,12 +1,11 @@
 import { TextAttributes } from "@opentui/core"
-import { Dynamic } from "solid-js/web"
 import { createEffect, createMemo, createSignal, on, Show } from "solid-js"
 import { useTerminalDimensions } from "@opentui/solid"
 import { useTheme } from "../context/theme"
 import { useBindings } from "../keymap"
 import { useDialog } from "../ui/dialog"
 import type { SessionImage } from "../util/session-image"
-import { nativeImageComponent, supportsNativeImages } from "./native-image"
+import { SessionNativeImage, supportsNativeImages } from "./native-image"
 
 export function DialogImagePreview(props: { images: readonly SessionImage[]; initial: number }) {
   const dialog = useDialog()
@@ -61,8 +60,7 @@ export function DialogImagePreview(props: { images: readonly SessionImage[]; ini
               </box>
             }
           >
-            <Dynamic
-              component={nativeImageComponent}
+            <SessionNativeImage
               source={image().uri}
               fit="fit"
               protocol="auto"

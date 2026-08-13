@@ -1,12 +1,13 @@
 import type { ToolPart } from "@opencode-ai/sdk/v2"
 import { Option, Schema } from "effect"
+import { isSessionDataImageUri, sessionImageIdentity, validSessionImageUri } from "./session-image-load"
 
 const supportedMime = new Set(["image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"])
-const dataImage = /^data:image\/(?:png|jpe?g|webp|gif);base64,/i
 const maxSources = 24
 const decodeJson = Schema.decodeUnknownOption(Schema.UnknownFromJsonString)
 
 export type SessionImage = {
+  key: string
   uri: string
   label: string
   source: "attachment" | "output"
@@ -19,10 +20,11 @@ export function toolSessionImages(part: ToolPart): SessionImage[] {
   const images = (part.state.attachments ?? [])
     .flatMap((attachment): SessionImage[] => {
       if (!supportedMime.has(attachment.mime.toLowerCase())) return []
-      const uri = imageUri(attachment.url)
+      const uri = validSessionImageUri(attachment.url)
       if (!uri) return []
       return [
         {
+          key: `attachment:${attachment.id}`,
           uri,
           label: imageLabel(attachment.filename),
           source: "attachment",
@@ -30,20 +32,21 @@ export function toolSessionImages(part: ToolPart): SessionImage[] {
       ]
     })
     .filter((image) => {
-      if (seen.has(image.uri)) return false
-      seen.add(image.uri)
+      const identity = sessionImageIdentity(image.uri)
+      if (seen.has(identity)) return false
+      seen.add(identity)
       return true
     })
     .slice(0, maxSources)
 
   const generated = generatedCapImage(part)
-  if (!generated || images.length >= maxSources || seen.has(generated.uri)) return images
+  if (!generated || images.length >= maxSources || seen.has(sessionImageIdentity(generated.uri))) return images
   images.push(generated)
   return images
 }
 
-export function sessionImageKey(partID: string, uri: string) {
-  return `${partID}\0${uri}`
+export function sessionImageKey(partID: string, imageKey: string) {
+  return `${partID}\0${imageKey}`
 }
 
 export function selectAutoSessionImageKeys(
@@ -56,8 +59,8 @@ export function selectAutoSessionImageKeys(
       .flatMap((part) =>
         part.images
           .slice(0, 3)
-          .filter((image) => image.source === "output" || dataImage.test(image.uri))
-          .map((image) => sessionImageKey(part.partID, image.uri)),
+          .filter((image) => image.source === "output" || isSessionDataImageUri(image.uri))
+          .map((image) => sessionImageKey(part.partID, image.key)),
       )
       .slice(-limit),
   )
@@ -81,21 +84,16 @@ function generatedCapImage(part: ToolPart): SessionImage | undefined {
   if (wrapper?.cap_name !== "generate_image") return
   const output = typeof wrapper.output === "string" ? jsonRecord(wrapper.output) : record(wrapper.output)
   if (!output || typeof output.url !== "string") return
-  const uri = imageUri(output.url)
+  const uri = validSessionImageUri(output.url)
   if (!uri) return
-  return { uri, label: "Generated image", source: "output" }
-}
-
-function imageUri(value: string) {
-  if (value !== value.trim()) return
-  if (dataImage.test(value)) return value
-  const url = URL.parse(value)
-  if (!url || url.protocol !== "https:" || url.username || url.password) return
-  return value
+  return { key: "output", uri, label: "Generated image", source: "output" }
 }
 
 function imageLabel(value: string | undefined) {
-  const label = value?.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 120)
+  const label = value
+    ?.replace(/[\u0000-\u001f\u007f]/g, " ")
+    .trim()
+    .slice(0, 120)
   return label || "Tool image"
 }
 

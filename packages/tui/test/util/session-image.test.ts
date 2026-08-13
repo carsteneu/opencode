@@ -66,15 +66,15 @@ describe("session images", () => {
     )
 
     expect(images).toEqual([
-      { uri, label: "result .png", source: "attachment" },
-      { uri: signed, label: "signed.webp", source: "attachment" },
+      { key: "attachment:part_image", uri, label: "result .png", source: "attachment" },
+      { key: "attachment:part_signed_image", uri: signed, label: "signed.webp", source: "attachment" },
     ])
   })
 
   test("accepts only the trusted generate_image CAP result and preserves its URL bytes", () => {
     const uri = "https://example.com/render.png?signature=abc!();:#preview"
     expect(toolSessionImages(completed({ tool: "yesmem_execute_cap", output: capOutput(uri) }))).toEqual([
-      { uri, label: "Generated image", source: "output" },
+      { key: "output", uri, label: "Generated image", source: "output" },
     ])
 
     expect(
@@ -119,6 +119,7 @@ describe("session images", () => {
       partID: `part_${index}`,
       images: [
         {
+          key: `output:${index}`,
           uri: `https://example.com/${index}.png`,
           label: `Image ${index}`,
           source: "output" as const,
@@ -128,26 +129,34 @@ describe("session images", () => {
     const selected = selectAutoSessionImageKeys(parts)
 
     expect(selected.size).toBe(1)
-    expect([...selected]).toEqual(parts.slice(-1).map((part) => sessionImageKey(part.partID, part.images[0]!.uri)))
+    expect([...selected]).toEqual(parts.slice(-1).map((part) => sessionImageKey(part.partID, part.images[0].key)))
   })
 
   test("requires a click before loading remote structured attachments", () => {
     const remote = {
       partID: "part_remote",
-      images: [{ uri: "https://example.com/image.png", label: "Remote", source: "attachment" as const }],
+      images: [{ key: "remote", uri: "https://example.com/image.png", label: "Remote", source: "attachment" as const }],
     }
     const inline = {
       partID: "part_inline",
-      images: [{ uri: "data:image/png;base64,aGVsbG8=", label: "Inline", source: "attachment" as const }],
+      images: [
+        {
+          key: "inline",
+          uri: "data:image/png;base64,aGVsbG8=",
+          label: "Inline",
+          source: "attachment" as const,
+        },
+      ],
     }
 
     expect([...selectAutoSessionImageKeys([remote, inline])]).toEqual([
-      sessionImageKey(inline.partID, inline.images[0]!.uri),
+      sessionImageKey(inline.partID, inline.images[0].key),
     ])
   })
 
   test("bounds transcript thumbnails and reports hidden images", () => {
     const images = ["a", "b", "c", "d"].map((uri) => ({
+      key: uri,
       uri,
       label: uri,
       source: "output" as const,
