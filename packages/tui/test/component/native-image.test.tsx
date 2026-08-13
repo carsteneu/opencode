@@ -2,7 +2,9 @@
 import { expect, test } from "bun:test"
 import { ImageRenderable, type Renderable } from "@opentui/core"
 import { testRender } from "@opentui/solid"
+import { createSignal, Show } from "solid-js"
 import { SessionNativeImage } from "../../src/component/native-image"
+import { sessionImagePreviewActive } from "../../src/util/session-image"
 
 const pixel =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
@@ -50,6 +52,48 @@ test("keeps only one session image source active", async () => {
   try {
     await waitForImage(app.renderer.root)
     expect(findImages(app.renderer.root)).toHaveLength(1)
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("keeps a loaded image mounted when a later turn becomes busy", async () => {
+  const [idle, setIdle] = createSignal(true)
+  const [loaded, setLoaded] = createSignal(false)
+  const app = await testRender(
+    () => (
+      <Show
+        when={sessionImagePreviewActive({
+          supported: true,
+          idle: idle(),
+          loaded: loaded(),
+          dialogOpen: false,
+          eager: true,
+          failed: false,
+        })}
+      >
+        <SessionNativeImage
+          source={pixel}
+          fit="fit"
+          protocol="auto"
+          width={4}
+          height={2}
+          onLoad={() => setLoaded(true)}
+        />
+      </Show>
+    ),
+    { width: 10, height: 6, useThread: false },
+  )
+
+  try {
+    const image = await waitForImage(app.renderer.root)
+    await image.loadPromise
+    expect(loaded()).toBeTrue()
+
+    setIdle(false)
+    await Bun.sleep(20)
+
+    expect(findImages(app.renderer.root)).toEqual([image])
   } finally {
     app.renderer.destroy()
   }

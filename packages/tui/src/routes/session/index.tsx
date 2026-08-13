@@ -94,6 +94,7 @@ import { LocationProvider } from "../../context/location"
 import {
   projectSessionImages,
   selectAutoSessionImageKeys,
+  sessionImagePreviewActive,
   sessionImageKey,
   sessionImagePreviewHeight,
   type SessionImage,
@@ -144,6 +145,27 @@ export function projectMessageWindow<T extends MessageOrder>(
 
 export function shouldExpandMessageWindow(hidden: number, contentHeight: number, containerHeight: number) {
   return hidden > 0 && containerHeight > 0 && contentHeight <= containerHeight
+}
+
+export function selectVisibleSessionImageKeys(
+  messages: readonly MessageOrder[],
+  parts: Readonly<Record<string, readonly Part[] | undefined>>,
+) {
+  return selectAutoSessionImageKeys(
+    messages.flatMap((message) => {
+      if (message.role !== "assistant") return []
+      return (parts[message.id] ?? []).flatMap((part) => {
+        const images =
+          part.type === "text"
+            ? textPartSessionImages(part, message.time.completed !== undefined)
+            : part.type === "tool"
+              ? toolSessionImages(part)
+              : []
+        if (images.length === 0) return []
+        return [{ partID: part.id, images }]
+      })
+    }),
+  )
 }
 
 function goUpsellKeys(action: RetryAction) {
@@ -309,23 +331,9 @@ export function Session() {
   const visibleMessages = createMemo(() => messageWindow().visible)
   const hiddenMessages = createMemo(() => messageWindow().hidden)
   const lastAssistant = createMemo(() => messageWindow().projected.findLast((message) => message.role === "assistant"))
-  // A mounted terminal image requires full-frame composition, so historical images stay compact and click-only.
-  const autoImageKeys = createMemo(() => {
-    const message = lastAssistant()
-    if (!message) return new Set<string>()
-    return selectAutoSessionImageKeys(
-      (sync.data.part[message.id] ?? []).flatMap((part) => {
-        const images =
-          part.type === "text"
-            ? textPartSessionImages(part, message.time.completed !== undefined)
-            : part.type === "tool"
-              ? toolSessionImages(part)
-              : []
-        if (images.length === 0) return []
-        return [{ partID: part.id, images }]
-      }),
-    )
-  })
+  // Keep one native image across the mounted message window. This preserves
+  // the preview through later turns without multiplying decoded image memory.
+  const autoImageKeys = createMemo(() => selectVisibleSessionImageKeys(visibleMessages(), sync.data.part))
 
   // Reset the window whenever the session changes so long histories don't
   // render fully on the first frame of a new session.
@@ -2012,9 +2020,19 @@ function SessionImagePreviews(props: { partID: string; images: readonly SessionI
       <For each={projected().visible}>
         {(image, index) => {
           const [failed, setFailed] = createSignal(false)
+          const [loaded, setLoaded] = createSignal(false)
           const [sourceSize, setSourceSize] = createSignal<{ width: number; height: number }>()
           const eager = createMemo(() => ctx.autoImageKeys.has(sessionImageKey(props.partID, image.key)))
-          const active = createMemo(() => supported && ctx.idle && dialog.stack.length === 0 && eager() && !failed())
+          const active = createMemo(() =>
+            sessionImagePreviewActive({
+              supported,
+              idle: ctx.idle,
+              loaded: loaded(),
+              dialogOpen: dialog.stack.length > 0,
+              eager: eager(),
+              failed: failed(),
+            }),
+          )
           const height = createMemo(() => {
             const resolution = renderer.resolution
             const cellWidth = resolution && renderer.terminalWidth > 0 ? resolution.width / renderer.terminalWidth : 0
@@ -2055,8 +2073,14 @@ function SessionImagePreviews(props: { partID: string; images: readonly SessionI
                   protocol="auto"
                   width="100%"
                   height="100%"
-                  onLoad={(loaded) => setSourceSize({ width: loaded.width, height: loaded.height })}
-                  onError={() => setFailed(true)}
+                  onLoad={(image) => {
+                    setLoaded(true)
+                    setSourceSize({ width: image.width, height: image.height })
+                  }}
+                  onError={() => {
+                    setLoaded(false)
+                    setFailed(true)
+                  }}
                 />
               </Show>
             </box>

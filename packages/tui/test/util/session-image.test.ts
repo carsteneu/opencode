@@ -5,6 +5,7 @@ import {
   projectSessionImages,
   selectAutoSessionImageKeys,
   sessionImageKey,
+  sessionImagePreviewActive,
   sessionImagePreviewHeight,
   textPartSessionImages,
   toolSessionImages,
@@ -195,6 +196,18 @@ describe("session images", () => {
     expect([...selectAutoSessionImageKeys([markdown, remote, inline])]).toEqual([
       sessionImageKey(inline.partID, inline.images[0].key),
     ])
+    expect([...selectAutoSessionImageKeys([markdown, { partID: "part_pending", images: [] }])]).toEqual([
+      sessionImageKey(markdown.partID, markdown.images[0].key),
+    ])
+  })
+
+  test("keeps an already loaded preview active while a later turn is busy", () => {
+    const base = { supported: true, dialogOpen: false, eager: true, failed: false }
+
+    expect(sessionImagePreviewActive({ ...base, idle: false, loaded: false })).toBeFalse()
+    expect(sessionImagePreviewActive({ ...base, idle: true, loaded: false })).toBeTrue()
+    expect(sessionImagePreviewActive({ ...base, idle: false, loaded: true })).toBeTrue()
+    expect(sessionImagePreviewActive({ ...base, idle: false, loaded: true, dialogOpen: true })).toBeFalse()
   })
 
   test("projects one full-width image and sizes it without cropping", () => {

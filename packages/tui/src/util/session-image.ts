@@ -103,6 +103,17 @@ export function projectSessionImages(images: readonly SessionImage[], limit = 1)
   }
 }
 
+export function sessionImagePreviewActive(input: {
+  supported: boolean
+  idle: boolean
+  loaded: boolean
+  dialogOpen: boolean
+  eager: boolean
+  failed: boolean
+}) {
+  return input.supported && !input.dialogOpen && input.eager && !input.failed && (input.idle || input.loaded)
+}
+
 export function sessionImagePreviewHeight(
   terminalHeight: number,
   availableColumns: number,

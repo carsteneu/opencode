@@ -1,7 +1,13 @@
 import { describe, expect, test } from "bun:test"
 import { BoxRenderable, ScrollBoxRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
-import { projectMessageWindow, shouldExpandMessageWindow } from "../../../src/routes/session"
+import type { Part } from "@opencode-ai/sdk/v2"
+import {
+  projectMessageWindow,
+  selectVisibleSessionImageKeys,
+  shouldExpandMessageWindow,
+} from "../../../src/routes/session"
+import { sessionImageKey } from "../../../src/util/session-image"
 
 function user(index: number) {
   return {
@@ -63,6 +69,35 @@ describe("session message window", () => {
     expect(projection.visible.findIndex((message) => message.id === queued.id)).toBe(9)
     expect(projection.queued.has("message-09")).toBeFalse()
     expect(projection.queued.has(queued.id)).toBeTrue()
+  })
+
+  test("keeps a completed image selected through later text-only turns and scrolling", () => {
+    const imageMessage = assistant(0)
+    const messages = [imageMessage, ...Array.from({ length: 9 }, (_, index) => user(index + 1))]
+    const imagePart: Part = {
+      id: "part-image",
+      sessionID: "session-test",
+      messageID: imageMessage.id,
+      type: "text",
+      text: "![Result](https://example.com/result.png)",
+      time: { start: 1, end: 2 },
+    }
+    const parts = { [imageMessage.id]: [imagePart] }
+
+    const followup = [imageMessage, user(1), assistant(2, false)]
+    expect([...selectVisibleSessionImageKeys(projectMessageWindow(followup, 10).visible, parts)]).toEqual([
+      sessionImageKey(imagePart.id, "markdown:0"),
+    ])
+    expect([...selectVisibleSessionImageKeys(projectMessageWindow(messages, 10).visible, parts)]).toEqual([
+      sessionImageKey(imagePart.id, "markdown:0"),
+    ])
+
+    const pending = assistant(10, false)
+    const next = [...messages, pending]
+    expect(selectVisibleSessionImageKeys(projectMessageWindow(next, 10).visible, parts).size).toBe(0)
+    expect([...selectVisibleSessionImageKeys(projectMessageWindow(next, 30).visible, parts)]).toEqual([
+      sessionImageKey(imagePart.id, "markdown:0"),
+    ])
   })
 
   test("expands an underfilled ScrollBox while a hidden prefix remains", async () => {
