@@ -18,16 +18,16 @@ solution.
 
 This is a community build, not an upstream OpenCode release.
 
-| Component                                | Version or commit                                                                                                                                  | Source                                                                      |
-| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| Currently deployed OpenCode build        | `1.18.16-patched.100`, image history commit `fc410068398140070a315cbda31796a6e746ee2d`, download commit `e15af30c01f8089a5c6e3874d703c72b2dbc27f1` | Local `working` build; public tag pending                                   |
-| Current public OpenCode prerelease       | `1.18.16-patched.99`, image implementation commit `1529acaa96396b15fd3bd65f9f61c63a091a4010`                                                       | [tag](https://github.com/carsteneu/opencode/tree/1.18.16-patched.99)        |
-| Previous public OpenCode prerelease      | `1.18.16-patched.97`, commit `418cce689ab74759b643ade316136ac25e207153`                                                                            | [tag](https://github.com/carsteneu/opencode/tree/1.18.16-patched.97)        |
-| Previous public OpenCode prerelease      | `1.18.4-patched.96`, commit `78f2f6aaf51137ea477491d9416daaf50bc6afcd`                                                                             | [tag](https://github.com/carsteneu/opencode/tree/1.18.4-patched.96)         |
-| OpenTUI renderer through `.97`           | OpenTUI 0.4.5 plus patches, commit `75f0721104b67027155dae967b44e67173b04756`                                                                      | [tag](https://github.com/carsteneu/opentui/tree/opencode-1.18.4-patched.92) |
-| OpenTUI renderer in `.98` through `.100` | OpenTUI 0.5.1 plus ported patches, commit `568db413e7bc3a110981d2e54ddb7ebb8e906075`                                                               | Tag `opencode-1.18.16-patched.98`                                           |
-| Current Linux binary                     | `.100`, x86_64, SHA-256 `1910ed4eabb0b3354c2571a82c1ad6c6478cf623a780826c99136243c0266a05`                                                         | Local deployed artifact                                                     |
-| Previous deployed Linux binary           | `.99`, x86_64, SHA-256 `ae875439a8e4493f38b0f8ecd3a9df69ad25603943ff986b14394071b7b02c5c`                                                          | Backup `opencode-1.18.16-patched.99-before-100.bak`                         |
+| Component                                | Version or commit                                                                            | Source                                                                      |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| Currently deployed OpenCode build        | `1.18.16-patched.101`, sharp-scroll fix commit `2a38a66038eb28aff03ee4cb99c809586558109b`    | Local `working` build; public tag pending                                   |
+| Current public OpenCode prerelease       | `1.18.16-patched.99`, image implementation commit `1529acaa96396b15fd3bd65f9f61c63a091a4010` | [tag](https://github.com/carsteneu/opencode/tree/1.18.16-patched.99)        |
+| Previous public OpenCode prerelease      | `1.18.16-patched.97`, commit `418cce689ab74759b643ade316136ac25e207153`                      | [tag](https://github.com/carsteneu/opencode/tree/1.18.16-patched.97)        |
+| Previous public OpenCode prerelease      | `1.18.4-patched.96`, commit `78f2f6aaf51137ea477491d9416daaf50bc6afcd`                       | [tag](https://github.com/carsteneu/opencode/tree/1.18.4-patched.96)         |
+| OpenTUI renderer through `.97`           | OpenTUI 0.4.5 plus patches, commit `75f0721104b67027155dae967b44e67173b04756`                | [tag](https://github.com/carsteneu/opentui/tree/opencode-1.18.4-patched.92) |
+| OpenTUI renderer in `.98` through `.101` | OpenTUI 0.5.1 plus ported patches, commit `568db413e7bc3a110981d2e54ddb7ebb8e906075`         | Tag `opencode-1.18.16-patched.98`                                           |
+| Current Linux binary                     | `.101`, x86_64, SHA-256 `f70cb221cb93cf0f848ce80ccb3946f7109e247e41b3ce8b8cb8c37a8b13822e`   | Local deployed artifact                                                     |
+| Previous deployed Linux binary           | `.100`, x86_64, SHA-256 `1910ed4eabb0b3354c2571a82c1ad6c6478cf623a780826c99136243c0266a05`   | Backup `opencode-1.18.16-patched.100-before-101.bak`                        |
 
 At the `.94` release tag, the OpenCode branch was 51 commits ahead of its then-current `dev` base, commit
 `0a601cf334b2cf5ac4e420cb2f3a4248b4414c17`. The focused diff is 58 files with 2,821 additions and 432
@@ -124,6 +124,14 @@ loaded dialog bytes are reused, filenames are sanitized and derived from the det
 files and symlinks are never overwritten, and parallel saves receive deterministic suffixes. A complete hidden
 temporary file is published atomically under its final name, so aborts or write failures cannot expose a partial
 download. The source still passes through the same HTTPS, redirect, address, MIME, timeout, and size checks.
+
+The locally deployed `.101` build fixes a permanent-demotion bug in that two-level path. A retained cell
+snapshot no longer removes its image from native viewport candidacy. After scrolling settles for 80 ms, the one
+selected idle image is promoted back to the native terminal protocol and regains full terminal pixel quality;
+the compact cell snapshot is only the temporary fallback. Streaming still mounts no native image, selection is
+still limited to one exact-viewport candidate, and all snapshot budgets remain unchanged. If reloading a stale
+or expired source fails, the retained snapshot stays visible and another attempt is suppressed until the image
+leaves and re-enters the viewport, avoiding both disappearance and retry loops.
 
 ## Results at a glance
 
@@ -609,13 +617,23 @@ packaging. The final artifact and atomically installed binary are byte-identical
 `1910ed4eabb0b3354c2571a82c1ad6c6478cf623a780826c99136243c0266a05`. The previous `.99` binary is retained
 unchanged as `opencode-1.18.16-patched.99-before-100.bak`.
 
+The `.101` correction passed the complete TUI suite with 240 tests passed, 1 existing skip, and no failures,
+plus the TUI and OpenCode package typechecks. Its component test proves the sequence native image, static
+fallback, restored native image for both viewport and busy transitions, then holds the restored state long
+enough to detect a reload loop. The full embedded Web UI and Linux x86_64 build completed from commit
+`2a38a66038eb28aff03ee4cb99c809586558109b`. The pinned OpenTUI overlay was verified before and after the build.
+The atomically installed binary reports `1.18.16-patched.101`, has SHA-256
+`f70cb221cb93cf0f848ce80ccb3946f7109e247e41b3ce8b8cb8c37a8b13822e`, and is byte-identical to the build
+artifact. The previous `.100` binary is retained unchanged as
+`opencode-1.18.16-patched.100-before-101.bak`.
+
 ## Packaging and reproducibility caveat
 
 The `.92`, `.93`, `.94`, `.96`, and `.97` binaries contain the patched OpenTUI 0.4.5 Core JavaScript, Solid
-integration, and matching native `libopentui.so`. The `.98` through `.100` builds contain the corresponding patched
+integration, and matching native `libopentui.so`. The `.98` through `.101` builds contain the corresponding patched
 OpenTUI 0.5.1 artifacts.
 
-The `.98` through `.100` OpenCode lockfiles name the released OpenTUI 0.5.1 packages. A fresh `bun install` therefore resolves
+The `.98` through `.101` OpenCode lockfiles name the released OpenTUI 0.5.1 packages. A fresh `bun install` therefore resolves
 stock OpenTUI 0.5.1, not the additional fork commits. Reproducing the deployed renderer requires building the
 tagged OpenTUI fork, placing its matching JavaScript and native artifacts into the OpenCode dependency tree, and
 then building OpenCode without reinstalling those dependencies.
@@ -633,7 +651,7 @@ is still OpenTUI 0.5.1, and replaces only the current worktree's Bun store targe
 must still be built first. Build OpenCode with `--skip-install` afterward so dependency installation cannot replace
 the verified overlay.
 
-The `.98` through `.100` artifact hashes are:
+The `.98` through `.101` artifact hashes are:
 
 - Core: `e15a4537e890882bee62068cb91b7cc5206dc5ea5fbc0b8def2e7f00a0c9d39b`
 - Solid: `294dcc12fb498a5a8427bea3b7fc30b89ff1b37b39c76e93f2dbb47247330617`
@@ -671,6 +689,6 @@ The current public prerelease is available at
 [OpenCode 1.18.16-patched.99](https://github.com/carsteneu/opencode/releases/tag/1.18.16-patched.99). The renderer
 source is preserved in the
 [OpenTUI `opencode-1.18.16-patched.98` tag](https://github.com/carsteneu/opentui/tree/opencode-1.18.16-patched.98).
-The locally deployed `.100` build is not yet published as a tag or release. The `.99` OpenCode binary is
-preserved as the local rollback build. `.100` retains the complete performance and stability patch set, adds
-bounded static image history, and provides generic original-image downloads without a Yesmem-specific protocol.
+The locally deployed `.101` build is not yet published as a tag or release. The `.100` OpenCode binary is
+preserved as the local rollback build. `.101` retains the complete performance and stability patch set, bounded
+static image history, and generic original-image downloads, while restoring native image quality after scrolling.
