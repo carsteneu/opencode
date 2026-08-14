@@ -30,6 +30,7 @@ import {
   addDefaultParsers,
   TextAttributes,
   RGBA,
+  type KeyEvent,
   type TextRenderable,
 } from "@opentui/core"
 import { Prompt, type PromptRef } from "../../component/prompt"
@@ -296,6 +297,12 @@ function createSessionImageState(getScroll: () => ScrollBoxRenderable | undefine
 
 function sameKeys(a: ReadonlySet<string>, b: ReadonlySet<string>) {
   return a.size === b.size && [...a].every((key) => b.has(key))
+}
+
+function isBareKey(event: KeyEvent, name: "home" | "end") {
+  return (
+    event.name === name && !event.ctrl && !event.meta && !event.shift && !event.option && !event.super && !event.hyper
+  )
 }
 
 function goUpsellKeys(action: RetryAction) {
@@ -1119,9 +1126,11 @@ export function Session() {
       value: "session.first",
       category: "Session",
       hidden: true,
-      run: () => {
+      run: (ctx: { event: KeyEvent }) => {
+        if (renderer.currentFocusedEditor !== null && isBareKey(ctx.event, "home")) return false
         scroll.scrollTo(0)
         dialog.clear()
+        return true
       },
     },
     {
@@ -1129,9 +1138,11 @@ export function Session() {
       value: "session.last",
       category: "Session",
       hidden: true,
-      run: () => {
+      run: (ctx: { event: KeyEvent }) => {
+        if (renderer.currentFocusedEditor !== null && isBareKey(ctx.event, "end")) return false
         scroll.scrollTo(scroll.scrollHeight)
         dialog.clear()
+        return true
       },
     },
     {
