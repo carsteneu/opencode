@@ -3,6 +3,7 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
 import { jsonSchema, streamText, tool, type ModelMessage, wrapLanguageModel } from "ai"
 import { Effect, Stream } from "effect"
 import { LLMAIProcess, type AIProcessInput } from "@/session/llm/ai-process-client"
+import type { AISDKEvent } from "@/session/llm/ai-sdk"
 import { LLMWorkerIPC } from "@/session/llm/ipc"
 import { LLMMessageTransform } from "@/session/llm/message-transform"
 import { ProviderTest } from "../fake/provider"
@@ -144,6 +145,175 @@ describe("LLM AI process", () => {
     expect(converted).toBeTrue()
     expect(requestBody.tools?.[0]?.function?.strict).toBeFalse()
     expect(events.some((event) => event.type === "tool-result")).toBeTrue()
+  })
+
+  test("streams the tool call before parent execution completes", async () => {
+    const server = serve([
+      chunk({ role: "assistant" }),
+      chunk({
+        tool_calls: [{ index: 0, id: "call-1", type: "function", function: { name: "echo", arguments: "" } }],
+      }),
+      chunk({ tool_calls: [{ index: 0, function: { arguments: '{"value":"ok"}' } }] }),
+      chunk({}, "tool_calls"),
+      "[DONE]",
+    ])
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const observed = Promise.withResolvers<void>()
+    const echo = tool<{ value: string }, string>({
+      inputSchema: jsonSchema({
+        type: "object",
+        properties: { value: { type: "string" } },
+        required: ["value"],
+      }),
+      execute: async (value) => {
+        entered.resolve()
+        await release.promise
+        return value.value
+      },
+    })
+    const processTools = LLMAIProcess.prepareTools({ echo })
+    if (!processTools) throw new Error("Expected tool to be safe for the AI process")
+    const messages: ModelMessage[] = [{ role: "user", content: "hello" }]
+    const events: string[] = []
+    const run = Effect.runPromise(
+      LLMAIProcess.stream(input(server, processTools), { echo }, messages, new AbortController().signal).pipe(
+        Stream.runForEach((event) =>
+          Effect.sync(() => {
+            events.push(event.type)
+            if (event.type === "tool-call") observed.resolve()
+          }),
+        ),
+      ),
+    )
+
+    await entered.promise
+    const visible = await Promise.race([observed.promise.then(() => true), Bun.sleep(2_000).then(() => false)])
+    release.resolve()
+    await run
+
+    expect(visible).toBeTrue()
+    expect(events.indexOf("tool-call")).toBeLessThan(events.indexOf("tool-result"))
+  })
+
+  test("starts parallel parent tools without blocking the worker reader", async () => {
+    const server = serve([
+      chunk({ role: "assistant" }),
+      chunk({
+        tool_calls: [
+          { index: 0, id: "call-1", type: "function", function: { name: "first", arguments: "" } },
+          { index: 1, id: "call-2", type: "function", function: { name: "second", arguments: "" } },
+        ],
+      }),
+      chunk({
+        tool_calls: [
+          { index: 0, function: { arguments: "{}" } },
+          { index: 1, function: { arguments: "{}" } },
+        ],
+      }),
+      chunk({}, "tool_calls"),
+      "[DONE]",
+    ])
+    const entered = new Set<string>()
+    const completed: string[] = []
+    const both = Promise.withResolvers<void>()
+    const secondCompleted = Promise.withResolvers<void>()
+    const releases = {
+      first: Promise.withResolvers<void>(),
+      second: Promise.withResolvers<void>(),
+    }
+    const parentTool = (name: "first" | "second") =>
+      tool<Record<string, never>, string>({
+        inputSchema: jsonSchema({ type: "object", properties: {} }),
+        execute: async () => {
+          entered.add(name)
+          if (entered.size === 2) both.resolve()
+          await releases[name].promise
+          completed.push(name)
+          if (name === "second") secondCompleted.resolve()
+          return name
+        },
+      })
+    const first = parentTool("first")
+    const second = parentTool("second")
+    const processTools = LLMAIProcess.prepareTools({ first, second })
+    if (!processTools) throw new Error("Expected tools to be safe for the AI process")
+    const messages: ModelMessage[] = [{ role: "user", content: "hello" }]
+    const events: AISDKEvent[] = []
+    const run = Effect.runPromise(
+      LLMAIProcess.stream(input(server, processTools), { first, second }, messages, new AbortController().signal).pipe(
+        Stream.runForEach((event) =>
+          Effect.sync(() => {
+            events.push(event)
+          }),
+        ),
+      ),
+    )
+
+    const concurrent = await Promise.race([both.promise.then(() => true), Bun.sleep(10_000).then(() => false)])
+    releases.second.resolve()
+    await secondCompleted.promise
+    releases.first.resolve()
+    await run
+
+    expect(concurrent).toBeTrue()
+    expect(entered).toEqual(new Set(["first", "second"]))
+    expect(completed).toEqual(["second", "first"])
+    expect(
+      events
+        .filter((event) => event.type === "tool-result")
+        .map((event) => ({ callID: event.toolCallId, output: event.output })),
+    ).toEqual([
+      { callID: "call-2", output: "second" },
+      { callID: "call-1", output: "first" },
+    ])
+  })
+
+  test("aborts parent tool execution when the stream consumer stops", async () => {
+    const server = serve([
+      chunk({ role: "assistant" }),
+      chunk({
+        tool_calls: [{ index: 0, id: "call-1", type: "function", function: { name: "wait", arguments: "" } }],
+      }),
+      chunk({ tool_calls: [{ index: 0, function: { arguments: "{}" } }] }),
+      chunk({}, "tool_calls"),
+      "[DONE]",
+    ])
+    const entered = Promise.withResolvers<AbortSignal>()
+    const toolAborted = Promise.withResolvers<void>()
+    const wait = tool<Record<string, never>, string>({
+      inputSchema: jsonSchema({ type: "object", properties: {} }),
+      execute: async (_, context) => {
+        const signal = context.abortSignal
+        if (!signal) throw new Error("Expected an abort signal")
+        entered.resolve(signal)
+        return new Promise<string>((_, reject) => {
+          const onAbort = () => {
+            toolAborted.resolve()
+            reject(signal.reason ?? new DOMException("Aborted", "AbortError"))
+          }
+          if (signal.aborted) return onAbort()
+          signal.addEventListener("abort", onAbort, { once: true })
+        })
+      },
+    })
+    const processTools = LLMAIProcess.prepareTools({ wait })
+    if (!processTools) throw new Error("Expected tool to be safe for the AI process")
+    const messages: ModelMessage[] = [{ role: "user", content: "hello" }]
+    const abort = new AbortController()
+    const run = Effect.runPromise(
+      LLMAIProcess.stream(input(server, processTools), { wait }, messages, abort.signal).pipe(
+        Stream.takeUntil((event) => event.type === "tool-call"),
+        Stream.runCollect,
+      ),
+    )
+
+    const signal = await entered.promise
+    const events = await run
+    await toolAborted.promise
+    expect(events.some((event) => event.type === "tool-call")).toBeTrue()
+    expect(signal.aborted).toBeTrue()
+    expect(abort.signal.aborted).toBeFalse()
   })
 
   test("falls back when tool callbacks cannot cross the process boundary", () => {

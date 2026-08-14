@@ -153,25 +153,50 @@ export function stream(input: AIProcessInput, tools: Record<string, Tool>, messa
     Effect.acquireRelease(
       Effect.sync(() => {
         const child = Bun.spawn(command(), { stdin: "pipe", stdout: "pipe", stderr: "pipe", env: process.env })
-        const write = (value: unknown) => child.stdin.write(LLMWorkerIPC.stringify(value) + "\n")
-        const onAbort = () => {
+        const lifecycle = new AbortController()
+        const toolSignal = AbortSignal.any([abort, lifecycle.signal])
+        let terminal = false
+        let closed = false
+        let killed = false
+        const close = () => {
+          if (!closed) {
+            closed = true
+            lifecycle.abort()
+          }
+          if (killed) return
+          killed = true
           child.kill()
-          Queue.failCauseUnsafe(queue, Cause.fail(new DOMException("Aborted", "AbortError")))
+        }
+        const write = (value: unknown) => {
+          if (closed) return false
+          void child.stdin.write(LLMWorkerIPC.stringify(value) + "\n")
+          return true
+        }
+        const fail = (error: unknown) => {
+          if (terminal) return
+          terminal = true
+          close()
+          Queue.failCauseUnsafe(queue, Cause.fail(error instanceof Error ? error : new Error(String(error))))
+        }
+        const onAbort = () => {
+          fail(new DOMException("Aborted", "AbortError"))
         }
         abort.addEventListener("abort", onAbort, { once: true })
-        write(input)
-        let terminal = false
-        void read(child.stdout, async (message) => {
-          if (message.type === "events") {
-            Queue.offerAllUnsafe(queue, message.events as AISDKEvent[])
-            return
+        if (abort.aborted) onAbort()
+        if (!terminal) {
+          try {
+            write(input)
+          } catch (error) {
+            fail(error)
           }
-          if (message.type === "tool") {
-            const tool = tools[message.name]
+        }
+        const executeTool = async (message: Extract<ProcessEvent, { type: "tool" }>) => {
+          const tool = tools[message.name]
+          const response = await (async () => {
             try {
               if (message.action === "model-output") {
                 if (!tool?.toModelOutput) throw new Error(`Tool has no model output handler: ${message.name}`)
-                write({
+                return {
                   type: "tool-result",
                   id: message.id,
                   result: await tool.toModelOutput({
@@ -179,49 +204,68 @@ export function stream(input: AIProcessInput, tools: Record<string, Tool>, messa
                     input: message.input,
                     output: message.output,
                   }),
-                })
-                return
+                }
               }
               if (!tool?.execute) throw new Error(`Tool has no execute handler: ${message.name}`)
-              write({
+              return {
                 type: "tool-result",
                 id: message.id,
                 result: await tool.execute(message.input, {
                   toolCallId: message.callID,
                   messages,
-                  abortSignal: abort,
+                  abortSignal: toolSignal,
                 }),
-              })
+              }
             } catch (error) {
-              write({ type: "tool-error", id: message.id, error: error instanceof Error ? error.message : String(error) })
+              return {
+                type: "tool-error",
+                id: message.id,
+                error: error instanceof Error ? error.message : String(error),
+              }
             }
+          })()
+          write(response)
+        }
+        const startTool = (message: Extract<ProcessEvent, { type: "tool" }>) => {
+          void executeTool(message).catch(fail)
+        }
+        void read(child.stdout, (message) => {
+          if (terminal) return
+          if (message.type === "events") {
+            Queue.offerAllUnsafe(queue, message.events as AISDKEvent[])
+            return
+          }
+          if (message.type === "tool") {
+            startTool(message)
             return
           }
           if (message.type === "end") {
             terminal = true
+            closed = true
+            lifecycle.abort()
             Queue.endUnsafe(queue)
-            child.stdin.end()
+            void child.stdin.end()
             return
           }
-          terminal = true
-          Queue.failCauseUnsafe(queue, Cause.fail(new Error(message.error)))
+          fail(new Error(message.error))
         })
           .then(async () => {
-            if (terminal || abort.aborted) return
+            if (terminal) return
             const error = await new Response(child.stderr).text()
-            Queue.failCauseUnsafe(
-              queue,
-              Cause.fail(new Error(error.trim() || `LLM process exited with code ${await child.exited}`)),
-            )
+            fail(new Error(error.trim() || `LLM process exited with code ${await child.exited}`))
           })
-          .catch((error) => Queue.failCauseUnsafe(queue, Cause.fail(error)))
-        return { child, onAbort }
+          .catch(fail)
+        const release = async () => {
+          terminal = true
+          close()
+          await child.exited
+        }
+        return { onAbort, release }
       }),
-      ({ child, onAbort }) =>
+      ({ onAbort, release }) =>
         Effect.promise(async () => {
           abort.removeEventListener("abort", onAbort)
-          child.kill()
-          await child.exited
+          await release()
         }),
     ),
   )

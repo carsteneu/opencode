@@ -4,7 +4,7 @@ import { createMemo, For, Match, Show, Switch } from "solid-js"
 import { Portal, useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import type { TextareaRenderable } from "@opentui/core"
 import { useTheme, selectedForeground } from "../../context/theme"
-import type { PermissionRequest } from "@opencode-ai/sdk/v2"
+import type { Part, PermissionRequest } from "@opencode-ai/sdk/v2"
 import { useSDK } from "../../context/sdk"
 import { SplitBorder } from "../../ui/border"
 import { useSync } from "../../context/sync"
@@ -119,17 +119,9 @@ export function PermissionPrompt(props: { request: PermissionRequest; directory?
 
   const session = createMemo(() => sync.data.session.find((s) => s.id === props.request.sessionID))
 
-  const input = createMemo(() => {
-    const tool = props.request.tool
-    if (!tool) return {}
-    const parts = sync.data.part[tool.messageID] ?? []
-    for (const part of parts) {
-      if (part.type === "tool" && part.callID === tool.callID && part.state.status !== "pending") {
-        return part.state.input ?? {}
-      }
-    }
-    return {}
-  })
+  const input = createMemo(() =>
+    permissionInput(props.request, sync.data.part[props.request.tool?.messageID ?? ""] ?? []),
+  )
 
   const { theme } = useTheme()
 
@@ -438,6 +430,17 @@ export function PermissionPrompt(props: { request: PermissionRequest; directory?
       </Match>
     </Switch>
   )
+}
+
+export function permissionInput(request: PermissionRequest, parts: Part[]) {
+  const metadata = request.metadata ?? {}
+  const tool = request.tool
+  if (!tool) return metadata
+  const part = parts.find(
+    (item) => item.type === "tool" && item.callID === tool.callID && item.state.status !== "pending",
+  )
+  if (!part || part.type !== "tool") return metadata
+  return { ...metadata, ...part.state.input }
 }
 
 function RejectPrompt(props: { onConfirm: (message: string) => void; onCancel: () => void }) {
