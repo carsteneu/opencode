@@ -3,6 +3,8 @@
 - Keep runtime dependencies directed from Schema to Core and Protocol, then from Core and Protocol to Server. Client runtime code may depend on Schema and Protocol but never Core or Server; `sdk-next` composes Client, Core, and Server.
 - The upstream integration branch is `dev`. Keep the fork's `dev` branch limited to upstream synchronization; do not merge local patches into it or create patched builds and releases from it.
 - The canonical branch for local patches, builds, deployments, tags, and GitHub prereleases is `working`, normally checked out at `.worktrees/working`.
+- Build fork prereleases from `packages/opencode` with `OPENCODE_VERSION=x.y.z-patched.n bun run build:patched --single --skip-install`. This keeps the normal `latest` data channel while pinning self-updates to patched prereleases from `carsteneu/opencode`.
+- Prepare a release with `OPENTUI_ROOT=/path/to/pinned/opentui bun run release:patched x.y.z-patched.n`; add `--publish` only from a clean, committed `working` branch. The publisher verifies the pinned OpenTUI overlay, uploads the raw Linux x64 binary and SHA-256 asset to a draft, verifies both, and only then publishes the prerelease.
 - Local `main` ref may not exist. Use `working` for patched release work and `origin/dev` for upstream comparisons.
 
 ## Branch Names

@@ -128,7 +128,13 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
           body: { success: false as const, error: "Unknown installation method" },
         }
       }
-      const target = ctx.payload.target || (yield* installation.latest(method))
+      const target = ctx.payload.target || (yield* installation.latest(method, true))
+      if (Installation.isPatched() && !Installation.isNewer(InstallationVersion, target)) {
+        return {
+          status: 400,
+          body: { success: false as const, error: `Target must be newer than ${InstallationVersion}` },
+        }
+      }
       const result = yield* installation.upgrade(method, target).pipe(
         Effect.as({ status: 200, body: { success: true as const, version: target } }),
         Effect.catch((err) =>
