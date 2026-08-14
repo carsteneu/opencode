@@ -1,4 +1,4 @@
-import { describe, expect } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { makeGlobalNode } from "@opencode-ai/core/effect/app-node"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { httpClient } from "@opencode-ai/core/effect/app-node-platform"
@@ -67,6 +67,96 @@ function testLayer(
 }
 
 describe("installation", () => {
+  describe("release ordering", () => {
+    test("only selects the newest complete patched prerelease", () => {
+      const release = Installation.selectPatchedRelease(
+        [
+          {
+            tag_name: "2.0.0-beta.1",
+            draft: false,
+            prerelease: true,
+            assets: [
+              {
+                name: "opencode-linux-x64",
+                browser_download_url: "https://example.com/v2",
+              },
+              {
+                name: "opencode-linux-x64.sha256",
+                browser_download_url: "https://example.com/v2.sha256",
+              },
+            ],
+          },
+          {
+            tag_name: "1.18.18-patched.105",
+            draft: true,
+            prerelease: true,
+            assets: [
+              {
+                name: "opencode-linux-x64",
+                browser_download_url: "https://example.com/draft",
+              },
+              {
+                name: "opencode-linux-x64.sha256",
+                browser_download_url: "https://example.com/draft.sha256",
+              },
+            ],
+          },
+          {
+            tag_name: "1.18.18-patched.103",
+            draft: false,
+            prerelease: true,
+            assets: [
+              {
+                name: "opencode-linux-x64",
+                browser_download_url: "https://example.com/103",
+              },
+              {
+                name: "opencode-linux-x64.sha256",
+                browser_download_url: "https://example.com/103.sha256",
+              },
+            ],
+          },
+          {
+            tag_name: "1.18.18-patched.104",
+            draft: false,
+            prerelease: true,
+            assets: [
+              {
+                name: "opencode-linux-x64",
+                browser_download_url: "https://example.com/104",
+              },
+              {
+                name: "opencode-linux-x64.sha256",
+                browser_download_url: "https://example.com/104.sha256",
+              },
+            ],
+          },
+          {
+            tag_name: "1.18.19-patched.106",
+            draft: false,
+            prerelease: true,
+            assets: [
+              {
+                name: "opencode-linux-x64",
+                browser_download_url: "https://example.com/incomplete",
+              },
+            ],
+          },
+        ],
+        "opencode-linux-x64",
+      )
+
+      expect(release?.tag_name).toBe("1.18.18-patched.104")
+    })
+
+    test("compares patched versions without allowing sidegrades or downgrades", () => {
+      expect(Installation.isNewer("1.18.18-patched.104", "1.18.18-patched.105")).toBe(true)
+      expect(Installation.isNewer("1.18.18-patched.105", "1.18.18-patched.104")).toBe(false)
+      expect(Installation.isNewer("1.18.18-patched.105", "1.18.18-patched.105")).toBe(false)
+      expect(Installation.isNewer("local", "1.18.18-patched.105")).toBe(false)
+    })
+  })
+
   describe("latest", () => {
     testEffect(testLayer(() => jsonResponse({ tag_name: "v1.2.3" }))).effect(
       "reads release version from GitHub releases",

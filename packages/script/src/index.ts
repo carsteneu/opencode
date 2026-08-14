@@ -22,6 +22,8 @@ const env = {
   OPENCODE_BUMP: process.env["OPENCODE_BUMP"],
   OPENCODE_VERSION: process.env["OPENCODE_VERSION"],
   OPENCODE_RELEASE: process.env["OPENCODE_RELEASE"],
+  OPENCODE_UPDATE_REPOSITORY: process.env["OPENCODE_UPDATE_REPOSITORY"],
+  OPENCODE_UPDATE_CHANNEL: process.env["OPENCODE_UPDATE_CHANNEL"],
 }
 const CHANNEL = await (async () => {
   if (env.OPENCODE_CHANNEL) return env.OPENCODE_CHANNEL
@@ -69,6 +71,12 @@ export const Script = {
   },
   get release(): boolean {
     return !!env.OPENCODE_RELEASE
+  },
+  get updateRepository() {
+    return env.OPENCODE_UPDATE_REPOSITORY ?? "anomalyco/opencode"
+  },
+  get updateChannel() {
+    return env.OPENCODE_UPDATE_CHANNEL ?? "stable"
   },
   get team() {
     return team
