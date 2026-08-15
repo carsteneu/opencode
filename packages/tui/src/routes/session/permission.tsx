@@ -1,6 +1,6 @@
 import { createStore } from "solid-js/store"
 import { dirname } from "node:path"
-import { createMemo, For, Match, Show, Switch } from "solid-js"
+import { createMemo, For, Match, Show, Switch, type Accessor } from "solid-js"
 import { Portal, useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import type { TextareaRenderable } from "@opentui/core"
 import { useTheme, selectedForeground } from "../../context/theme"
@@ -16,10 +16,17 @@ import { getScrollAcceleration } from "../../util/scroll"
 import { useTuiConfig } from "../../config"
 import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
+import { createDiffPreview, DIFF_PREVIEW_LIMITS, formatDiffBytes } from "../../util/diff-preview"
 
 type PermissionStage = "permission" | "always" | "reject"
+type PermissionInfo = {
+  icon: string
+  title: string
+  body?: JSX.Element
+  bodyWithFullscreen?: (expanded: Accessor<boolean>) => JSX.Element
+}
 
-function EditBody(props: { request: PermissionRequest }) {
+export function EditBody(props: { request: PermissionRequest; expanded: Accessor<boolean> }) {
   const themeState = useTheme()
   const theme = themeState.theme
   const syntax = themeState.syntax
@@ -34,6 +41,9 @@ function EditBody(props: { request: PermissionRequest }) {
     const value = props.request.metadata?.diff
     return typeof value === "string" ? value : ""
   })
+  const preview = createMemo(() => createDiffPreview(diff()))
+  const files = createMemo(() => permissionDiffFiles(props.request.metadata?.files))
+  const limited = createMemo(() => preview().limited || files().length > DIFF_PREVIEW_LIMITS.maxSetFiles)
 
   const view = createMemo(() => {
     const diffStyle = config.diff_style
@@ -57,25 +67,91 @@ function EditBody(props: { request: PermissionRequest }) {
             },
           }}
         >
-          <diff
-            diff={diff()}
-            view={view()}
-            filetype={ft()}
-            syntaxStyle={syntax()}
-            showLineNumbers={true}
-            width="100%"
-            wrapMode="word"
-            fg={theme.text}
-            addedBg={theme.diffAddedBg}
-            removedBg={theme.diffRemovedBg}
-            contextBg={theme.diffContextBg}
-            addedSignColor={theme.diffHighlightAdded}
-            removedSignColor={theme.diffHighlightRemoved}
-            lineNumberFg={theme.diffLineNumber}
-            lineNumberBg={theme.diffContextBg}
-            addedLineNumberBg={theme.diffAddedLineNumberBg}
-            removedLineNumberBg={theme.diffRemovedLineNumberBg}
-          />
+          <Switch>
+            <Match when={limited() && !props.expanded()}>
+              <box gap={1} paddingLeft={1}>
+                <text fg={theme.warning}>
+                  Large diff preview · +{preview().additions} -{preview().deletions} ·{" "}
+                  {formatDiffBytes(preview().bytes)}
+                </text>
+                <Show when={files().length > 1}>
+                  <box>
+                    <For each={files().slice(0, 8)}>
+                      {(file) => (
+                        <text fg={theme.textMuted}>
+                          {file.label} <span style={{ fg: theme.diffAdded }}>+{file.additions}</span>{" "}
+                          <span style={{ fg: theme.diffRemoved }}>-{file.deletions}</span>
+                        </text>
+                      )}
+                    </For>
+                    <Show when={files().length > 8}>
+                      <text fg={theme.textMuted}>… {files().length - 8} more files</text>
+                    </Show>
+                  </box>
+                </Show>
+                <text fg={theme.text}>{preview().preview}</text>
+                <text fg={theme.textMuted}>Preview limited. Open fullscreen to render the complete diff.</text>
+              </box>
+            </Match>
+            <Match when={limited() && props.expanded() && files().length > 1}>
+              <box gap={1} paddingLeft={1}>
+                <text fg={theme.textMuted}>Complete raw diff · {files().length} files</text>
+                <text fg={theme.text}>{diff()}</text>
+              </box>
+            </Match>
+            <Match when={files().length > 0}>
+              <For each={files()}>
+                {(file) => (
+                  <box gap={1}>
+                    <text fg={theme.textMuted} paddingLeft={1}>
+                      {file.label} <span style={{ fg: theme.diffAdded }}>+{file.additions}</span>{" "}
+                      <span style={{ fg: theme.diffRemoved }}>-{file.deletions}</span>
+                    </text>
+                    <diff
+                      diff={file.patch}
+                      view={view()}
+                      filetype={filetype(file.filePath)}
+                      syntaxStyle={syntax()}
+                      showLineNumbers={true}
+                      width="100%"
+                      wrapMode="word"
+                      fg={theme.text}
+                      addedBg={theme.diffAddedBg}
+                      removedBg={theme.diffRemovedBg}
+                      contextBg={theme.diffContextBg}
+                      addedSignColor={theme.diffHighlightAdded}
+                      removedSignColor={theme.diffHighlightRemoved}
+                      lineNumberFg={theme.diffLineNumber}
+                      lineNumberBg={theme.diffContextBg}
+                      addedLineNumberBg={theme.diffAddedLineNumberBg}
+                      removedLineNumberBg={theme.diffRemovedLineNumberBg}
+                    />
+                  </box>
+                )}
+              </For>
+            </Match>
+            <Match when={true}>
+              <diff
+                diff={diff()}
+                view={view()}
+                filetype={ft()}
+                syntaxStyle={syntax()}
+                showLineNumbers={true}
+                width="100%"
+                wrapMode="word"
+                fg={theme.text}
+                addedBg={theme.diffAddedBg}
+                removedBg={theme.diffRemovedBg}
+                contextBg={theme.diffContextBg}
+                addedSignColor={theme.diffHighlightAdded}
+                removedSignColor={theme.diffHighlightRemoved}
+                lineNumberFg={theme.diffLineNumber}
+                lineNumberBg={theme.diffContextBg}
+                addedLineNumberBg={theme.diffAddedLineNumberBg}
+                removedLineNumberBg={theme.diffRemovedLineNumberBg}
+              />
+            </Match>
+          </Switch>
         </scrollbox>
       </Show>
       <Show when={!diff()}>
@@ -85,6 +161,32 @@ function EditBody(props: { request: PermissionRequest }) {
       </Show>
     </box>
   )
+}
+
+type PermissionDiffFile = {
+  filePath: string
+  label: string
+  patch: string
+  additions: number
+  deletions: number
+}
+
+function permissionDiffFiles(value: unknown): PermissionDiffFile[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") return []
+    if (!("patch" in entry) || typeof entry.patch !== "string") return []
+    const filePath = "filePath" in entry && typeof entry.filePath === "string" ? entry.filePath : ""
+    return [
+      {
+        filePath,
+        label: "relativePath" in entry && typeof entry.relativePath === "string" ? entry.relativePath : filePath,
+        patch: entry.patch,
+        additions: "additions" in entry && typeof entry.additions === "number" ? entry.additions : 0,
+        deletions: "deletions" in entry && typeof entry.deletions === "number" ? entry.deletions : 0,
+      },
+    ]
+  })
 }
 
 function TextBody(props: { title: string; description?: string; icon?: string }) {
@@ -184,7 +286,7 @@ export function PermissionPrompt(props: { request: PermissionRequest; directory?
       </Match>
       <Match when={store.stage === "permission"}>
         {(() => {
-          const info = () => {
+          const info = (): PermissionInfo => {
             const permission = props.request.permission
             const data = input()
 
@@ -194,7 +296,7 @@ export function PermissionPrompt(props: { request: PermissionRequest; directory?
               return {
                 icon: "→",
                 title: `Edit ${pathFormatter.format(filepath)}`,
-                body: <EditBody request={props.request} />,
+                bodyWithFullscreen: (expanded) => <EditBody request={props.request} expanded={expanded} />,
               }
             }
 
@@ -394,6 +496,7 @@ export function PermissionPrompt(props: { request: PermissionRequest; directory?
               title="Permission required"
               header={header()}
               body={current.body}
+              bodyWithFullscreen={current.bodyWithFullscreen}
               options={{ once: "Allow once", always: "Allow always", reject: "Reject" }}
               escapeKey="reject"
               fullscreen
@@ -528,7 +631,8 @@ function RejectPrompt(props: { onConfirm: (message: string) => void; onCancel: (
 function Prompt<const T extends Record<string, string>>(props: {
   title: string
   header?: JSX.Element
-  body: JSX.Element
+  body?: JSX.Element
+  bodyWithFullscreen?: (expanded: Accessor<boolean>) => JSX.Element
   options: T
   escapeKey?: keyof T
   fullscreen?: boolean
@@ -663,7 +767,7 @@ function Prompt<const T extends Record<string, string>>(props: {
             {props.header}
           </box>
         </Show>
-        {props.body}
+        {props.bodyWithFullscreen ? props.bodyWithFullscreen(() => store.expanded) : props.body}
       </box>
       <box
         flexDirection={narrow() ? "column" : "row"}

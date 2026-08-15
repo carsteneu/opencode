@@ -121,6 +121,7 @@ import {
 } from "../../util/session-image-source"
 import { sessionImageProjectDirectory } from "../../util/session-image-save"
 import { toolInputProgress } from "../../util/tool-input-progress"
+import { createDiffPreview, DIFF_PREVIEW_LIMITS, formatDiffBytes, measureDiff } from "../../util/diff-preview"
 
 addDefaultParsers(parsers.parsers)
 
@@ -2901,7 +2902,6 @@ function Execute(props: ToolProps) {
 
 function Edit(props: ToolProps) {
   const ctx = use()
-  const { theme, syntax } = useTheme()
   const pathFormatter = usePathFormatter()
 
   const view = createMemo(() => {
@@ -2911,37 +2911,20 @@ function Edit(props: ToolProps) {
     return ctx.width > 120 ? "split" : "unified"
   })
 
-  const ft = createMemo(() => filetype(stringValue(props.input.filePath)))
-
   const diffContent = createMemo(() => stringValue(props.metadata.diff) ?? "")
 
   return (
     <Switch>
       <Match when={stringValue(props.metadata.diff) !== undefined}>
-        <BlockTool title={"← Edit " + pathFormatter.format(stringValue(props.input.filePath))} part={props.part}>
-          <box paddingLeft={1}>
-            <diff
-              diff={diffContent()}
-              view={view()}
-              filetype={ft()}
-              syntaxStyle={syntax()}
-              showLineNumbers={true}
-              width="100%"
-              wrapMode={ctx.diffWrapMode()}
-              fg={theme.text}
-              addedBg={theme.diffAddedBg}
-              removedBg={theme.diffRemovedBg}
-              contextBg={theme.diffContextBg}
-              addedSignColor={theme.diffHighlightAdded}
-              removedSignColor={theme.diffHighlightRemoved}
-              lineNumberFg={theme.diffLineNumber}
-              lineNumberBg={theme.diffContextBg}
-              addedLineNumberBg={theme.diffAddedLineNumberBg}
-              removedLineNumberBg={theme.diffRemovedLineNumberBg}
-            />
-          </box>
-          <Diagnostics diagnostics={props.metadata.diagnostics} filePath={stringValue(props.input.filePath) ?? ""} />
-        </BlockTool>
+        <SessionEditOutput
+          title={"← Edit " + pathFormatter.format(stringValue(props.input.filePath))}
+          diff={diffContent()}
+          filePath={stringValue(props.input.filePath) ?? ""}
+          diagnostics={props.metadata.diagnostics}
+          part={props.part}
+          view={view()}
+          wrapMode={ctx.diffWrapMode()}
+        />
       </Match>
       <Match when={true}>
         <InlineTool
@@ -2957,9 +2940,53 @@ function Edit(props: ToolProps) {
   )
 }
 
+export function SessionEditOutput(props: {
+  title: string
+  diff: string
+  filePath: string
+  diagnostics?: unknown
+  part?: ToolPart
+  view: "unified" | "split"
+  wrapMode: "word" | "none"
+}) {
+  const theme = useTheme().theme
+  const preview = createMemo(() => createDiffPreview(props.diff))
+  const [expanded, setExpanded] = createSignal(false)
+
+  return (
+    <BlockTool
+      title={props.title}
+      part={props.part}
+      onClick={preview().limited ? () => setExpanded((value) => !value) : undefined}
+    >
+      <Show
+        when={!preview().limited || expanded()}
+        fallback={
+          <box paddingLeft={1} gap={1}>
+            <text fg={theme.text}>{preview().preview}</text>
+            <text fg={theme.textMuted}>
+              {preview().changedLines} changed lines · {formatDiffBytes(preview().bytes)} · Click to show full patch ·
+              /diff opens the full review
+            </text>
+          </box>
+        }
+      >
+        {(_) => (
+          <>
+            <SessionDiff diff={props.diff} filePath={props.filePath} view={props.view} wrapMode={props.wrapMode} />
+            <Show when={preview().limited}>
+              <text fg={theme.textMuted}>Click to collapse · /diff opens the full review</text>
+            </Show>
+          </>
+        )}
+      </Show>
+      <Diagnostics diagnostics={props.diagnostics} filePath={props.filePath} />
+    </BlockTool>
+  )
+}
+
 function ApplyPatch(props: ToolProps) {
   const ctx = use()
-  const { theme, syntax } = useTheme()
   const pathFormatter = usePathFormatter()
 
   const files = createMemo(() => parseApplyPatchFiles(props.metadata.files))
@@ -2970,59 +2997,17 @@ function ApplyPatch(props: ToolProps) {
     return ctx.width > 120 ? "split" : "unified"
   })
 
-  function Diff(p: { diff: string; filePath: string }) {
-    return (
-      <box paddingLeft={1}>
-        <diff
-          diff={p.diff}
-          view={view()}
-          filetype={filetype(p.filePath)}
-          syntaxStyle={syntax()}
-          showLineNumbers={true}
-          width="100%"
-          wrapMode={ctx.diffWrapMode()}
-          fg={theme.text}
-          addedBg={theme.diffAddedBg}
-          removedBg={theme.diffRemovedBg}
-          contextBg={theme.diffContextBg}
-          addedSignColor={theme.diffHighlightAdded}
-          removedSignColor={theme.diffHighlightRemoved}
-          lineNumberFg={theme.diffLineNumber}
-          lineNumberBg={theme.diffContextBg}
-          addedLineNumberBg={theme.diffAddedLineNumberBg}
-          removedLineNumberBg={theme.diffRemovedLineNumberBg}
-        />
-      </box>
-    )
-  }
-
-  function title(file: { type: string; relativePath: string; filePath: string; deletions: number }) {
-    if (file.type === "delete") return "# Deleted " + file.relativePath
-    if (file.type === "add") return "# Created " + file.relativePath
-    if (file.type === "move") return "# Moved " + pathFormatter.format(file.filePath) + " → " + file.relativePath
-    return "← Patched " + file.relativePath
-  }
-
   return (
     <Switch>
       <Match when={files().length > 0}>
-        <For each={files()}>
-          {(file) => (
-            <BlockTool title={title(file)} part={props.part}>
-              <Show
-                when={file.type !== "delete"}
-                fallback={
-                  <text fg={theme.diffRemoved}>
-                    -{file.deletions} line{file.deletions !== 1 ? "s" : ""}
-                  </text>
-                }
-              >
-                <Diff diff={file.patch} filePath={file.filePath} />
-                <Diagnostics diagnostics={props.metadata.diagnostics} filePath={file.movePath ?? file.filePath} />
-              </Show>
-            </BlockTool>
-          )}
-        </For>
+        <SessionApplyPatchOutput
+          files={files()}
+          diagnostics={props.metadata.diagnostics}
+          part={props.part}
+          view={view()}
+          wrapMode={ctx.diffWrapMode()}
+          formatPath={pathFormatter.format}
+        />
       </Match>
       <Match when={true}>
         <InlineTool
@@ -3037,6 +3022,163 @@ function ApplyPatch(props: ToolProps) {
       </Match>
     </Switch>
   )
+}
+
+export function SessionApplyPatchOutput(props: {
+  files: ReturnType<typeof parseApplyPatchFiles>
+  diagnostics?: unknown
+  part?: ToolPart
+  view: "unified" | "split"
+  wrapMode: "word" | "none"
+  formatPath: (value: string) => string
+}) {
+  const theme = useTheme().theme
+  const terminalEnvironment = useTuiTerminalEnvironment()
+  const summaries = createMemo(() => props.files.map((file) => ({ file, measured: measureDiff(file.patch) })))
+  const [expanded, setExpanded] = createSignal(false)
+  const totals = createMemo(() =>
+    summaries().reduce(
+      (result, item) => ({
+        bytes: result.bytes + item.measured.bytes,
+        additions: result.additions + item.measured.additions,
+        deletions: result.deletions + item.measured.deletions,
+      }),
+      { bytes: 0, additions: 0, deletions: 0 },
+    ),
+  )
+  const limited = createMemo(
+    () =>
+      props.files.length > DIFF_PREVIEW_LIMITS.maxSetFiles ||
+      totals().bytes > DIFF_PREVIEW_LIMITS.maxSetBytes ||
+      summaries().some((item) => item.measured.limited),
+  )
+  const preview = createMemo(() =>
+    createDiffPreview(
+      props.files
+        .slice(0, DIFF_PREVIEW_LIMITS.maxSetFiles)
+        .map((file) => createDiffPreview(file.patch).preview)
+        .join("\n"),
+    ),
+  )
+  const diagnosticFiles = createMemo(() =>
+    props.files.filter(
+      (file) =>
+        parseDiagnostics(props.diagnostics, normalizePath(file.movePath ?? file.filePath, terminalEnvironment.platform))
+          .length > 0,
+    ),
+  )
+
+  return (
+    <Show
+      when={limited()}
+      fallback={
+        <For each={props.files}>
+          {(file) => (
+            <BlockTool title={applyPatchTitle(file, props.formatPath)} part={props.part}>
+              <Show
+                when={file.type !== "delete"}
+                fallback={
+                  <text fg={theme.diffRemoved}>
+                    -{file.deletions} line{file.deletions !== 1 ? "s" : ""}
+                  </text>
+                }
+              >
+                <SessionDiff diff={file.patch} filePath={file.filePath} view={props.view} wrapMode={props.wrapMode} />
+                <Diagnostics diagnostics={props.diagnostics} filePath={file.movePath ?? file.filePath} />
+              </Show>
+            </BlockTool>
+          )}
+        </For>
+      }
+    >
+      {(_) => (
+        <BlockTool
+          title={`# Patched ${props.files.length} file${props.files.length === 1 ? "" : "s"} · +${totals().additions} -${totals().deletions} · ${formatDiffBytes(totals().bytes)}`}
+          part={props.part}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          <Show
+            when={expanded()}
+            fallback={
+              <box gap={1}>
+                <box>
+                  <For each={summaries().slice(0, DIFF_PREVIEW_LIMITS.maxSetFiles)}>
+                    {(item) => (
+                      <text fg={theme.textMuted}>
+                        {applyPatchSummaryPath(item.file, props.formatPath)} +{item.measured.additions} -
+                        {item.measured.deletions}
+                      </text>
+                    )}
+                  </For>
+                  <Show when={props.files.length > DIFF_PREVIEW_LIMITS.maxSetFiles}>
+                    <text fg={theme.textMuted}>+{props.files.length - DIFF_PREVIEW_LIMITS.maxSetFiles} more files</text>
+                  </Show>
+                </box>
+                <text fg={theme.text}>{preview().preview}</text>
+                <text fg={theme.textMuted}>Click to show full patch · /diff opens the full review</text>
+              </box>
+            }
+          >
+            {(_) => (
+              <box gap={1}>
+                <text fg={theme.text}>{props.files.map((file) => file.patch).join("\n")}</text>
+                <text fg={theme.textMuted}>Click to collapse · /diff opens the full review</text>
+              </box>
+            )}
+          </Show>
+          <For each={diagnosticFiles()}>
+            {(file) => <Diagnostics diagnostics={props.diagnostics} filePath={file.movePath ?? file.filePath} />}
+          </For>
+        </BlockTool>
+      )}
+    </Show>
+  )
+}
+
+function SessionDiff(props: { diff: string; filePath: string; view: "unified" | "split"; wrapMode: "word" | "none" }) {
+  const themeState = useTheme()
+  const theme = themeState.theme
+  return (
+    <box paddingLeft={1}>
+      <diff
+        diff={props.diff}
+        view={props.view}
+        filetype={filetype(props.filePath)}
+        syntaxStyle={themeState.syntax()}
+        showLineNumbers={true}
+        width="100%"
+        wrapMode={props.wrapMode}
+        fg={theme.text}
+        addedBg={theme.diffAddedBg}
+        removedBg={theme.diffRemovedBg}
+        contextBg={theme.diffContextBg}
+        addedSignColor={theme.diffHighlightAdded}
+        removedSignColor={theme.diffHighlightRemoved}
+        lineNumberFg={theme.diffLineNumber}
+        lineNumberBg={theme.diffContextBg}
+        addedLineNumberBg={theme.diffAddedLineNumberBg}
+        removedLineNumberBg={theme.diffRemovedLineNumberBg}
+      />
+    </box>
+  )
+}
+
+function applyPatchTitle(
+  file: { type: string; relativePath: string; filePath: string; deletions: number },
+  formatPath: (value: string) => string,
+) {
+  if (file.type === "delete") return "# Deleted " + file.relativePath
+  if (file.type === "add") return "# Created " + file.relativePath
+  if (file.type === "move") return "# Moved " + formatPath(file.filePath) + " → " + file.relativePath
+  return "← Patched " + file.relativePath
+}
+
+function applyPatchSummaryPath(
+  file: ReturnType<typeof parseApplyPatchFiles>[number],
+  formatPath: (value: string) => string,
+) {
+  if (file.type === "move") return formatPath(file.filePath) + " → " + file.relativePath
+  return file.relativePath
 }
 
 function TodoWrite(props: ToolProps) {

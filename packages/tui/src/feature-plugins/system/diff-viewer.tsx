@@ -18,6 +18,7 @@ import { DiffViewerFileTree } from "./diff-viewer-file-tree"
 import { Panel, PanelGroup, Separator } from "./diff-viewer-ui"
 import { DialogSelect } from "../../ui/dialog-select"
 import { getScrollAcceleration } from "../../util/scroll"
+import { createDiffPreview, DIFF_PREVIEW_LIMITS, formatDiffBytes, shouldLimitDiffSet } from "../../util/diff-preview"
 import {
   allExpandedFileTreeDirectories,
   buildFileTree,
@@ -130,11 +131,27 @@ function DiffViewer(props: { api: TuiPluginApi }) {
   })
   const files = createMemo(() => diff() ?? [])
   const [focus, setFocus] = createSignal<DiffViewerFocus>("patches")
-  const [fileTreeEnabled, setFileTreeEnabled] = createSignal(
+  const [fileTreePreference, setFileTreePreference] = createSignal(
     props.api.kv.get<boolean>(KV_SHOW_FILE_TREE, true) !== false,
   )
+  const [fileTreeOverride, setFileTreeOverride] = createSignal<boolean>()
+  const automaticFileTreeLimit = createMemo(() => files().length > DIFF_PREVIEW_LIMITS.maxFileTreeFiles)
+  const fileTreeEnabled = createMemo(
+    () => fileTreeOverride() ?? (automaticFileTreeLimit() ? false : fileTreePreference()),
+  )
   const showFileTree = createMemo(() => showDiffViewerFileTree(fileTreeEnabled(), files().length))
-  const [singlePatch, setSinglePatch] = createSignal(props.api.kv.get<boolean>(KV_SINGLE_PATCH, false) === true)
+  const [singlePatchPreference, setSinglePatchPreference] = createSignal(
+    props.api.kv.get<boolean>(KV_SINGLE_PATCH, false) === true,
+  )
+  const [singlePatchOverride, setSinglePatchOverride] = createSignal<boolean>()
+  const automaticSinglePatch = createMemo(() => {
+    const current = files()
+    if (current.length > DIFF_PREVIEW_LIMITS.maxSetFiles) return true
+    return shouldLimitDiffSet(current.map((file) => file.patch))
+  })
+  const singlePatch = createMemo(
+    () => singlePatchOverride() ?? (automaticSinglePatch() ? true : singlePatchPreference()),
+  )
   const patchPaneWidth = createMemo(() => dimensions().width - (showFileTree() ? 33 : 0) - 4)
   const patchLeftBorder = createMemo<BorderSides[]>(() => (showFileTree() ? ["left"] : []))
   const splitAvailable = createMemo(() => patchPaneWidth() >= MIN_SPLIT_WIDTH)
@@ -151,6 +168,7 @@ function DiffViewer(props: { api: TuiPluginApi }) {
   const [activePatchFileIndex, setActivePatchFileIndex] = createSignal<number | undefined>()
   const [selectedFileIndex, setSelectedFileIndex] = createSignal<number | undefined>()
   const [reviewedFileNames, setReviewedFileNames] = createSignal<ReadonlySet<string>>(new Set())
+  const [fullPatchFileIndexes, setFullPatchFileIndexes] = createSignal<ReadonlySet<number>>(new Set())
   const patchScrollAcceleration = createMemo(() => getScrollAcceleration(props.api.tuiConfig))
   const fileRows = createMemo(() => flattenFileTree(fileTree(), expandedFileNodes()))
   const patchFileIndexes = createMemo(() => orderedPatchFileIndexes(flattenFileTree(fileTree())))
@@ -176,13 +194,17 @@ function DiffViewer(props: { api: TuiPluginApi }) {
   onCleanup(() => props.api.ui.dialog.clear())
 
   createEffect(() => {
-    setExpandedFileNodes(allExpandedFileTreeDirectories(fileTree()))
+    const tree = fileTree()
+    setExpandedFileNodes(allExpandedFileTreeDirectories(tree))
     setHighlightedFileNode(undefined)
     setLastHighlightedFileNode(undefined)
     setActivePatchFileIndex(undefined)
     setSelectedFileIndex(undefined)
     setSelectedHunk(undefined)
     setReviewedFileNames(new Set<string>())
+    setFullPatchFileIndexes(new Set<number>())
+    setFileTreeOverride(undefined)
+    setSinglePatchOverride(undefined)
   })
 
   const ensureHighlightedFileNode = () => {
@@ -332,6 +354,30 @@ function DiffViewer(props: { api: TuiPluginApi }) {
     const file = fileIndex === undefined ? undefined : files()[fileIndex]
     return file && fileIndex !== undefined ? [{ file, fileIndex }] : []
   })
+  const visiblePatchPreviews = createMemo(() =>
+    visiblePatchFiles().flatMap((entry) => {
+      if (entry.file.patch === undefined) return []
+      return [{ fileIndex: entry.fileIndex, preview: createDiffPreview(entry.file.patch) }]
+    }),
+  )
+  const visiblePatchPreview = (fileIndex: number) =>
+    visiblePatchPreviews().find((entry) => entry.fileIndex === fileIndex)?.preview
+  const visiblePatchLimited = createMemo(() =>
+    visiblePatchFiles().some(
+      (entry) =>
+        entry.file.patch !== undefined &&
+        !fullPatchFileIndexes().has(entry.fileIndex) &&
+        visiblePatchPreview(entry.fileIndex)?.limited === true,
+    ),
+  )
+  const safeModeLabel = createMemo(() => {
+    const reasons = [
+      automaticSinglePatch() && singlePatch() ? "one patch at a time" : undefined,
+      automaticFileTreeLimit() && !fileTreeEnabled() ? "file tree hidden" : undefined,
+      visiblePatchLimited() ? "large patch preview" : undefined,
+    ].filter((reason): reason is string => reason !== undefined)
+    return reasons.length > 0 ? `Safe mode: ${reasons.join(", ")}` : undefined
+  })
 
   const ensureHighlightedPatchFile = () => {
     const fileIndex = currentPatchFileIndex() ?? activePatchFileIndex() ?? firstPatchFileIndex()
@@ -393,8 +439,23 @@ function DiffViewer(props: { api: TuiPluginApi }) {
     visiblePatchFiles()
     dimensions()
     view()
+    fullPatchFileIndexes()
     measurePatchFiller()
   })
+
+  const toggleCurrentFullPatch = () => {
+    const fileIndex =
+      activePatchFileIndex() ?? currentPatchFileIndex() ?? selectedFileIndex() ?? visiblePatchFiles()[0]?.fileIndex
+    const patch = fileIndex === undefined ? undefined : files()[fileIndex]?.patch
+    if (fileIndex === undefined || patch === undefined || visiblePatchPreview(fileIndex)?.limited !== true) return
+    setSelectedHunk(undefined)
+    setFullPatchFileIndexes((current) => {
+      const next = new Set(current)
+      if (next.has(fileIndex)) next.delete(fileIndex)
+      else next.add(fileIndex)
+      return next
+    })
+  }
 
   const toggleSelectedFileTreeRow = () => {
     const highlighted = fileRows().find((row) => row.id === highlightedFileNode())
@@ -509,7 +570,9 @@ function DiffViewer(props: { api: TuiPluginApi }) {
         files() {
           toggleSelectedFileTreeRow()
         },
-        patches() {},
+        patches() {
+          toggleCurrentFullPatch()
+        },
       }),
     },
     {
@@ -620,7 +683,11 @@ function DiffViewer(props: { api: TuiPluginApi }) {
       run() {
         const next = !fileTreeEnabled()
         if (!next) setFocus("patches")
-        setFileTreeEnabled(next)
+        if (automaticFileTreeLimit()) {
+          setFileTreeOverride(next)
+          return
+        }
+        setFileTreePreference(next)
         props.api.kv.set(KV_SHOW_FILE_TREE, next)
       },
     },
@@ -632,7 +699,8 @@ function DiffViewer(props: { api: TuiPluginApi }) {
         setSelectedHunk(undefined)
         if (!singlePatch()) {
           ensureHighlightedPatchFile()
-          setSinglePatch(true)
+          setSinglePatchOverride(true)
+          setSinglePatchPreference(true)
           props.api.kv.set(KV_SINGLE_PATCH, true)
           scrollSinglePatchToTop()
           return
@@ -646,7 +714,8 @@ function DiffViewer(props: { api: TuiPluginApi }) {
             firstPatchFileIndex(),
           )
         if (fileIndex !== undefined) selectPatchFile(fileIndex)
-        setSinglePatch(false)
+        setSinglePatchOverride(false)
+        setSinglePatchPreference(false)
         props.api.kv.set(KV_SINGLE_PATCH, false)
         if (fileIndex !== undefined) scrollToPatchFileIndexAfterRender(fileIndex)
       },
@@ -749,12 +818,45 @@ function DiffViewer(props: { api: TuiPluginApi }) {
     ],
   }))
 
+  function FullPatch(input: { entry: { file: DiffFile; fileIndex: number }; patch: string; reviewed: boolean }) {
+    let node: DiffRenderable | undefined
+    onCleanup(() => {
+      if (diffNodeByFileIndex.get(input.entry.fileIndex) === node) diffNodeByFileIndex.delete(input.entry.fileIndex)
+    })
+    return (
+      <box border={patchLeftBorder()} borderColor={theme().border}>
+        <diff
+          ref={(element: DiffRenderable) => {
+            node = element
+            diffNodeByFileIndex.set(input.entry.fileIndex, element)
+          }}
+          diff={input.patch}
+          view={view()}
+          filetype={input.reviewed ? PLAIN_TEXT_FILETYPE : filetype(input.entry.file.file)}
+          syntaxStyle={themeState.syntax()}
+          showLineNumbers={true}
+          width="100%"
+          wrapMode="char"
+          fg={input.reviewed ? theme().textMuted : theme().text}
+          addedBg={input.reviewed ? theme().backgroundElement : theme().diffAddedBg}
+          removedBg={input.reviewed ? theme().backgroundElement : theme().diffRemovedBg}
+          addedSignColor={input.reviewed ? theme().textMuted : theme().diffHighlightAdded}
+          removedSignColor={input.reviewed ? theme().textMuted : theme().diffHighlightRemoved}
+          lineNumberFg={theme().diffLineNumber}
+          addedLineNumberBg={input.reviewed ? theme().backgroundElement : theme().diffAddedLineNumberBg}
+          removedLineNumberBg={input.reviewed ? theme().backgroundElement : theme().diffRemovedLineNumberBg}
+        />
+      </box>
+    )
+  }
+
   return (
     <box position="absolute" zIndex={2500} left={0} top={0} width={dimensions().width} height={dimensions().height}>
       <PanelGroup axis="y" width="100%" height="100%">
         <Panel border="none" flexShrink={0} padding={0} paddingLeft={1}>
           <text fg={theme().text}>Diff </text>
           <text fg={theme().textMuted}>{diffSourceLabel(mode())}</text>
+          <Show when={safeModeLabel()}>{(label) => <text fg={theme().warning}> {label()}</text>}</Show>
           <box flexGrow={1} />
           <text fg={theme().textMuted}>
             {files().length} {files().length === 1 ? "file" : "files"}
@@ -812,8 +914,18 @@ function DiffViewer(props: { api: TuiPluginApi }) {
                     <For each={visiblePatchFiles()}>
                       {(entry, index) => {
                         const reviewed = () => reviewedFileNames().has(entry.file.file)
+                        let patchNode: BoxRenderable | undefined
+                        onCleanup(() => {
+                          if (patchNodeByFileIndex.get(entry.fileIndex) === patchNode)
+                            patchNodeByFileIndex.delete(entry.fileIndex)
+                        })
                         return (
-                          <box ref={(element: BoxRenderable) => registerPatchNode(entry.fileIndex, element)}>
+                          <box
+                            ref={(element: BoxRenderable) => {
+                              patchNode = element
+                              registerPatchNode(entry.fileIndex, element)
+                            }}
+                          >
                             {index() !== 0 ? <Separator axis="x" start={showFileTree() ? "edge" : undefined} /> : null}
                             <box
                               flexDirection="row"
@@ -838,32 +950,35 @@ function DiffViewer(props: { api: TuiPluginApi }) {
                               when={entry.file.patch}
                               fallback={<text fg={theme().textMuted}>No patch available for this file.</text>}
                             >
-                              {(patch) => (
-                                <box border={patchLeftBorder()} borderColor={theme().border}>
-                                  <diff
-                                    ref={(element: DiffRenderable) => diffNodeByFileIndex.set(entry.fileIndex, element)}
-                                    diff={patch()}
-                                    view={view()}
-                                    filetype={reviewed() ? PLAIN_TEXT_FILETYPE : filetype(entry.file.file)}
-                                    syntaxStyle={themeState.syntax()}
-                                    showLineNumbers={true}
-                                    width="100%"
-                                    wrapMode="char"
-                                    fg={reviewed() ? theme().textMuted : theme().text}
-                                    addedBg={reviewed() ? theme().backgroundElement : theme().diffAddedBg}
-                                    removedBg={reviewed() ? theme().backgroundElement : theme().diffRemovedBg}
-                                    addedSignColor={reviewed() ? theme().textMuted : theme().diffHighlightAdded}
-                                    removedSignColor={reviewed() ? theme().textMuted : theme().diffHighlightRemoved}
-                                    lineNumberFg={theme().diffLineNumber}
-                                    addedLineNumberBg={
-                                      reviewed() ? theme().backgroundElement : theme().diffAddedLineNumberBg
-                                    }
-                                    removedLineNumberBg={
-                                      reviewed() ? theme().backgroundElement : theme().diffRemovedLineNumberBg
-                                    }
-                                  />
-                                </box>
-                              )}
+                              {(patch) => {
+                                const preview = createMemo(
+                                  () => visiblePatchPreview(entry.fileIndex) ?? createDiffPreview(patch()),
+                                )
+                                const limited = () => preview().limited && !fullPatchFileIndexes().has(entry.fileIndex)
+                                return (
+                                  <Show
+                                    when={limited()}
+                                    fallback={<FullPatch entry={entry} patch={patch()} reviewed={reviewed()} />}
+                                  >
+                                    <box
+                                      border={patchLeftBorder()}
+                                      borderColor={theme().border}
+                                      flexDirection="column"
+                                      paddingLeft={1}
+                                      paddingRight={1}
+                                    >
+                                      <text fg={theme().warning}>
+                                        Safe mode preview ({formatDiffBytes(preview().bytes)}, {preview().changedLines}{" "}
+                                        changed lines)
+                                      </text>
+                                      <text fg={theme().textMuted}>Press Enter or Space to render the full patch.</text>
+                                      <text fg={theme().textMuted} wrapMode="char">
+                                        {preview().preview}
+                                      </text>
+                                    </box>
+                                  </Show>
+                                )
+                              }}
                             </Show>
                           </box>
                         )

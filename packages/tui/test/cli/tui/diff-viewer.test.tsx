@@ -1,19 +1,35 @@
 /** @jsxImportSource @opentui/solid */
-import { expect, test } from "bun:test"
+import { afterAll, beforeAll, expect, test } from "bun:test"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { DiffRenderable, type Renderable, ScrollBoxRenderable } from "@opentui/core"
 import { testRender, useRenderer } from "@opentui/solid"
 import type { TuiPluginApi, TuiPluginMeta, TuiRouteCurrent, TuiRouteDefinition } from "@opencode-ai/plugin/tui"
 import type { Session } from "@opencode-ai/sdk/v2"
+import { mkdtemp, mkdir, rm } from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
 import { KVProvider } from "../../../src/context/kv"
 import { ThemeProvider } from "../../../src/context/theme"
 import { TuiConfigProvider } from "../../../src/config"
 import { TuiKeybind } from "../../../src/config/keybind"
 import { OpencodeKeymapProvider } from "../../../src/keymap"
 import diffViewerPlugin from "../../../src/feature-plugins/system/diff-viewer"
+import { DIFF_PREVIEW_LIMITS } from "../../../src/util/diff-preview"
 import { createTuiPluginApi } from "../../fixture/tui-plugin"
 import { createTuiResolvedConfig } from "../../fixture/tui-runtime"
 import { TestTuiContexts } from "../../fixture/tui-environment"
+
+let root = ""
+
+beforeAll(async () => {
+  root = await mkdtemp(path.join(os.tmpdir(), "opencode-diff-viewer-"))
+  await mkdir(path.join(root, "state"))
+  await Bun.write(path.join(root, "state", "kv.json"), "{}")
+})
+
+afterAll(async () => {
+  await rm(root, { recursive: true, force: true })
+})
 
 test("closing the diff viewer returns to the route it opened from", async () => {
   const viewer = await renderDiffViewer([])
@@ -98,7 +114,116 @@ test("brackets navigate diff hunks", async () => {
   }
 })
 
-async function renderDiffViewer(vcsDiff: unknown[], height = 20, initialRoute?: TuiRouteCurrent) {
+test("small diff sets still render every patch", async () => {
+  const diffs = [diffFile("src/one.ts"), diffFile("src/two.ts")]
+  const viewer = await renderDiffViewer(diffs)
+  try {
+    await viewer.app.waitFor(() => findDiffs(viewer.app.renderer.root).length === diffs.length)
+    expect(findDiffs(viewer.app.renderer.root).map((node) => node.diff)).toEqual(diffs.map((item) => item.patch))
+  } finally {
+    viewer.app.renderer.destroy()
+  }
+})
+
+test("large diff sets automatically mount at most one patch without changing the KV preference", async () => {
+  const cases = [
+    Array.from({ length: DIFF_PREVIEW_LIMITS.maxSetFiles + 1 }, (_, index) => diffFile(`src/file-${index}.ts`)),
+    Array.from({ length: 3 }, (_, index) =>
+      diffFile(`src/aggregate-${index}.ts`, paddedPatch(`src/aggregate-${index}.ts`, 90 * 1024)),
+    ),
+  ]
+
+  for (const diffs of cases) {
+    const viewer = await renderDiffViewer(diffs, 20, undefined, { diff_viewer_single_patch: false })
+    try {
+      await viewer.app.waitForFrame((frame) => frame.includes("Safe mode: one patch at a time"))
+      expect(findDiffs(viewer.app.renderer.root).length).toBeLessThanOrEqual(1)
+      expect(viewer.kvValue("diff_viewer_single_patch")).toBe(false)
+      expect(viewer.kvWrites()).toEqual([])
+
+      void viewer.commands.get("diff.single_patch")!.run?.({} as never)
+      await viewer.app.waitFor(() => findDiffs(viewer.app.renderer.root).length > 1)
+      expect(viewer.app.captureCharFrame()).not.toContain("Safe mode: one patch at a time")
+    } finally {
+      viewer.app.renderer.destroy()
+    }
+  }
+})
+
+test("automatic single-patch navigation destroys the previous renderable", async () => {
+  const diffs = Array.from({ length: DIFF_PREVIEW_LIMITS.maxSetFiles + 1 }, (_, index) =>
+    diffFile(`src/file-${index}.ts`),
+  )
+  const viewer = await renderDiffViewer(diffs)
+  try {
+    await viewer.app.waitFor(() => findDiffs(viewer.app.renderer.root).length === 1)
+    void viewer.commands.get("diff.next_file")!.run?.({} as never)
+    await viewer.app.renderOnce()
+    const previous: DiffRenderable[] = []
+    for (let index = 0; index < 5; index++) {
+      const node = findDiffs(viewer.app.renderer.root)[0]!
+      previous.push(node)
+      void viewer.commands.get("diff.next_file")!.run?.({} as never)
+      await viewer.app.waitFor(() => findDiffs(viewer.app.renderer.root)[0] !== node)
+    }
+
+    expect(previous.every((node) => node.isDestroyed)).toBe(true)
+    expect(findDiffs(viewer.app.renderer.root)).toHaveLength(1)
+  } finally {
+    viewer.app.renderer.destroy()
+  }
+})
+
+test("large individual patches stay raw until explicitly expanded", async () => {
+  const patch = paddedPatch("src/large.ts", DIFF_PREVIEW_LIMITS.maxPatchBytes + 1024)
+  const viewer = await renderDiffViewer([diffFile("src/large.ts", patch)])
+  try {
+    await viewer.app.waitForFrame((frame) => frame.includes("Press Enter or Space to render the full"))
+    expect(findDiffs(viewer.app.renderer.root)).toHaveLength(0)
+
+    void viewer.commands.get("diff.toggle")!.run?.({} as never)
+    await viewer.app.waitFor(() => findDiffs(viewer.app.renderer.root).length === 1)
+    const node = findDiffs(viewer.app.renderer.root)[0]
+    expect(node.diff).toBe(patch)
+
+    void viewer.commands.get("diff.toggle")!.run?.({} as never)
+    await viewer.app.waitFor(() => findDiffs(viewer.app.renderer.root).length === 0)
+    expect(node.isDestroyed).toBe(true)
+  } finally {
+    viewer.app.renderer.destroy()
+  }
+})
+
+test("very large file sets initially hide the tree and explicit toggle does not overwrite KV", async () => {
+  const diffs = Array.from({ length: DIFF_PREVIEW_LIMITS.maxFileTreeFiles + 1 }, (_, index) =>
+    diffFile(`src/file-${String(index).padStart(3, "0")}.ts`),
+  )
+  const viewer = await renderDiffViewer(diffs, 20, undefined, { diff_viewer_show_file_tree: true })
+  try {
+    await viewer.app.waitForFrame((frame) => frame.includes("Safe mode: one patch at a time"))
+    const initialScrollBoxes = findScrollBoxes(viewer.app.renderer.root).length
+    const initialRenderables = countRenderables(viewer.app.renderer.root)
+    expect(initialScrollBoxes).toBe(1)
+    expect(initialRenderables).toBeLessThan(100)
+    expect(viewer.kvValue("diff_viewer_show_file_tree")).toBe(true)
+    expect(viewer.kvWrites()).toEqual([])
+
+    viewer.commands.get("diff.toggle_file_tree")!.run?.({} as never)
+    await viewer.app.waitFor(() => findScrollBoxes(viewer.app.renderer.root).length > initialScrollBoxes)
+    expect(countRenderables(viewer.app.renderer.root)).toBeGreaterThan(initialRenderables + 1_000)
+    expect(viewer.kvValue("diff_viewer_show_file_tree")).toBe(true)
+    expect(viewer.kvWrites()).toEqual([])
+  } finally {
+    viewer.app.renderer.destroy()
+  }
+})
+
+async function renderDiffViewer(
+  vcsDiff: unknown[],
+  height = 20,
+  initialRoute?: TuiRouteCurrent,
+  initialKv: Record<string, unknown> = {},
+) {
   const commands = new Map<
     string,
     NonNullable<Parameters<TuiPluginApi["keymap"]["registerLayer"]>[0]["commands"]>[number]
@@ -107,6 +232,8 @@ async function renderDiffViewer(vcsDiff: unknown[], height = 20, initialRoute?: 
   let renderDiff: TuiRouteDefinition["render"] | undefined
   let vcsDiffInput: unknown
   let sessionDiffInput: unknown
+  let kv: TuiPluginApi["kv"] | undefined
+  const kvWrites: { name: string; value: unknown }[] = []
   const config = createTuiResolvedConfig()
   function Harness() {
     const renderer = useRenderer()
@@ -138,6 +265,13 @@ async function renderDiffViewer(vcsDiff: unknown[], height = 20, initialRoute?: 
         },
       },
     })
+    Object.entries(initialKv).forEach(([name, value]) => base.kv.set(name, value))
+    const setKv = base.kv.set.bind(base.kv)
+    base.kv.set = (name, value) => {
+      kvWrites.push({ name, value })
+      setKv(name, value)
+    }
+    kv = base.kv
     const api = {
       ...base,
       route: {
@@ -158,11 +292,11 @@ async function renderDiffViewer(vcsDiff: unknown[], height = 20, initialRoute?: 
     if (!initialRoute) commands.get("diff.open")?.run?.({} as never)
 
     return (
-      <TestTuiContexts>
+      <TestTuiContexts directory={root} paths={{ home: root, state: path.join(root, "state"), worktree: root }}>
         <OpencodeKeymapProvider keymap={keymap}>
           <TuiConfigProvider config={config}>
             <KVProvider>
-              <ThemeProvider mode="dark">
+              <ThemeProvider mode="dark" source={{ discover: async () => ({}) }}>
                 {renderDiff?.({ params: "params" in current ? current.params : undefined })}
               </ThemeProvider>
             </KVProvider>
@@ -180,6 +314,8 @@ async function renderDiffViewer(vcsDiff: unknown[], height = 20, initialRoute?: 
     current: () => current,
     vcsDiffInput: () => vcsDiffInput,
     sessionDiffInput: () => sessionDiffInput,
+    kvValue: (name: string) => kv?.get(name),
+    kvWrites: () => kvWrites,
   }
 }
 
@@ -193,6 +329,45 @@ function findScrollBox(root: Renderable): ScrollBoxRenderable | undefined {
 function containsDiff(root: Renderable): boolean {
   if (root instanceof DiffRenderable) return true
   return root.getChildren().some(containsDiff)
+}
+
+function findDiffs(root: Renderable): DiffRenderable[] {
+  return [...(root instanceof DiffRenderable ? [root] : []), ...root.getChildren().flatMap(findDiffs)]
+}
+
+function findScrollBoxes(root: Renderable): ScrollBoxRenderable[] {
+  return [...(root instanceof ScrollBoxRenderable ? [root] : []), ...root.getChildren().flatMap(findScrollBoxes)]
+}
+
+function countRenderables(root: Renderable): number {
+  return 1 + root.getChildren().reduce((total, child) => total + countRenderables(child), 0)
+}
+
+function diffFile(file: string, patch = smallPatch(file)) {
+  return {
+    file,
+    additions: 1,
+    deletions: 1,
+    status: "modified",
+    patch,
+  }
+}
+
+function smallPatch(file: string) {
+  return `--- a/${file}
++++ b/${file}
+@@ -1 +1 @@
+-old
++new`
+}
+
+function paddedPatch(file: string, characters: number) {
+  return `--- a/${file}
++++ b/${file}
+@@ -1,2 +1,2 @@
+ ${"x".repeat(characters)}
+-old
++new`
 }
 
 const session = {
