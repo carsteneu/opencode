@@ -472,11 +472,15 @@ export type TuiHostSlotMap = {
   }
   home_bottom: {}
   home_footer: {}
-  sidebar_title: {
-    session_id: string
-    title: string
-    share_url?: string
-  }
+    sidebar_title: {
+      session_id: string
+      title: string
+      share_url?: string
+    }
+    sidebar_title_actions: {
+      session_id: string
+      title: string
+    }
   sidebar_content: {
     session_id: string
   }
