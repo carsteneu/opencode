@@ -1,7 +1,6 @@
 import type { TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui"
 import HomeFooter from "./home/footer"
 import HomeTips from "./home/tips"
-import SessionTokenRate from "./session/token-rate"
 import SidebarContext from "./sidebar/context"
 import SidebarRename from "./sidebar/rename-button"
 import SidebarFiles from "./sidebar/files"
@@ -24,7 +23,6 @@ export function createBuiltinPlugins(options: { experimentalEventSystem: boolean
   return [
     HomeFooter,
     HomeTips,
-    SessionTokenRate,
     SidebarContext,
     SidebarRename,
     SidebarMcp,
