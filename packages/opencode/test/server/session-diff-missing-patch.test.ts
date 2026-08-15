@@ -12,21 +12,35 @@
  */
 import { afterEach, describe, expect } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Schema } from "effect"
 import { SessionPaths } from "@/server/routes/instance/httpapi/groups/session"
 import { Session } from "@/session/session"
 import { Storage } from "@/storage/storage"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { Database } from "@opencode-ai/core/database/database"
+import { EventV2 } from "@opencode-ai/core/event"
+import { EventTable } from "@opencode-ai/core/event/sql"
+import { MessageTable } from "@opencode-ai/core/session/sql"
+import { MessageDiff } from "@opencode-ai/core/session/message-diff"
 import { MessageID } from "@/session/schema"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
+import { EventV2Bridge } from "@/event-v2-bridge"
 import { resetDatabase } from "../fixture/db"
 import { disposeAllInstances, TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { httpApiLayer, requestInDirectory } from "./httpapi-layer"
 import { TuiPayload } from "@/server/shared/tui-payload"
+import { and, eq } from "drizzle-orm"
 
-const it = testEffect(Layer.mergeAll(LayerNode.compile(LayerNode.group([Session.node, Storage.node])), httpApiLayer))
+const it = testEffect(
+  Layer.mergeAll(
+    LayerNode.compile(
+      LayerNode.group([Session.node, Storage.node, Database.node, EventV2Bridge.node, MessageDiff.node]),
+    ),
+    httpApiLayer,
+  ),
+)
 
 afterEach(async () => {
   await disposeAllInstances()
@@ -67,22 +81,16 @@ describe("session diff with missing patch (#26574)", () => {
   )
 
   it.instance(
-    "TUI message hydration omits patches without changing the requested turn diff",
+    "legacy durable messages retain full patches while TUI hydration omits them",
     () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
         const session = yield* withSession({ title: "turn-diff" })
-        yield* Session.use.updateMessage({
-          id: MessageID.ascending(),
-          sessionID: session.id,
-          role: "user",
-          time: { created: 1 },
-          agent: "build",
-          model: { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("model") },
-        } satisfies SessionV1.User)
+        const database = yield* Database.Service
+        const events = yield* EventV2Bridge.Service
         const messageID = MessageID.ascending()
         const patch = "@@ -1 +1 @@\n-old\n+new"
-        yield* Session.use.updateMessage({
+        const legacy = {
           id: messageID,
           sessionID: session.id,
           role: "user",
@@ -94,7 +102,40 @@ describe("session diff with missing patch (#26574)", () => {
             body: "turn body",
             diffs: [{ file: "turn.ts", patch, additions: 1, deletions: 0, status: "modified" }],
           },
-        } satisfies SessionV1.User)
+        } satisfies SessionV1.User
+
+        // Historical versions published the full user message directly. Publish below
+        // Session.updateMessage so this fixture exercises the real durable legacy shape.
+        yield* events.publish(SessionV1.Event.MessageUpdated, { sessionID: session.id, info: legacy })
+
+        const projectedRow = yield* database.db
+          .select()
+          .from(MessageTable)
+          .where(and(eq(MessageTable.id, messageID), eq(MessageTable.session_id, session.id)))
+          .get()
+        if (!projectedRow) throw new Error("Expected projected legacy message")
+        const projected = Schema.decodeUnknownSync(SessionV1.Info)({
+          ...projectedRow.data,
+          id: projectedRow.id,
+          sessionID: projectedRow.session_id,
+        })
+        if (projected.role !== "user") throw new Error("Expected projected user message")
+        expect(projected.summary?.diffs?.[0]?.patch).toBe(patch)
+
+        const durable = (yield* database.db
+          .select({ data: EventTable.data })
+          .from(EventTable)
+          .where(
+            and(
+              eq(EventTable.aggregate_id, session.id),
+              eq(EventTable.type, EventV2.versionedType(SessionV1.Event.MessageUpdated.type, 1)),
+            ),
+          )
+          .all())
+          .map((row) => Schema.decodeUnknownSync(SessionV1.Event.MessageUpdated.data)(row.data))
+          .find((row) => row.info.id === messageID)
+        if (!durable || durable.info.role !== "user") throw new Error("Expected durable legacy user message")
+        expect(durable.info.summary?.diffs?.[0]?.patch).toBe(patch)
 
         const messagesPath = `${pathFor(SessionPaths.messages, { sessionID: session.id })}?limit=1`
         const tuiResponse = yield* requestInDirectory(messagesPath, test.directory, {
@@ -111,7 +152,7 @@ describe("session diff with missing patch (#26574)", () => {
           },
         })
         if (tuiMessages[0]?.info.role !== "user") throw new Error("Expected user message")
-        expect(tuiMessages[0].info.summary?.diffs[0]?.patch).toBeUndefined()
+        expect(tuiMessages[0].info.summary?.diffs?.[0]?.patch).toBeUndefined()
 
         const initialResponse = yield* requestInDirectory(
           `${pathFor(SessionPaths.messages, { sessionID: session.id })}?limit=100`,
@@ -122,13 +163,13 @@ describe("session diff with missing patch (#26574)", () => {
         const initialMessages = (yield* initialResponse.json) as SessionV1.WithParts[]
         const initialMessage = initialMessages.find((message) => message.info.id === messageID)?.info
         if (initialMessage?.role !== "user") throw new Error("Expected user message")
-        expect(initialMessage.summary?.diffs[0]?.patch).toBeUndefined()
+        expect(initialMessage.summary?.diffs?.[0]?.patch).toBeUndefined()
 
         const regularResponse = yield* requestInDirectory(messagesPath, test.directory)
         expect(regularResponse.status).toBe(200)
         const regularMessages = (yield* regularResponse.json) as SessionV1.WithParts[]
         if (regularMessages[0]?.info.role !== "user") throw new Error("Expected user message")
-        expect(regularMessages[0].info.summary?.diffs[0]?.patch).toBe(patch)
+        expect(regularMessages[0].info.summary?.diffs?.[0]?.patch).toBe(patch)
 
         const response = yield* requestInDirectory(
           `${pathFor(SessionPaths.diff, { sessionID: session.id })}?messageID=${messageID}`,
@@ -139,6 +180,79 @@ describe("session diff with missing patch (#26574)", () => {
         expect(yield* response.json).toEqual([
           { file: "turn.ts", patch, additions: 1, deletions: 0, status: "modified" },
         ])
+      }),
+    { git: true, config: { formatter: false, lsp: false } },
+  )
+
+  it.instance(
+    "new message writes omit patch text from projection and durable event",
+    () =>
+      Effect.gen(function* () {
+        const session = yield* withSession({ title: "bounded-turn-diff" })
+        const database = yield* Database.Service
+        const messageDiffs = yield* MessageDiff.Service
+        const messageID = MessageID.ascending()
+        const marker = "durable-patch-marker"
+        const written = yield* Session.use.updateMessage({
+          id: messageID,
+          sessionID: session.id,
+          role: "user",
+          time: { created: 1 },
+          agent: "build",
+          model: { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("model") },
+          summary: {
+            title: "turn title",
+            body: "turn body",
+            diffs: [
+              {
+                file: "turn.ts",
+                patch: `${marker}\n${"x".repeat(50_000)}`,
+                additions: 1,
+                deletions: 0,
+                status: "modified",
+              },
+            ],
+          },
+        } satisfies SessionV1.User)
+
+        if (written.role !== "user") throw new Error("Expected written user message")
+        expect(written.summary).toEqual({
+          title: "turn title",
+          body: "turn body",
+          diffs: [{ file: "turn.ts", additions: 1, deletions: 0, status: "modified" }],
+        })
+
+        const projectedRow = yield* database.db
+          .select()
+          .from(MessageTable)
+          .where(and(eq(MessageTable.id, messageID), eq(MessageTable.session_id, session.id)))
+          .get()
+        if (!projectedRow) throw new Error("Expected projected user message")
+        const projected = Schema.decodeUnknownSync(SessionV1.Info)({
+          ...projectedRow.data,
+          id: projectedRow.id,
+          sessionID: projectedRow.session_id,
+        })
+        if (projected.role !== "user") throw new Error("Expected projected user message")
+        expect(projected.summary).toEqual(written.summary)
+        expect(JSON.stringify(projectedRow.data)).not.toContain(marker)
+
+        const durable = (yield* database.db
+          .select({ data: EventTable.data })
+          .from(EventTable)
+          .where(
+            and(
+              eq(EventTable.aggregate_id, session.id),
+              eq(EventTable.type, EventV2.versionedType(SessionV1.Event.MessageUpdated.type, 1)),
+            ),
+          )
+          .all())
+          .map((row) => Schema.decodeUnknownSync(SessionV1.Event.MessageUpdated.data)(row.data))
+          .find((row) => row.info.id === messageID)
+        if (!durable || durable.info.role !== "user") throw new Error("Expected durable user message")
+        expect(durable.info.summary).toEqual(written.summary)
+        expect(JSON.stringify(durable)).not.toContain(marker)
+        expect((yield* messageDiffs.get(messageID, session.id))?.diffs[0]?.patch).toContain(marker)
       }),
     { git: true, config: { formatter: false, lsp: false } },
   )

@@ -32,6 +32,10 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { MessageDiff } from "@opencode-ai/core/session/message-diff"
+import { MessageID, SessionV1 } from "@opencode-ai/core/v1/session"
+import { ModelV2 } from "@opencode-ai/core/model"
+import { ProviderV2 } from "@opencode-ai/core/provider"
 
 const originalEnv = {
   OPENCODE_AUTH_CONTENT: process.env.OPENCODE_AUTH_CONTENT,
@@ -47,6 +51,7 @@ const workspaceLayer = (experimentalWorkspaces: boolean) =>
       Workspace.node,
       SessionNs.node,
       SessionProjector.node,
+      MessageDiff.node,
       Database.node,
       InstanceStore.node,
       Ripgrep.node,
@@ -89,6 +94,11 @@ type FetchCall = {
   headers: Headers
   bodyText?: string
   json?: unknown
+}
+
+function emptyMessageDiffManifest(bodyText: string) {
+  const sessionIDs = JSON.parse(bodyText) as SessionID[]
+  return HttpServerResponse.fromWeb(Response.json(sessionIDs.map((sessionID) => ({ sessionID, rows: [] }))))
 }
 
 function unique(prefix: string) {
@@ -989,11 +999,13 @@ describe("workspace CRUD", () => {
     { git: true },
   )
 
-  it.live("sessionWarp syncs previous remote history, replays it, steals, and claims the sequence", () => {
+  it.live("sessionWarp tolerates a legacy remote source, replays it, steals, and claims the sequence", () => {
     const calls: FetchCall[] = []
     let historySessionID: SessionID | undefined
     let historySession: SessionNs.Info | undefined
+    let historyMessage: SessionV1.User | undefined
     let historyNextSeq = 0
+    let historyCalls = 0
     return Effect.gen(function* () {
       yield* HttpServer.serveEffect()(
         Effect.gen(function* () {
@@ -1008,6 +1020,8 @@ describe("workspace CRUD", () => {
           }
           calls.push(call)
           if (call.url.pathname === "/warp-source/sync/history") {
+            historyCalls++
+            if (historyCalls > 1) return yield* HttpServerResponse.json([])
             return yield* HttpServerResponse.json([
               {
                 id: `evt_${unique("warp-source-history")}`,
@@ -1016,8 +1030,21 @@ describe("workspace CRUD", () => {
                 type: "session.updated.1",
                 data: { sessionID: historySessionID!, info: historySession! },
               },
+              {
+                id: `evt_${unique("warp-source-message")}`,
+                aggregate_id: historySessionID!,
+                seq: historyNextSeq + 1,
+                type: "message.updated.1",
+                data: { sessionID: historySessionID!, info: historyMessage! },
+              },
             ])
           }
+          if (call.url.pathname === "/warp-source/sync/message-diffs/manifest")
+            return HttpServerResponse.text("not found", { status: 404 })
+          if (call.url.pathname === "/warp-source/sync/message-diffs/materialize")
+            return HttpServerResponse.text("not found", { status: 404 })
+          if (call.url.pathname === "/warp-target/sync/message-diffs/manifest")
+            return yield* HttpServerResponse.json([{ sessionID: historySessionID!, rows: [] }])
           if (call.url.pathname === "/warp-source/vcs/diff/raw") return HttpServerResponse.text("remote patch")
           if (call.url.pathname === "/warp-target/sync/replay")
             return yield* HttpServerResponse.json({ sessionID: "ok" })
@@ -1046,37 +1073,154 @@ describe("workspace CRUD", () => {
             yield* attachSessionToWorkspace(session.id, previous.id)
             historySessionID = session.id
             historySession = { ...session, workspaceID: previous.id, title: "from source history" }
+            historyMessage = {
+              id: MessageID.ascending(),
+              sessionID: session.id,
+              role: "user",
+              time: { created: Date.now() },
+              agent: "build",
+              model: { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("model") },
+              summary: {
+                diffs: [
+                  {
+                    file: "legacy.ts",
+                    patch: "legacy portable patch",
+                    additions: 1,
+                    deletions: 0,
+                    status: "modified",
+                  },
+                ],
+              },
+            }
             historyNextSeq = ((yield* sessionSequence(session.id)) ?? -1) + 1
 
             yield* workspace.sessionWarp({ workspaceID: target.id, sessionID: session.id, copyChanges: true })
 
             expect(calls.map((call) => `${call.method} ${call.url.pathname}`)).toEqual([
               "POST /warp-source/sync/history",
+              "POST /warp-source/sync/message-diffs/manifest",
+              "POST /warp-source/sync/message-diffs/materialize",
+              "POST /warp-source/sync/history",
+              "POST /warp-source/sync/message-diffs/manifest",
+              "POST /warp-target/sync/message-diffs/manifest",
               "GET /warp-source/vcs/diff/raw",
               "POST /warp-target/vcs/apply",
               "POST /warp-target/sync/replay",
               "POST /warp-target/sync/steal",
             ])
             expect(calls[0].json).toEqual({ [session.id]: historyNextSeq - 1 })
-            expect(calls[2].json).toEqual({ patch: "remote patch" })
-            expect(calls[3].json).toMatchObject({
-              directory: "remote-target-dir",
-              events: [
-                {
+            expect(calls[7].json).toEqual({ patch: "remote patch" })
+            const replay = calls[8].json as {
+              directory: string
+              events: Array<{ aggregateID: string; seq: number; type: string }>
+              messageDiffs: MessageDiff.Snapshot
+            }
+            expect(replay.directory).toBe("remote-target-dir")
+            expect(replay.events).toEqual(
+              expect.arrayContaining([
+                expect.objectContaining({
                   aggregateID: session.id,
                   seq: 0,
                   type: "session.created.1",
-                },
-                {
+                }),
+                expect.objectContaining({
                   aggregateID: session.id,
                   seq: historyNextSeq,
                   type: "session.updated.1",
-                },
-              ],
+                }),
+                expect.objectContaining({
+                  aggregateID: session.id,
+                  seq: historyNextSeq + 1,
+                  type: "message.updated.1",
+                }),
+              ]),
+            )
+            expect(replay.messageDiffs.sessionID).toBe(session.id)
+            expect(replay.messageDiffs.rows[0]).toMatchObject({
+              messageID: historyMessage!.id,
+              revision: expect.any(String),
+              diffs: [{ file: "legacy.ts", patch: "legacy portable patch" }],
             })
-            expect(calls[4].json).toEqual({ sessionID: session.id })
+            expect(calls[9].json).toEqual({ sessionID: session.id })
             expect((yield* sessionSvc.get(session.id)).title).toBe("from source history")
             expect(yield* sessionSequenceOwner(session.id)).toBe(target.id)
+          }),
+        { git: true },
+      )
+    })
+  })
+
+  it.live("sessionWarp rejects a legacy remote target before any mutating request when portable diffs exist", () => {
+    const calls: FetchCall[] = []
+    return Effect.gen(function* () {
+      yield* HttpServer.serveEffect()(
+        Effect.gen(function* () {
+          const req = yield* HttpServerRequest.HttpServerRequest
+          const bodyText = yield* req.text
+          calls.push({
+            url: new URL(req.url, "http://localhost"),
+            method: req.method,
+            headers: new Headers(req.headers),
+            bodyText,
+            json: bodyText ? JSON.parse(bodyText) : undefined,
+          })
+          return HttpServerResponse.text("not found", { status: 404 })
+        }),
+      )
+      const url = yield* serverUrl()
+      yield* provideTmpdirInstance(
+        () =>
+          Effect.gen(function* () {
+            const workspace = yield* Workspace.Service
+            const sessionSvc = yield* SessionNs.Service
+            const instance = yield* requireInstance
+            const sourceType = unique("legacy-source")
+            const targetType = unique("legacy-target")
+            const source = workspaceInfo(instance.project.id, sourceType)
+            const target = workspaceInfo(instance.project.id, targetType)
+            yield* insertWorkspace(source)
+            yield* insertWorkspace(target)
+            registerAdapter(instance.project.id, sourceType, localAdapter(instance.directory).adapter)
+            registerAdapter(instance.project.id, targetType, remoteAdapter(`${url}/legacy-target`).adapter)
+            const session = yield* sessionSvc.create({})
+            yield* attachSessionToWorkspace(session.id, source.id)
+            const { db } = yield* Database.Service
+            yield* db
+              .update(EventSequenceTable)
+              .set({ owner_id: source.id })
+              .where(eq(EventSequenceTable.aggregate_id, session.id))
+              .run()
+              .pipe(Effect.orDie)
+            yield* sessionSvc.updateMessage({
+              id: MessageID.ascending(),
+              sessionID: session.id,
+              role: "user",
+              time: { created: Date.now() },
+              agent: "build",
+              model: { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("model") },
+              summary: {
+                diffs: [
+                  {
+                    file: "portable.ts",
+                    patch: "portable patch",
+                    additions: 1,
+                    deletions: 0,
+                    status: "modified",
+                  },
+                ],
+              },
+            } satisfies SessionV1.User)
+
+            const exit = yield* workspace
+              .sessionWarp({ workspaceID: target.id, sessionID: session.id, copyChanges: true })
+              .pipe(Effect.exit)
+
+            expect(Exit.isFailure(exit)).toBe(true)
+            expect(calls.map((call) => `${call.method} ${call.url.pathname}`)).toEqual([
+              "POST /legacy-target/sync/message-diffs/manifest",
+            ])
+            expect((yield* sessionSvc.get(session.id)).workspaceID).toBe(source.id)
+            expect(yield* sessionSequenceOwner(session.id)).toBe(source.id)
           }),
         { git: true },
       )
@@ -1212,7 +1356,7 @@ describe("workspace sync state", () => {
     { git: true },
   )
 
-  it.live("remote start emits disconnected, connecting, and connected then refuses duplicate listeners", () => {
+  it.live("remote start tolerates a legacy server without diff manifests and refuses duplicate listeners", () => {
     const calls: FetchCall[] = []
     return Effect.gen(function* () {
       yield* HttpServer.serveEffect()(
@@ -1229,6 +1373,8 @@ describe("workspace sync state", () => {
           calls.push(call)
           if (call.url.pathname === "/sync/global/event") return HttpServerResponse.fromWeb(eventStreamResponse())
           if (call.url.pathname === "/sync/sync/history") return HttpServerResponse.fromWeb(Response.json([]))
+          if (call.url.pathname === "/sync/sync/message-diffs/manifest")
+            return HttpServerResponse.text("not found", { status: 404 })
           return HttpServerResponse.text("unexpected", { status: 500 })
         }),
       )
@@ -1265,6 +1411,7 @@ describe("workspace sync state", () => {
               ).toEqual(["disconnected", "connecting", "connected"])
               expect(calls.filter((call) => call.url.pathname === "/sync/global/event")).toHaveLength(1)
               expect(calls.filter((call) => call.url.pathname === "/sync/sync/history")).toHaveLength(1)
+              expect(calls.filter((call) => call.url.pathname === "/sync/sync/message-diffs/manifest")).toHaveLength(1)
               expect(yield* workspace.isSyncing(info.id)).toBe(true)
 
               yield* workspace.remove(info.id)
@@ -1315,6 +1462,147 @@ describe("workspace sync state", () => {
       )
     }),
   )
+
+  it.live("history reconciliation transfers only changed diff rows and removes stale rows", () => {
+    const calls: FetchCall[] = []
+    let sessionID: SessionID | undefined
+    let remoteMessageID: MessageID | undefined
+    let unchangedMessageID: MessageID | undefined
+    let unchangedRevision = ""
+    return Effect.gen(function* () {
+      yield* HttpServer.serveEffect()(
+        Effect.gen(function* () {
+          const req = yield* HttpServerRequest.HttpServerRequest
+          const bodyText = yield* req.text
+          const call = {
+            url: new URL(req.url, "http://localhost"),
+            method: req.method,
+            headers: new Headers(req.headers),
+            bodyText,
+            json: bodyText ? JSON.parse(bodyText) : undefined,
+          }
+          calls.push(call)
+          if (call.url.pathname === "/diff-reconcile/global/event")
+            return HttpServerResponse.fromWeb(eventStreamResponse())
+          if (call.url.pathname === "/diff-reconcile/sync/history") return HttpServerResponse.fromWeb(Response.json([]))
+          if (call.url.pathname === "/diff-reconcile/sync/message-diffs/manifest")
+            return HttpServerResponse.fromWeb(
+              Response.json([
+                {
+                  sessionID: sessionID!,
+                  rows: [
+                    { messageID: remoteMessageID!, revision: "remote-revision" },
+                    { messageID: unchangedMessageID!, revision: unchangedRevision },
+                  ],
+                },
+              ]),
+            )
+          if (call.url.pathname === "/diff-reconcile/sync/message-diffs")
+            return HttpServerResponse.fromWeb(
+              Response.json([
+                {
+                  sessionID: sessionID!,
+                  messageIDs: [remoteMessageID!],
+                  rows: [
+                    {
+                      messageID: remoteMessageID!,
+                      revision: "remote-revision",
+                      diffs: [
+                        {
+                          file: "remote.ts",
+                          patch: "remote patch",
+                          additions: 1,
+                          deletions: 0,
+                          status: "modified",
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ]),
+            )
+          return HttpServerResponse.text("unexpected", { status: 500 })
+        }),
+      )
+      const url = yield* serverUrl()
+      yield* provideTmpdirInstance(
+        () =>
+          Effect.gen(function* () {
+            const workspace = yield* Workspace.Service
+            const sessionSvc = yield* SessionNs.Service
+            const messageDiff = yield* MessageDiff.Service
+            const instance = yield* requireInstance
+            const captured = captureGlobalEvents()
+            try {
+              const type = unique("diff-reconcile")
+              const info = workspaceInfo(instance.project.id, type)
+              yield* insertWorkspace(info)
+              registerAdapter(instance.project.id, type, remoteAdapter(`${url}/diff-reconcile`).adapter)
+              const session = yield* sessionSvc.create({})
+              yield* attachSessionToWorkspace(session.id, info.id)
+              sessionID = session.id
+              remoteMessageID = MessageID.ascending()
+              unchangedMessageID = MessageID.ascending()
+              const staleMessageID = MessageID.ascending()
+              yield* Effect.forEach(
+                [remoteMessageID, unchangedMessageID, staleMessageID],
+                (messageID) =>
+                  sessionSvc.updateMessage({
+                    id: messageID,
+                    sessionID: session.id,
+                    role: "user",
+                    time: { created: Date.now() },
+                    agent: "build",
+                    model: { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("model") },
+                  } satisfies SessionV1.User),
+                { discard: true },
+              )
+              yield* messageDiff.put({ messageID: staleMessageID, diffs: [] })
+              yield* messageDiff.put({ messageID: unchangedMessageID, diffs: [] })
+              unchangedRevision =
+                (yield* messageDiff.manifest([session.id]))[0]?.rows.find((row) => row.messageID === unchangedMessageID)
+                  ?.revision ?? ""
+              expect(unchangedRevision).not.toBe("")
+
+              yield* workspace.startWorkspaceSyncing(instance.project.id)
+
+              yield* eventuallyEffect(
+                Effect.gen(function* () {
+                  expect(yield* messageDiff.get(remoteMessageID!, session.id)).toMatchObject({
+                    diffs: [{ file: "remote.ts", patch: "remote patch" }],
+                  })
+                  expect(yield* messageDiff.get(staleMessageID, session.id)).toBeUndefined()
+                  expect(yield* messageDiff.get(unchangedMessageID!, session.id)).toBeDefined()
+                }),
+              )
+              expect(calls.find((call) => call.url.pathname === "/diff-reconcile/sync/message-diffs")?.json).toEqual([
+                { sessionID: session.id, messageIDs: [remoteMessageID] },
+              ])
+              expect(
+                captured.events.some(
+                  (event) =>
+                    event.workspace === info.id &&
+                    event.payload.type === SessionNs.Event.DiffUpdated.type &&
+                    event.payload.properties.messageID === remoteMessageID,
+                ),
+              ).toBe(true)
+              expect(
+                captured.events.some(
+                  (event) =>
+                    event.workspace === info.id &&
+                    event.payload.type === SessionV1.Event.DiffInvalidated.type &&
+                    event.payload.properties.messageID === staleMessageID,
+                ),
+              ).toBe(true)
+              yield* workspace.remove(info.id)
+            } finally {
+              captured.dispose()
+            }
+          }),
+        { git: true },
+      )
+    })
+  })
 
   it.live("remote history HTTP failures set error", () =>
     Effect.gen(function* () {
@@ -1383,6 +1671,7 @@ describe("workspace sync state", () => {
               ]),
             )
           }
+          if (url.pathname === "/history/sync/message-diffs/manifest") return emptyMessageDiffManifest(bodyText)
           return HttpServerResponse.text("unexpected", { status: 500 })
         }),
       )
@@ -1453,6 +1742,8 @@ describe("workspace sync state", () => {
               ),
             )
           if (url.pathname === "/sse-forward/sync/history") return HttpServerResponse.fromWeb(Response.json([]))
+          if (url.pathname === "/sse-forward/sync/message-diffs/manifest")
+            return emptyMessageDiffManifest(yield* req.text)
           return HttpServerResponse.text("unexpected", { status: 500 })
         }),
       )
@@ -1536,6 +1827,7 @@ describe("workspace sync state", () => {
               ),
             )
           if (url.pathname === "/sse-sync/sync/history") return HttpServerResponse.fromWeb(Response.json([]))
+          if (url.pathname === "/sse-sync/sync/message-diffs/manifest") return emptyMessageDiffManifest(yield* req.text)
           return HttpServerResponse.text("unexpected", { status: 500 })
         }),
       )

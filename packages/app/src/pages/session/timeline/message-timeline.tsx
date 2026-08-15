@@ -8,13 +8,14 @@ import {
   onCleanup,
   onMount,
   Show,
+  untrack,
   type Accessor,
   type JSX,
 } from "solid-js"
 import { createStore, produce } from "solid-js/store"
 import { Dynamic } from "solid-js/web"
 import { useNavigate } from "@solidjs/router"
-import { useMutation } from "@tanstack/solid-query"
+import { useMutation, useQueryClient } from "@tanstack/solid-query"
 import { createVirtualizer, defaultRangeExtractor, elementScroll, type VirtualItem } from "@tanstack/solid-virtual"
 import { Accordion } from "@opencode-ai/ui/accordion"
 import { Button } from "@opencode-ai/ui/button"
@@ -77,6 +78,15 @@ import { observeElementOffsetReconnectAware } from "./observe-element-offset"
 import { createTimelineProjection } from "./projection"
 import { MessageComment, SummaryDiff, TimelineRow, TimelineRowMap } from "./rows"
 import { filterVirtualIndexes } from "./virtual-items"
+import {
+  clearMessageDiffQuery,
+  hasMessageDiffPatch,
+  hydrateMessageDiffs,
+  loadMessageDiff,
+  messageDiffNeedsLoad,
+  messageDiffQueryKey,
+  type MessageDiffResult,
+} from "@/pages/session/message-diff"
 
 const emptyMessages: MessageType[] = []
 const emptyParts: PartType[] = []
@@ -142,9 +152,19 @@ function TimelineThinkingRow(props: { reasoningHeading?: string; showReasoningSu
   )
 }
 
-function TimelineDiffSummaryRow(props: { diffs: SummaryDiff[] }) {
+function TimelineDiffSummaryRow(props: {
+  diffs: SummaryDiff[]
+  sessionID?: string
+  messageID: string
+  revision: () => number
+  invalidation: () => number
+  available: () => boolean | undefined
+}) {
   const language = useLanguage()
+  const queryClient = useQueryClient()
+  const sdk = useSDK()
   const maxFiles = 10
+  const [request, setRequest] = createSignal(0)
   const [state, setState] = createStore({
     showAll: false,
     expanded: [] as string[],
@@ -153,6 +173,81 @@ function TimelineDiffSummaryRow(props: { diffs: SummaryDiff[] }) {
   const expanded = () => state.expanded
   const overflow = createMemo(() => Math.max(0, props.diffs.length - maxFiles))
   const visible = createMemo(() => (showAll() ? props.diffs : props.diffs.slice(0, maxFiles)))
+  const [loaded, setLoaded] = createSignal<MessageDiffResult>()
+  const hydrated = createMemo(() => {
+    const result = loaded()
+    return hydrateMessageDiffs(
+      props.diffs,
+      result?.revision === props.revision() && result.invalidation === props.invalidation() ? result.diffs : undefined,
+    )
+  })
+  const details = createMemo(
+    () => new Map(hydrated().flatMap((diff) => (diff.file ? [[diff.file, diff] as const] : []))),
+  )
+  createEffect(
+    on(
+      () =>
+        [
+          request(),
+          props.revision(),
+          props.invalidation(),
+          props.available(),
+          props.sessionID,
+          props.messageID,
+        ] as const,
+      ([token, revision, invalidation, available, sessionID, messageID], prev) => {
+        const identityChanged = !!prev && (sessionID !== prev[4] || messageID !== prev[5])
+        const terminal = !!prev && !identityChanged && revision !== prev[1]
+        const invalidated = !!prev && !identityChanged && invalidation !== prev[2]
+        const context = sdk()
+        const queryKey = sessionID
+          ? messageDiffQueryKey({
+              scope: context.scope,
+              directory: context.directory,
+              sessionID,
+              messageID,
+            })
+          : undefined
+        if (identityChanged || terminal || invalidated) setLoaded(undefined)
+        if (invalidated && queryKey) {
+          clearMessageDiffQuery(queryClient, queryKey)
+          return
+        }
+        if (terminal && queryKey) {
+          void queryClient.invalidateQueries({ queryKey, exact: true, refetchType: "none" })
+        }
+        if (available === false) return
+        if (!token || !sessionID || untrack(expanded).length === 0) return
+        if (!queryKey) return
+        let active = true
+        void loadMessageDiff({
+          queryClient,
+          queryKey,
+          revision,
+          invalidation,
+          current: () => ({ revision: props.revision(), invalidation: props.invalidation() }),
+          query: () =>
+            context.client.session
+              .diff({ sessionID, messageID }, { throwOnError: true })
+              .then((result) => result.data ?? []),
+        })
+          .catch((error) => {
+            console.debug("[session-timeline] failed to load message diff", {
+              sessionID,
+              messageID,
+              error,
+            })
+            return undefined
+          })
+          .then((result) => {
+            if (active && result) setLoaded(result)
+          })
+        onCleanup(() => {
+          active = false
+        })
+      },
+    ),
+  )
 
   return (
     <div
@@ -176,11 +271,21 @@ function TimelineDiffSummaryRow(props: { diffs: SummaryDiff[] }) {
           multiple
           style={{ "--sticky-accordion-offset": "44px" }}
           value={expanded()}
-          onChange={(value) => setState("expanded", Array.isArray(value) ? value : value ? [value] : [])}
+          onChange={(value) => {
+            const next = Array.isArray(value) ? value : value ? [value] : []
+            setState("expanded", next)
+            if (messageDiffNeedsLoad(hydrated(), next)) setRequest((value) => value + 1)
+          }}
         >
           <For each={visible()}>
             {(diff) => {
               const opened = createMemo(() => expanded().includes(diff.file))
+              const detail = createMemo<SummaryDiff | undefined>(() => {
+                const value = details().get(diff.file)
+                if (!value || !hasMessageDiffPatch(value)) return
+                if (!value?.file) return
+                return { ...value, file: value.file }
+              })
 
               return (
                 <Accordion.Item value={diff.file}>
@@ -205,9 +310,7 @@ function TimelineDiffSummaryRow(props: { diffs: SummaryDiff[] }) {
                     </Accordion.Trigger>
                   </StickyAccordionHeader>
                   <Accordion.Content>
-                    <Show when={opened()}>
-                      <TimelineDiffView diff={diff} />
-                    </Show>
+                    <Show when={opened() && detail()}>{(value) => <TimelineDiffView diff={value()} />}</Show>
                   </Accordion.Content>
                 </Accordion.Item>
               )
@@ -1254,7 +1357,20 @@ export function MessageTimeline(props: {
         return (
           <TimelineRowFrame row={diffSummaryRow}>
             <div data-slot="session-turn-message-container" class="w-full px-4 md:px-5">
-              <TimelineDiffSummaryRow diffs={diffSummaryRow().diffs} />
+              <TimelineDiffSummaryRow
+                diffs={diffSummaryRow().diffs}
+                sessionID={params.id}
+                messageID={diffSummaryRow().userMessageID}
+                revision={() =>
+                  params.id ? sync().session.messageDiffRevision(params.id, diffSummaryRow().userMessageID) : 0
+                }
+                invalidation={() =>
+                  params.id ? sync().session.messageDiffInvalidation(params.id, diffSummaryRow().userMessageID) : 0
+                }
+                available={() =>
+                  params.id ? sync().session.messageDiffAvailable(params.id, diffSummaryRow().userMessageID) : undefined
+                }
+              />
             </div>
           </TimelineRowFrame>
         )

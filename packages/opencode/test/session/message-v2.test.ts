@@ -112,6 +112,34 @@ function basePart(messageID: string, id: string) {
 }
 
 describe("session.message-v2.toModelMessage", () => {
+  test("keeps provider messages byte-identical when summary patch text is compacted", async () => {
+    const messageID = "m-summary"
+    const info = userInfo(messageID)
+    const parts = [
+      {
+        ...basePart(messageID, "p-summary"),
+        type: "text",
+        text: "hello",
+      },
+    ] as SessionV1.Part[]
+    const metadata = {
+      file: "src/app.ts",
+      additions: 1,
+      deletions: 1,
+      status: "modified" as const,
+    }
+    const full = await MessageV2.toModelMessages(
+      [{ info: { ...info, summary: { diffs: [{ ...metadata, patch: "full patch" }] } }, parts }],
+      model,
+    )
+    const compact = await MessageV2.toModelMessages(
+      [{ info: { ...info, summary: { diffs: [metadata] } }, parts }],
+      model,
+    )
+
+    expect(JSON.stringify(compact)).toBe(JSON.stringify(full))
+  })
+
   test("filters out messages with no parts", async () => {
     const input: SessionV1.WithParts[] = [
       {

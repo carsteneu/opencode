@@ -1,10 +1,13 @@
 import { Workspace } from "@/control-plane/workspace"
 import * as InstanceState from "@/effect/instance-state"
 import { Session } from "@/session/session"
+import { SessionSummary } from "@/session/summary"
+import { SessionPrompt } from "@/session/prompt"
 import { Database } from "@opencode-ai/core/database/database"
 import { EventV2 } from "@opencode-ai/core/event"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { EventTable } from "@opencode-ai/core/event/sql"
+import { MessageDiff } from "@opencode-ai/core/session/message-diff"
 import { asc } from "drizzle-orm"
 import { and } from "drizzle-orm"
 import { eq } from "drizzle-orm"
@@ -14,14 +17,17 @@ import { or } from "drizzle-orm"
 import { Effect, Scope } from "effect"
 import { HttpApiBuilder, HttpApiError } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
-import { HistoryPayload, ReplayPayload, SessionPayload } from "../groups/sync"
+import { HistoryPayload, MessageDiffManifestPayload, ReplayPayload, SessionPayload } from "../groups/sync"
 
 export const syncHandlers = HttpApiBuilder.group(InstanceHttpApi, "sync", (handlers) =>
   Effect.gen(function* () {
     const workspace = yield* Workspace.Service
     const session = yield* Session.Service
+    const summary = yield* SessionSummary.Service
+    const prompt = yield* SessionPrompt.Service
     const scope = yield* Scope.Scope
     const events = yield* EventV2Bridge.Service
+    const messageDiff = yield* MessageDiff.Service
     const { db } = yield* Database.Service
 
     const start = Effect.fn("SyncHttpApi.start")(function* () {
@@ -49,6 +55,10 @@ export const syncHandlers = HttpApiBuilder.group(InstanceHttpApi, "sync", (handl
       })
       const ownerID = yield* InstanceState.workspaceID
       yield* events.replayAll(payload, { ownerID, strictOwner: true })
+      if (ctx.payload.messageDiffs) {
+        if (ctx.payload.messageDiffs.sessionID !== source) return yield* new HttpApiError.BadRequest({})
+        yield* messageDiff.replace(ctx.payload.messageDiffs)
+      }
       yield* Effect.logInfo("sync replay complete", {
         sessionID: source,
         events: payload.length,
@@ -84,6 +94,51 @@ export const syncHandlers = HttpApiBuilder.group(InstanceHttpApi, "sync", (handl
         .pipe(Effect.orDie)
     })
 
-    return handlers.handle("start", start).handle("replay", replay).handle("steal", steal).handle("history", history)
+    const messageDiffs = Effect.fn("SyncHttpApi.messageDiffs")(function* (ctx: {
+      payload: ReadonlyArray<MessageDiff.Selection>
+    }) {
+      return yield* Effect.forEach(ctx.payload, (selection) =>
+        messageDiff.list(selection).pipe(
+          Effect.map((rows) => ({
+            sessionID: selection.sessionID,
+            messageIDs: selection.messageIDs,
+            rows,
+          })),
+        ),
+      )
+    })
+
+    const messageDiffManifest = Effect.fn("SyncHttpApi.messageDiffManifest")(function* (ctx: {
+      payload: typeof MessageDiffManifestPayload.Type
+    }) {
+      return yield* messageDiff.manifest(ctx.payload)
+    })
+
+    const materializeMessageDiffs = Effect.fn("SyncHttpApi.materializeMessageDiffs")(function* (ctx: {
+      payload: typeof SessionPayload.Type
+    }) {
+      yield* prompt.cancel(ctx.payload.sessionID)
+      const missing = yield* summary.materializeSession(ctx.payload)
+      if (missing.length) {
+        yield* Effect.logWarning("session warp message diffs are unavailable", {
+          sessionID: ctx.payload.sessionID,
+          messageIDs: missing,
+        })
+        return yield* new HttpApiError.BadRequest({})
+      }
+      return {
+        sessionID: ctx.payload.sessionID,
+        rows: yield* messageDiff.list({ sessionID: ctx.payload.sessionID }),
+      }
+    })
+
+    return handlers
+      .handle("start", start)
+      .handle("replay", replay)
+      .handle("steal", steal)
+      .handle("history", history)
+      .handle("messageDiffs", messageDiffs)
+      .handle("messageDiffManifest", messageDiffManifest)
+      .handle("materializeMessageDiffs", materializeMessageDiffs)
   }),
 )

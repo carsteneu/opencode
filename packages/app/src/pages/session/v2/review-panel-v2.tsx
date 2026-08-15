@@ -38,8 +38,9 @@ export type ReviewPanelV2Props = {
   empty?: JSX.Element
   diffs: () => ReviewDiff[]
   diffsReady: () => boolean
-  diffVersion?: number
-  loadDiff?: (path: string, version?: number) => Promise<RenderDiff | undefined>
+  diffVersion?: string | number
+  needsDiffLoad?: (diff: RenderDiff) => boolean
+  loadDiff?: (path: string, version?: string | number) => Promise<RenderDiff | undefined>
   activeFile?: string
   onSelectFile: (path: string) => void
   diffStyle: SessionReviewDiffStyle
@@ -83,7 +84,7 @@ export function ReviewPanelV2(props: ReviewPanelV2Props) {
   const detailSource = createMemo(() => {
     const diff = sourceActiveItem()
     const load = props.loadDiff
-    if (!diff || !load || !reviewDiffNeedsLoad(diff)) return
+    if (!diff || !load || !(props.needsDiffLoad?.(diff) ?? reviewDiffNeedsLoad(diff))) return
     return { diff, load, version: props.diffVersion }
   })
   const [loadedDiff] = createResource(detailSource, async ({ diff, load, version }) => {
@@ -94,10 +95,10 @@ export function ReviewPanelV2(props: ReviewPanelV2Props) {
 
   const activeItem = createMemo(() => {
     const source = sourceActiveItem()
-    if (loadedDiff.state !== "ready") return source
+    if (!detailSource()) return source
+    if (loadedDiff.state !== "ready") return
     const loaded = loadedDiff()
     if (loaded && loaded.source === source && loaded.version === props.diffVersion) return loaded.value
-    return source
   })
 
   const readFile = async (path: string) =>

@@ -3,10 +3,13 @@ import { $ } from "bun"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { FSUtil } from "@opencode-ai/core/fs-util"
+import { Global } from "@opencode-ai/core/global"
+import { Hash } from "@opencode-ai/core/util/hash"
 import fs from "fs/promises"
 import path from "path"
 import { Effect, Fiber, Layer } from "effect"
 import { Snapshot } from "../../src/snapshot"
+import { InstanceState } from "@/effect/instance-state"
 import {
   disposeAllInstances,
   provideInstance,
@@ -885,7 +888,16 @@ it.instance(
     const after = yield* snapshot.track()
     expect(after).toBeTruthy()
     const diffs = yield* snapshot.diffFull(before!, after!)
+    const summary = yield* snapshot.diffSummary(before!, after!)
     expect(diffs.length).toBe(4)
+    expect(summary).toEqual(
+      diffs.map((diff) => ({
+        file: diff.file,
+        additions: diff.additions,
+        deletions: diff.deletions,
+        status: diff.status,
+      })),
+    )
     expect(diffs.find((d) => d.file === "added.txt")!.status).toBe("added")
     expect(diffs.find((d) => d.file === "delete.txt")!.status).toBe("deleted")
     const grow = diffs.find((d) => d.file === "grow.txt")!
@@ -897,6 +909,51 @@ it.instance(
     expect(trim.additions).toBe(0)
     expect(trim.deletions).toBeGreaterThan(0)
   }),
+  { git: true },
+)
+
+it.instance(
+  "diffSummary distinguishes an empty diff from missing snapshots",
+  withTrackedSnapshot(({ snapshot, before }) =>
+    Effect.gen(function* () {
+      expect(yield* snapshot.diffSummary(before, before)).toEqual([])
+      expect(yield* snapshot.diffSummary("missing-before", "missing-after")).toBeUndefined()
+      expect(yield* snapshot.diffFullAvailable(before, before)).toEqual([])
+      expect(yield* snapshot.diffFullAvailable("missing-before", "missing-after")).toBeUndefined()
+    }),
+  ),
+  { git: true },
+)
+
+it.instance(
+  "pins session diff snapshots across git gc and releases them by scope",
+  withTrackedSnapshot(({ tmp, snapshot, before }) =>
+    Effect.gen(function* () {
+      yield* write(`${tmp.path}/pinned.txt`, "pinned content")
+      const after = yield* snapshot.track()
+      expect(after).toBeTruthy()
+      const source = { sessionID: "ses_source", messageID: "msg_source" }
+      const copy = { sessionID: "ses_copy", messageID: "msg_copy" }
+      expect(yield* snapshot.pinDiff({ ...source, from: before, to: after! })).toBe(true)
+
+      const context = yield* InstanceState.context
+      const gitdir = path.join(Global.Path.data, "snapshot", context.project.id, Hash.fast(context.worktree))
+      yield* exec(tmp.path, ["git", "--git-dir", gitdir, "gc", "--prune=now"])
+      expect(yield* snapshot.diffPinned({ ...source, from: after!, to: before })).toBeUndefined()
+      expect((yield* snapshot.diffPinned(source))?.[0]?.patch).toContain("+pinned content")
+      expect((yield* snapshot.diffPinned({ ...source, from: before, to: after! }))?.[0]?.patch).toContain(
+        "+pinned content",
+      )
+
+      expect(yield* snapshot.copyDiffPin({ from: source, to: copy })).toBe(true)
+      yield* snapshot.unpinDiff(source)
+      expect(yield* snapshot.diffPinned(source)).toBeUndefined()
+      expect((yield* snapshot.diffPinned(copy))?.[0]?.patch).toContain("+pinned content")
+
+      yield* snapshot.unpinSessionDiffs(copy.sessionID)
+      expect(yield* snapshot.diffPinned(copy)).toBeUndefined()
+    }),
+  ),
   { git: true },
 )
 

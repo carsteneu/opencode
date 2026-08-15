@@ -208,6 +208,15 @@ export function createServerSession(
       return (this.session_status[id]?.type ?? "idle") !== "idle"
     },
   })
+  const [messageDiffRevisions, setMessageDiffRevisions] = createStore(
+    {} as Record<string, Record<string, number> | undefined>,
+  )
+  const [messageDiffInvalidations, setMessageDiffInvalidations] = createStore(
+    {} as Record<string, Record<string, number> | undefined>,
+  )
+  const [messageDiffAvailability, setMessageDiffAvailability] = createStore(
+    {} as Record<string, Record<string, boolean> | undefined>,
+  )
   const requests = new Map<string, Promise<Session>>()
   const inflight = new Map<string, Promise<void>>()
   const inflightTodo = new Map<string, Promise<void>>()
@@ -495,6 +504,21 @@ export function createServerSession(
     setData(
       produce((draft) => {
         dropSessionCaches(draft, sessionIDs)
+      }),
+    )
+    setMessageDiffRevisions(
+      produce((draft) => {
+        for (const sessionID of sessionIDs) delete draft[sessionID]
+      }),
+    )
+    setMessageDiffInvalidations(
+      produce((draft) => {
+        for (const sessionID of sessionIDs) delete draft[sessionID]
+      }),
+    )
+    setMessageDiffAvailability(
+      produce((draft) => {
+        for (const sessionID of sessionIDs) delete draft[sessionID]
       }),
     )
     setMeta(
@@ -1027,6 +1051,34 @@ export function createServerSession(
         setData("session_status", props.sessionID, reconcile(props.status))
         return
       }
+      case "message.diff.updated": {
+        const props = event.properties as { sessionID: string; messageID: string }
+        batch(() => {
+          setMessageDiffRevisions(props.sessionID, (revisions = {}) => ({
+            ...revisions,
+            [props.messageID]: (revisions[props.messageID] ?? 0) + 1,
+          }))
+          setMessageDiffAvailability(props.sessionID, (availability = {}) => ({
+            ...availability,
+            [props.messageID]: true,
+          }))
+        })
+        return
+      }
+      case "message.diff.invalidated": {
+        const props = event.properties as { sessionID: string; messageID: string }
+        batch(() => {
+          setMessageDiffInvalidations(props.sessionID, (invalidations = {}) => ({
+            ...invalidations,
+            [props.messageID]: (invalidations[props.messageID] ?? 0) + 1,
+          }))
+          setMessageDiffAvailability(props.sessionID, (availability = {}) => ({
+            ...availability,
+            [props.messageID]: false,
+          }))
+        })
+        return
+      }
       case "message.updated": {
         const info = cleanMessage((event.properties as { info: Message }).info)
         indexLegacyMessage(info)
@@ -1062,6 +1114,32 @@ export function createServerSession(
       }
       case "message.removed": {
         const props = event.properties as { sessionID: string; messageID: string }
+        batch(() => {
+          setMessageDiffRevisions(
+            produce((draft) => {
+              const revisions = draft[props.sessionID]
+              if (!revisions) return
+              delete revisions[props.messageID]
+              if (Object.keys(revisions).length === 0) delete draft[props.sessionID]
+            }),
+          )
+          setMessageDiffInvalidations(
+            produce((draft) => {
+              const invalidations = draft[props.sessionID]
+              if (!invalidations) return
+              delete invalidations[props.messageID]
+              if (Object.keys(invalidations).length === 0) delete draft[props.sessionID]
+            }),
+          )
+          setMessageDiffAvailability(
+            produce((draft) => {
+              const availability = draft[props.sessionID]
+              if (!availability) return
+              delete availability[props.messageID]
+              if (Object.keys(availability).length === 0) delete draft[props.sessionID]
+            }),
+          )
+        })
         setData("session_message", props.sessionID, (messages) =>
           messages?.filter((message) => message.id !== props.messageID),
         )
@@ -1296,6 +1374,10 @@ export function createServerSession(
   return {
     data,
     set: setData,
+    messageDiffRevision: (sessionID: string, messageID: string) => messageDiffRevisions[sessionID]?.[messageID] ?? 0,
+    messageDiffInvalidation: (sessionID: string, messageID: string) =>
+      messageDiffInvalidations[sessionID]?.[messageID] ?? 0,
+    messageDiffAvailable: (sessionID: string, messageID: string) => messageDiffAvailability[sessionID]?.[messageID],
     get: (sessionID: string) => data.info[sessionID],
     peek: (sessionID: string) => data.info[sessionID],
     remember,

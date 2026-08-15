@@ -21,6 +21,11 @@ describe("diffs", () => {
     expect(diffs(item)).toEqual([item])
   })
 
+  test("keeps summary metadata without patch text", () => {
+    const metadata = { file: "src/meta.ts", additions: 2, deletions: 1, status: "modified" as const }
+    expect(diffs([metadata])).toEqual([metadata])
+  })
+
   test("reads keyed diff objects", () => {
     expect(diffs({ a: item })).toEqual([item])
   })
@@ -29,7 +34,7 @@ describe("diffs", () => {
     expect(
       diffs([
         item,
-        { file: "src/bad.ts", additions: 1, deletions: 1 },
+        { file: "src/bad.ts", patch: 42, additions: 1, deletions: 1 },
         { patch: item.patch, additions: 1, deletions: 1 },
       ]),
     ).toEqual([item])

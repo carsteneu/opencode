@@ -20,6 +20,11 @@ export type Patch = typeof Patch.Type
 export const FileDiff = Info
 export type FileDiff = typeof FileDiff.Type
 
+type DiffPin = {
+  sessionID: string
+  messageID: string
+}
+
 const prune = "7.days"
 const limit = 2 * 1024 * 1024
 const core = ["-c", "core.longpaths=true", "-c", "core.symlinks=true"]
@@ -41,6 +46,15 @@ export interface Interface {
   readonly restore: (snapshot: string) => Effect.Effect<void>
   readonly revert: (patches: Patch[]) => Effect.Effect<void>
   readonly diff: (hash: string) => Effect.Effect<string>
+  readonly pinDiff: (input: DiffPin & { from: string; to: string }) => Effect.Effect<boolean>
+  readonly copyDiffPin: (input: { from: DiffPin; to: DiffPin }) => Effect.Effect<boolean>
+  readonly unpinDiff: (input: DiffPin) => Effect.Effect<void>
+  readonly unpinSessionDiffs: (sessionID: string) => Effect.Effect<void>
+  readonly diffSummary: (from: string, to: string) => Effect.Effect<FileDiff[] | undefined>
+  readonly diffFullAvailable: (from: string, to: string) => Effect.Effect<FileDiff[] | undefined>
+  readonly diffPinned: (
+    input: DiffPin & { readonly from?: string; readonly to?: string; readonly excludeTo?: string },
+  ) => Effect.Effect<FileDiff[] | undefined>
   readonly diffFull: (from: string, to: string) => Effect.Effect<FileDiff[]>
 }
 
@@ -73,6 +87,11 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
         }
 
         const args = (cmd: string[]) => ["--git-dir", state.gitdir, "--work-tree", state.worktree, ...cmd]
+
+        const diffRefs = (input: DiffPin) => {
+          const base = `refs/opencode/session-diffs/${Hash.fast(input.sessionID)}/${Hash.fast(input.messageID)}`
+          return { base, from: `${base}/from`, to: `${base}/to` }
+        }
 
         const encodeNulTerminatedPaths = (files: string[]) => files.join("\0") + "\0"
         const encodeTopLevelLiteralPathspecs = (files: string[]) =>
@@ -561,17 +580,80 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
           )
         })
 
-        const diffFull = Effect.fnUntraced(function* (from: string, to: string) {
+        type Row = {
+          file: string
+          status: "added" | "deleted" | "modified"
+          binary: boolean
+          additions: number
+          deletions: number
+        }
+
+        const diffRows = Effect.fnUntraced(function* (from: string, to: string) {
+          const status = new Map<string, "added" | "deleted" | "modified">()
+          const statuses = yield* git(
+            [...quote, ...args(["diff", "--no-ext-diff", "--name-status", "--no-renames", from, to, "--", "."])],
+            { cwd: state.directory },
+          )
+          if (statuses.code !== 0) return { available: false as const, rows: [] }
+
+          for (const line of statuses.text.trim().split("\n")) {
+            if (!line) continue
+            const [code, file] = line.split("\t")
+            if (!code || !file) continue
+            status.set(file, code.startsWith("A") ? "added" : code.startsWith("D") ? "deleted" : "modified")
+          }
+
+          const numstat = yield* git(
+            [...quote, ...args(["diff", "--no-ext-diff", "--no-renames", "--numstat", from, to, "--", "."])],
+            { cwd: state.directory },
+          )
+          if (numstat.code !== 0) return { available: false as const, rows: [] }
+          const rows = numstat.text
+            .trim()
+            .split("\n")
+            .filter(Boolean)
+            .flatMap((line) => {
+              const [adds, dels, file] = line.split("\t")
+              if (!file) return []
+              const binary = adds === "-" && dels === "-"
+              const additions = binary ? 0 : parseInt(adds)
+              const deletions = binary ? 0 : parseInt(dels)
+              return [
+                {
+                  file,
+                  status: status.get(file) ?? "modified",
+                  binary,
+                  additions: Number.isFinite(additions) ? additions : 0,
+                  deletions: Number.isFinite(deletions) ? deletions : 0,
+                } satisfies Row,
+              ]
+            })
+
+          const ignored = yield* ignore(rows.map((row) => row.file))
+          if (!ignored.size) return { available: true as const, rows }
+          return { available: true as const, rows: rows.filter((row) => !ignored.has(row.file)) }
+        })
+
+        const diffSummary = Effect.fnUntraced(function* (from: string, to: string) {
+          return yield* locked(
+            diffRows(from, to).pipe(
+              Effect.map((result) =>
+                result.available
+                  ? result.rows.map((row) => ({
+                      file: row.file,
+                      additions: row.additions,
+                      deletions: row.deletions,
+                      status: row.status,
+                    }))
+                  : undefined,
+              ),
+            ),
+          )
+        })
+
+        const diffFullAvailable = Effect.fnUntraced(function* (from: string, to: string) {
           return yield* locked(
             Effect.gen(function* () {
-              type Row = {
-                file: string
-                status: "added" | "deleted" | "modified"
-                binary: boolean
-                additions: number
-                deletions: number
-              }
-
               type Ref = {
                 file: string
                 side: "before" | "after"
@@ -700,55 +782,9 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
               )
 
               const result: FileDiff[] = []
-              const status = new Map<string, "added" | "deleted" | "modified">()
-
-              const statuses = yield* git(
-                [...quote, ...args(["diff", "--no-ext-diff", "--name-status", "--no-renames", from, to, "--", "."])],
-                { cwd: state.directory },
-              )
-
-              for (const line of statuses.text.trim().split("\n")) {
-                if (!line) continue
-                const [code, file] = line.split("\t")
-                if (!code || !file) continue
-                status.set(file, code.startsWith("A") ? "added" : code.startsWith("D") ? "deleted" : "modified")
-              }
-
-              const numstat = yield* git(
-                [...quote, ...args(["diff", "--no-ext-diff", "--no-renames", "--numstat", from, to, "--", "."])],
-                {
-                  cwd: state.directory,
-                },
-              )
-
-              const rows = numstat.text
-                .trim()
-                .split("\n")
-                .filter(Boolean)
-                .flatMap((line) => {
-                  const [adds, dels, file] = line.split("\t")
-                  if (!file) return []
-                  const binary = adds === "-" && dels === "-"
-                  const additions = binary ? 0 : parseInt(adds)
-                  const deletions = binary ? 0 : parseInt(dels)
-                  return [
-                    {
-                      file,
-                      status: status.get(file) ?? "modified",
-                      binary,
-                      additions: Number.isFinite(additions) ? additions : 0,
-                      deletions: Number.isFinite(deletions) ? deletions : 0,
-                    } satisfies Row,
-                  ]
-                })
-
-              // Hide ignored-file removals from the user-facing diff output.
-              const ignored = yield* ignore(rows.map((r) => r.file))
-              if (ignored.size > 0) {
-                const filtered = rows.filter((r) => !ignored.has(r.file))
-                rows.length = 0
-                rows.push(...filtered)
-              }
+              const source = yield* diffRows(from, to)
+              if (!source.available) return
+              const rows = source.rows
 
               const step = 100
               const patch = (file: string, before: string, after: string) =>
@@ -776,6 +812,90 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
           )
         })
 
+        const diffFull = Effect.fnUntraced(function* (from: string, to: string) {
+          return (yield* diffFullAvailable(from, to)) ?? []
+        })
+
+        const pinUnlocked = Effect.fnUntraced(function* (input: DiffPin & { from: string; to: string }) {
+          if (!(yield* enabled())) return false
+          const refs = diffRefs(input)
+          const result = yield* git(["--git-dir", state.gitdir, "update-ref", "--stdin"], {
+            cwd: state.directory,
+            stdin: `start\nupdate ${refs.from} ${input.from}\nupdate ${refs.to} ${input.to}\nprepare\ncommit\n`,
+          })
+          if (result.code === 0) return true
+          yield* Effect.logWarning("failed to pin session diff snapshots", {
+            sessionID: input.sessionID,
+            messageID: input.messageID,
+            stderr: result.stderr,
+          })
+          return false
+        })
+
+        const pinDiff = Effect.fnUntraced(function* (input: DiffPin & { from: string; to: string }) {
+          return yield* locked(pinUnlocked(input))
+        })
+
+        const copyDiffPin = Effect.fnUntraced(function* (input: { from: DiffPin; to: DiffPin }) {
+          return yield* locked(
+            Effect.gen(function* () {
+              const refs = diffRefs(input.from)
+              const hashes = yield* Effect.all(
+                [refs.from, refs.to].map((ref) => git(["--git-dir", state.gitdir, "rev-parse", "--verify", ref])),
+                { concurrency: 2 },
+              )
+              if (hashes.some((result) => result.code !== 0)) return false
+              return yield* pinUnlocked({
+                ...input.to,
+                from: hashes[0]!.text.trim(),
+                to: hashes[1]!.text.trim(),
+              })
+            }),
+          )
+        })
+
+        const unpinDiff = Effect.fnUntraced(function* (input: DiffPin) {
+          const refs = diffRefs(input)
+          yield* locked(
+            git(["--git-dir", state.gitdir, "update-ref", "--stdin"], {
+              cwd: state.directory,
+              stdin: `start\ndelete ${refs.from}\ndelete ${refs.to}\nprepare\ncommit\n`,
+            }).pipe(Effect.asVoid),
+          )
+        })
+
+        const unpinSessionDiffs = Effect.fnUntraced(function* (sessionID: string) {
+          yield* locked(
+            Effect.gen(function* () {
+              const prefix = `refs/opencode/session-diffs/${Hash.fast(sessionID)}/`
+              const listed = yield* git(["--git-dir", state.gitdir, "for-each-ref", "--format=%(refname)", prefix])
+              if (listed.code !== 0) return
+              const refs = listed.text.trim().split("\n").filter(Boolean)
+              if (!refs.length) return
+              yield* git(["--git-dir", state.gitdir, "update-ref", "--stdin"], {
+                stdin: refs.map((ref) => `delete ${ref}`).join("\n") + "\n",
+              })
+            }),
+          )
+        })
+
+        const diffPinned = Effect.fnUntraced(function* (
+          input: DiffPin & { readonly from?: string; readonly to?: string; readonly excludeTo?: string },
+        ) {
+          const refs = diffRefs(input)
+          if (input.from !== undefined || input.to !== undefined || input.excludeTo !== undefined) {
+            if ((input.from === undefined) !== (input.to === undefined)) return
+            const result = yield* git(["--git-dir", state.gitdir, "rev-parse", refs.from, refs.to], {
+              cwd: state.directory,
+            })
+            if (result.code !== 0) return
+            const [from, to] = result.text.trim().split("\n")
+            if (input.from !== undefined && (from !== input.from || to !== input.to)) return
+            if (to === input.excludeTo) return
+          }
+          return yield* diffFullAvailable(refs.from, refs.to)
+        })
+
         yield* cleanup().pipe(
           Effect.catchCause((cause) => Effect.logError("cleanup loop failed", { cause: Cause.pretty(cause) })),
           Effect.repeat(Schedule.spaced(Duration.hours(1))),
@@ -783,7 +903,22 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
           Effect.forkScoped,
         )
 
-        return { cleanup, track, patch, restore, revert, diff, diffFull }
+        return {
+          cleanup,
+          track,
+          patch,
+          restore,
+          revert,
+          diff,
+          pinDiff,
+          copyDiffPin,
+          unpinDiff,
+          unpinSessionDiffs,
+          diffSummary,
+          diffFullAvailable,
+          diffPinned,
+          diffFull,
+        }
       }),
     )
 
@@ -808,6 +943,29 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
       }),
       diff: Effect.fn("Snapshot.diff")(function* (hash: string) {
         return yield* InstanceState.useEffect(state, (s) => s.diff(hash))
+      }),
+      pinDiff: Effect.fn("Snapshot.pinDiff")(function* (input: DiffPin & { from: string; to: string }) {
+        return yield* InstanceState.useEffect(state, (s) => s.pinDiff(input))
+      }),
+      copyDiffPin: Effect.fn("Snapshot.copyDiffPin")(function* (input: { from: DiffPin; to: DiffPin }) {
+        return yield* InstanceState.useEffect(state, (s) => s.copyDiffPin(input))
+      }),
+      unpinDiff: Effect.fn("Snapshot.unpinDiff")(function* (input: DiffPin) {
+        return yield* InstanceState.useEffect(state, (s) => s.unpinDiff(input))
+      }),
+      unpinSessionDiffs: Effect.fn("Snapshot.unpinSessionDiffs")(function* (sessionID: string) {
+        return yield* InstanceState.useEffect(state, (s) => s.unpinSessionDiffs(sessionID))
+      }),
+      diffSummary: Effect.fn("Snapshot.diffSummary")(function* (from: string, to: string) {
+        return yield* InstanceState.useEffect(state, (s) => s.diffSummary(from, to))
+      }),
+      diffFullAvailable: Effect.fn("Snapshot.diffFullAvailable")(function* (from: string, to: string) {
+        return yield* InstanceState.useEffect(state, (s) => s.diffFullAvailable(from, to))
+      }),
+      diffPinned: Effect.fn("Snapshot.diffPinned")(function* (
+        input: DiffPin & { readonly from?: string; readonly to?: string; readonly excludeTo?: string },
+      ) {
+        return yield* InstanceState.useEffect(state, (s) => s.diffPinned(input))
       }),
       diffFull: Effect.fn("Snapshot.diffFull")(function* (from: string, to: string) {
         return yield* InstanceState.useEffect(state, (s) => s.diffFull(from, to))

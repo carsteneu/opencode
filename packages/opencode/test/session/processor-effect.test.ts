@@ -26,12 +26,18 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { LLMEvent } from "@opencode-ai/llm"
+import { Snapshot } from "@/snapshot"
 
 const summary = Layer.succeed(
   SessionSummary.Service,
   SessionSummary.Service.of({
+    reset: () => Effect.void,
     summarize: () => Effect.void,
+    materialize: () => Effect.void,
+    materializeSession: () => Effect.succeed([]),
     diff: () => Effect.succeed([]),
+    hydrate: (info) => Effect.succeed(info),
+    hydrateMessages: (messages) => Effect.succeed([...messages]),
     computeDiff: () => Effect.succeed([]),
   }),
 )
@@ -173,6 +179,7 @@ const root = LayerNode.group([
   Database.node,
   EventV2Bridge.node,
   SessionStatus.node,
+  Snapshot.node,
   CrossSpawnSpawner.node,
 ])
 const replacements = [
@@ -1146,6 +1153,88 @@ it.live("session.processor effect tests mark interruptions aborted without manua
         expect(state).toMatchObject({ type: "idle" })
       }),
     { config: (url) => providerCfg(url) },
+  ),
+)
+
+it.live("session.processor effect tests pin interrupted later step diff from the turn start", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const database = yield* Database.Service
+        const { processors, session, provider } = yield* boot()
+        const snapshot = yield* Snapshot.Service
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "two step interrupt")
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const input = {
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies SessionV1.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user" as const, content: "two step interrupt" }],
+          tools: {},
+        }
+
+        yield* llm.text("first step complete")
+        const firstMessage = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const first = yield* processors.create({
+          assistantMessage: firstMessage,
+          sessionID: chat.id,
+          model: mdl,
+        })
+        yield* Effect.promise(() => Bun.write(path.join(dir, "first-step.txt"), "first step\n"))
+        expect(yield* first.process(input)).toBe("continue")
+        if (!first.nextSnapshot) throw new Error("Expected completed first-step snapshot")
+        if (!first.summarySnapshot) throw new Error("Expected turn-start snapshot")
+        const turnStart = first.summarySnapshot
+
+        yield* llm.hang
+        const secondMessage = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const second = yield* processors.create({
+          assistantMessage: secondMessage,
+          sessionID: chat.id,
+          model: mdl,
+          initialSnapshot: first.nextSnapshot,
+          summarySnapshot: turnStart,
+        })
+        const run = yield* second.process(input).pipe(Effect.forkChild)
+
+        yield* llm.wait(2)
+        yield* waitFor(
+          MessageV2.parts(secondMessage.id).pipe(
+            Effect.map((parts) => parts.find((part) => part.type === "step-start")),
+            Effect.provideService(Database.Service, database),
+          ),
+          "timed out waiting for the later step to start",
+          2_000,
+        )
+        yield* Effect.promise(() => Bun.write(path.join(dir, "interrupted-step.txt"), "interrupted step\n"))
+        yield* Fiber.interrupt(run)
+        expect(Exit.isFailure(yield* Fiber.await(run))).toBe(true)
+
+        if (!second.nextSnapshot) throw new Error("Expected interrupted-step end snapshot")
+        const diff = yield* snapshot.diffPinned({
+          sessionID: chat.id,
+          messageID: parent.id,
+          from: turnStart,
+          to: second.nextSnapshot,
+        })
+        const files = new Map(diff?.map((item) => [item.file, item]))
+
+        expect(second.summarySnapshot).toBe(turnStart)
+        expect(files.get("first-step.txt")?.patch).toContain("+first step")
+        expect(files.get("interrupted-step.txt")?.patch).toContain("+interrupted step")
+      }),
+    { git: true, config: (url) => providerCfg(url) },
   ),
 )
 

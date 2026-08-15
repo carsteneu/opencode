@@ -35,6 +35,7 @@ export type Result = "compact" | "stop" | "continue"
 
 export interface Handle {
   readonly message: SessionV1.Assistant
+  readonly summarySnapshot?: string
   readonly nextSnapshot: string | undefined
   readonly updateToolCall: (
     toolCallID: string,
@@ -57,6 +58,7 @@ type Input = {
   sessionID: SessionID
   model: Provider.Model
   initialSnapshot?: string
+  summarySnapshot?: string
 }
 
 export interface Interface {
@@ -81,6 +83,7 @@ interface ProcessorContext extends Input {
   toolInputProgress: Record<string, ToolInputProgress>
   shouldBreak: boolean
   snapshot: string | undefined
+  summarySnapshot: string | undefined
   blocked: boolean
   needsCompaction: boolean
   currentText: SessionV1.TextPart | undefined
@@ -121,6 +124,7 @@ const layer = Layer.effect(
         toolInputProgress: {},
         shouldBreak: false,
         snapshot: initialSnapshot,
+        summarySnapshot: input.summarySnapshot ?? initialSnapshot,
         blocked: false,
         needsCompaction: false,
         currentText: undefined,
@@ -517,7 +521,7 @@ const layer = Layer.effect(
                 sessionID: ctx.sessionID,
                 messageID: ctx.assistantMessage.parentID,
               })
-              .pipe(Effect.ignore, Effect.forkIn(scope))
+              .pipe(Effect.ignore)
             if (
               !ctx.assistantMessage.summary &&
               isOverflow({ cfg: yield* config.get(), tokens: usage.tokens, model: ctx.model })
@@ -582,7 +586,8 @@ const layer = Layer.effect(
 
       const cleanup = Effect.fn("SessionProcessor.cleanup")(function* () {
         if (ctx.snapshot) {
-          const patch = yield* snapshot.patch(ctx.snapshot)
+          const completedSnapshot = yield* snapshot.track()
+          const patch = yield* snapshot.patch(ctx.snapshot, completedSnapshot)
           if (patch.files.length) {
             yield* session.updatePart({
               id: PartID.ascending(),
@@ -591,6 +596,15 @@ const layer = Layer.effect(
               type: "patch",
               hash: patch.hash,
               files: patch.files,
+            })
+          }
+          if (completedSnapshot && ctx.summarySnapshot) {
+            ctx.nextSnapshot = completedSnapshot
+            yield* snapshot.pinDiff({
+              sessionID: ctx.sessionID,
+              messageID: ctx.assistantMessage.parentID,
+              from: ctx.summarySnapshot,
+              to: completedSnapshot,
             })
           }
           ctx.snapshot = undefined
@@ -730,6 +744,9 @@ const layer = Layer.effect(
       return {
         get message() {
           return ctx.assistantMessage
+        },
+        get summarySnapshot() {
+          return ctx.summarySnapshot
         },
         get nextSnapshot() {
           return ctx.nextSnapshot

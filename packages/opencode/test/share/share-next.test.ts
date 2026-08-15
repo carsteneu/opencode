@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect } from "bun:test"
-import { Effect, Exit, Layer, Option } from "effect"
-import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
+import { Deferred, Effect, Exit, Layer, Option } from "effect"
+import { HttpClient, HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { httpClient } from "@opencode-ai/core/effect/app-node-platform"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
@@ -14,6 +14,11 @@ import type { SessionID } from "../../src/session/schema"
 import { ShareNext } from "@/share/share-next"
 import { SessionShareTable } from "@opencode-ai/core/share/sql"
 import { Database } from "@opencode-ai/core/database/database"
+import { MessageDiff } from "@opencode-ai/core/session/message-diff"
+import { ModelV2 } from "@opencode-ai/core/model"
+import { ProviderV2 } from "@opencode-ai/core/provider"
+import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { MessageID } from "../../src/session/schema"
 import { eq } from "drizzle-orm"
 import { provideTmpdirInstance } from "../fixture/fixture"
 import { resetDatabase } from "../fixture/db"
@@ -48,6 +53,7 @@ function integrationLayer(client: HttpClient.HttpClient) {
       SessionProjector.node,
       AccountRepo.node,
       Database.node,
+      MessageDiff.node,
     ]),
     [replacement],
   )
@@ -320,5 +326,307 @@ describe("ShareNext", () => {
       },
       { config: { enterprise: { url: "https://legacy-share.example.com" } } },
     ),
+  )
+
+  it.live(
+    "reconciles persisted full message diffs when sharing initializes",
+    () =>
+      provideTmpdirInstance(
+        () => {
+          const seen: string[] = []
+          const client = HttpClient.make((req) => {
+            if (req.url.endsWith("/sync") && req.body._tag === "Uint8Array") {
+              seen.push(new TextDecoder().decode(req.body.body))
+            }
+            return Effect.succeed(json(req, { ok: true }))
+          })
+
+          return Effect.gen(function* () {
+            const sessions = yield* Session.Service
+            const messageDiffs = yield* MessageDiff.Service
+            const info = yield* sessions.create({ title: "startup reconciliation" })
+            const target = yield* sessions.updateMessage({
+              id: MessageID.ascending(),
+              sessionID: info.id,
+              role: "user",
+              time: { created: Date.now() },
+              agent: "build",
+              model: {
+                providerID: ProviderV2.ID.make("test"),
+                modelID: ModelV2.ID.make("model"),
+              },
+              summary: {
+                diffs: [{ file: "startup.ts", additions: 3, deletions: 1, status: "modified" }],
+              },
+            } satisfies SessionV1.User)
+            const unrelated = yield* sessions.updateMessage({
+              id: MessageID.ascending(),
+              sessionID: info.id,
+              role: "user",
+              time: { created: Date.now() + 1 },
+              agent: "build",
+              model: {
+                providerID: ProviderV2.ID.make("test"),
+                modelID: ModelV2.ID.make("model"),
+              },
+              summary: {
+                diffs: [{ file: "unrelated.ts", additions: 1, deletions: 0, status: "added" }],
+              },
+            } satisfies SessionV1.User)
+            yield* messageDiffs.put({
+              messageID: target.id,
+              diffs: [
+                {
+                  file: "startup.ts",
+                  patch: "persisted full patch",
+                  additions: 3,
+                  deletions: 1,
+                  status: "modified",
+                },
+              ],
+            })
+
+            const { db } = yield* Database.Service
+            yield* db
+              .insert(SessionShareTable)
+              .values({
+                session_id: info.id,
+                id: "shr_startup",
+                url: "https://legacy-share.example.com/share/startup",
+                secret: "sec_startup",
+              })
+              .run()
+              .pipe(Effect.orDie)
+
+            yield* (yield* ShareNext.Service).init()
+            yield* pollWithTimeout(
+              Effect.sync(() => (seen.length === 1 ? true : undefined)),
+              "timed out waiting for startup share reconciliation",
+              "5 seconds",
+            )
+
+            const payload = JSON.parse(seen[0]!) as {
+              secret: string
+              data: Array<{ type: string; data: SessionV1.Info }>
+            }
+            expect(payload.secret).toBe("sec_startup")
+            expect(payload.data).toHaveLength(1)
+            expect(payload.data[0]?.type).toBe("message")
+            expect(payload.data[0]?.data.id).toBe(target.id)
+            expect(payload.data[0]?.data.id).not.toBe(unrelated.id)
+            const message = payload.data[0]?.data
+            if (message?.role !== "user") throw new Error("expected reconciled shared user message")
+            expect(message.summary?.diffs).toEqual([
+              {
+                file: "startup.ts",
+                patch: "persisted full patch",
+                additions: 3,
+                deletions: 1,
+                status: "modified",
+              },
+            ])
+          }).pipe(Effect.provide(integrationLayer(client)))
+        },
+        { config: { enterprise: { url: "https://legacy-share.example.com" } } },
+      ),
+    10_000,
+  )
+
+  it.live(
+    "requeues transport failures without overwriting newer queued diff data",
+    () =>
+      provideTmpdirInstance(
+        () => {
+          const seen: string[] = []
+          const release = Deferred.makeUnsafe<void>()
+          const client = HttpClient.make((req) => {
+            if (!req.url.endsWith("/sync") || req.body._tag !== "Uint8Array") {
+              return Effect.succeed(json(req, { ok: true }))
+            }
+
+            seen.push(new TextDecoder().decode(req.body.body))
+            if (seen.length > 1) return Effect.succeed(json(req, { ok: true }))
+            return Deferred.await(release).pipe(
+              Effect.andThen(
+                Effect.fail(
+                  new HttpClientError.HttpClientError({
+                    reason: new HttpClientError.TransportError({ request: req }),
+                  }),
+                ),
+              ),
+            )
+          })
+
+          return Effect.gen(function* () {
+            const events = yield* EventV2Bridge.Service
+            const sharing = yield* ShareNext.Service
+            const sessions = yield* Session.Service
+            const info = yield* sessions.create({ title: "retry diff" })
+
+            yield* sharing.init()
+            const { db } = yield* Database.Service
+            yield* db
+              .insert(SessionShareTable)
+              .values({
+                session_id: info.id,
+                id: "shr_retry",
+                url: "https://legacy-share.example.com/share/retry",
+                secret: "sec_retry",
+              })
+              .run()
+              .pipe(Effect.orDie)
+
+            yield* events.publish(Session.Event.Diff, {
+              sessionID: info.id,
+              diff: [{ file: "old.ts", patch: "old patch", additions: 1, deletions: 0, status: "modified" }],
+            })
+            yield* pollWithTimeout(
+              Effect.sync(() => (seen.length === 1 ? true : undefined)),
+              "timed out waiting for failed share sync",
+              "5 seconds",
+            )
+
+            yield* events.publish(Session.Event.Diff, {
+              sessionID: info.id,
+              diff: [{ file: "new.ts", patch: "new patch", additions: 2, deletions: 1, status: "modified" }],
+            })
+            yield* Deferred.succeed(release, undefined)
+            yield* pollWithTimeout(
+              Effect.sync(() => (seen.length === 2 ? true : undefined)),
+              "timed out waiting for retried share sync",
+              "10 seconds",
+            )
+
+            const payloads = seen.map(
+              (body) =>
+                JSON.parse(body) as {
+                  data: Array<{
+                    type: string
+                    data: Array<{
+                      file: string
+                      patch: string
+                      additions: number
+                      deletions: number
+                      status?: string
+                    }>
+                  }>
+                },
+            )
+            expect(payloads[0].data.find((item) => item.type === "session_diff")?.data).toEqual([
+              { file: "old.ts", patch: "old patch", additions: 1, deletions: 0, status: "modified" },
+            ])
+            expect(payloads[1].data.find((item) => item.type === "session_diff")?.data).toEqual([
+              { file: "new.ts", patch: "new patch", additions: 2, deletions: 1, status: "modified" },
+            ])
+          }).pipe(Effect.provide(integrationLayer(client)))
+        },
+        { config: { enterprise: { url: "https://legacy-share.example.com" } } },
+      ),
+    20_000,
+  )
+
+  it.live(
+    "retries a terminal full message diff after a non-ok response",
+    () =>
+      provideTmpdirInstance(
+        () => {
+          const seen: string[] = []
+          let failNext = false
+          const client = HttpClient.make((req) => {
+            if (req.url.endsWith("/sync") && req.body._tag === "Uint8Array") {
+              seen.push(new TextDecoder().decode(req.body.body))
+              if (failNext) {
+                failNext = false
+                return Effect.succeed(json(req, { error: "retry" }, 503))
+              }
+            }
+            return Effect.succeed(json(req, { ok: true }))
+          })
+
+          return Effect.gen(function* () {
+            const events = yield* EventV2Bridge.Service
+            const messageDiffs = yield* MessageDiff.Service
+            const sharing = yield* ShareNext.Service
+            const sessions = yield* Session.Service
+            const info = yield* sessions.create({ title: "message diff" })
+
+            yield* sharing.init()
+            const { db } = yield* Database.Service
+            yield* db
+              .insert(SessionShareTable)
+              .values({
+                session_id: info.id,
+                id: "shr_diff",
+                url: "https://legacy-share.example.com/share/diff",
+                secret: "sec_diff",
+              })
+              .run()
+              .pipe(Effect.orDie)
+
+            const message = yield* sessions.updateMessage({
+              id: MessageID.ascending(),
+              sessionID: info.id,
+              role: "user",
+              time: { created: Date.now() },
+              agent: "build",
+              model: {
+                providerID: ProviderV2.ID.make("test"),
+                modelID: ModelV2.ID.make("model"),
+              },
+              summary: {
+                diffs: [{ file: "turn.ts", additions: 1, deletions: 0, status: "modified" }],
+              },
+            } satisfies SessionV1.User)
+            yield* messageDiffs.put({
+              messageID: message.id,
+              diffs: [
+                {
+                  file: "turn.ts",
+                  patch: "terminal full patch",
+                  additions: 1,
+                  deletions: 0,
+                  status: "modified",
+                },
+              ],
+            })
+
+            yield* pollWithTimeout(
+              Effect.sync(() => (seen.length === 1 ? true : undefined)),
+              "timed out waiting for metadata share sync",
+              "5 seconds",
+            )
+            const pending = JSON.parse(seen[0]!) as {
+              data: Array<{ type: string; data: SessionV1.Info }>
+            }
+            const pendingMessage = pending.data.find((item) => item.type === "message")?.data
+            if (pendingMessage?.role !== "user") throw new Error("expected pending shared user message")
+            expect(pendingMessage.summary?.diffs?.[0]?.patch).toBeUndefined()
+
+            failNext = true
+            yield* events.publish(Session.Event.DiffUpdated, { sessionID: info.id, messageID: message.id })
+            yield* pollWithTimeout(
+              Effect.sync(() => (seen.length === 3 ? true : undefined)),
+              "timed out waiting for retried terminal share sync",
+              "10 seconds",
+            )
+            const terminal = JSON.parse(seen[1]!) as {
+              data: Array<{ type: string; data: SessionV1.Info }>
+            }
+            const terminalMessage = terminal.data.find((item) => item.type === "message")?.data
+            if (terminalMessage?.role !== "user") throw new Error("expected terminal shared user message")
+            expect(terminalMessage.summary?.diffs?.[0]?.patch).toBe("terminal full patch")
+            expect(seen[2]).toBe(seen[1])
+
+            const retried = JSON.parse(seen[2]!) as {
+              data: Array<{ type: string; data: SessionV1.Info }>
+            }
+            const retriedMessage = retried.data.find((item) => item.type === "message")?.data
+            if (retriedMessage?.role !== "user") throw new Error("expected retried shared user message")
+            expect(retriedMessage.summary?.diffs?.[0]?.patch).toBe("terminal full patch")
+          }).pipe(Effect.provide(integrationLayer(client)))
+        },
+        { config: { enterprise: { url: "https://legacy-share.example.com" } } },
+      ),
+    20_000,
   )
 })

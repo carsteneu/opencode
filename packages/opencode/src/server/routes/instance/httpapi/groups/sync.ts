@@ -1,5 +1,6 @@
 import { NonNegativeInt } from "@opencode-ai/core/schema"
 import { EventV2 } from "@opencode-ai/core/event"
+import { MessageDiff } from "@opencode-ai/core/session/message-diff"
 import { SessionID } from "@/session/schema"
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
@@ -19,6 +20,7 @@ export const ReplayEvent = Schema.Struct({
 export const ReplayPayload = Schema.Struct({
   directory: Schema.String,
   events: Schema.NonEmptyArray(ReplayEvent),
+  messageDiffs: Schema.optional(MessageDiff.Snapshot),
 })
 export const ReplayResponse = Schema.Struct({
   sessionID: Schema.String,
@@ -27,6 +29,7 @@ export const SessionPayload = Schema.Struct({
   sessionID: SessionID,
 })
 export const HistoryPayload = Schema.Record(Schema.String, NonNegativeInt)
+export const MessageDiffManifestPayload = Schema.Array(SessionID)
 export const HistoryEvent = Schema.Struct({
   id: EventV2.ID,
   aggregate_id: Schema.String,
@@ -40,6 +43,9 @@ export const SyncPaths = {
   replay: `${root}/replay`,
   steal: `${root}/steal`,
   history: `${root}/history`,
+  messageDiffs: `${root}/message-diffs`,
+  messageDiffManifest: `${root}/message-diffs/manifest`,
+  materializeMessageDiffs: `${root}/message-diffs/materialize`,
 } as const
 
 export const SyncApi = HttpApi.make("sync")
@@ -91,6 +97,40 @@ export const SyncApi = HttpApi.make("sync")
             summary: "List sync events",
             description:
               "List sync events for all aggregates. Keys are aggregate IDs the client already knows about, values are the last known sequence ID. Events with seq > value are returned for those aggregates. Aggregates not listed in the input get their full history.",
+          }),
+        ),
+        HttpApiEndpoint.post("messageDiffs", SyncPaths.messageDiffs, {
+          query: WorkspaceRoutingQuery,
+          payload: Schema.Array(MessageDiff.Selection),
+          success: described(Schema.Array(MessageDiff.Snapshot), "Message diff snapshots"),
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "sync.message-diffs.list",
+            summary: "List message diff snapshots",
+            description: "List authoritative side-table snapshots for workspace session synchronization.",
+          }),
+        ),
+        HttpApiEndpoint.post("messageDiffManifest", SyncPaths.messageDiffManifest, {
+          query: WorkspaceRoutingQuery,
+          payload: MessageDiffManifestPayload,
+          success: described(Schema.Array(MessageDiff.Manifest), "Message diff manifest"),
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "sync.message-diffs.manifest",
+            summary: "List message diff markers",
+            description: "List lightweight revision markers for workspace side-table reconciliation.",
+          }),
+        ),
+        HttpApiEndpoint.post("materializeMessageDiffs", SyncPaths.materializeMessageDiffs, {
+          query: WorkspaceRoutingQuery,
+          payload: SessionPayload,
+          success: described(MessageDiff.Snapshot, "Materialized message diff snapshot"),
+          error: HttpApiError.BadRequest,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "sync.message-diffs.materialize",
+            summary: "Materialize session message diffs",
+            description: "Materialize and return a portable side-table snapshot before an explicit session warp.",
           }),
         ),
       )

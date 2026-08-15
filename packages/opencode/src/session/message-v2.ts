@@ -22,11 +22,13 @@ import { Database } from "@opencode-ai/core/database/database"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { NotFoundError } from "@/storage/storage"
 import { and } from "drizzle-orm"
+import { asc } from "drizzle-orm"
 import { desc } from "drizzle-orm"
 import { eq } from "drizzle-orm"
 import { inArray } from "drizzle-orm"
 import { lt } from "drizzle-orm"
 import { or } from "drizzle-orm"
+import { sql } from "drizzle-orm"
 import { MessageTable, PartTable, SessionTable } from "@opencode-ai/core/session/sql"
 import { ProviderError } from "@/provider/error"
 import { iife } from "@/util/iife"
@@ -464,6 +466,26 @@ export const page = Effect.fn("MessageV2.page")(function* (input: {
     more,
     cursor: more && tail ? cursor.encode({ id: tail.id, time: tail.time_created }) : undefined,
   }
+})
+
+export const turn = Effect.fn("MessageV2.turn")(function* (input: { sessionID: SessionID; messageID: MessageID }) {
+  const { db } = yield* Database.Service
+  const rows = yield* db
+    .select()
+    .from(MessageTable)
+    .where(
+      and(
+        eq(MessageTable.session_id, input.sessionID),
+        or(
+          eq(MessageTable.id, input.messageID),
+          eq(sql<string>`json_extract(${MessageTable.data}, '$.parentID')`, input.messageID),
+        ),
+      ),
+    )
+    .orderBy(asc(MessageTable.time_created), asc(MessageTable.id))
+    .all()
+    .pipe(Effect.orDie)
+  return yield* hydrate(db, rows)
 })
 
 export function stream(sessionID: SessionID) {

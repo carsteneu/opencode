@@ -342,7 +342,7 @@ export const User = Schema.Struct({
     Schema.Struct({
       title: Schema.optional(Schema.String),
       body: Schema.optional(Schema.String),
-      diffs: Schema.Array(FileDiff.Info),
+      diffs: Schema.optional(Schema.Array(FileDiff.Info)),
     }),
   ),
   agent: Schema.String,
@@ -642,6 +642,24 @@ export const PartDelta = define({
   },
 })
 
+// The full diff lives in the message_diff side table. This ephemeral event only
+// invalidates readers after a terminal turn materializes that row.
+export const DiffUpdated = define({
+  type: "message.diff.updated",
+  schema: {
+    sessionID: SessionID,
+    messageID: MessageID,
+  },
+})
+
+export const DiffInvalidated = define({
+  type: "message.diff.invalidated",
+  schema: {
+    sessionID: SessionID,
+    messageID: MessageID,
+  },
+})
+
 export const Diff = define({
   type: "session.diff",
   schema: {
@@ -660,6 +678,8 @@ export const Error = define({
 
 export const Event = {
   ...events,
+  DiffUpdated,
+  DiffInvalidated,
   PartDelta,
   Diff,
   Error,
@@ -671,6 +691,8 @@ export const Event = {
     events.MessageRemoved,
     events.PartUpdated,
     events.PartRemoved,
+    DiffUpdated,
+    DiffInvalidated,
     PartDelta,
     Diff,
     Error,

@@ -1,4 +1,6 @@
 import { Session } from "@/session/session"
+import { SessionSummary } from "@/session/summary"
+import { NotFoundError } from "@/storage/storage"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { MessageV2 } from "../../session/message-v2"
 import { SessionID } from "../../session/schema"
@@ -160,7 +162,7 @@ function part(part: SessionV1.Part): SessionV1.Part {
 
 const partFn = part
 
-function sanitize(data: { info: Session.Info; messages: SessionV1.WithParts[] }) {
+export function sanitize(data: { info: Session.Info; messages: SessionV1.WithParts[] }) {
   return {
     info: {
       ...data.info,
@@ -218,6 +220,17 @@ function sanitize(data: { info: Session.Info; messages: SessionV1.WithParts[] })
     })),
   }
 }
+
+export const hydrateSummaryDiffs = Effect.fn("Cli.export.hydrateSummaryDiffs")(function* (data: {
+  info: Session.Info
+  messages: SessionV1.WithParts[]
+}) {
+  const summary = yield* SessionSummary.Service
+  return {
+    ...data,
+    messages: yield* summary.hydrateMessages(data.messages, { persist: false }),
+  }
+})
 
 export const ExportCommand = effectCmd({
   command: "export [sessionID]",
@@ -278,15 +291,21 @@ const run = Effect.fn("Cli.export.body")(function* (args: { sessionID?: string; 
     prompts.outro("Exporting session...", { output: process.stderr })
   }
 
-  // Match legacy try/catch — catches both typed failures and defects
-  // (Session.Service.get throws NotFoundError as a defect, not a typed E).
-  return yield* Effect.gen(function* () {
-    const sessionInfo = yield* svc.get(sessionID!)
-    const messages = yield* svc.messages({ sessionID: sessionInfo.id })
+  const sessionInfo = yield* svc
+    .get(sessionID!)
+    .pipe(Effect.catchIf(NotFoundError.isInstance, () => fail(`Session not found: ${sessionID!}`)))
+  const messages = yield* svc
+    .messages({ sessionID: sessionInfo.id })
+    .pipe(Effect.catchIf(NotFoundError.isInstance, () => fail(`Session not found: ${sessionID!}`)))
+  const exportData = yield* hydrateSummaryDiffs({ info: sessionInfo, messages })
+  const incomplete = exportData.messages.flatMap((message) =>
+    message.info.role === "user" ? (message.info.summary?.diffs ?? []).filter((item) => item.patch === undefined) : [],
+  )
+  if (incomplete.length)
+    process.stderr.write(
+      `Warning: ${incomplete.length} file diff${incomplete.length === 1 ? " is" : "s are"} metadata-only because the original snapshot is unavailable.\n`,
+    )
 
-    const exportData = { info: sessionInfo, messages }
-
-    process.stdout.write(JSON.stringify(args.sanitize ? sanitize(exportData) : exportData, null, 2))
-    process.stdout.write(EOL)
-  }).pipe(Effect.catchCause(() => fail(`Session not found: ${sessionID!}`)))
+  process.stdout.write(JSON.stringify(args.sanitize ? sanitize(exportData) : exportData, null, 2))
+  process.stdout.write(EOL)
 })

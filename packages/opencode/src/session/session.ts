@@ -9,6 +9,7 @@ import { Decimal } from "decimal.js"
 import type { ProviderMetadata, Usage } from "@opencode-ai/llm"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { Database } from "@opencode-ai/core/database/database"
+import { MessageDiff } from "@opencode-ai/core/session/message-diff"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionV2 } from "@opencode-ai/core/session"
 import * as SessionExecutionLocal from "@opencode-ai/core/session/execution/local"
@@ -26,7 +27,7 @@ import { inArray } from "drizzle-orm"
 import { lt } from "drizzle-orm"
 import { or } from "drizzle-orm"
 import type { SQL } from "drizzle-orm"
-import { PartTable, SessionTable } from "@opencode-ai/core/session/sql"
+import { MessageTable, PartTable, SessionTable } from "@opencode-ai/core/session/sql"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { MessageV2 } from "./message-v2"
 import type { InstanceContext } from "../project/instance-context"
@@ -47,6 +48,28 @@ import { SessionMessage } from "@opencode-ai/schema/session-message"
 
 const parentTitlePrefix = "New session - "
 const childTitlePrefix = "Child session - "
+
+export function compactSummaryDiffs(diffs: readonly Snapshot.FileDiff[]): Snapshot.FileDiff[] {
+  return diffs.map((diff) => ({
+    file: diff.file,
+    additions: diff.additions,
+    deletions: diff.deletions,
+    status: diff.status,
+  }))
+}
+
+function compactMessageSummary<T extends SessionV1.Info>(message: T): T {
+  if (message.role !== "user") return message
+  const diffs = message.summary?.diffs
+  if (!diffs?.some((diff) => diff.patch !== undefined)) return message
+  return {
+    ...message,
+    summary: {
+      ...message.summary,
+      diffs: compactSummaryDiffs(diffs),
+    },
+  } as T
+}
 
 export function isDefaultTitle(title: string) {
   return new RegExp(
@@ -324,6 +347,7 @@ export const Event = {
   Created: SessionV1.Event.Created,
   Updated: SessionV1.Event.Updated,
   Deleted: SessionV1.Event.Deleted,
+  DiffUpdated: SessionV1.Event.DiffUpdated,
   Diff: SessionV1.Event.Diff,
   Error: SessionV1.Event.Error,
 }
@@ -459,6 +483,7 @@ export interface Interface {
     partID: PartID
   }) => Effect.Effect<SessionV1.Part | undefined>
   readonly updatePart: <T extends SessionV1.Part>(part: T) => Effect.Effect<T>
+  readonly replacePart: <T extends SessionV1.Part>(part: T) => Effect.Effect<T>
   readonly updatePartDelta: (input: {
     sessionID: SessionID
     messageID: MessageID
@@ -488,7 +513,12 @@ export type Patch = Omit<Partial<Info>, "time" | "share" | "summary" | "revert" 
 const layer: Layer.Layer<
   Service,
   never,
-  BackgroundJob.Service | RuntimeFlags.Service | Database.Service | EventV2Bridge.Service
+  | BackgroundJob.Service
+  | RuntimeFlags.Service
+  | Database.Service
+  | EventV2Bridge.Service
+  | MessageDiff.Service
+  | Snapshot.Service
 > = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -497,6 +527,8 @@ const layer: Layer.Layer<
     const background = yield* BackgroundJob.Service
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
+    const messageDiffs = yield* MessageDiff.Service
+    const snapshot = yield* Snapshot.Service
 
     const createNext = Effect.fn("Session.createNext")(function* (input: {
       id?: SessionID
@@ -623,6 +655,7 @@ const layer: Layer.Layer<
 
         yield* events.publish(SessionV1.Event.Deleted, { sessionID, info: session })
         yield* events.remove(sessionID)
+        if (hasInstance) yield* snapshot.unpinSessionDiffs(sessionID)
       } catch (error) {
         yield* Effect.logError("failed to remove session", { sessionID, error })
       }
@@ -630,22 +663,92 @@ const layer: Layer.Layer<
 
     const updateMessage = <T extends SessionV1.Info>(msg: T): Effect.Effect<T> =>
       Effect.gen(function* () {
-        yield* events.publish(SessionV1.Event.MessageUpdated, { sessionID: msg.sessionID, info: msg })
-        return msg
+        const info = compactMessageSummary(msg)
+        const diffs = msg.role === "user" ? msg.summary?.diffs : undefined
+        yield* events.publish(
+          SessionV1.Event.MessageUpdated,
+          { sessionID: info.sessionID, info },
+          diffs?.some((diff) => diff.patch !== undefined)
+            ? { commit: () => messageDiffs.put({ messageID: msg.id, diffs }) }
+            : undefined,
+        )
+        if (diffs?.some((diff) => diff.patch !== undefined))
+          yield* events.publish(SessionV1.Event.DiffUpdated, { sessionID: info.sessionID, messageID: info.id })
+        return info
       }).pipe(Effect.withSpan("Session.updateMessage"))
+
+    const messageInfo = Effect.fnUntraced(function* (input: { sessionID: SessionID; messageID: MessageID }) {
+      const row = yield* db
+        .select({ data: MessageTable.data })
+        .from(MessageTable)
+        .where(and(eq(MessageTable.session_id, input.sessionID), eq(MessageTable.id, input.messageID)))
+        .get()
+        .pipe(Effect.orDie)
+      if (!row) return
+      return { ...row.data, id: input.messageID, sessionID: input.sessionID } as SessionV1.Info
+    })
+
+    const diffOwner = Effect.fnUntraced(function* (input: { sessionID: SessionID; messageID: MessageID }) {
+      const info = yield* messageInfo(input)
+      if (!info) return
+      return info.role === "user" ? info.id : info.parentID
+    })
+
+    const invalidateDiff = Effect.fnUntraced(function* (input: {
+      sessionID: SessionID
+      ownerID: MessageID
+      clearSummary?: boolean
+    }) {
+      yield* snapshot.unpinDiff({ sessionID: input.sessionID, messageID: input.ownerID })
+      const info = yield* messageInfo({ sessionID: input.sessionID, messageID: input.ownerID })
+      if (input.clearSummary !== false && info?.role === "user" && info.summary?.diffs !== undefined) {
+        const summary = { ...info.summary }
+        delete summary.diffs
+        yield* updateMessage({
+          ...info,
+          summary,
+        })
+      }
+      yield* events.publish(SessionV1.Event.DiffInvalidated, {
+        sessionID: input.sessionID,
+        messageID: input.ownerID,
+      })
+    })
 
     // No structuredClone here (PR #35111): deep-cloning large parts per publish caused
     // unbounded heap churn. Invariant: callers must not mutate `part` after this call —
     // async PubSub subscribers (SSE, share) serialize it at dequeue time.
-    const updatePart = <T extends SessionV1.Part>(part: T): Effect.Effect<T> =>
+    const publishPart = <T extends SessionV1.Part>(part: T, previous?: SessionV1.Part): Effect.Effect<T> =>
       Effect.gen(function* () {
-        yield* events.publish(SessionV1.Event.PartUpdated, {
-          sessionID: part.sessionID,
-          part,
-          time: Date.now(),
-        })
+        const boundary =
+          part.type === "step-start" ||
+          part.type === "step-finish" ||
+          previous?.type === "step-start" ||
+          previous?.type === "step-finish"
+        const ownerID = boundary
+          ? yield* diffOwner({ sessionID: part.sessionID, messageID: part.messageID })
+          : undefined
+        const stored = ownerID ? yield* messageDiffs.get(ownerID, part.sessionID) : undefined
+        const starting = part.type === "step-start" && previous === undefined
+        yield* events.publish(
+          SessionV1.Event.PartUpdated,
+          {
+            sessionID: part.sessionID,
+            part,
+            time: Date.now(),
+          },
+          stored && ownerID ? { commit: () => messageDiffs.remove(ownerID) } : undefined,
+        )
+        if (ownerID && (stored || previous || starting))
+          yield* invalidateDiff({
+            sessionID: part.sessionID,
+            ownerID,
+            clearSummary: !starting,
+          })
         return part
       }).pipe(Effect.withSpan("Session.updatePart"))
+
+    const updatePart = <T extends SessionV1.Part>(part: T): Effect.Effect<T> => publishPart(part)
 
     const getPart: Interface["getPart"] = Effect.fn("Session.getPart")(function* (input) {
       const row = yield* db
@@ -668,6 +771,12 @@ const layer: Layer.Layer<
         messageID: row.message_id,
       } as SessionV1.Part
     })
+
+    const replacePart = <T extends SessionV1.Part>(part: T): Effect.Effect<T> =>
+      getPart({ sessionID: part.sessionID, messageID: part.messageID, partID: part.id }).pipe(
+        Effect.flatMap((previous) => publishPart(part, previous)),
+        Effect.withSpan("Session.replacePart"),
+      )
 
     const create = Effect.fn("Session.create")(function* (input?: {
       parentID?: SessionID
@@ -707,18 +816,22 @@ const layer: Layer.Layer<
       const msgs = yield* messages({ sessionID: input.sessionID })
       const idMap = new Map<string, MessageID>()
       const target = input.messageID ? msgs.findIndex((msg) => msg.info.id === input.messageID) : msgs.length
+      const selected = msgs.slice(0, target < 0 ? msgs.length : target)
+      const users: Array<{ source: SessionV1.WithParts; targetID: MessageID }> = []
 
-      for (const msg of msgs.slice(0, target < 0 ? msgs.length : target)) {
+      for (const msg of selected) {
         const newID = MessageID.ascending()
         idMap.set(msg.info.id, newID)
 
         const parentID = msg.info.role === "assistant" && msg.info.parentID ? idMap.get(msg.info.parentID) : undefined
-        const cloned = yield* updateMessage({
+        const info = {
           ...msg.info,
           sessionID: session.id,
           id: newID,
           ...(parentID && { parentID }),
-        })
+        } as SessionV1.Info
+        const cloned = yield* updateMessage(compactMessageSummary(info))
+        if (msg.info.role === "user") users.push({ source: msg, targetID: newID })
 
         for (const part of msg.parts) {
           const p: SessionV1.Part = {
@@ -732,6 +845,37 @@ const layer: Layer.Layer<
           }
           yield* updatePart(p)
         }
+      }
+
+      for (const user of users) {
+        const copied = yield* messageDiffs.copy({ fromMessageID: user.source.info.id, toMessageID: user.targetID })
+        if (copied) {
+          yield* events.publish(SessionV1.Event.DiffUpdated, { sessionID: session.id, messageID: user.targetID })
+          continue
+        }
+
+        const legacy = user.source.info.role === "user" ? user.source.info.summary?.diffs : undefined
+        if (legacy?.some((diff) => diff.patch !== undefined)) {
+          yield* messageDiffs.put({ messageID: user.targetID, diffs: legacy })
+          yield* events.publish(SessionV1.Event.DiffUpdated, { sessionID: session.id, messageID: user.targetID })
+          continue
+        }
+
+        const pinned = yield* snapshot.copyDiffPin({
+          from: { sessionID: input.sessionID, messageID: user.source.info.id },
+          to: { sessionID: session.id, messageID: user.targetID },
+        })
+        if (pinned) continue
+        const parts = selected
+          .filter((message) => message.info.role === "assistant" && message.info.parentID === user.source.info.id)
+          .flatMap((message) => message.parts)
+        const from = parts.find(
+          (part): part is SessionV1.StepStartPart => part.type === "step-start" && part.snapshot !== undefined,
+        )?.snapshot
+        const to = parts.findLast(
+          (part): part is SessionV1.StepFinishPart => part.type === "step-finish" && part.snapshot !== undefined,
+        )?.snapshot
+        if (from && to) yield* snapshot.pinDiff({ sessionID: session.id, messageID: user.targetID, from, to })
       }
       return session
     })
@@ -859,10 +1003,18 @@ const layer: Layer.Layer<
       sessionID: SessionID
       messageID: MessageID
     }) {
-      yield* events.publish(SessionV1.Event.MessageRemoved, {
-        sessionID: input.sessionID,
-        messageID: input.messageID,
-      })
+      const ownerID = yield* diffOwner(input)
+      const stored = ownerID ? yield* messageDiffs.get(ownerID, input.sessionID) : undefined
+      yield* events.publish(
+        SessionV1.Event.MessageRemoved,
+        {
+          sessionID: input.sessionID,
+          messageID: input.messageID,
+        },
+        stored && ownerID !== input.messageID && ownerID ? { commit: () => messageDiffs.remove(ownerID) } : undefined,
+      )
+      if (ownerID && ownerID !== input.messageID) yield* invalidateDiff({ sessionID: input.sessionID, ownerID })
+      if (ownerID === input.messageID) yield* snapshot.unpinDiff(input)
       return input.messageID
     })
 
@@ -871,11 +1023,19 @@ const layer: Layer.Layer<
       messageID: MessageID
       partID: PartID
     }) {
-      yield* events.publish(SessionV1.Event.PartRemoved, {
-        sessionID: input.sessionID,
-        messageID: input.messageID,
-        partID: input.partID,
-      })
+      const part = yield* getPart(input)
+      const ownerID = part?.type === "step-start" || part?.type === "step-finish" ? yield* diffOwner(input) : undefined
+      const stored = ownerID ? yield* messageDiffs.get(ownerID, input.sessionID) : undefined
+      yield* events.publish(
+        SessionV1.Event.PartRemoved,
+        {
+          sessionID: input.sessionID,
+          messageID: input.messageID,
+          partID: input.partID,
+        },
+        stored && ownerID ? { commit: () => messageDiffs.remove(ownerID) } : undefined,
+      )
+      if (ownerID) yield* invalidateDiff({ sessionID: input.sessionID, ownerID })
       return input.partID
     })
 
@@ -933,6 +1093,7 @@ const layer: Layer.Layer<
       removeMessage,
       removePart,
       updatePart,
+      replacePart,
       getPart,
       updatePartDelta,
       findMessage,
@@ -1015,7 +1176,7 @@ function listByProject(
 export const node = LayerNode.make({
   service: Service,
   layer: layer,
-  deps: [BackgroundJob.node, RuntimeFlags.node, Database.node, EventV2Bridge.node],
+  deps: [BackgroundJob.node, RuntimeFlags.node, Database.node, EventV2Bridge.node, MessageDiff.node, Snapshot.node],
 })
 
 export * as Session from "./session"

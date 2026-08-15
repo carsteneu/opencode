@@ -92,7 +92,7 @@ test("message hydration and live events retain diff metadata without patch text"
     const updated = sync.data.message[sessionID]?.[0]
     if (updated?.role !== "user") throw new Error("Expected user message")
     expect(updated.summary?.title).toBe("live title")
-    expect(updated.summary?.diffs[0]?.patch).toBeUndefined()
+    expect(updated.summary?.diffs?.[0]?.patch).toBeUndefined()
 
     await sync.session.loadOlder(sessionID)
     expect(headers).toEqual(["omit", "omit"])
@@ -303,7 +303,9 @@ test("batched deltas expose append provenance until a full snapshot arrives", as
         properties: { sessionID, messageID, partID, field: "text", delta: "world" },
       }),
     )
-    await wait(() => sync.data.part[messageID]?.[0]?.type === "text" && sync.data.part[messageID][0].text === "Hello world")
+    await wait(
+      () => sync.data.part[messageID]?.[0]?.type === "text" && sync.data.part[messageID][0].text === "Hello world",
+    )
 
     expect(sync.partDelta(messageID, partID, "text")).toMatchObject({ fromLength: 6, toLength: 11 })
 
@@ -318,7 +320,9 @@ test("batched deltas expose append provenance until a full snapshot arrives", as
         },
       }),
     )
-    await wait(() => sync.data.part[messageID]?.[0]?.type === "text" && sync.data.part[messageID][0].text === "replacement")
+    await wait(
+      () => sync.data.part[messageID]?.[0]?.type === "text" && sync.data.part[messageID][0].text === "replacement",
+    )
     expect(sync.partDelta(messageID, partID, "text")).toBeUndefined()
   } finally {
     app.renderer.destroy()

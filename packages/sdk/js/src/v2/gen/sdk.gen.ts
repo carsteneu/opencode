@@ -223,9 +223,16 @@ import type {
   SessionUnshareResponses,
   SessionUpdateErrors,
   SessionUpdateResponses,
+  SnapshotFileDiff,
   SubtaskPartInput,
   SyncHistoryListErrors,
   SyncHistoryListResponses,
+  SyncMessageDiffsListErrors,
+  SyncMessageDiffsListResponses,
+  SyncMessageDiffsManifestErrors,
+  SyncMessageDiffsManifestResponses,
+  SyncMessageDiffsMaterializeErrors,
+  SyncMessageDiffsMaterializeResponses,
   SyncReplayErrors,
   SyncReplayResponses,
   SyncStartErrors,
@@ -4445,6 +4452,134 @@ export class History extends HeyApiClient {
   }
 }
 
+export class MessageDiffs extends HeyApiClient {
+  /**
+   * List message diff snapshots
+   *
+   * List authoritative side-table snapshots for workspace session synchronization.
+   */
+  public list<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      body?: Array<{
+        sessionID: string
+        messageIDs?: Array<string>
+      }>
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { key: "body", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      SyncMessageDiffsListResponses,
+      SyncMessageDiffsListErrors,
+      ThrowOnError
+    >({
+      url: "/sync/message-diffs",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * List message diff markers
+   *
+   * List lightweight revision markers for workspace side-table reconciliation.
+   */
+  public manifest<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      body?: Array<string>
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { key: "body", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      SyncMessageDiffsManifestResponses,
+      SyncMessageDiffsManifestErrors,
+      ThrowOnError
+    >({
+      url: "/sync/message-diffs/manifest",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Materialize session message diffs
+   *
+   * Materialize and return a portable side-table snapshot before an explicit session warp.
+   */
+  public materialize<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      sessionID?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "sessionID" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      SyncMessageDiffsMaterializeResponses,
+      SyncMessageDiffsMaterializeErrors,
+      ThrowOnError
+    >({
+      url: "/sync/message-diffs/materialize",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
 export class Sync extends HeyApiClient {
   /**
    * Start workspace sync
@@ -4495,6 +4630,17 @@ export class Sync extends HeyApiClient {
           [key: string]: unknown
         }
       }>
+      messageDiffs?: {
+        sessionID: string
+        messageIDs?: Array<string>
+        rows: Array<{
+          messageID: string
+          revision: string
+          fromSnapshot?: string
+          toSnapshot?: string
+          diffs: Array<SnapshotFileDiff>
+        }>
+      }
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -4515,6 +4661,7 @@ export class Sync extends HeyApiClient {
               map: "directory",
             },
             { in: "body", key: "events" },
+            { in: "body", key: "messageDiffs" },
           ],
         },
       ],
@@ -4571,6 +4718,11 @@ export class Sync extends HeyApiClient {
   private _history?: History
   get history(): History {
     return (this._history ??= new History({ client: this.client }))
+  }
+
+  private _messageDiffs?: MessageDiffs
+  get messageDiffs(): MessageDiffs {
+    return (this._messageDiffs ??= new MessageDiffs({ client: this.client }))
   }
 }
 

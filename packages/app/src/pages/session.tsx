@@ -1,4 +1,4 @@
-import type { FilePart, Project, UserMessage, VcsFileDiff } from "@opencode-ai/sdk/v2"
+import type { FilePart, Project, SnapshotFileDiff, UserMessage, VcsFileDiff } from "@opencode-ai/sdk/v2"
 import { getFilename } from "@opencode-ai/core/util/path"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { createQuery, skipToken, useMutation, useQueryClient } from "@tanstack/solid-query"
@@ -88,7 +88,23 @@ import { SessionReviewEmptyNoGitV2 } from "@opencode-ai/session-ui/v2/session-re
 import { SessionReviewV2SidebarToggle } from "@opencode-ai/session-ui/v2/session-review-v2"
 import { ReviewPanelV2 } from "@/pages/session/v2/review-panel-v2"
 import { createReviewPanelV2State } from "@/pages/session/v2/review-panel-v2-state"
-import { reviewDiffDirectory, reviewDiffNeedsLoad, reviewRootDirectory } from "@/pages/session/v2/review-diff-kinds"
+import {
+  filterRenderableDiff,
+  reviewDiffDirectory,
+  reviewDiffNeedsLoad,
+  reviewRootDirectory,
+  type RenderDiff,
+} from "@/pages/session/v2/review-diff-kinds"
+import {
+  clearMessageDiffQuery,
+  hasMessageDiffPatch,
+  hydrateMessageDiffs,
+  loadMessageDiff,
+  messageDiffNeedsLoad,
+  messageDiffQueryKey,
+  messageDiffSessionQueryKey,
+  resolveMessageDiff,
+} from "@/pages/session/message-diff"
 import { TerminalPanel } from "@/pages/session/terminal-panel"
 import { TerminalPanelV2 } from "@/pages/session/terminal-panel-v2"
 import { useComposerCommands } from "@/pages/session/use-composer-commands"
@@ -601,6 +617,32 @@ export default function Page() {
     ...sessionViewState(),
     newSessionWorktree: "main",
     deferRender: false,
+    turnDiff: undefined as
+      | { messageID: string; revision: number; invalidation: number; diffs: SnapshotFileDiff[] }
+      | undefined,
+  })
+
+  createEffect(
+    on(
+      () => [sdk().scope, sdk().directory, params.id] as const,
+      (next, prev) => {
+        if (!prev || (next[0] === prev[0] && next[1] === prev[1] && next[2] === prev[2])) return
+        setStore("turnDiff", undefined)
+        if (!prev[2]) return
+        queryClient.removeQueries({
+          queryKey: messageDiffSessionQueryKey({ scope: prev[0], directory: prev[1], sessionID: prev[2] }),
+        })
+      },
+      { defer: true },
+    ),
+  )
+  onCleanup(() => {
+    const sessionID = params.id
+    if (!sessionID) return
+    const context = sdk()
+    queryClient.removeQueries({
+      queryKey: messageDiffSessionQueryKey({ scope: context.scope, directory: context.directory, sessionID }),
+    })
   })
 
   const [followup, setFollowup] = persisted(
@@ -649,7 +691,62 @@ export default function Page() {
     return open
   }, desktopReviewOpen())
 
-  const turnDiffs = createMemo(() => list(lastUserMessage()?.summary?.diffs))
+  const turnSummaryDiffs = createMemo(() => list(lastUserMessage()?.summary?.diffs))
+  const turnDiffRevision = createMemo(() => {
+    const message = lastUserMessage()
+    return message ? sync().session.messageDiffRevision(message.sessionID, message.id) : 0
+  })
+  const turnDiffInvalidation = createMemo(() => {
+    const message = lastUserMessage()
+    return message ? sync().session.messageDiffInvalidation(message.sessionID, message.id) : 0
+  })
+  const turnDiffAvailable = createMemo(() => {
+    const message = lastUserMessage()
+    return message ? sync().session.messageDiffAvailable(message.sessionID, message.id) : undefined
+  })
+  const turnDiffs = createMemo(() => {
+    const message = lastUserMessage()
+    if (!message) return turnSummaryDiffs()
+    const loaded = store.turnDiff
+    return hydrateMessageDiffs(
+      turnSummaryDiffs(),
+      loaded?.messageID === message.id &&
+        loaded.revision === turnDiffRevision() &&
+        loaded.invalidation === turnDiffInvalidation()
+        ? loaded.diffs
+        : undefined,
+    )
+  })
+  const loadTurnDiffs = async () => {
+    const sessionID = params.id
+    const message = lastUserMessage()
+    if (!sessionID || !message || turnDiffAvailable() === false) return []
+    const revision = turnDiffRevision()
+    const invalidation = turnDiffInvalidation()
+    const context = sdk()
+    const result = await loadMessageDiff({
+      queryClient,
+      queryKey: messageDiffQueryKey({
+        scope: context.scope,
+        directory: context.directory,
+        sessionID,
+        messageID: message.id,
+      }),
+      revision,
+      invalidation,
+      current: () => {
+        const current = lastUserMessage()
+        if (current?.id !== message.id) return { revision: -1, invalidation: -1 }
+        return { revision: turnDiffRevision(), invalidation: turnDiffInvalidation() }
+      },
+      query: () =>
+        context.client.session
+          .diff({ sessionID, messageID: message.id }, { throwOnError: true })
+          .then((result) => result.data ?? []),
+    })
+    setStore("turnDiff", { messageID: message.id, ...result })
+    return result.diffs
+  }
   const nogit = createMemo(() => {
     const project = sync().project
     return !!project && project.vcs !== "git"
@@ -706,6 +803,77 @@ export default function Page() {
       return vcsQuery.isFetched ? (vcsQuery.data ?? []) : []
     return turnDiffs()
   }
+  const reviewOpen = () => {
+    const open = view().review.open()
+    if (reviewMode() !== "turn") return open
+    const missing = new Set(turnDiffs().flatMap((diff) => (diff.file && !hasMessageDiffPatch(diff) ? [diff.file] : [])))
+    return open.filter((file) => !missing.has(file))
+  }
+  const setReviewOpen = (open: string[]) => {
+    view().review.setOpen(open)
+    if (reviewMode() !== "turn") return
+    if (turnDiffAvailable() === false) return
+    if (!messageDiffNeedsLoad(turnDiffs(), open)) return
+    void loadTurnDiffs().catch((error) => {
+      console.debug("[session-review] failed to load turn diff", { sessionID: params.id, error })
+    })
+  }
+  createEffect(
+    on(
+      () => {
+        const message = lastUserMessage()
+        return [
+          reviewMode(),
+          wantsReview(),
+          message?.sessionID,
+          message?.id,
+          turnDiffRevision(),
+          turnDiffInvalidation(),
+        ] as const
+      },
+      (next, prev) =>
+        untrack(() => {
+          const invalidated = !!prev && next[2] === prev[2] && next[3] === prev[3] && next[5] !== prev[5]
+          if (invalidated && next[2] && next[3]) {
+            setStore("turnDiff", undefined)
+            const context = sdk()
+            clearMessageDiffQuery(
+              queryClient,
+              messageDiffQueryKey({
+                scope: context.scope,
+                directory: context.directory,
+                sessionID: next[2],
+                messageID: next[3],
+              }),
+            )
+            return
+          }
+          const terminal = !!prev && next[2] === prev[2] && next[3] === prev[3] && next[4] !== prev[4]
+          if (terminal && next[2] && next[3]) {
+            setStore("turnDiff", undefined)
+            const context = sdk()
+            void queryClient.invalidateQueries({
+              queryKey: messageDiffQueryKey({
+                scope: context.scope,
+                directory: context.directory,
+                sessionID: next[2],
+                messageID: next[3],
+              }),
+              exact: true,
+              refetchType: "none",
+            })
+          }
+          if (reviewMode() !== "turn") return
+          if (!wantsReview()) return
+          if (turnDiffAvailable() === false) return
+          const open = view().review.open()
+          if (!messageDiffNeedsLoad(turnDiffs(), open)) return
+          void loadTurnDiffs().catch((error) => {
+            console.debug("[session-review] failed to restore turn diff", { sessionID: params.id, error })
+          })
+        }),
+    ),
+  )
   const activeReviewFile = () => {
     const diffs = reviewDiffs()
     const selected = reviewFile()
@@ -718,7 +886,16 @@ export default function Page() {
     if (reviewMode() === "git" || reviewMode() === "branch") return !vcsQuery.isPending
     return true
   }
-  const loadReviewDiff = async (file: string, version?: number): Promise<VcsFileDiff | undefined> => {
+  const loadReviewDiff = async (file: string, version?: string | number): Promise<RenderDiff | undefined> => {
+    if (reviewMode() === "turn") {
+      if (turnDiffAvailable() === false) return
+      const source = reviewDiffs().find((diff) => diff.file === file)
+      if (!source || !filterRenderableDiff(source)) return
+      if (!messageDiffNeedsLoad([source], [source.file])) return source
+      const loaded = resolveMessageDiff(source, await loadTurnDiffs())
+      if (!loaded || !filterRenderableDiff(loaded)) return
+      return loaded
+    }
     const mode = vcsMode()
     if (!mode) return
     const root = reviewRootDirectory(sync().project?.worktree ?? sdk().directory)
@@ -1275,6 +1452,8 @@ export default function Page() {
         diffStyle={input.diffStyle}
         onDiffStyleChange={input.onDiffStyleChange}
         onScrollRef={(el) => setTree("reviewScroll", el)}
+        open={reviewOpen}
+        onOpenChange={setReviewOpen}
         focusedFile={activeReviewFile()}
         onLineComment={(comment) => addCommentToContext({ ...comment, origin: "review" })}
         onLineCommentUpdate={updateCommentInContext}
@@ -1307,7 +1486,12 @@ export default function Page() {
     diffs: reviewDiffs,
     diffsReady: reviewReady,
     get diffVersion() {
-      return vcsQuery.dataUpdatedAt
+      return reviewMode() === "turn" ? turnDiffRevision() : vcsQuery.dataUpdatedAt
+    },
+    needsDiffLoad: (diff: RenderDiff) => {
+      if (reviewMode() !== "turn") return reviewDiffNeedsLoad(diff)
+      if (turnDiffAvailable() === false) return false
+      return messageDiffNeedsLoad([diff], [diff.file])
     },
     loadDiff: loadReviewDiff,
     get activeFile() {

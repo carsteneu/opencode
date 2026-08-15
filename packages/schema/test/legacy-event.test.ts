@@ -15,6 +15,8 @@ describe("legacy public event schemas", () => {
       "message.removed",
       "message.part.updated",
       "message.part.removed",
+      "message.diff.updated",
+      "message.diff.invalidated",
       "message.part.delta",
       "session.diff",
       "session.error",
@@ -27,6 +29,8 @@ describe("legacy public event schemas", () => {
 
   test("owns the legacy transient public definitions", () => {
     expect([
+      SessionV1.DiffUpdated.type,
+      SessionV1.DiffInvalidated.type,
       SessionV1.PartDelta.type,
       SessionV1.Diff.type,
       SessionV1.Error.type,
@@ -38,6 +42,8 @@ describe("legacy public event schemas", () => {
       Project.Event.Updated.type,
       LegacyEvent.CommandExecuted.type,
     ]).toEqual([
+      "message.diff.updated",
+      "message.diff.invalidated",
       "message.part.delta",
       "session.diff",
       "session.error",

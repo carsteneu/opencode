@@ -1,4 +1,5 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { MessageDiff } from "@opencode-ai/core/session/message-diff"
 import { Effect, Layer, Context, Schema } from "effect"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -32,6 +33,7 @@ const layer = Layer.effect(
     const snap = yield* Snapshot.Service
     const storage = yield* Storage.Service
     const events = yield* EventV2Bridge.Service
+    const messageDiffs = yield* MessageDiff.Service
     const summary = yield* SessionSummary.Service
     const state = yield* SessionRunState.Service
 
@@ -118,6 +120,18 @@ const layer = Layer.effect(
           for (const part of removeParts) {
             yield* sessions.removePart({ sessionID, messageID: target.info.id, partID: part.id })
           }
+          const messageID = target.info.role === "user" ? target.info.id : target.info.parentID
+          yield* messageDiffs.remove(messageID)
+          yield* snap.unpinDiff({ sessionID, messageID })
+          const user = msgs.find((message) => message.info.id === messageID)?.info
+          if (user?.role === "user") {
+            yield* sessions.updateMessage({
+              ...user,
+              summary: { ...user.summary, diffs: [] },
+            })
+            yield* summary.summarize({ sessionID, messageID })
+            yield* summary.materialize({ sessionID, messageID })
+          }
         }
       }
       yield* sessions.clearRevert(sessionID)
@@ -130,7 +144,15 @@ const layer = Layer.effect(
 export const node = LayerNode.make({
   service: Service,
   layer: layer,
-  deps: [Session.node, Snapshot.node, Storage.node, EventV2Bridge.node, SessionSummary.node, SessionRunState.node],
+  deps: [
+    Session.node,
+    MessageDiff.node,
+    Snapshot.node,
+    Storage.node,
+    EventV2Bridge.node,
+    SessionSummary.node,
+    SessionRunState.node,
+  ],
 })
 
 export * as SessionRevert from "./revert"

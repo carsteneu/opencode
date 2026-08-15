@@ -2,8 +2,8 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { httpClient } from "@opencode-ai/core/effect/app-node-platform"
 import type * as SDK from "@opencode-ai/sdk/v2"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
-import { Effect, Exit, Layer, Option, Schema, Scope, Context, Stream } from "effect"
-import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
+import { Effect, Exit, Layer, Option, Schema, Scope, Context } from "effect"
+import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import { Account } from "@/account/account"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { InstanceState } from "@/effect/instance-state"
@@ -11,9 +11,13 @@ import { Provider } from "@/provider/provider"
 
 import { Session } from "@/session/session"
 import { MessageV2 } from "@/session/message-v2"
+import { SessionSummary } from "@/session/summary"
+import { SessionV1 } from "@opencode-ai/core/v1/session"
 import type { SessionID } from "@/session/schema"
 import { Database } from "@opencode-ai/core/database/database"
-import { eq } from "drizzle-orm"
+import { MessageDiff } from "@opencode-ai/core/session/message-diff"
+import { MessageTable, SessionTable } from "@opencode-ai/core/session/sql"
+import { and, eq, inArray } from "drizzle-orm"
 import { Config } from "@/config/config"
 import { SessionShareTable } from "@opencode-ai/core/share/sql"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -44,8 +48,11 @@ export type Share = typeof ShareSchema.Type
 
 type State = {
   queue: Map<SessionID, Map<string, Data>>
+  flushing: Set<SessionID>
   scope: Scope.Closeable
   shared: Map<SessionID, Share | null>
+  directory: string
+  reconciled: boolean
 }
 
 type Data =
@@ -120,6 +127,19 @@ const layer = Layer.effect(
     const httpOk = HttpClient.filterStatusOk(http)
     const provider = yield* Provider.Service
     const session = yield* Session.Service
+    const summary = yield* SessionSummary.Service
+    const messageDiffs = yield* MessageDiff.Service
+
+    function scheduleFlush(sessionID: SessionID, retry = false): Effect.Effect<void> {
+      return Effect.gen(function* () {
+        const s = yield* InstanceState.get(state)
+        yield* flush(sessionID).pipe(
+          Effect.delay(retry ? "5 seconds" : "1 second"),
+          Effect.catchCause((cause) => Effect.logError("share flush failed", { sessionID: sessionID, cause: cause })),
+          Effect.forkIn(s.scope),
+        )
+      })
+    }
 
     function sync(sessionID: SessionID, data: Data[]) {
       return Effect.gen(function* () {
@@ -138,23 +158,27 @@ const layer = Layer.effect(
 
         const next = new Map(data.map((item) => [key(item), item]))
         s.queue.set(sessionID, next)
-        yield* flush(sessionID).pipe(
-          Effect.delay(1000),
-          Effect.catchCause((cause) => Effect.logError("share flush failed", { sessionID: sessionID, cause: cause })),
-          Effect.forkIn(s.scope),
-        )
+        yield* scheduleFlush(sessionID)
       })
     }
 
     const state: InstanceState.InstanceState<State> = yield* InstanceState.make<State>(
       Effect.fn("ShareNext.state")(function* (_ctx) {
-        const cache: State = { queue: new Map(), scope: yield* Scope.make(), shared: new Map() }
+        const cache: State = {
+          queue: new Map(),
+          flushing: new Set(),
+          scope: yield* Scope.make(),
+          shared: new Map(),
+          directory: _ctx.directory,
+          reconciled: false,
+        }
 
         yield* Effect.addFinalizer(() =>
           Scope.close(cache.scope, Exit.void).pipe(
             Effect.andThen(
               Effect.sync(() => {
                 cache.queue.clear()
+                cache.flushing.clear()
                 cache.shared.clear()
               }),
             ),
@@ -189,6 +213,24 @@ const layer = Layer.effect(
             if (info.role !== "user") return
             const model = yield* provider.getModel(info.model.providerID, info.model.modelID)
             yield* sync(info.sessionID, [{ type: "model", data: [model] }])
+          }),
+        )
+        yield* watch(Session.Event.DiffUpdated, (data) =>
+          Effect.gen(function* () {
+            if (!(yield* getCached(data.sessionID))) return
+            const row = yield* db
+              .select()
+              .from(MessageTable)
+              .where(and(eq(MessageTable.session_id, data.sessionID), eq(MessageTable.id, data.messageID)))
+              .get()
+              .pipe(Effect.orDie)
+            if (!row) return
+            const info = yield* summary.hydrate({
+              ...row.data,
+              id: row.id,
+              sessionID: row.session_id,
+            } as SessionV1.Info)
+            yield* sync(data.sessionID, [{ type: "message", data: info as SDK.Message }])
           }),
         )
         yield* watch(MessageV2.Event.PartUpdated, (data) =>
@@ -244,31 +286,57 @@ const layer = Layer.effect(
       return share
     })
 
-    const flush = Effect.fn("ShareNext.flush")(function* (sessionID: SessionID) {
+    const flush: (sessionID: SessionID) => Effect.Effect<void> = Effect.fn("ShareNext.flush")(function* (
+      sessionID: SessionID,
+    ) {
       if (disabled) return
       const s = yield* InstanceState.get(state)
+      if (s.flushing.has(sessionID)) return
       const queued = s.queue.get(sessionID)
       if (!queued) return
 
       s.queue.delete(sessionID)
+      s.flushing.add(sessionID)
+      const requeue = () => {
+        const pending = s.queue.get(sessionID)
+        // Values queued while this request was in flight are newer and must win on duplicate keys.
+        s.queue.set(sessionID, new Map([...queued, ...(pending ?? [])]))
+      }
 
-      const share = yield* getCached(sessionID)
-      if (!share) return
+      const retry = yield* Effect.gen(function* () {
+        const result = yield* Effect.exit(
+          Effect.gen(function* () {
+            const share = yield* getCached(sessionID)
+            if (!share) return { sent: false as const }
+            const req = yield* request()
+            const res = yield* HttpClientRequest.post(`${req.baseUrl}${req.api.sync(share.id)}`).pipe(
+              HttpClientRequest.setHeaders(req.headers),
+              HttpClientRequest.bodyJson({ secret: share.secret, data: Array.from(queued.values()) }),
+              Effect.flatMap((r) => http.execute(r)),
+            )
+            return { sent: true as const, share, res }
+          }),
+        )
 
-      const req = yield* request()
-      const res = yield* HttpClientRequest.post(`${req.baseUrl}${req.api.sync(share.id)}`).pipe(
-        HttpClientRequest.setHeaders(req.headers),
-        HttpClientRequest.bodyJson({ secret: share.secret, data: Array.from(queued.values()) }),
-        Effect.flatMap((r) => http.execute(r)),
-      )
+        if (Exit.isFailure(result)) {
+          requeue()
+          yield* Effect.logError("share sync failed", { sessionID: sessionID, cause: result.cause })
+          return true
+        }
+        if (!result.value.sent) return false
+        if (result.value.res.status >= 200 && result.value.res.status < 300) return false
 
-      if (res.status >= 400) {
+        requeue()
         yield* Effect.logWarning("failed to sync share", {
           sessionID: sessionID,
-          shareID: share.id,
-          status: res.status,
+          shareID: result.value.share.id,
+          status: result.value.res.status,
         })
-      }
+        return true
+      }).pipe(Effect.ensuring(Effect.sync(() => s.flushing.delete(sessionID))))
+
+      if (!s.queue.has(sessionID)) return
+      yield* scheduleFlush(sessionID, retry)
     })
 
     const full = Effect.fn("ShareNext.full")(function* (sessionID: SessionID) {
@@ -276,6 +344,7 @@ const layer = Layer.effect(
       const info = yield* session.get(sessionID)
       const diffs = yield* session.diff(sessionID)
       const messages = yield* session.messages({ sessionID })
+      const hydrated = yield* summary.hydrateMessages(messages)
       const models = yield* Effect.forEach(
         Array.from(
           new Map(
@@ -291,7 +360,7 @@ const layer = Layer.effect(
 
       yield* sync(sessionID, [
         { type: "session", data: info },
-        ...messages.map((item) => ({ type: "message" as const, data: item.info })),
+        ...hydrated.map((item) => ({ type: "message" as const, data: item.info })),
         ...messages.flatMap((item) => item.parts.map((part) => ({ type: "part" as const, data: part }))),
         { type: "session_diff", data: diffs },
         { type: "model", data: models },
@@ -300,7 +369,62 @@ const layer = Layer.effect(
 
     const init = Effect.fn("ShareNext.init")(function* () {
       if (disabled) return
-      yield* InstanceState.get(state)
+      const s = yield* InstanceState.get(state)
+      if (s.reconciled) return
+
+      const shares = yield* db
+        .select({
+          sessionID: SessionTable.id,
+          id: SessionShareTable.id,
+          secret: SessionShareTable.secret,
+          url: SessionShareTable.url,
+        })
+        .from(SessionShareTable)
+        .innerJoin(SessionTable, eq(SessionTable.id, SessionShareTable.session_id))
+        .where(eq(SessionTable.directory, s.directory))
+        .all()
+        .pipe(Effect.orDie)
+
+      yield* Effect.forEach(
+        shares,
+        (share) =>
+          Effect.gen(function* () {
+            s.shared.set(share.sessionID, { id: share.id, secret: share.secret, url: share.url })
+            const diffs = yield* messageDiffs.list({ sessionID: share.sessionID })
+            if (!diffs.length) return
+
+            const rows = yield* db
+              .select()
+              .from(MessageTable)
+              .where(
+                and(
+                  eq(MessageTable.session_id, share.sessionID),
+                  inArray(
+                    MessageTable.id,
+                    diffs.map((diff) => diff.messageID),
+                  ),
+                ),
+              )
+              .all()
+              .pipe(Effect.orDie)
+            const messages = yield* Effect.forEach(
+              rows,
+              (row) =>
+                summary.hydrate({
+                  ...row.data,
+                  id: row.id,
+                  sessionID: row.session_id,
+                } as SessionV1.Info),
+              { concurrency: 8 },
+            )
+            yield* sync(
+              share.sessionID,
+              messages.map((message) => ({ type: "message" as const, data: message as SDK.Message })),
+            )
+          }),
+        { concurrency: 4 },
+      )
+      s.reconciled = true
     })
 
     const url = Effect.fn("ShareNext.url")(function* () {
@@ -365,7 +489,17 @@ const layer = Layer.effect(
 export const node = LayerNode.make({
   service: Service,
   layer: layer,
-  deps: [Account.node, EventV2Bridge.node, Config.node, Database.node, httpClient, Provider.node, Session.node],
+  deps: [
+    Account.node,
+    EventV2Bridge.node,
+    Config.node,
+    Database.node,
+    httpClient,
+    Provider.node,
+    Session.node,
+    SessionSummary.node,
+    MessageDiff.node,
+  ],
 })
 
 export * as ShareNext from "./share-next"

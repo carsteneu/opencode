@@ -2,7 +2,14 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { httpClient } from "@opencode-ai/core/effect/app-node-platform"
 import { Context, Effect, FiberMap, Iterable, Layer, Schema, Stream } from "effect"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
-import { FetchHttpClient, HttpBody, HttpClient, HttpClientError, HttpClientRequest } from "effect/unstable/http"
+import {
+  FetchHttpClient,
+  HttpBody,
+  HttpClient,
+  HttpClientError,
+  HttpClientRequest,
+  HttpClientResponse,
+} from "effect/unstable/http"
 import { Database } from "@opencode-ai/core/database/database"
 import { asc } from "drizzle-orm"
 import { eq } from "drizzle-orm"
@@ -22,8 +29,11 @@ import { getAdapter, registeredAdapters } from "./adapters"
 import { type Target, type WorkspaceInfo, WorkspaceInfo as WorkspaceInfoSchema } from "./types"
 import { WorkspaceV2 } from "@opencode-ai/core/workspace"
 import { Session } from "@/session/session"
+import { SessionSummary } from "@/session/summary"
 import { SessionPrompt } from "@/session/prompt"
 import { SessionTable } from "@opencode-ai/core/session/sql"
+import { MessageDiff } from "@opencode-ai/core/session/message-diff"
+import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { SessionID } from "@/session/schema"
 import { NotFoundError } from "@/storage/storage"
 import { errorData } from "@/util/error"
@@ -97,6 +107,15 @@ export class SessionEventsNotFoundError extends Schema.TaggedErrorClass<SessionE
   },
 ) {}
 
+export class SessionDiffsUnavailableError extends Schema.TaggedErrorClass<SessionDiffsUnavailableError>()(
+  "WorkspaceSessionDiffsUnavailableError",
+  {
+    message: Schema.String,
+    sessionID: SessionID,
+    messageIDs: Schema.Array(SessionV1.MessageID),
+  },
+) {}
+
 export class SessionWarpHttpError extends Schema.TaggedErrorClass<SessionWarpHttpError>()(
   "WorkspaceSessionWarpHttpError",
   {
@@ -122,7 +141,9 @@ type CreateError = Auth.AuthError
 type SessionWarpError =
   | WorkspaceNotFoundError
   | SessionEventsNotFoundError
+  | SessionDiffsUnavailableError
   | SessionWarpHttpError
+  | SyncHttpError
   | Vcs.PatchApplyError
   | HttpClientError.HttpClientError
 type WaitForSyncError = SyncTimeoutError | SyncAbortedError
@@ -156,8 +177,10 @@ const layer = Layer.effect(
     const auth = yield* Auth.Service
     const session = yield* Session.Service
     const prompt = yield* SessionPrompt.Service
+    const summary = yield* SessionSummary.Service
     const http = yield* HttpClient.HttpClient
     const events = yield* EventV2Bridge.Service
+    const messageDiffs = yield* MessageDiff.Service
     const vcs = yield* Vcs.Service
     const flags = yield* RuntimeFlags.Service
     const fs = yield* FSUtil.Service
@@ -202,7 +225,7 @@ const layer = Layer.effect(
 
     const parseSSE = Effect.fn("Workspace.parseSSE")(function* (
       stream: Stream.Stream<Uint8Array, unknown>,
-      onEvent: (event: unknown) => Effect.Effect<void>,
+      onEvent: (event: unknown) => Effect.Effect<void, SyncLoopError>,
     ) {
       yield* stream.pipe(
         Stream.decodeText(),
@@ -304,6 +327,182 @@ const layer = Layer.effect(
         )
       })
 
+    const syncMessageDiffs = Effect.fn("Workspace.syncMessageDiffs")(function* (
+      url: URL | string,
+      headers: HeadersInit | undefined,
+      selections: ReadonlyArray<MessageDiff.Selection>,
+    ) {
+      if (!selections.length) return []
+      const response = yield* http.execute(
+        HttpClientRequest.post(route(url, "/sync/message-diffs"), {
+          headers: new Headers(headers),
+          body: HttpBody.jsonUnsafe(selections),
+        }),
+      )
+      if (response.status < 200 || response.status >= 300) {
+        const body = yield* response.text
+        return yield* new SyncHttpError({
+          message: `Workspace message diff HTTP failure: ${response.status} ${body}`,
+          status: response.status,
+          body,
+        })
+      }
+      const snapshots = yield* HttpClientResponse.schemaBodyJson(Schema.Array(MessageDiff.Snapshot))(response).pipe(
+        Effect.mapError(
+          (error) =>
+            new SyncHttpError({
+              message: "Workspace message diff response was invalid",
+              status: 502,
+              body: String(error),
+            }),
+        ),
+      )
+      if (
+        snapshots.length !== selections.length ||
+        snapshots.some((snapshot, index) => !sameMessageDiffSelection(snapshot, selections[index]))
+      )
+        return yield* new SyncHttpError({
+          message: "Workspace message diff response did not match the requested selections",
+          status: 502,
+        })
+      return yield* Effect.forEach(snapshots, (snapshot) =>
+        messageDiffs
+          .replace(snapshot)
+          .pipe(Effect.map((changes) => changes.map((change) => ({ sessionID: snapshot.sessionID, ...change })))),
+      ).pipe(Effect.map((items) => items.flat()))
+    })
+
+    const fetchMessageDiffManifest = Effect.fn("Workspace.fetchMessageDiffManifest")(function* (
+      url: URL | string,
+      headers: HeadersInit | undefined,
+      sessionIDs: ReadonlyArray<SessionID>,
+    ) {
+      if (!sessionIDs.length) return []
+      const response = yield* http.execute(
+        HttpClientRequest.post(route(url, "/sync/message-diffs/manifest"), {
+          headers: new Headers(headers),
+          body: HttpBody.jsonUnsafe(sessionIDs),
+        }),
+      )
+      if (response.status === 404) {
+        yield* response.text.pipe(Effect.ignore)
+        return
+      }
+      if (response.status < 200 || response.status >= 300) {
+        const body = yield* response.text
+        return yield* new SyncHttpError({
+          message: `Workspace message diff manifest HTTP failure: ${response.status} ${body}`,
+          status: response.status,
+          body,
+        })
+      }
+      const manifests = yield* HttpClientResponse.schemaBodyJson(Schema.Array(MessageDiff.Manifest))(response).pipe(
+        Effect.mapError(
+          (error) =>
+            new SyncHttpError({
+              message: "Workspace message diff manifest response was invalid",
+              status: 502,
+              body: String(error),
+            }),
+        ),
+      )
+      if (
+        manifests.length !== sessionIDs.length ||
+        manifests.some(
+          (manifest, index) =>
+            manifest.sessionID !== sessionIDs[index] ||
+            new Set(manifest.rows.map((row) => row.messageID)).size !== manifest.rows.length,
+        )
+      )
+        return yield* new SyncHttpError({
+          message: "Workspace message diff manifest did not match the requested sessions",
+          status: 502,
+        })
+      return manifests
+    })
+
+    const reconcileMessageDiffs = Effect.fn("Workspace.reconcileMessageDiffs")(function* (
+      url: URL | string,
+      headers: HeadersInit | undefined,
+      sessionIDs: ReadonlyArray<SessionID>,
+    ) {
+      const remote = yield* fetchMessageDiffManifest(url, headers, sessionIDs)
+      if (!remote) return []
+      const local = yield* messageDiffs.manifest(sessionIDs)
+      const removed = yield* Effect.forEach(remote, (manifest, index) => {
+        const remoteIDs = new Set(manifest.rows.map((row) => row.messageID))
+        const messageIDs = (local[index]?.rows ?? [])
+          .filter((row) => !remoteIDs.has(row.messageID))
+          .map((row) => row.messageID)
+        if (!messageIDs.length) return Effect.succeed([])
+        return messageDiffs
+          .replace({ sessionID: manifest.sessionID, messageIDs, rows: [] })
+          .pipe(Effect.map((changes) => changes.map((change) => ({ sessionID: manifest.sessionID, ...change }))))
+      }).pipe(Effect.map((items) => items.flat()))
+      const selections = remote.flatMap((manifest, index) => {
+        const revisions = new Map((local[index]?.rows ?? []).map((row) => [row.messageID, row.revision]))
+        const messageIDs = manifest.rows
+          .filter((row) => revisions.get(row.messageID) !== row.revision)
+          .map((row) => row.messageID)
+        return messageIDs.length ? [{ sessionID: manifest.sessionID, messageIDs }] : []
+      })
+      return [...removed, ...(yield* syncMessageDiffs(url, headers, selections))]
+    })
+
+    const materializeLocalMessageDiffs = Effect.fn("Workspace.materializeLocalMessageDiffs")(function* (
+      sessionID: SessionID,
+    ) {
+      const messageIDs = yield* summary.materializeSession({ sessionID })
+      if (!messageIDs.length) return
+      return yield* new SessionDiffsUnavailableError({
+        message: `Portable message diffs are unavailable for session ${sessionID}`,
+        sessionID,
+        messageIDs,
+      })
+    })
+
+    const materializeRemoteMessageDiffs = Effect.fn("Workspace.materializeRemoteMessageDiffs")(function* (
+      sessionID: SessionID,
+      url: URL | string,
+      headers: HeadersInit | undefined,
+    ) {
+      const response = yield* http.execute(
+        HttpClientRequest.post(route(url, "/sync/message-diffs/materialize"), {
+          headers: new Headers(headers),
+          body: HttpBody.jsonUnsafe({ sessionID }),
+        }),
+      )
+      if (response.status === 404) {
+        yield* response.text.pipe(Effect.ignore)
+        return false
+      }
+      if (response.status < 200 || response.status >= 300) {
+        const body = yield* response.text
+        return yield* new SessionDiffsUnavailableError({
+          message: `Remote portable message diffs are unavailable for session ${sessionID}: HTTP ${response.status} ${body}`,
+          sessionID,
+          messageIDs: [],
+        })
+      }
+      const snapshot = yield* HttpClientResponse.schemaBodyJson(MessageDiff.Snapshot)(response).pipe(
+        Effect.mapError(
+          (error) =>
+            new SyncHttpError({
+              message: "Workspace materialized message diff response was invalid",
+              status: 502,
+              body: String(error),
+            }),
+        ),
+      )
+      if (snapshot.sessionID !== sessionID || snapshot.messageIDs)
+        return yield* new SyncHttpError({
+          message: "Workspace materialized message diff response did not match the requested session",
+          status: 502,
+        })
+      yield* messageDiffs.replace(snapshot)
+      return true
+    })
+
     const syncHistory = Effect.fn("Workspace.syncHistory")(function* (
       space: Info,
       url: URL | string,
@@ -361,6 +560,24 @@ const layer = Layer.effect(
             .pipe(Effect.provideService(WorkspaceRef, space.id)),
         { discard: true },
       )
+
+      const reconciledSessionIDs = (yield* db
+        .select({ id: SessionTable.id })
+        .from(SessionTable)
+        .where(eq(SessionTable.workspace_id, space.id))
+        .all()
+        .pipe(Effect.orDie)).map((row) => row.id)
+      const invalidated = yield* reconcileMessageDiffs(url, headers, reconciledSessionIDs)
+      invalidated.forEach((item) =>
+        GlobalBus.emit("event", {
+          directory: space.directory ?? undefined,
+          workspace: space.id,
+          payload: {
+            type: item.present ? Session.Event.DiffUpdated.type : SessionV1.Event.DiffInvalidated.type,
+            properties: { sessionID: item.sessionID, messageID: item.messageID },
+          },
+        }),
+      )
     })
 
     const syncWorkspaceLoop = Effect.fn("Workspace.syncWorkspaceLoop")(function* (space: Info) {
@@ -395,8 +612,22 @@ const layer = Layer.effect(
           yield* parseSSE(stream, (evt) =>
             Effect.gen(function* () {
               if (!evt || typeof evt !== "object" || !("payload" in evt)) return
-              const payload = evt.payload as { type?: string; syncEvent?: EventV2.SerializedEvent }
+              const payload = evt.payload as {
+                type?: string
+                syncEvent?: EventV2.SerializedEvent
+                properties?: { sessionID?: SessionID; messageID?: MessageDiff.Entry["messageID"] }
+              }
               if (payload.type === "server.heartbeat") return
+
+              if (
+                (payload.type === Session.Event.DiffUpdated.type ||
+                  payload.type === SessionV1.Event.DiffInvalidated.type) &&
+                payload.properties?.sessionID &&
+                payload.properties.messageID
+              )
+                yield* syncMessageDiffs(target.url, target.headers, [
+                  { sessionID: payload.properties.sessionID, messageIDs: [payload.properties.messageID] },
+                ])
 
               if (payload.type === "sync" && payload.syncEvent) {
                 const failed = yield* events.replay(payload.syncEvent, { publish: true, ownerID: space.id }).pipe(
@@ -426,6 +657,13 @@ const layer = Layer.effect(
                 })
               }
             }),
+          ).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("workspace event stream failed", {
+                workspaceID: space.id,
+                error: errorData(error),
+              }),
+            ),
           )
 
           setStatus(space.id, "disconnected")
@@ -571,19 +809,50 @@ const layer = Layer.effect(
             const target = yield* WorkspaceAdapterRuntime.target(previous)
 
             if (target.type === "remote") {
-              yield* syncHistory(previous, target.url, target.headers).pipe(
-                Effect.catch((error) =>
-                  Effect.logWarning("session warp final source sync failed", {
-                    workspaceID: previous.id,
-                    sessionID: input.sessionID,
-                    error: errorData(error),
-                  }),
-                ),
-              )
+              yield* syncHistory(previous, target.url, target.headers)
+              const materialized = yield* materializeRemoteMessageDiffs(input.sessionID, target.url, target.headers)
+              yield* syncHistory(previous, target.url, target.headers)
+              if (!materialized) yield* materializeLocalMessageDiffs(input.sessionID)
             } else {
               yield* prompt.cancel(input.sessionID)
+              yield* materializeLocalMessageDiffs(input.sessionID)
             }
+          }
+          if (!previous) {
+            yield* prompt.cancel(input.sessionID)
+            yield* materializeLocalMessageDiffs(input.sessionID)
+          }
+        }
+        if (!current?.workspaceID) {
+          yield* prompt.cancel(input.sessionID)
+          yield* materializeLocalMessageDiffs(input.sessionID)
+        }
 
+        const portableMessageDiffRows = yield* messageDiffs.list({ sessionID: input.sessionID })
+        if (input.workspaceID !== null) {
+          const destination = yield* get(input.workspaceID)
+          if (!destination)
+            return yield* new WorkspaceNotFoundError({
+              message: `Workspace not found: ${input.workspaceID}`,
+              workspaceID: input.workspaceID,
+            })
+          const destinationTarget = yield* WorkspaceAdapterRuntime.target(destination)
+          if (destinationTarget.type === "remote" && portableMessageDiffRows.length) {
+            const supported = yield* fetchMessageDiffManifest(destinationTarget.url, destinationTarget.headers, [
+              input.sessionID,
+            ])
+            if (!supported)
+              return yield* new SessionDiffsUnavailableError({
+                message: `Remote workspace ${destination.id} cannot accept portable message diffs`,
+                sessionID: input.sessionID,
+                messageIDs: portableMessageDiffRows.map((row) => row.messageID),
+              })
+          }
+        }
+
+        if (current?.workspaceID) {
+          const previous = yield* get(current.workspaceID)
+          if (previous) {
             // "claim" this session so any future events coming from
             // the old workspace are ignored
             yield* events.claim(input.sessionID, input.workspaceID ?? previous.projectID)
@@ -660,6 +929,10 @@ const layer = Layer.effect(
             message: `No events found for session: ${input.sessionID}`,
             sessionID: input.sessionID,
           })
+        const messageDiffSnapshot = {
+          sessionID: input.sessionID,
+          rows: portableMessageDiffRows,
+        }
 
         const batches = Iterable.chunksOf(rows, 10)
         const total = Iterable.size(batches)
@@ -674,6 +947,7 @@ const layer = Layer.effect(
                   body: HttpBody.jsonUnsafe({
                     directory: space.directory ?? "",
                     events,
+                    messageDiffs: i === total - 1 ? messageDiffSnapshot : undefined,
                   }),
                 }),
               )
@@ -947,6 +1221,14 @@ function route(url: string | URL, path: string) {
   return next
 }
 
+function sameMessageDiffSelection(snapshot: MessageDiff.Snapshot, selection: MessageDiff.Selection | undefined) {
+  if (!selection || snapshot.sessionID !== selection.sessionID) return false
+  if (!snapshot.messageIDs && !selection.messageIDs) return true
+  if (!snapshot.messageIDs || !selection.messageIDs || snapshot.messageIDs.length !== selection.messageIDs.length)
+    return false
+  return snapshot.messageIDs.every((messageID, index) => messageID === selection.messageIDs?.[index])
+}
+
 export const node = LayerNode.make({
   service: Service,
   layer: layer,
@@ -954,12 +1236,14 @@ export const node = LayerNode.make({
     Auth.node,
     Session.node,
     SessionPrompt.node,
+    SessionSummary.node,
     httpClient,
     EventV2Bridge.node,
     Vcs.node,
     RuntimeFlags.node,
     FSUtil.node,
     Database.node,
+    MessageDiff.node,
   ],
 })
 

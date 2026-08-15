@@ -32,6 +32,8 @@ type TimelinePayload = Extract<
   {
     type:
       | "message.updated"
+      | "message.diff.updated"
+      | "message.diff.invalidated"
       | "message.removed"
       | "message.part.updated"
       | "message.part.removed"
@@ -75,6 +77,8 @@ const decodePart = Schema.decodeUnknownSync(SessionV1.Part)
 const decodeStatus = Schema.decodeUnknownSync(SessionStatusEvent.Info)
 const timelineEventSchema = Schema.Union([
   eventSchema("message.updated", SessionV1.Event.MessageUpdated.data),
+  eventSchema("message.diff.updated", SessionV1.Event.DiffUpdated.data),
+  eventSchema("message.diff.invalidated", SessionV1.Event.DiffInvalidated.data),
   eventSchema("message.removed", SessionV1.Event.MessageRemoved.data),
   eventSchema("message.part.updated", SessionV1.Event.PartUpdated.data),
   eventSchema("message.part.removed", SessionV1.Event.PartRemoved.data),

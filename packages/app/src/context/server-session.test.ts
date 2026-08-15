@@ -344,6 +344,45 @@ describe("server session", () => {
     expect(store.data.session_message.root.map((message) => message.id)).toEqual([user.id, assistant.id])
   })
 
+  test("increments revisions only when full message diffs materialize", () => {
+    const store = setup({ child: session("child") }).store
+    const message = userMessage("message", { summary: { diffs: [] } })
+
+    expect(store.messageDiffRevision("child", message.id)).toBe(0)
+    expect(store.messageDiffInvalidation("child", message.id)).toBe(0)
+    expect(store.messageDiffAvailable("child", message.id)).toBeUndefined()
+    store.apply({ type: "message.updated", properties: { info: message } })
+    store.apply({ type: "message.updated", properties: { info: message } })
+    expect(store.messageDiffRevision("child", message.id)).toBe(0)
+    expect(store.messageDiffInvalidation("child", message.id)).toBe(0)
+
+    store.apply({ type: "message.diff.updated", properties: { sessionID: "child", messageID: message.id } })
+    expect(store.messageDiffRevision("child", message.id)).toBe(1)
+    expect(store.messageDiffInvalidation("child", message.id)).toBe(0)
+    expect(store.messageDiffAvailable("child", message.id)).toBe(true)
+
+    store.apply({ type: "message.diff.invalidated", properties: { sessionID: "child", messageID: message.id } })
+    expect(store.messageDiffRevision("child", message.id)).toBe(1)
+    expect(store.messageDiffInvalidation("child", message.id)).toBe(1)
+    expect(store.messageDiffAvailable("child", message.id)).toBe(false)
+
+    store.apply({ type: "message.updated", properties: { info: message } })
+    expect(store.messageDiffRevision("child", message.id)).toBe(1)
+    expect(store.messageDiffInvalidation("child", message.id)).toBe(1)
+    expect(store.messageDiffAvailable("child", message.id)).toBe(false)
+
+    store.apply({ type: "message.diff.updated", properties: { sessionID: "child", messageID: message.id } })
+    expect(store.messageDiffRevision("child", message.id)).toBe(2)
+    expect(store.messageDiffAvailable("child", message.id)).toBe(true)
+
+    store.apply({ type: "message.removed", properties: { sessionID: "child", messageID: message.id } })
+    expect(store.messageDiffRevision("child", message.id)).toBe(0)
+    expect(store.messageDiffInvalidation("child", message.id)).toBe(0)
+    expect(store.messageDiffAvailable("child", message.id)).toBeUndefined()
+    store.apply({ type: "message.updated", properties: { info: message } })
+    expect(store.messageDiffRevision("child", message.id)).toBe(0)
+  })
+
   test("backfills an assistant-only initial page through its user root", async () => {
     const user = userMessage("message-1")
     const assistants = [assistantMessage("message-2", user.id), assistantMessage("message-3", user.id)]

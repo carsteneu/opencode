@@ -33,6 +33,8 @@ export interface SessionReviewTabProps {
   focusedComment?: { file: string; id: string } | null
   onFocusedCommentChange?: (focus: { file: string; id: string } | null) => void
   focusedFile?: string
+  open?: () => string[]
+  onOpenChange?: (open: string[]) => void
   onScrollRef?: (el: HTMLDivElement | undefined) => void
   commentMentions?: {
     items: (query: string) => string[] | Promise<string[]>
@@ -146,8 +148,8 @@ export function SessionReviewTab(props: SessionReviewTabProps) {
       }}
       onScroll={handleScroll}
       onDiffRendered={queueRestore}
-      open={props.view().review.open()}
-      onOpenChange={props.view().review.setOpen}
+      open={props.open?.() ?? props.view().review.open()}
+      onOpenChange={props.onOpenChange ?? props.view().review.setOpen}
       classes={{
         root: props.classes?.root ?? "pr-3",
         header: props.classes?.header ?? "px-3",

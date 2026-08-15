@@ -1,9 +1,11 @@
 import type { Session as SDKSession, Message, Part } from "@opencode-ai/sdk/v2"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Session } from "@/session/session"
-import { MessageV2 } from "../../session/message-v2"
+import type { MessageID } from "@/session/schema"
 import { CliError, effectCmd } from "../effect-cmd"
 import { Database } from "@opencode-ai/core/database/database"
+import { MessageDiffTable } from "@opencode-ai/core/database/message-diff.sql"
+import { EventSequenceTable } from "@opencode-ai/core/event/sql"
 import { SessionTable, MessageTable, PartTable } from "@opencode-ai/core/session/sql"
 import { InstanceRef } from "@/effect/instance-ref"
 import { ShareNext } from "@/share/share-next"
@@ -12,6 +14,7 @@ import path from "path"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Effect, Schema } from "effect"
 import type { InstanceContext } from "@/project/instance-context"
+import { eq, inArray } from "drizzle-orm"
 
 const decodeMessageInfo = Schema.decodeUnknownSync(SessionV1.Info)
 const decodePart = Schema.decodeUnknownSync(SessionV1.Part)
@@ -183,47 +186,115 @@ const runImport = Effect.fn("Cli.import.body")(function* (file: string, ctx: Ins
     path: path.relative(path.resolve(ctx.worktree), ctx.directory).replaceAll("\\", "/"),
   }) as Session.Info
   const row = Session.toRow(info)
-  yield* db
-    .insert(SessionTable)
-    .values(row)
-    .onConflictDoUpdate({
-      target: SessionTable.id,
-      set: { project_id: row.project_id, directory: row.directory, path: row.path },
-    })
-    .run()
+  const messages = exportData.messages.map((msg) => ({
+    info: decodeMessageInfo(msg.info) as SessionV1.Info,
+    parts: msg.parts.map((part) => decodePart(part) as SessionV1.Part),
+  }))
+  const turnParts = new Map<MessageID, SessionV1.Part[]>()
+  messages.forEach((message) => {
+    if (message.info.role !== "assistant") return
+    const parts = turnParts.get(message.info.parentID) ?? []
+    parts.push(...message.parts)
+    turnParts.set(message.info.parentID, parts)
+  })
+  const accepted = yield* db
+    .transaction((tx) =>
+      Effect.gen(function* () {
+        const existing = messages.length
+          ? yield* tx
+              .select({ id: MessageTable.id, sessionID: MessageTable.session_id })
+              .from(MessageTable)
+              .where(
+                inArray(
+                  MessageTable.id,
+                  messages.map((message) => message.info.id),
+                ),
+              )
+              .all()
+          : []
+        if (existing.some((message) => message.sessionID !== row.id)) return false
+
+        yield* tx
+          .insert(SessionTable)
+          .values(row)
+          .onConflictDoUpdate({
+            target: SessionTable.id,
+            set: { project_id: row.project_id, directory: row.directory, path: row.path },
+          })
+          .run()
+        yield* tx.delete(EventSequenceTable).where(eq(EventSequenceTable.aggregate_id, row.id)).run()
+        yield* tx.delete(MessageTable).where(eq(MessageTable.session_id, row.id)).run()
+
+        for (const msg of messages) {
+          const diffs = msg.info.role === "user" ? msg.info.summary?.diffs : undefined
+          const portable = diffs?.some((diff) => diff.patch !== undefined) ? diffs : undefined
+          const stored = portable
+            ? {
+                ...msg.info,
+                summary: {
+                  ...(msg.info.role === "user" && msg.info.summary ? msg.info.summary : {}),
+                  diffs: Session.compactSummaryDiffs(portable),
+                },
+              }
+            : msg.info
+          const { id, sessionID: _, ...data } = stored
+          const parts = turnParts.get(id) ?? []
+          const fromSnapshot = parts.find(
+            (part): part is SessionV1.StepStartPart => part.type === "step-start" && part.snapshot !== undefined,
+          )?.snapshot
+          const toSnapshot = parts.findLast(
+            (part): part is SessionV1.StepFinishPart => part.type === "step-finish" && part.snapshot !== undefined,
+          )?.snapshot
+
+          yield* tx
+            .insert(MessageTable)
+            .values({
+              id,
+              session_id: row.id,
+              time_created: msg.info.time?.created ?? Date.now(),
+              data: data as never,
+            })
+            .run()
+
+          if (portable)
+            yield* tx
+              .insert(MessageDiffTable)
+              .values({
+                message_id: id,
+                from_snapshot: fromSnapshot ?? null,
+                to_snapshot: toSnapshot ?? null,
+                revision: crypto.randomUUID(),
+                data: portable,
+              })
+              .onConflictDoUpdate({
+                target: MessageDiffTable.message_id,
+                set: {
+                  from_snapshot: fromSnapshot ?? null,
+                  to_snapshot: toSnapshot ?? null,
+                  revision: crypto.randomUUID(),
+                  data: portable,
+                },
+              })
+              .run()
+          if (msg.parts.length)
+            yield* tx
+              .insert(PartTable)
+              .values(
+                msg.parts.map((partInfo) => {
+                  const { id: partID, sessionID: _sessionID, messageID: _messageID, ...partData } = partInfo
+                  return { id: partID, message_id: id, session_id: row.id, data: partData }
+                }),
+              )
+              .run()
+        }
+        return true
+      }),
+    )
     .pipe(Effect.orDie)
-
-  for (const msg of exportData.messages) {
-    const msgInfo = decodeMessageInfo(msg.info) as SessionV1.Info
-    const { id, sessionID: _, ...msgData } = msgInfo
-    yield* db
-      .insert(MessageTable)
-      .values({
-        id,
-        session_id: row.id,
-        time_created: msgInfo.time?.created ?? Date.now(),
-        data: msgData as never,
-      })
-      .onConflictDoNothing()
-      .run()
-      .pipe(Effect.orDie)
-
-    for (const part of msg.parts) {
-      const partInfo = decodePart(part) as SessionV1.Part
-      const { id: partId, sessionID: _s, messageID, ...partData } = partInfo
-      yield* db
-        .insert(PartTable)
-        .values({
-          id: partId,
-          message_id: messageID,
-          session_id: row.id,
-          data: partData,
-        })
-        .onConflictDoNothing()
-        .run()
-        .pipe(Effect.orDie)
-    }
-  }
+  if (!accepted)
+    return yield* Effect.fail(
+      new CliError({ message: "One or more message IDs already belong to another session and cannot be imported" }),
+    )
 
   process.stdout.write(`Imported session: ${exportData.info.id}`)
   process.stdout.write(EOL)

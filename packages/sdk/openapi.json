@@ -8206,6 +8206,53 @@
                       "required": ["id", "aggregateID", "seq", "type", "data"],
                       "additionalProperties": false
                     }
+                  },
+                  "messageDiffs": {
+                    "type": "object",
+                    "properties": {
+                      "sessionID": {
+                        "type": "string",
+                        "pattern": "^ses"
+                      },
+                      "messageIDs": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "pattern": "^msg"
+                        }
+                      },
+                      "rows": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "messageID": {
+                              "type": "string",
+                              "pattern": "^msg"
+                            },
+                            "revision": {
+                              "type": "string"
+                            },
+                            "fromSnapshot": {
+                              "type": "string"
+                            },
+                            "toSnapshot": {
+                              "type": "string"
+                            },
+                            "diffs": {
+                              "type": "array",
+                              "items": {
+                                "$ref": "#/components/schemas/SnapshotFileDiff"
+                              }
+                            }
+                          },
+                          "required": ["messageID", "revision", "diffs"],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": ["sessionID", "rows"],
+                    "additionalProperties": false
                   }
                 },
                 "required": ["directory", "events"],
@@ -8404,6 +8451,354 @@
           {
             "lang": "js",
             "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.sync.history.list({\n  ...\n})"
+          }
+        ]
+      }
+    },
+    "/sync/message-diffs": {
+      "post": {
+        "tags": ["sync"],
+        "operationId": "sync.message-diffs.list",
+        "parameters": [
+          {
+            "name": "directory",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "name": "workspace",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Message diff snapshots",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "sessionID": {
+                        "type": "string",
+                        "pattern": "^ses"
+                      },
+                      "messageIDs": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "pattern": "^msg"
+                        }
+                      },
+                      "rows": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "messageID": {
+                              "type": "string",
+                              "pattern": "^msg"
+                            },
+                            "revision": {
+                              "type": "string"
+                            },
+                            "fromSnapshot": {
+                              "type": "string"
+                            },
+                            "toSnapshot": {
+                              "type": "string"
+                            },
+                            "diffs": {
+                              "type": "array",
+                              "items": {
+                                "$ref": "#/components/schemas/SnapshotFileDiff"
+                              }
+                            }
+                          },
+                          "required": ["messageID", "revision", "diffs"],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": ["sessionID", "rows"],
+                    "additionalProperties": false
+                  },
+                  "description": "Message diff snapshots"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BadRequestError"
+                }
+              }
+            }
+          }
+        },
+        "description": "List authoritative side-table snapshots for workspace session synchronization.",
+        "summary": "List message diff snapshots",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "sessionID": {
+                      "type": "string",
+                      "pattern": "^ses"
+                    },
+                    "messageIDs": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "pattern": "^msg"
+                      }
+                    }
+                  },
+                  "required": ["sessionID"],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        },
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.sync.message-diffs.list({\n  ...\n})"
+          }
+        ]
+      }
+    },
+    "/sync/message-diffs/manifest": {
+      "post": {
+        "tags": ["sync"],
+        "operationId": "sync.message-diffs.manifest",
+        "parameters": [
+          {
+            "name": "directory",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "name": "workspace",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Message diff manifest",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "sessionID": {
+                        "type": "string",
+                        "pattern": "^ses"
+                      },
+                      "rows": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "messageID": {
+                              "type": "string",
+                              "pattern": "^msg"
+                            },
+                            "revision": {
+                              "type": "string"
+                            }
+                          },
+                          "required": ["messageID", "revision"],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": ["sessionID", "rows"],
+                    "additionalProperties": false
+                  },
+                  "description": "Message diff manifest"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BadRequestError"
+                }
+              }
+            }
+          }
+        },
+        "description": "List lightweight revision markers for workspace side-table reconciliation.",
+        "summary": "List message diff markers",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^ses"
+                }
+              }
+            }
+          }
+        },
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.sync.message-diffs.manifest({\n  ...\n})"
+          }
+        ]
+      }
+    },
+    "/sync/message-diffs/materialize": {
+      "post": {
+        "tags": ["sync"],
+        "operationId": "sync.message-diffs.materialize",
+        "parameters": [
+          {
+            "name": "directory",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "name": "workspace",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Materialized message diff snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "sessionID": {
+                      "type": "string",
+                      "pattern": "^ses"
+                    },
+                    "messageIDs": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "pattern": "^msg"
+                      }
+                    },
+                    "rows": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "messageID": {
+                            "type": "string",
+                            "pattern": "^msg"
+                          },
+                          "revision": {
+                            "type": "string"
+                          },
+                          "fromSnapshot": {
+                            "type": "string"
+                          },
+                          "toSnapshot": {
+                            "type": "string"
+                          },
+                          "diffs": {
+                            "type": "array",
+                            "items": {
+                              "$ref": "#/components/schemas/SnapshotFileDiff"
+                            }
+                          }
+                        },
+                        "required": ["messageID", "revision", "diffs"],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": ["sessionID", "rows"],
+                  "additionalProperties": false,
+                  "description": "Materialized message diff snapshot"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "BadRequest | InvalidRequestError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/effect_HttpApiError_BadRequest"
+                    },
+                    {
+                      "$ref": "#/components/schemas/InvalidRequestError"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "description": "Materialize and return a portable side-table snapshot before an explicit session warp.",
+        "summary": "Materialize session message diffs",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "sessionID": {
+                    "type": "string",
+                    "pattern": "^ses"
+                  }
+                },
+                "required": ["sessionID"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.sync.message-diffs.materialize({\n  ...\n})"
           }
         ]
       }
@@ -15389,6 +15784,12 @@
             "$ref": "#/components/schemas/EventSessionNextRevertCommitted"
           },
           {
+            "$ref": "#/components/schemas/EventMessageDiffUpdated"
+          },
+          {
+            "$ref": "#/components/schemas/EventMessageDiffInvalidated"
+          },
+          {
             "$ref": "#/components/schemas/EventMessagePartDelta"
           },
           {
@@ -15998,7 +16399,6 @@
                 }
               }
             },
-            "required": ["diffs"],
             "additionalProperties": false
           },
           "agent": {
@@ -19015,6 +19415,66 @@
                       }
                     },
                     "required": ["timestamp", "sessionID", "messageID"],
+                    "additionalProperties": false
+                  }
+                },
+                "required": ["id", "type", "properties"],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "pattern": "^evt_"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": ["message.diff.updated"]
+                  },
+                  "properties": {
+                    "type": "object",
+                    "properties": {
+                      "sessionID": {
+                        "type": "string",
+                        "pattern": "^ses"
+                      },
+                      "messageID": {
+                        "type": "string",
+                        "pattern": "^msg"
+                      }
+                    },
+                    "required": ["sessionID", "messageID"],
+                    "additionalProperties": false
+                  }
+                },
+                "required": ["id", "type", "properties"],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "pattern": "^evt_"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": ["message.diff.invalidated"]
+                  },
+                  "properties": {
+                    "type": "object",
+                    "properties": {
+                      "sessionID": {
+                        "type": "string",
+                        "pattern": "^ses"
+                      },
+                      "messageID": {
+                        "type": "string",
+                        "pattern": "^msg"
+                      }
+                    },
+                    "required": ["sessionID", "messageID"],
                     "additionalProperties": false
                   }
                 },
@@ -24134,6 +24594,12 @@
           },
           {
             "$ref": "#/components/schemas/SessionNextRevertCommitted"
+          },
+          {
+            "$ref": "#/components/schemas/MessageDiffUpdated"
+          },
+          {
+            "$ref": "#/components/schemas/MessageDiffInvalidated"
           },
           {
             "$ref": "#/components/schemas/MessagePartDelta"
@@ -31477,6 +31943,110 @@
         "required": ["id", "type", "data"],
         "additionalProperties": false
       },
+      "MessageDiffUpdated": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^evt_"
+          },
+          "metadata": {
+            "type": "object"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["message.diff.updated"]
+          },
+          "durable": {
+            "type": "object",
+            "properties": {
+              "aggregateID": {
+                "type": "string"
+              },
+              "seq": {
+                "type": "integer"
+              },
+              "version": {
+                "type": "integer"
+              }
+            },
+            "required": ["aggregateID", "seq", "version"],
+            "additionalProperties": false
+          },
+          "location": {
+            "$ref": "#/components/schemas/LocationRef"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "sessionID": {
+                "type": "string",
+                "pattern": "^ses"
+              },
+              "messageID": {
+                "type": "string",
+                "pattern": "^msg"
+              }
+            },
+            "required": ["sessionID", "messageID"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["id", "type", "data"],
+        "additionalProperties": false
+      },
+      "MessageDiffInvalidated": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^evt_"
+          },
+          "metadata": {
+            "type": "object"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["message.diff.invalidated"]
+          },
+          "durable": {
+            "type": "object",
+            "properties": {
+              "aggregateID": {
+                "type": "string"
+              },
+              "seq": {
+                "type": "integer"
+              },
+              "version": {
+                "type": "integer"
+              }
+            },
+            "required": ["aggregateID", "seq", "version"],
+            "additionalProperties": false
+          },
+          "location": {
+            "$ref": "#/components/schemas/LocationRef"
+          },
+          "data": {
+            "type": "object",
+            "properties": {
+              "sessionID": {
+                "type": "string",
+                "pattern": "^ses"
+              },
+              "messageID": {
+                "type": "string",
+                "pattern": "^msg"
+              }
+            },
+            "required": ["sessionID", "messageID"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["id", "type", "data"],
+        "additionalProperties": false
+      },
       "MessagePartDelta": {
         "type": "object",
         "properties": {
@@ -35418,6 +35988,66 @@
               }
             },
             "required": ["timestamp", "sessionID", "messageID"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["id", "type", "properties"],
+        "additionalProperties": false
+      },
+      "EventMessageDiffUpdated": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^evt_"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["message.diff.updated"]
+          },
+          "properties": {
+            "type": "object",
+            "properties": {
+              "sessionID": {
+                "type": "string",
+                "pattern": "^ses"
+              },
+              "messageID": {
+                "type": "string",
+                "pattern": "^msg"
+              }
+            },
+            "required": ["sessionID", "messageID"],
+            "additionalProperties": false
+          }
+        },
+        "required": ["id", "type", "properties"],
+        "additionalProperties": false
+      },
+      "EventMessageDiffInvalidated": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^evt_"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["message.diff.invalidated"]
+          },
+          "properties": {
+            "type": "object",
+            "properties": {
+              "sessionID": {
+                "type": "string",
+                "pattern": "^ses"
+              },
+              "messageID": {
+                "type": "string",
+                "pattern": "^msg"
+              }
+            },
+            "required": ["sessionID", "messageID"],
             "additionalProperties": false
           }
         },
