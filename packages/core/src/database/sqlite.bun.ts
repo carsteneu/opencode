@@ -55,10 +55,10 @@ const make = (options: Config) =>
 
     const run = (query: string, params: ReadonlyArray<unknown> = []) =>
       Effect.withFiber<Array<Record<string, unknown>>, SqlError>((fiber) => {
-        const statement = native.query(query)
-        // @ts-ignore bun-types missing safeIntegers method, fixed in https://github.com/oven-sh/bun/pull/26627
-        statement.safeIntegers(Context.get(fiber.context, Client.SafeIntegers))
         try {
+          const statement = native.query(query)
+          // @ts-ignore bun-types missing safeIntegers method, fixed in https://github.com/oven-sh/bun/pull/26627
+          statement.safeIntegers(Context.get(fiber.context, Client.SafeIntegers))
           return Effect.succeed((statement.all(...(params as any)) ?? []) as Array<Record<string, unknown>>)
         } catch (cause) {
           return Effect.fail(
@@ -71,10 +71,10 @@ const make = (options: Config) =>
 
     const runValues = (query: string, params: ReadonlyArray<unknown> = []) =>
       Effect.withFiber<Array<unknown[]>, SqlError>((fiber) => {
-        const statement = native.query(query)
-        // @ts-ignore bun-types missing safeIntegers method, fixed in https://github.com/oven-sh/bun/pull/26627
-        statement.safeIntegers(Context.get(fiber.context, Client.SafeIntegers))
         try {
+          const statement = native.query(query)
+          // @ts-ignore bun-types missing safeIntegers method, fixed in https://github.com/oven-sh/bun/pull/26627
+          statement.safeIntegers(Context.get(fiber.context, Client.SafeIntegers))
           return Effect.succeed((statement.values(...(params as any)) ?? []) as Array<unknown[]>)
         } catch (cause) {
           return Effect.fail(
@@ -87,13 +87,17 @@ const make = (options: Config) =>
 
     const connection = identity<SqliteConnection>({
       execute(query, params, transformRows) {
-        return transformRows ? Effect.map(run(query, params), transformRows) : run(query, params)
+        const result = Sqlite.retryLockedStatement(run(query, params), {
+          query,
+          inTransaction: native.inTransaction,
+        })
+        return transformRows ? Effect.map(result, transformRows) : result
       },
       executeRaw(query, params) {
-        return run(query, params)
+        return Sqlite.retryLockedStatement(run(query, params), { query, inTransaction: native.inTransaction })
       },
       executeValues(query, params) {
-        return runValues(query, params)
+        return Sqlite.retryLockedStatement(runValues(query, params), { query, inTransaction: native.inTransaction })
       },
       executeUnprepared(query, params, transformRows) {
         return this.execute(query, params, transformRows)

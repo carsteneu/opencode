@@ -11,7 +11,7 @@ import * as Stream from "effect/Stream"
 import * as Reactivity from "effect/unstable/reactivity/Reactivity"
 import * as Client from "effect/unstable/sql/SqlClient"
 import type { Connection } from "effect/unstable/sql/SqlConnection"
-import { classifySqliteError, SqlError } from "effect/unstable/sql/SqlError"
+import { classifySqliteError, LockTimeoutError, SqlError } from "effect/unstable/sql/SqlError"
 import * as Statement from "effect/unstable/sql/Statement"
 import { Sqlite } from "./sqlite"
 
@@ -44,6 +44,15 @@ interface SqliteConnection extends Connection {
   readonly loadExtension: (path: string) => Effect.Effect<void, SqlError>
 }
 
+function classifyNodeSqliteError(cause: unknown, message: string, operation: string) {
+  const errcode =
+    typeof cause === "object" && cause !== null && "errcode" in cause ? Reflect.get(cause, "errcode") : undefined
+  if (typeof errcode === "number" && [5, 6].includes(errcode & 0xff)) {
+    return new LockTimeoutError({ cause, message, operation })
+  }
+  return classifySqliteError(cause, { message, operation })
+}
+
 const make = (options: Config) =>
   Effect.gen(function* () {
     const native = (yield* Sqlite.Native) as DatabaseSync
@@ -55,14 +64,14 @@ const make = (options: Config) =>
 
     const run = (query: string, params: ReadonlyArray<unknown> = []) =>
       Effect.withFiber<Array<Record<string, unknown>>, SqlError>((fiber) => {
-        const statement = native.prepare(query)
-        statement.setReadBigInts(Context.get(fiber.context, Client.SafeIntegers))
         try {
+          const statement = native.prepare(query)
+          statement.setReadBigInts(Context.get(fiber.context, Client.SafeIntegers))
           return Effect.succeed(statement.all(...(params as SQLInputValue[])) as Array<Record<string, unknown>>)
         } catch (cause) {
           return Effect.fail(
             new SqlError({
-              reason: classifySqliteError(cause, { message: "Failed to execute statement", operation: "execute" }),
+              reason: classifyNodeSqliteError(cause, "Failed to execute statement", "execute"),
             }),
           )
         }
@@ -70,17 +79,17 @@ const make = (options: Config) =>
 
     const runValues = (query: string, params: ReadonlyArray<unknown> = []) =>
       Effect.withFiber<ReadonlyArray<ReadonlyArray<unknown>>, SqlError>((fiber) => {
-        const statement = native.prepare(query)
-        statement.setReadBigInts(Context.get(fiber.context, Client.SafeIntegers))
-        statement.setReturnArrays(true)
         try {
+          const statement = native.prepare(query)
+          statement.setReadBigInts(Context.get(fiber.context, Client.SafeIntegers))
+          statement.setReturnArrays(true)
           return Effect.succeed(
             statement.all(...(params as SQLInputValue[])) as unknown as ReadonlyArray<ReadonlyArray<unknown>>,
           )
         } catch (cause) {
           return Effect.fail(
             new SqlError({
-              reason: classifySqliteError(cause, { message: "Failed to execute statement", operation: "execute" }),
+              reason: classifyNodeSqliteError(cause, "Failed to execute statement", "execute"),
             }),
           )
         }
@@ -88,13 +97,17 @@ const make = (options: Config) =>
 
     const connection = identity<SqliteConnection>({
       execute(query, params, transformRows) {
-        return transformRows ? Effect.map(run(query, params), transformRows) : run(query, params)
+        const result = Sqlite.retryLockedStatement(run(query, params), {
+          query,
+          inTransaction: native.isTransaction,
+        })
+        return transformRows ? Effect.map(result, transformRows) : result
       },
       executeRaw(query, params) {
-        return run(query, params)
+        return Sqlite.retryLockedStatement(run(query, params), { query, inTransaction: native.isTransaction })
       },
       executeValues(query, params) {
-        return runValues(query, params)
+        return Sqlite.retryLockedStatement(runValues(query, params), { query, inTransaction: native.isTransaction })
       },
       executeUnprepared(query, params, transformRows) {
         return this.execute(query, params, transformRows)
@@ -107,7 +120,7 @@ const make = (options: Config) =>
           try: () => native.loadExtension(path),
           catch: (cause) =>
             new SqlError({
-              reason: classifySqliteError(cause, { message: "Failed to load extension", operation: "loadExtension" }),
+              reason: classifyNodeSqliteError(cause, "Failed to load extension", "loadExtension"),
             }),
         }),
     })
@@ -150,7 +163,7 @@ const nativeLayer = (config: Config) =>
     Effect.gen(function* () {
       const native = new DatabaseSync(config.filename, {
         readOnly: config.readonly,
-        timeout: config.timeout,
+        timeout: config.timeout ?? 0,
         allowExtension: config.allowExtension,
         enableForeignKeyConstraints: true,
         open: true,
