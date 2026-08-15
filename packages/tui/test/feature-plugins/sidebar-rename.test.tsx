@@ -7,7 +7,7 @@ import { createTuiPluginApi } from "../fixture/tui-plugin"
 
 type Registered = { order: number; slots: Record<string, (ctx: unknown, props: { session_id: string }) => unknown> }
 type Slots = {
-  sidebar_title_actions: { session_id: string; title: string }
+  sidebar_title_actions: { session_id: string }
 }
 const meta = { id: "internal:sidebar-rename" } as never
 
@@ -45,7 +45,7 @@ test("renders the pencil action for a session", async () => {
       id: "internal:sidebar-rename",
       slots: registered!.slots as never,
     })
-    return <Slot name="sidebar_title_actions" session_id="session-1" title="title" />
+    return <Slot name="sidebar_title_actions" session_id="session-1" />
   }
 
   const app = await testRender(() => <App />)

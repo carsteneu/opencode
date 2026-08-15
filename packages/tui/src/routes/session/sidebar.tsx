@@ -54,7 +54,7 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
                 title={session()!.title}
                 share_url={session()!.share?.url}
               >
-                <box paddingRight={1}>
+                <box paddingRight={1} flexShrink={1}>
                   <text fg={theme.text}>
                     <b>{session()!.title}</b>
                   </text>
@@ -83,7 +83,7 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
                   </Show>
                 </box>
               </pluginRuntime.Slot>
-              <pluginRuntime.Slot name="sidebar_title_actions" session_id={props.sessionID} title={session()!.title} />
+              <pluginRuntime.Slot name="sidebar_title_actions" mode="replace" session_id={props.sessionID} />
             </box>
             <pluginRuntime.Slot name="sidebar_content" session_id={props.sessionID} />
           </box>
