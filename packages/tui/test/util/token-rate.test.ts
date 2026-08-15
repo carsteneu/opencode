@@ -54,14 +54,4 @@ describe("util.token-rate", () => {
     meter.add(10, 2000)
     expect(meter.rate(2000)).toBe(0)
   })
-
-  test("isActive reflects recent sampling within the timeout", () => {
-    const meter = new TokenRateMeter()
-    expect(meter.isActive(1000, 2000)).toBe(false)
-    meter.add(10, 1000)
-    expect(meter.isActive(1000, 2000)).toBe(true)
-    expect(meter.isActive(2999, 2000)).toBe(true)
-    expect(meter.isActive(3000, 2000)).toBe(true)
-    expect(meter.isActive(3001, 2000)).toBe(false)
-  })
 })

@@ -41,7 +41,7 @@ function TokenRate(props: { api: TuiPluginApi }) {
     props.api.event.on("message.updated", (evt) => {
       const info = evt.properties.info
       if (info.role !== "assistant") return
-      const tokens = info.tokens.output + info.tokens.reasoning
+      const tokens = (info.tokens?.output ?? 0) + (info.tokens?.reasoning ?? 0)
       lastActivityAt = Date.now()
       if (info.id !== currentId) {
         currentId = info.id
@@ -67,6 +67,7 @@ function TokenRate(props: { api: TuiPluginApi }) {
     tick()
     const now = Date.now()
     if (now - lastActivityAt > ACTIVITY_TIMEOUT) return
+    if (currentTokens <= 0) return
     return {
       rate: meter.rate(now),
       total: currentTokens,

@@ -34,12 +34,6 @@ export class TokenRateMeter {
     return (last.tokens - first.tokens) / elapsed
   }
 
-  // True when a sample landed within `timeoutMs` of `at`.
-  isActive(at = Date.now(), timeoutMs = 2000): boolean {
-    const last = this.samples[this.samples.length - 1]
-    return !!last && at - last.at <= timeoutMs
-  }
-
   private prune(at: number) {
     const windowStart = at - this.windowMs
     let drop = 0
