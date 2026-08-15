@@ -83,11 +83,7 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
                   </Show>
                 </box>
               </pluginRuntime.Slot>
-              <pluginRuntime.Slot
-                name="sidebar_title_actions"
-                session_id={props.sessionID}
-                title={session()!.title}
-              />
+              <pluginRuntime.Slot name="sidebar_title_actions" session_id={props.sessionID} title={session()!.title} />
             </box>
             <pluginRuntime.Slot name="sidebar_content" session_id={props.sessionID} />
           </box>
