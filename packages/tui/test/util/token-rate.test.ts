@@ -1,0 +1,67 @@
+import { describe, expect, test } from "bun:test"
+import { TokenRateMeter } from "../../src/util/token-rate"
+
+describe("util.token-rate", () => {
+  test("rate is 0 with fewer than two samples", () => {
+    const meter = new TokenRateMeter()
+    expect(meter.rate(0)).toBe(0)
+    meter.add(10, 0)
+    expect(meter.rate(0)).toBe(0)
+  })
+
+  test("computes tokens per second from cumulative samples", () => {
+    const meter = new TokenRateMeter()
+    meter.add(25, 0)
+    meter.add(50, 500)
+    meter.add(75, 1000)
+    meter.add(100, 1500)
+    expect(meter.rate(1500)).toBeCloseTo(50, 5)
+  })
+
+  test("steady 10 tok/s over a 3s window", () => {
+    const meter = new TokenRateMeter()
+    meter.add(10, 0)
+    meter.add(20, 1000)
+    meter.add(30, 2000)
+    meter.add(40, 3000)
+    expect(meter.rate(3000)).toBeCloseTo(10, 5)
+  })
+
+  test("prunes samples older than the window but keeps the newest two", () => {
+    const meter = new TokenRateMeter(1000)
+    meter.add(10, 0)
+    meter.add(20, 1000)
+    meter.add(30, 2000)
+    meter.add(40, 3000)
+    // After pruning only the newest two remain (at 2000, 3000).
+    expect(meter.rate(3000)).toBeCloseTo(10, 5)
+  })
+
+  test("does not move backwards on non-monotonic samples", () => {
+    const meter = new TokenRateMeter()
+    meter.add(10, 0)
+    meter.add(9, 500) // duplicate/out-of-order guard: ignored
+    meter.add(20, 1000)
+    expect(meter.rate(1000)).toBeCloseTo(10, 5)
+  })
+
+  test("reset clears all samples", () => {
+    const meter = new TokenRateMeter()
+    meter.add(5, 0)
+    meter.add(10, 1000)
+    meter.reset()
+    expect(meter.rate(2000)).toBe(0)
+    meter.add(10, 2000)
+    expect(meter.rate(2000)).toBe(0)
+  })
+
+  test("isActive reflects recent sampling within the timeout", () => {
+    const meter = new TokenRateMeter()
+    expect(meter.isActive(1000, 2000)).toBe(false)
+    meter.add(10, 1000)
+    expect(meter.isActive(1000, 2000)).toBe(true)
+    expect(meter.isActive(2999, 2000)).toBe(true)
+    expect(meter.isActive(3000, 2000)).toBe(true)
+    expect(meter.isActive(3001, 2000)).toBe(false)
+  })
+})
