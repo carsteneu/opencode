@@ -9,7 +9,9 @@ function RenameButton(props: { api: TuiPluginApi; session_id: string }) {
     <box>
       <text
         fg={props.api.theme.current.textMuted}
-        onMouseDown={() => {
+        // Open on mouseup: the dialog backdrop closes on a subsequent mouseup, so
+        // opening on mousedown would let the release hit the backdrop and dismiss it.
+        onMouseUp={() => {
           props.api.ui.dialog.replace(() => <DialogSessionRename session={props.session_id} />)
         }}
       >
