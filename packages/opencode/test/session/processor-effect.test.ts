@@ -915,6 +915,7 @@ itToolInputProgress.live("session.processor effect tests throttle tool input pro
             Effect.provideService(Database.Service, database),
           ),
           "timed out waiting for throttled tool input progress",
+          2_000,
         )
         expect(part.state.status).toBe("pending")
         if (part.state.status !== "pending") return
