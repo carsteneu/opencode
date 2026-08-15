@@ -103,9 +103,9 @@ function defer<T>() {
   return { promise, resolve }
 }
 
-const waitFor = <A>(check: Effect.Effect<A | undefined>, message: string) =>
+const waitFor = <A>(check: Effect.Effect<A | undefined>, message: string, timeout = 500) =>
   Effect.gen(function* () {
-    const stop = Date.now() + 500
+    const stop = Date.now() + timeout
     while (Date.now() < stop) {
       const value = yield* check
       if (value !== undefined) return value
@@ -225,6 +225,50 @@ const fragmentFailureLLM = Layer.succeed(
 )
 const fragmentFailureEnv = LayerNode.compile(root, [...replacements, [LLM.node, fragmentFailureLLM]])
 const itFragmentFailure = testEffect(fragmentFailureEnv)
+
+const firstToolInput = '{"content":"'
+const bufferedToolInput = Array.from({ length: 1_024 }, () => "é")
+const finalToolInput = "x".repeat(16 * 1024)
+const authoritativeToolInput = { filePath: "README.md", content: "final" }
+const toolInputProgressLLM = Layer.succeed(
+  LLM.Service,
+  LLM.Service.of({
+    stream: () =>
+      Stream.concat(
+        Stream.fromIterable([
+          LLMEvent.toolInputStart({ id: "call-progress", name: "write" }),
+          LLMEvent.toolInputDelta({ id: "call-progress", name: "write", text: firstToolInput }),
+          ...bufferedToolInput.map((text) => LLMEvent.toolInputDelta({ id: "call-progress", name: "write", text })),
+          LLMEvent.toolInputStart({ id: "call-ignored", name: "read" }),
+          ...bufferedToolInput.map((text) => LLMEvent.toolInputDelta({ id: "call-ignored", name: "read", text })),
+        ]),
+        Stream.concat(
+          Stream.fromEffect(Effect.sleep("550 millis")).pipe(
+            Stream.flatMap(() =>
+              Stream.make(LLMEvent.toolInputDelta({ id: "call-progress", name: "write", text: finalToolInput })),
+            ),
+          ),
+          Stream.concat(
+            Stream.fromEffect(Effect.sleep("500 millis")).pipe(
+              Stream.flatMap(() =>
+                Stream.make(
+                  LLMEvent.toolInputEnd({ id: "call-progress", name: "write" }),
+                  LLMEvent.toolCall({
+                    id: "call-progress",
+                    name: "write",
+                    input: authoritativeToolInput,
+                  }),
+                ),
+              ),
+            ),
+            Stream.never,
+          ),
+        ),
+      ),
+  }),
+)
+const toolInputProgressEnv = LayerNode.compile(root, [...replacements, [LLM.node, toolInputProgressLLM]])
+const itToolInputProgress = testEffect(toolInputProgressEnv)
 
 const boot = Effect.fn("test.boot")(function* () {
   const processors = yield* SessionProcessor.Service
@@ -810,6 +854,98 @@ it.live("session.processor effect tests complete AI SDK tool calls when native f
         expect(call.state.time.end).toBeDefined()
       }),
     { config: (url) => providerCfg(url) },
+  ),
+)
+
+itToolInputProgress.live("session.processor effect tests throttle tool input progress without retaining content", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const database = yield* Database.Service
+        const { processors, session, provider } = yield* boot()
+        const events = yield* EventV2Bridge.Service
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "large write")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const published: number[] = []
+        let ignoredUpdates = 0
+        const off = yield* events.listen((event) => {
+          if (event.type !== MessageV2.Event.PartUpdated.type) return Effect.void
+          const part = (event.data as typeof MessageV2.Event.PartUpdated.data.Type).part
+          if (part.type !== "tool" || part.state.status !== "pending") return Effect.void
+          if (part.callID === "call-ignored") {
+            ignoredUpdates += 1
+            return Effect.void
+          }
+          if (part.callID !== "call-progress") return Effect.void
+          published.push(part.state.received ?? 0)
+          return Effect.void
+        })
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+        const run = yield* handle
+          .process({
+            user: {
+              id: parent.id,
+              sessionID: chat.id,
+              role: "user",
+              time: parent.time,
+              agent: parent.agent,
+              model: { providerID: ref.providerID, modelID: ref.modelID },
+            } satisfies SessionV1.User,
+            sessionID: chat.id,
+            model: mdl,
+            agent: agent(),
+            system: [],
+            messages: [{ role: "user", content: "large write" }],
+            tools: {},
+          })
+          .pipe(Effect.forkChild)
+
+        yield* Effect.sleep("550 millis")
+        const expected = Buffer.byteLength(firstToolInput + bufferedToolInput.join("") + finalToolInput, "utf8")
+        const part = yield* waitFor(
+          MessageV2.parts(msg.id).pipe(
+            Effect.map((parts) =>
+              parts.find(
+                (item): item is SessionV1.ToolPart =>
+                  item.type === "tool" && item.state.status === "pending" && item.state.received === expected,
+              ),
+            ),
+            Effect.provideService(Database.Service, database),
+          ),
+          "timed out waiting for throttled tool input progress",
+        )
+        expect(part.state.status).toBe("pending")
+        if (part.state.status !== "pending") return
+        expect(part.state.raw).toBe("")
+        expect(part.state.input).toEqual({})
+        expect(published).toEqual([0, Buffer.byteLength(firstToolInput, "utf8"), expected])
+        expect(ignoredUpdates).toBe(1)
+
+        yield* Effect.sleep("100 millis")
+        const running = yield* waitFor(
+          MessageV2.parts(msg.id).pipe(
+            Effect.map((parts) =>
+              parts.find(
+                (item): item is SessionV1.ToolPart =>
+                  item.type === "tool" && item.callID === "call-progress" && item.state.status === "running",
+              ),
+            ),
+            Effect.provideService(Database.Service, database),
+          ),
+          "timed out waiting for authoritative tool call input",
+          2_000,
+        )
+        yield* off
+        yield* Fiber.interrupt(run)
+
+        expect(running.state.status).toBe("running")
+        if (running.state.status !== "running") return
+        expect(running.state.input).toEqual(authoritativeToolInput)
+        expect("received" in running.state).toBe(false)
+      }),
+    { config: cfg },
   ),
 )
 

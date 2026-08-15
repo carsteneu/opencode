@@ -260,6 +260,8 @@ export const ToolStatePending = Schema.Struct({
   status: Schema.Literal("pending"),
   input: Schema.Record(Schema.String, Schema.Any),
   raw: Schema.String,
+  // UTF-8 byte count of the raw tool input observed while streaming.
+  received: Schema.optional(NonNegativeInt),
 }).annotate({ identifier: "ToolStatePending" })
 export type ToolStatePending = Types.DeepMutable<Schema.Schema.Type<typeof ToolStatePending>>
 

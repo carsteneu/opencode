@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test"
-import { reasoningSummary } from "../../../src/context/thinking"
+import { createMemo, createRoot } from "solid-js"
+import { createStore } from "solid-js/store"
+import { reasoningSummary, renderedAssistantParts } from "../../../src/context/thinking"
 
 describe("reasoningSummary", () => {
   test("extracts a leading summary title and leaves markdown body", () => {
@@ -32,5 +34,40 @@ describe("reasoningSummary", () => {
 
   test("leaves content without a leading title in its body", () => {
     expect(reasoningSummary("Details only.")).toEqual({ title: null, body: "Details only." })
+  })
+})
+
+describe("renderedAssistantParts", () => {
+  test("removes reasoning before the hidden render path", () => {
+    const parts = [
+      { type: "reasoning", text: "private" },
+      { type: "text", text: "answer" },
+    ]
+
+    expect(renderedAssistantParts(parts, "hide")).toEqual([{ type: "text", text: "answer" }])
+    expect(renderedAssistantParts(parts, "show")).toBe(parts)
+  })
+
+  test("does not react to hidden reasoning text deltas", () => {
+    createRoot((dispose) => {
+      const [store, setStore] = createStore({
+        parts: [
+          { type: "reasoning", text: "first" },
+          { type: "text", text: "answer" },
+        ],
+      })
+      let runs = 0
+      const rendered = createMemo(() => {
+        runs += 1
+        return renderedAssistantParts(store.parts, "hide")
+      })
+
+      expect(rendered()).toHaveLength(1)
+      expect(runs).toBe(1)
+      setStore("parts", 0, "text", "second")
+      expect(rendered()).toHaveLength(1)
+      expect(runs).toBe(1)
+      dispose()
+    })
   })
 })

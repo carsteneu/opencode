@@ -26,6 +26,11 @@ export function nextThinkingMode(current: ThinkingMode): ThinkingMode {
   return MODES[(idx + 1) % MODES.length] ?? "show"
 }
 
+export function renderedAssistantParts<T extends { type: string }>(parts: readonly T[], mode: ThinkingMode) {
+  if (mode === "show") return parts
+  return parts.filter((part) => part.type !== "reasoning")
+}
+
 export function useThinkingMode() {
   const kv = useKV()
   // Capture pre-state before `kv.signal` seeds a default, so we can detect
@@ -47,7 +52,7 @@ export function useThinkingMode() {
 
   // Preserve previous experience for users who had explicitly toggled the
   // legacy `thinking_visibility` boolean. First-time users (no legacy key)
-  // get the new "hide" default (collapsed thinking).
+  // get the new "hide" default.
   if (!hadStored) {
     if (legacy === true) set("show")
     else if (legacy === false) set("hide")

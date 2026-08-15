@@ -81,7 +81,13 @@ import { setPreLayoutSiblingMargin } from "../../util/layout"
 import { useTuiConfig } from "../../config"
 import { useClipboard } from "../../context/clipboard"
 import { usePartialRender } from "../../ui/partial-render"
-import { nextThinkingMode, reasoningSummary, useThinkingMode, type ThinkingMode } from "../../context/thinking"
+import {
+  nextThinkingMode,
+  reasoningSummary,
+  renderedAssistantParts,
+  useThinkingMode,
+  type ThinkingMode,
+} from "../../context/thinking"
 import { getScrollAcceleration } from "../../util/scroll"
 import { collapseToolOutput } from "../../util/collapse-tool-output"
 import { usePluginRuntime } from "../../plugin/runtime"
@@ -113,6 +119,7 @@ import {
   type SessionImageSourceReader,
 } from "../../util/session-image-source"
 import { sessionImageProjectDirectory } from "../../util/session-image-save"
+import { toolInputProgress } from "../../util/tool-input-progress"
 
 addDefaultParsers(parsers.parsers)
 
@@ -568,7 +575,7 @@ export function Session() {
   const [conceal, setConceal] = createSignal(true)
   const thinking = useThinkingMode()
   const thinkingMode = thinking.mode
-  const showThinking = createMemo(() => true)
+  const showThinking = createMemo(() => thinkingMode() === "show")
   const [timestamps, setTimestamps] = kv.signal<"hide" | "show">("timestamps", "hide")
   const [showDetails, setShowDetails] = kv.signal("tool_details_visibility", true)
   const [showAssistantMetadata, _setShowAssistantMetadata] = kv.signal("assistant_metadata_visibility", true)
@@ -1018,11 +1025,7 @@ export function Session() {
       },
     },
     {
-      title: (() => {
-        const next = nextThinkingMode(thinkingMode())
-        if (next === "hide") return "Collapse thinking"
-        return "Expand thinking"
-      })(),
+      title: showThinking() ? "Hide thinking" : "Show thinking",
       value: "session.toggle.thinking",
       category: "Session",
       slash: {
@@ -1795,6 +1798,7 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
   const sync = useSync()
   const messages = createMemo(() => sync.data.message[props.message.sessionID] ?? [])
   const model = createMemo(() => Model.name(ctx.providers(), props.message.providerID, props.message.modelID))
+  const renderedParts = createMemo(() => renderedAssistantParts(props.parts, ctx.thinkingMode()))
 
   const final = createMemo(() => {
     return props.message.finish && !["tool-calls", "unknown"].includes(props.message.finish)
@@ -1813,13 +1817,13 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
 
   return (
     <>
-      <For each={props.parts}>
+      <For each={renderedParts()}>
         {(part, index) => {
           const component = createMemo(() => PART_MAPPING[part.type as keyof typeof PART_MAPPING])
           return (
             <Show when={component()}>
               <Dynamic
-                last={index() === props.parts.length - 1}
+                last={index() === renderedParts().length - 1}
                 component={component()}
                 part={part as any}
                 message={props.message}
@@ -1908,9 +1912,6 @@ const INLINE_TOOL_ICON_WIDTH = 2
 function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: AssistantMessage }) {
   const { theme } = useTheme()
   const ctx = use()
-  // Collapsed by default in hide mode: a single line throughout, so the
-  // layout never shifts. Click to open the full markdown block, click to close.
-  const [expanded, setExpanded] = createSignal(false)
 
   const content = createMemo(() => {
     // OpenRouter encrypts some reasoning blocks; drop the placeholder.
@@ -1919,18 +1920,12 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
   // Reasoning is finalized when the server sets `time.end` (see processor.ts).
   // Flips independently of the parent message completing.
   const isDone = createMemo(() => props.part.time.end !== undefined)
-  const inMinimal = createMemo(() => ctx.thinkingMode() === "hide")
   const duration = createMemo(() => {
     const end = props.part.time.end
     return end === undefined ? 0 : Math.max(0, end - props.part.time.start)
   })
   const summary = createMemo(() => reasoningSummary(content()))
   const syntax = createSyntaxStyleMemo(() => generateSubtleSyntax(theme))
-
-  const toggle = () => {
-    if (!inMinimal()) return
-    setExpanded((prev) => !prev)
-  }
 
   return (
     <Show when={content()}>
@@ -1941,17 +1936,15 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
         flexDirection="column"
         flexShrink={0}
       >
-        <box onMouseUp={toggle}>
+        <box>
           <ReasoningHeader
-            toggleable={inMinimal()}
-            open={!inMinimal() || expanded()}
             done={isDone()}
             title={summary().title}
             duration={isDone() ? Locale.duration(duration()) : undefined}
           />
         </box>
-        <Show when={(!inMinimal() || expanded()) && summary().body}>
-          <box paddingLeft={inMinimal() ? 2 : 0} marginTop={1}>
+        <Show when={summary().body}>
+          <box marginTop={1}>
             <code
               filetype="markdown"
               drawUnstyledText={false}
@@ -1968,18 +1961,9 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
   )
 }
 
-function ReasoningHeader(props: {
-  toggleable: boolean
-  open: boolean
-  done: boolean
-  title: string | null
-  duration?: string
-}) {
+function ReasoningHeader(props: { done: boolean; title: string | null; duration?: string }) {
   const { theme } = useTheme()
-  const fg = () =>
-    props.open
-      ? RGBA.fromValues(theme.warning.r, theme.warning.g, theme.warning.b, theme.thinkingOpacity)
-      : theme.warning
+  const fg = () => RGBA.fromValues(theme.warning.r, theme.warning.g, theme.warning.b, theme.thinkingOpacity)
 
   return (
     <Switch>
@@ -1990,9 +1974,6 @@ function ReasoningHeader(props: {
       </Match>
       <Match when={true}>
         <text fg={fg()} wrapMode="none">
-          <Show when={props.toggleable}>
-            <span>{props.open ? "- " : "+ "}</span>
-          </Show>
           <span>Thought</span>
           <Show when={props.title || props.duration}>
             <span>: </span>
@@ -2302,6 +2283,11 @@ type ToolProps = {
   output?: string
   part: ToolPart
 }
+
+function pendingToolInput(label: string, part: ToolPart) {
+  return toolInputProgress(label, part.state.status === "pending" ? part.state.received : undefined)
+}
+
 function GenericTool(props: ToolProps) {
   const { theme } = useTheme()
   const ctx = use()
@@ -2647,8 +2633,8 @@ function Write(props: ToolProps) {
       <Match when={true}>
         <InlineTool
           icon="←"
-          pending="Preparing write..."
-          complete={stringValue(props.input.filePath)}
+          pending={pendingToolInput("Preparing write...", props.part)}
+          complete={props.part.state.status === "pending" ? false : stringValue(props.input.filePath)}
           part={props.part}
         >
           Write {pathFormatter.format(stringValue(props.input.filePath))}
@@ -2956,7 +2942,12 @@ function Edit(props: ToolProps) {
         </BlockTool>
       </Match>
       <Match when={true}>
-        <InlineTool icon="←" pending="Preparing edit..." complete={stringValue(props.input.filePath)} part={props.part}>
+        <InlineTool
+          icon="←"
+          pending={pendingToolInput("Preparing edit...", props.part)}
+          complete={props.part.state.status === "pending" ? false : stringValue(props.input.filePath)}
+          part={props.part}
+        >
           Edit {pathFormatter.format(stringValue(props.input.filePath))} {input({ replaceAll: props.input.replaceAll })}
         </InlineTool>
       </Match>
@@ -3032,7 +3023,13 @@ function ApplyPatch(props: ToolProps) {
         </For>
       </Match>
       <Match when={true}>
-        <InlineTool icon="%" pending="Preparing patch..." failure="Patch failed" complete={false} part={props.part}>
+        <InlineTool
+          icon="%"
+          pending={pendingToolInput("Preparing patch...", props.part)}
+          failure="Patch failed"
+          complete={false}
+          part={props.part}
+        >
           Patch
         </InlineTool>
       </Match>

@@ -480,6 +480,7 @@ export type ToolStatePending = {
     [key: string]: unknown
   }
   raw: string
+  received?: number
 }
 
 export type ToolStateRunning = {

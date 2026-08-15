@@ -27,6 +27,10 @@ import { Database } from "@opencode-ai/core/database/database"
 import { Usage, type LLMEvent } from "@opencode-ai/llm"
 
 const DOOM_LOOP_THRESHOLD = 3
+const TOOL_INPUT_PROGRESS_INTERVAL = 500
+const TOOL_INPUT_PROGRESS_IDLE_INTERVAL = 2_000
+const TOOL_INPUT_PROGRESS_BYTES = 16 * 1024
+const TOOL_INPUT_PROGRESS_TOOLS = new Set(["write", "edit", "apply_patch"])
 export type Result = "compact" | "stop" | "continue"
 
 export interface Handle {
@@ -66,8 +70,15 @@ type ToolCall = {
   done: Deferred.Deferred<void>
 }
 
+type ToolInputProgress = {
+  received: number
+  published: number
+  publishedAt: number
+}
+
 interface ProcessorContext extends Input {
   toolcalls: Record<string, ToolCall>
+  toolInputProgress: Record<string, ToolInputProgress>
   shouldBreak: boolean
   snapshot: string | undefined
   blocked: boolean
@@ -107,6 +118,7 @@ const layer = Layer.effect(
         sessionID: input.sessionID,
         model: input.model,
         toolcalls: {},
+        toolInputProgress: {},
         shouldBreak: false,
         snapshot: initialSnapshot,
         blocked: false,
@@ -126,6 +138,7 @@ const layer = Layer.effect(
       const settleToolCall = Effect.fn("SessionProcessor.settleToolCall")(function* (toolCallID: string) {
         const done = ctx.toolcalls[toolCallID]?.done
         delete ctx.toolcalls[toolCallID]
+        delete ctx.toolInputProgress[toolCallID]
         if (done) yield* Deferred.succeed(done, undefined).pipe(Effect.ignore)
       })
 
@@ -139,6 +152,7 @@ const layer = Layer.effect(
         })
         if (!part || part.type !== "tool") {
           delete ctx.toolcalls[toolCallID]
+          delete ctx.toolInputProgress[toolCallID]
           return undefined
         }
         return { call, part }
@@ -221,6 +235,7 @@ const layer = Layer.effect(
         name: string
         providerExecuted?: boolean
       }) {
+        if (ctx.toolcalls[input.id] && !input.providerExecuted) return undefined
         const existing = yield* readToolCall(input.id)
         if (existing) {
           if (!input.providerExecuted || existing.part.metadata?.providerExecuted) return existing
@@ -319,15 +334,39 @@ const layer = Layer.effect(
             if (ctx.assistantMessage.summary) {
               throw new Error(`Tool call not allowed while generating summary: ${value.name}`)
             }
+            delete ctx.toolInputProgress[value.id]
             yield* ensureToolCall(value)
             return
 
           case "tool-input-delta":
-            yield* ensureToolCall(value)
+            if (!ctx.toolcalls[value.id]) yield* ensureToolCall(value)
+            if (!value.text || !TOOL_INPUT_PROGRESS_TOOLS.has(value.name)) return
+            {
+              const progress = ctx.toolInputProgress[value.id] ?? { received: 0, published: 0, publishedAt: 0 }
+              ctx.toolInputProgress[value.id] ??= progress
+              progress.received += Buffer.byteLength(value.text, "utf8")
+              const now = Date.now()
+              const elapsed = now - progress.publishedAt
+              const growth = progress.received - progress.published
+              if (
+                progress.publishedAt &&
+                (elapsed < TOOL_INPUT_PROGRESS_INTERVAL ||
+                  (elapsed < TOOL_INPUT_PROGRESS_IDLE_INTERVAL && growth < TOOL_INPUT_PROGRESS_BYTES))
+              ) {
+                return
+              }
+              progress.published = progress.received
+              progress.publishedAt = now
+              yield* updateToolCall(value.id, (match) => {
+                if (match.state.status !== "pending") return match
+                return { ...match, state: { ...match.state, received: progress.received } }
+              })
+            }
             return
 
           case "tool-input-end": {
             yield* ensureToolCall(value)
+            delete ctx.toolInputProgress[value.id]
             return
           }
 
@@ -336,6 +375,7 @@ const layer = Layer.effect(
               throw new Error(`Tool call not allowed while generating summary: ${value.name}`)
             }
             yield* ensureToolCall(value)
+            delete ctx.toolInputProgress[value.id]
             const input = isRecord(value.input) ? value.input : { value: value.input }
             yield* updateToolCall(value.id, (match) => ({
               ...match,
@@ -596,6 +636,7 @@ const layer = Layer.effect(
           })
         }
         ctx.toolcalls = {}
+        ctx.toolInputProgress = {}
         ctx.assistantMessage.time.completed = Date.now()
         yield* session.updateMessage(ctx.assistantMessage)
       })
