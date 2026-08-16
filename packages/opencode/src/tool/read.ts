@@ -325,12 +325,20 @@ export const ReadTool = Tool.define<
       const mime = sniffAttachmentMime(sample, FSUtil.mimeType(filepath))
       const isImage = SUPPORTED_IMAGE_MIMES.has(mime)
 
-      if (isImage || isPdfAttachment(mime)) {
-        if (Number(stat.size) > MAX_MEDIA_BYTES) {
-          return yield* Effect.fail(new Error(`Media exceeds ${MAX_MEDIA_BYTES} byte ingestion limit: ${filepath}`))
-        }
-        const bytes = yield* fs.readFile(filepath)
-        const msg = isPdfAttachment(mime) ? "PDF read successfully" : "Image read successfully"
+        if (isImage || isPdfAttachment(mime)) {
+          // Bounded read: stat.size can go stale (or the file can grow mid-read),
+          // so the read itself enforces the cap instead of a pre-check.
+          const bytes = yield* Effect.scoped(
+            Effect.gen(function* () {
+              const file = yield* fs.open(filepath, { flag: "r" })
+              const chunk = Option.getOrElse(yield* file.readAlloc(MAX_MEDIA_BYTES + 1), () => new Uint8Array())
+              if (chunk.byteLength > MAX_MEDIA_BYTES) {
+                return yield* Effect.fail(new Error(`Media exceeds ${MAX_MEDIA_BYTES} byte ingestion limit: ${filepath}`))
+              }
+              return chunk
+            }),
+          )
+          const msg = isPdfAttachment(mime) ? "PDF read successfully" : "Image read successfully"
         return {
           title,
           output: msg,
