@@ -70,6 +70,26 @@ describe("ToolOutputStore", () => {
     ),
   )
 
+  it.live("bounds a large single-line suffix without copying the full input into characters", () =>
+    withStore(({ store }) =>
+      Effect.gen(function* () {
+        const result = yield* store.bound({
+          sessionID,
+          toolCallID: "call-large-line",
+          output: {
+            structured: {},
+            content: [{ type: "text", text: `${"x".repeat(8 * 1024 * 1024)}🙂-TAIL` }],
+          },
+        })
+
+        expect(result.outputPaths).toHaveLength(1)
+        if (result.output.content[0]?.type !== "text") throw new Error("expected text preview")
+        expect(result.output.content[0].text.endsWith("🙂-TAIL")).toBe(true)
+        expect(Buffer.byteLength(result.output.content[0].text)).toBeLessThanOrEqual(ToolOutputStore.MAX_BYTES)
+      }),
+    ),
+  )
+
   it.live("uses bounded text for oversized structured-only output", () =>
     withStore(({ store, fs }) =>
       Effect.gen(function* () {

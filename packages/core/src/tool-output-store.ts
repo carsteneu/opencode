@@ -62,13 +62,25 @@ const takePrefix = (input: string, maximumBytes: number) => {
 const takeSuffix = (input: string, maximumBytes: number) => {
   let bytes = 0
   const content: string[] = []
-  for (const char of Array.from(input).toReversed()) {
+  for (let index = input.length; index > 0; ) {
+    const last = input.charCodeAt(index - 1)
+    // Walk only the bounded tail while preserving complete Unicode code points.
+    const width =
+      last >= 0xdc00 &&
+      last <= 0xdfff &&
+      index > 1 &&
+      input.charCodeAt(index - 2) >= 0xd800 &&
+      input.charCodeAt(index - 2) <= 0xdbff
+        ? 2
+        : 1
+    const char = input.slice(index - width, index)
     const size = Buffer.byteLength(char, "utf-8")
     if (bytes + size > maximumBytes) break
-    content.unshift(char)
+    content.push(char)
     bytes += size
+    index -= width
   }
-  return content.join("")
+  return content.reverse().join("")
 }
 
 const preview = (text: string, maxLines: number, maxBytes: number) => {
