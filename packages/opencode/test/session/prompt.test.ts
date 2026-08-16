@@ -77,6 +77,11 @@ const ref = {
   modelID: ModelV2.ID.make("test-model"),
 }
 
+const anthropicRef = {
+  providerID: ProviderV2.ID.make("anthropic"),
+  modelID: ModelV2.ID.make("claude-test"),
+}
+
 function withSh<A, E, R>(fx: () => Effect.Effect<A, E, R>) {
   return Effect.acquireUseRelease(
     Effect.sync(() => {
@@ -91,6 +96,25 @@ function withSh<A, E, R>(fx: () => Effect.Effect<A, E, R>) {
         if (prev === undefined) delete process.env.SHELL
         else process.env.SHELL = prev
         Shell.preferred.reset()
+      }),
+  )
+}
+
+function withNodeEnv<A, E, R>(value: string, fx: () => Effect.Effect<A, E, R>) {
+  return Effect.acquireUseRelease(
+    Effect.sync(() => {
+      const prev = process.env.NODE_ENV
+      process.env.NODE_ENV = value
+      return prev
+    }),
+    () => fx(),
+    (prev) =>
+      Effect.sync(() => {
+        if (prev === undefined) {
+          delete process.env.NODE_ENV
+          return
+        }
+        process.env.NODE_ENV = prev
       }),
   )
 }
@@ -169,8 +193,6 @@ const blockingProcessor = Layer.succeed(
   }),
 )
 
-const runtimeFlags = RuntimeFlags.layer({ experimentalEventSystem: true })
-
 const testLLMServerNode = LayerNode.make({ service: TestLLMServer, layer: TestLLMServer.layer, deps: [] })
 
 const promptRoot = LayerNode.group([
@@ -213,12 +235,19 @@ const promptRoot = LayerNode.group([
   RuntimeFlags.node,
 ])
 
-function makePrompt(input?: { mcpInstructions?: MCP.ServerInstructions[]; processor?: "blocking" }) {
+function makePrompt(input?: {
+  mcpInstructions?: MCP.ServerInstructions[]
+  processor?: "blocking"
+  nativeLlm?: boolean
+}) {
   const replacements = [
     [SessionSummary.node, summary],
     [LSP.node, lsp],
     [MCP.node, makeMcp(input?.mcpInstructions)],
-    [RuntimeFlags.node, runtimeFlags],
+    [
+      RuntimeFlags.node,
+      RuntimeFlags.layer({ experimentalEventSystem: true, experimentalNativeLlm: input?.nativeLlm ?? false }),
+    ],
   ] as const
   if (input?.processor === "blocking") {
     return LayerNode.compile(promptRoot, [...replacements, [SessionProcessor.node, blockingProcessor]])
@@ -226,13 +255,20 @@ function makePrompt(input?: { mcpInstructions?: MCP.ServerInstructions[]; proces
   return LayerNode.compile(promptRoot, replacements)
 }
 
-function makeHttp(input?: { mcpInstructions?: MCP.ServerInstructions[]; processor?: "blocking" }) {
+function makeHttp(input?: {
+  mcpInstructions?: MCP.ServerInstructions[]
+  processor?: "blocking"
+  nativeLlm?: boolean
+}) {
   const root = LayerNode.group([promptRoot, testLLMServerNode])
   const replacements = [
     [SessionSummary.node, summary],
     [LSP.node, lsp],
     [MCP.node, makeMcp(input?.mcpInstructions)],
-    [RuntimeFlags.node, runtimeFlags],
+    [
+      RuntimeFlags.node,
+      RuntimeFlags.layer({ experimentalEventSystem: true, experimentalNativeLlm: input?.nativeLlm ?? false }),
+    ],
   ] as const
   if (input?.processor === "blocking") {
     return LayerNode.compile(root, [...replacements, [SessionProcessor.node, blockingProcessor]])
@@ -240,11 +276,16 @@ function makeHttp(input?: { mcpInstructions?: MCP.ServerInstructions[]; processo
   return LayerNode.compile(root, replacements)
 }
 
-function makeHttpNoLLMServer(input?: { mcpInstructions?: MCP.ServerInstructions[]; processor?: "blocking" }) {
+function makeHttpNoLLMServer(input?: {
+  mcpInstructions?: MCP.ServerInstructions[]
+  processor?: "blocking"
+  nativeLlm?: boolean
+}) {
   return makePrompt(input)
 }
 
 const it = testEffect(makeHttp())
+const nativeIt = testEffect(makeHttp({ nativeLlm: true }))
 const noLLMServer = testEffect(makeHttpNoLLMServer())
 const raceNoLLMServer = testEffect(makeHttpNoLLMServer({ processor: "blocking" }))
 const withMcpInstructions = testEffect(
@@ -333,6 +374,44 @@ function cacheCfg(url: string, compaction?: ConfigV1.Info["compaction"]) {
   }
 }
 
+function anthropicCacheCfg(url: string, compaction?: ConfigV1.Info["compaction"]) {
+  return {
+    provider: {
+      anthropic: {
+        name: "Anthropic",
+        id: "anthropic",
+        env: [],
+        npm: "@ai-sdk/anthropic",
+        models: {
+          "claude-test": {
+            id: "claude-test",
+            name: "Claude Test",
+            attachment: false,
+            reasoning: false,
+            temperature: true,
+            tool_call: true,
+            release_date: "2025-01-01",
+            limit: { context: 100000, output: 10000 },
+            cost: { input: 0, output: 0 },
+            options: {},
+          },
+        },
+        options: {
+          apiKey: "test-key",
+          baseURL: url,
+        },
+      },
+    },
+    agent: {
+      build: {
+        temperature: 0.37,
+        top_p: 0.82,
+      },
+    },
+    ...(compaction ? { compaction } : {}),
+  }
+}
+
 function requestMessages(input: Record<string, unknown>) {
   const messages = input.messages ?? input.input
   if (!Array.isArray(messages)) throw new Error("expected request messages")
@@ -341,6 +420,15 @@ function requestMessages(input: Record<string, unknown>) {
 
 function requestEnvelope(input: Record<string, unknown>) {
   return Object.fromEntries(Object.entries(input).filter((entry) => !["input", "messages"].includes(entry[0])))
+}
+
+function countCacheControls(input: unknown): number {
+  if (Array.isArray(input)) return input.reduce((total, item) => total + countCacheControls(item), 0)
+  if (!input || typeof input !== "object") return 0
+  return Object.entries(input).reduce(
+    (total, [key, value]) => total + (key === "cache_control" ? 1 : countCacheControls(value)),
+    0,
+  )
 }
 
 function expectLegacyCompaction(input: Record<string, unknown>, text: string) {
@@ -504,14 +592,14 @@ const succeedVoid = (deferred: Deferred.Deferred<void>) => {
   Effect.runSync(Deferred.succeed(deferred, void 0).pipe(Effect.ignore))
 }
 
-const user = Effect.fn("test.user")(function* (sessionID: SessionID, text: string) {
+const user = Effect.fn("test.user")(function* (sessionID: SessionID, text: string, model = ref) {
   const session = yield* Session.Service
   const msg = yield* session.updateMessage({
     id: MessageID.ascending(),
     role: "user",
     sessionID,
     agent: "build",
-    model: ref,
+    model,
     time: { created: Date.now() },
   })
   yield* session.updatePart({
@@ -640,6 +728,301 @@ it.instance("automatic compaction preserves the OpenAI Responses input prefix", 
     expect(JSON.stringify(replay.slice(prefix.length))).toContain("normal response")
     expect(JSON.stringify(replay.at(-1))).toContain("Create an anchored summary")
   }),
+)
+
+it.instance(
+  "automatic Anthropic compaction preserves the AI SDK wire prefix and cache breakpoints",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(anthropicCacheCfg)
+      const { prompt, chat } = yield* boot()
+      yield* user(chat.id, "anthropic cache prefix", anthropicRef)
+      yield* llm.push(
+        Array.from({ length: 24 }, (_, index) => `normal anthropic response ${index}`).reduce(
+          (out, text) => out.text(text),
+          reply(),
+        )
+          .usage({ input: 90_000, output: 24 })
+          .stop(),
+      )
+      yield* llm.text("compacted anthropic summary")
+
+      yield* prompt.loop({ sessionID: chat.id })
+
+      const hits = yield* llm.hits
+      expect(hits.length).toBeGreaterThanOrEqual(2)
+      expect(hits[0]?.url.pathname).toBe("/v1/messages")
+      expect(hits[1]?.url.pathname).toBe("/v1/messages")
+      const normal = hits[0]!.body
+      const compact = hits[1]!.body
+      const prefix = requestMessages(normal)
+      const replay = requestMessages(compact)
+      const suffix = replay.slice(prefix.length)
+      expect(requestEnvelope(compact)).toEqual(requestEnvelope(normal))
+      expect(replay.slice(0, prefix.length)).toEqual(prefix)
+      expect(prefix.some((item) => countCacheControls(item) > 0)).toBe(true)
+      expect(
+        suffix.some(
+          (item) =>
+            !!item &&
+            typeof item === "object" &&
+            "content" in item &&
+            Array.isArray(item.content) &&
+            item.content.length > 20,
+        ),
+      ).toBe(true)
+      expect(countCacheControls(suffix)).toBe(0)
+      expect(countCacheControls(compact)).toBe(countCacheControls(normal))
+      expect(countCacheControls(compact)).toBeLessThanOrEqual(4)
+      expect(JSON.stringify(suffix)).toContain("normal anthropic response")
+      expect(JSON.stringify(suffix.at(-1))).toContain("Create an anchored summary")
+      expect(compact.system).toEqual(normal.system)
+      expect(compact.tools).toEqual(normal.tools)
+      expect(compact.tool_choice).toEqual(normal.tool_choice)
+      expect(normal.temperature).toBe(0.37)
+    }),
+  20_000,
+)
+
+it.instance(
+  "automatic Anthropic compaction blocks replay tools and continues on the legacy path",
+  () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const file = path.join(test.directory, ".opencode", "tool", "counter.ts")
+      yield* writeText(
+        file,
+        [
+          "export const state = { calls: 0 }",
+          "export default {",
+          '  description: "Increment the Anthropic test counter",',
+          "  args: {},",
+          "  execute: async () => {",
+          "    state.calls++",
+          '    return "executed"',
+          "  },",
+          "}",
+          "",
+        ].join("\n"),
+      )
+      const { llm } = yield* useServerConfig(anthropicCacheCfg)
+      const registry = yield* ToolRegistry.Service
+      expect((yield* registry.all()).some((item) => item.id === "counter")).toBe(true)
+      const counter = (yield* Effect.promise(() => import(pathToFileURL(file).href))) as {
+        state: { calls: number }
+      }
+      const { prompt, chat } = yield* boot()
+      yield* user(chat.id, "do not execute Anthropic summary tools", anthropicRef)
+      yield* llm.text("normal anthropic response", { usage: { input: 90_000, output: 1 } })
+      yield* llm.tool("counter", {})
+      yield* llm.text("compacted after blocked Anthropic tool")
+
+      yield* prompt.loop({ sessionID: chat.id })
+
+      const hits = yield* llm.hits
+      expect(hits.length).toBeGreaterThanOrEqual(3)
+      const normal = hits[0]!.body
+      const replay = hits[1]!.body
+      expect(requestEnvelope(replay)).toEqual(requestEnvelope(normal))
+      expect(requestMessages(replay).slice(0, requestMessages(normal).length)).toEqual(requestMessages(normal))
+      expect(countCacheControls(replay)).toBe(countCacheControls(normal))
+      expect(countCacheControls(requestMessages(replay).slice(requestMessages(normal).length))).toBe(0)
+      expectLegacyCompaction(hits[2]!.body, "do not execute Anthropic summary tools")
+      expect(counter.state.calls).toBe(0)
+    }),
+  30_000,
+)
+
+it.instance(
+  "automatic Anthropic compaction discards a pre-transform prefix mismatch before provider I/O",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(anthropicCacheCfg)
+      const { prompt, sessions, chat } = yield* boot()
+      const message = yield* sessions.updateMessage({
+        id: MessageID.ascending(),
+        role: "user",
+        sessionID: chat.id,
+        agent: "build",
+        model: anthropicRef,
+        time: { created: Date.now() },
+      })
+      const part = yield* sessions.updatePart({
+        id: PartID.ascending(),
+        messageID: message.id,
+        sessionID: chat.id,
+        type: "text",
+        text: "captured Anthropic prefix",
+      })
+      const events = yield* EventV2Bridge.Service
+      const seen: CapturedSessionEvent[] = []
+      const off = yield* events.listen((event) => {
+        seen.push({ type: event.type, data: structuredClone(event.data) })
+        return Effect.void
+      })
+      yield* Effect.addFinalizer(() => off)
+      const gate = yield* Deferred.make<void>()
+      yield* llm.push(
+        reply()
+          .text("normal anthropic response")
+          .usage({ input: 90_000, output: 1 })
+          .wait(deferredAsPromise(gate))
+          .stop(),
+      )
+      yield* llm.text("compacted after Anthropic mismatch")
+
+      const fiber = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+      yield* awaitWithTimeout(llm.wait(1), "timed out waiting for the captured Anthropic request", "10 seconds")
+      yield* sessions.updatePart({ ...part, text: "mutated Anthropic prefix" })
+      yield* Deferred.succeed(gate, undefined)
+      yield* Fiber.join(fiber)
+
+      const hits = yield* llm.hits
+      expect(hits.length).toBeGreaterThanOrEqual(2)
+      expect(JSON.stringify(requestMessages(hits[0]!.body))).toContain("captured Anthropic prefix")
+      expectLegacyCompaction(hits[1]!.body, "mutated Anthropic prefix")
+      const summaries = (yield* sessions.messages({ sessionID: chat.id })).filter(
+        (item) => item.info.role === "assistant" && item.info.summary,
+      )
+      expect(summaries).toHaveLength(1)
+      expectCleanSummaryLifecycle({
+        events: seen,
+        sessionID: chat.id,
+        summary: summaries[0]!,
+        text: "compacted after Anthropic mismatch",
+      })
+    }),
+  20_000,
+)
+
+it.instance("Anthropic retained-tail compaction stays on the legacy path", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => anthropicCacheCfg(url, { preserve_recent_tokens: 100 }))
+    const { prompt, chat } = yield* boot()
+    yield* user(chat.id, `older Anthropic request ${"x".repeat(10_000)}`, anthropicRef)
+    yield* llm.text("older Anthropic response", { usage: { input: 1, output: 1 } })
+    yield* prompt.loop({ sessionID: chat.id })
+
+    yield* user(chat.id, "recent Anthropic request retained verbatim", anthropicRef)
+    yield* llm.text("recent Anthropic response retained verbatim", { usage: { input: 90_000, output: 1 } })
+    yield* llm.text("compacted Anthropic summary")
+    yield* prompt.loop({ sessionID: chat.id })
+
+    const hits = yield* llm.hits
+    expect(hits.length).toBeGreaterThanOrEqual(3)
+    expectLegacyCompaction(hits[2]!.body, "older Anthropic request")
+  }),
+)
+
+it.instance("Anthropic automatic cacheControl keeps compaction on the legacy path", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => {
+      const config = anthropicCacheCfg(url)
+      return {
+        ...config,
+        provider: {
+          anthropic: {
+            ...config.provider.anthropic,
+            models: {
+              "claude-test": {
+                ...config.provider.anthropic.models["claude-test"],
+                options: { cacheControl: { type: "ephemeral" } },
+              },
+            },
+          },
+        },
+      }
+    })
+    const { prompt, chat } = yield* boot()
+    yield* user(chat.id, "Anthropic automatic cache control", anthropicRef)
+    yield* llm.text("normal anthropic response", { usage: { input: 90_000, output: 1 } })
+    yield* llm.text("compacted anthropic summary")
+
+    yield* prompt.loop({ sessionID: chat.id })
+
+    const hits = yield* llm.hits
+    expect(hits.length).toBeGreaterThanOrEqual(2)
+    expectLegacyCompaction(hits[1]!.body, "Anthropic automatic cache control")
+  }),
+)
+
+it.instance("Anthropic media prompts keep compaction on the legacy path", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => {
+      const config = anthropicCacheCfg(url)
+      return {
+        ...config,
+        provider: {
+          anthropic: {
+            ...config.provider.anthropic,
+            models: {
+              "claude-test": {
+                ...config.provider.anthropic.models["claude-test"],
+                attachment: true,
+                modalities: { input: ["text", "image"], output: ["text"] },
+              },
+            },
+          },
+        },
+      }
+    })
+    const { prompt, sessions, chat } = yield* boot()
+    const message = yield* user(chat.id, "Anthropic media prefix", anthropicRef)
+    yield* sessions.updatePart({
+      id: PartID.ascending(),
+      messageID: message.id,
+      sessionID: chat.id,
+      type: "file",
+      mime: "image/png",
+      url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    })
+    yield* llm.text("normal anthropic response", { usage: { input: 90_000, output: 1 } })
+    yield* llm.text("compacted anthropic summary")
+
+    yield* prompt.loop({ sessionID: chat.id })
+
+    const hits = yield* llm.hits
+    expect(hits.length).toBeGreaterThanOrEqual(2)
+    expect(JSON.stringify(requestMessages(hits[0]!.body))).toContain('"type":"image"')
+    expectLegacyCompaction(hits[1]!.body, "Anthropic media prefix")
+  }),
+)
+
+nativeIt.instance("Anthropic native runtime keeps automatic compaction on the legacy path", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(anthropicCacheCfg)
+    const { prompt, chat } = yield* boot()
+    yield* user(chat.id, "Anthropic native runtime", anthropicRef)
+    yield* llm.text("normal native response", { usage: { input: 90_000, output: 1 } })
+    yield* llm.text("compacted native summary")
+
+    yield* prompt.loop({ sessionID: chat.id })
+
+    const hits = yield* llm.hits
+    expect(hits.length).toBeGreaterThanOrEqual(2)
+    expectLegacyCompaction(hits[1]!.body, "Anthropic native runtime")
+  }),
+)
+
+it.instance(
+  "Anthropic AI process runtime keeps automatic compaction on the legacy path",
+  () =>
+    withNodeEnv("production", () =>
+      Effect.gen(function* () {
+        const { llm } = yield* useServerConfig(anthropicCacheCfg)
+        const { prompt, chat } = yield* boot()
+        yield* user(chat.id, "Anthropic AI process runtime", anthropicRef)
+        yield* llm.text("normal AI process response", { usage: { input: 90_000, output: 1 } })
+        yield* llm.text("compacted AI process summary")
+
+        yield* prompt.loop({ sessionID: chat.id })
+
+        const hits = yield* llm.hits
+        expect(hits.length).toBeGreaterThanOrEqual(2)
+        expectLegacyCompaction(hits[1]!.body, "Anthropic AI process runtime")
+      }),
+    ),
+  30_000,
 )
 
 it.instance("automatic compaction reuses an exact shorter prefix when retaining the recent tail", () =>

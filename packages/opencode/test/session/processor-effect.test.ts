@@ -13,6 +13,7 @@ import { Provider } from "@/provider/provider"
 
 import { Session } from "@/session/session"
 import { LLM } from "../../src/session/llm"
+import { LLMMessageTransform } from "@/session/llm/message-transform"
 import { MessageV2 } from "../../src/session/message-v2"
 import { SessionProcessor } from "../../src/session/processor"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
@@ -397,6 +398,32 @@ const bufferedOverflowLLM = Layer.succeed(
 )
 const bufferedOverflowEnv = LayerNode.compile(root, [...replacements, [LLM.node, bufferedOverflowLLM]])
 const itBufferedOverflow = testEffect(bufferedOverflowEnv)
+
+const replayMismatchLLM = Layer.succeed(
+  LLM.Service,
+  LLM.Service.of({
+    stream: (input) =>
+      input.request?.bufferEvents
+        ? Stream.concat(
+            Stream.make(
+              LLMEvent.stepStart({ index: 0 }),
+              LLMEvent.textStart({ id: "replay" }),
+              LLMEvent.textDelta({ id: "replay", text: "discarded replay" }),
+            ),
+            Stream.fail(new LLMMessageTransform.ReplayMismatchError("deliberate replay mismatch")),
+          )
+        : Stream.make(
+            LLMEvent.stepStart({ index: 0 }),
+            LLMEvent.textStart({ id: "legacy" }),
+            LLMEvent.textDelta({ id: "legacy", text: "legacy summary" }),
+            LLMEvent.textEnd({ id: "legacy" }),
+            LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+            LLMEvent.finish({ reason: "stop" }),
+          ),
+  }),
+)
+const replayMismatchEnv = LayerNode.compile(root, [...replacements, [LLM.node, replayMismatchLLM]])
+const itReplayMismatch = testEffect(replayMismatchEnv)
 
 const firstToolInput = '{"content":"'
 const bufferedToolInput = Array.from({ length: 1_024 }, () => "é")
@@ -1757,6 +1784,90 @@ itBufferedOverflow.live("session.processor discards buffered native overflow eve
         expect(parts.filter((part) => part.type === "text").map((part) => part.text)).toEqual(["legacy summary"])
         expect(seen).not.toContain(MessageV2.Event.PartRemoved.type)
         expect(seen).not.toContain(Session.Event.Error.type)
+        expect(handle.message.error).toBeUndefined()
+        expect(handle.message.time.completed).toBeDefined()
+      }),
+    { config: cfg },
+  ),
+)
+
+itReplayMismatch.live("session.processor discards a typed replay mismatch before one clean fallback lifecycle", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const events = yield* EventV2Bridge.Service
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "typed replay mismatch fallback")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        msg.summary = true
+        msg.finish = undefined
+        yield* session.updateMessage(msg)
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const seen: Array<{ type: string; data: unknown }> = []
+        const off = yield* events.listen((event) => {
+          seen.push({ type: event.type, data: structuredClone(event.data) })
+          return Effect.void
+        })
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+        const input = {
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies SessionV1.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user" as const, content: "typed replay mismatch fallback" }],
+          tools: {},
+        } satisfies LLM.StreamInput
+
+        expect(
+          yield* handle.process(
+            {
+              ...input,
+              request: { bufferEvents: true },
+            },
+            { fallback: input },
+          ),
+        ).toBe("continue")
+        yield* off
+
+        const parts = yield* MessageV2.parts(msg.id)
+        const completed = seen.filter((event) => {
+          if (event.type !== MessageV2.Event.Updated.type) return false
+          const data = event.data as typeof SessionV1.Event.MessageUpdated.data.Type
+          return data.info.id === msg.id && data.info.role === "assistant" && data.info.time.completed !== undefined
+        })
+        const failed = seen.filter((event) => {
+          if (event.type !== MessageV2.Event.Updated.type) return false
+          const data = event.data as typeof SessionV1.Event.MessageUpdated.data.Type
+          return data.info.id === msg.id && data.info.role === "assistant" && data.info.error !== undefined
+        })
+        const removals = seen.filter((event) => event.type === MessageV2.Event.PartRemoved.type)
+        const errors = seen.filter((event) => event.type === Session.Event.Error.type)
+        const completedIndex = seen.findIndex((event) => completed.includes(event))
+        const lastPartIndex = seen.findLastIndex((event) => {
+          if (event.type === MessageV2.Event.PartUpdated.type) {
+            const data = event.data as typeof SessionV1.Event.PartUpdated.data.Type
+            return data.part.messageID === msg.id
+          }
+          if (event.type !== MessageV2.Event.PartDelta.type) return false
+          const data = event.data as typeof SessionV1.Event.PartDelta.data.Type
+          return data.messageID === msg.id
+        })
+        expect(parts.some((part) => part.type === "text" && part.text === "discarded replay")).toBe(false)
+        expect(parts.filter((part) => part.type === "text").map((part) => part.text)).toEqual(["legacy summary"])
+        expect(completed).toHaveLength(1)
+        expect(completedIndex).toBeGreaterThan(lastPartIndex)
+        expect(failed).toEqual([])
+        expect(removals).toEqual([])
+        expect(errors).toEqual([])
         expect(handle.message.error).toBeUndefined()
         expect(handle.message.time.completed).toBeDefined()
       }),

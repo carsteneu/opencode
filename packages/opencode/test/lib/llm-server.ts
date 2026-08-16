@@ -409,15 +409,96 @@ function responses(item: Sse, model: string) {
   return { ...item, head: lines, tail: [] } satisfies Sse
 }
 
+function anthropic(item: Sse, model: string) {
+  const parts = flow(item)
+  const usage = parts.findLast((part): part is Extract<Flow, { type: "usage" }> => part.type === "usage")?.usage
+  const text = parts
+    .filter((part): part is Extract<Flow, { type: "text" }> => part.type === "text")
+    .map((part) => part.text)
+  const reason = parts
+    .filter((part): part is Extract<Flow, { type: "reason" }> => part.type === "reason")
+    .map((part) => part.text)
+  const call = parts.find((part): part is Extract<Flow, { type: "tool-start" }> => part.type === "tool-start")
+  const args = parts
+    .filter((part): part is Extract<Flow, { type: "tool-args" }> => part.type === "tool-args")
+    .map((part) => part.text)
+    .join("")
+  const lines: unknown[] = [
+    {
+      type: "message_start",
+      message: {
+        id: "msg_test",
+        type: "message",
+        role: "assistant",
+        content: [],
+        model,
+        stop_reason: null,
+        stop_sequence: null,
+        usage: {
+          input_tokens: usage?.input ?? 0,
+          cache_creation_input_tokens: null,
+          cache_read_input_tokens: null,
+          output_tokens: 0,
+        },
+      },
+    },
+  ]
+  lines.push(
+    ...reason.flatMap((value, index) => [
+      { type: "content_block_start", index, content_block: { type: "thinking", thinking: "" } },
+      { type: "content_block_delta", index, delta: { type: "thinking_delta", thinking: value } },
+      { type: "content_block_delta", index, delta: { type: "signature_delta", signature: "test-signature" } },
+      { type: "content_block_stop", index },
+    ]),
+    ...text.flatMap((value, offset) => {
+      const index = reason.length + offset
+      return [
+        { type: "content_block_start", index, content_block: { type: "text", text: "" } },
+        { type: "content_block_delta", index, delta: { type: "text_delta", text: value } },
+        { type: "content_block_stop", index },
+      ]
+    }),
+  )
+  if (call) {
+    const index = reason.length + text.length
+    lines.push(
+      {
+        type: "content_block_start",
+        index,
+        content_block: { type: "tool_use", id: call.id, name: call.name, input: {} },
+      },
+      { type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: args } },
+      { type: "content_block_stop", index },
+    )
+  }
+  const tail =
+    item.hang || item.error
+      ? []
+      : [
+          {
+            type: "message_delta",
+            delta: { stop_reason: call ? "tool_use" : "end_turn", stop_sequence: null },
+            usage: {
+              input_tokens: usage?.input ?? 0,
+              output_tokens: usage?.output ?? 0,
+              cache_creation_input_tokens: null,
+              cache_read_input_tokens: null,
+            },
+          },
+          { type: "message_stop" },
+        ]
+  return { ...item, head: lines, tail } satisfies Sse
+}
+
 function modelFrom(body: unknown) {
   if (!body || typeof body !== "object") return "test-model"
   if (!("model" in body) || typeof body.model !== "string") return "test-model"
   return body.model
 }
 
-function send(item: Sse) {
+function send(item: Sse, appendDone = true) {
   const head = bytes(item.head)
-  const tail = bytes([...item.tail, ...(item.hang || item.error ? [] : [done])])
+  const tail = bytes([...item.tail, ...(item.hang || item.error || !appendDone ? [] : [done])])
   const empty = Stream.fromIterable<Uint8Array>([])
   const wait = item.wait
   const body: Stream.Stream<Uint8Array, unknown> = wait
@@ -669,7 +750,7 @@ export class TestLLMServer extends Context.Service<TestLLMServer, TestLLMServer.
         return first.item
       }
 
-      const handle = Effect.fn("TestLLMServer.handle")(function* (mode: "chat" | "responses") {
+      const handle = Effect.fn("TestLLMServer.handle")(function* (mode: "chat" | "responses" | "anthropic") {
         const req = yield* HttpServerRequest.HttpServerRequest
         const body = yield* req.json.pipe(Effect.orElseSucceed(() => ({})))
         const current = hit(req.originalUrl, body)
@@ -678,6 +759,7 @@ export class TestLLMServer extends Context.Service<TestLLMServer, TestLLMServer.
           yield* notify()
           const auto: Sse = { type: "sse", head: [role()], tail: [textLine("E2E Title"), finishLine("stop")] }
           if (mode === "responses") return send(responses(auto, modelFrom(body)))
+          if (mode === "anthropic") return send(anthropic(auto, modelFrom(body)), false)
           return send(auto)
         }
         const next = pull(current)
@@ -686,12 +768,14 @@ export class TestLLMServer extends Context.Service<TestLLMServer, TestLLMServer.
           yield* notify()
           const auto: Sse = { type: "sse", head: [role()], tail: [textLine("ok"), finishLine("stop")] }
           if (mode === "responses") return send(responses(auto, modelFrom(body)))
+          if (mode === "anthropic") return send(anthropic(auto, modelFrom(body)), false)
           return send(auto)
         }
         hits = [...hits, current]
         yield* notify()
         if (next.type !== "sse") return fail(next)
         if (mode === "responses") return send(responses(next, modelFrom(body)))
+        if (mode === "anthropic") return send(anthropic(next, modelFrom(body)), false)
         if (next.reset) {
           yield* reset(next)
           return HttpServerResponse.empty()
@@ -701,6 +785,7 @@ export class TestLLMServer extends Context.Service<TestLLMServer, TestLLMServer.
 
       yield* router.add("POST", "/v1/chat/completions", handle("chat"))
       yield* router.add("POST", "/v1/responses", handle("responses"))
+      yield* router.add("POST", "/v1/messages", handle("anthropic"))
 
       yield* server.serve(router.asHttpEffect())
 

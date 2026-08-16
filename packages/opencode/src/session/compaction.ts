@@ -202,12 +202,34 @@ function isPrefix(prefix: StreamInput["messages"], messages: StreamInput["messag
 }
 
 export function cacheCompatible(model: Provider.Model) {
+  if (directAnthropicCache(model)) return true
   if (!["@ai-sdk/openai", "@ai-sdk/openai-compatible"].includes(model.api.npm)) return false
   if (model.providerID.startsWith("opencode")) return false
   const family = `${model.providerID}/${model.id}/${model.api.id}`.toLowerCase()
   return !["anthropic", "claude", "github-copilot", "mistral", "devstral", "codestral", "pixtral", "mixtral"].some(
     (value) => family.includes(value),
   )
+}
+
+function directAnthropicCache(model: Provider.Model) {
+  return model.providerID === "anthropic" && model.api.npm === "@ai-sdk/anthropic"
+}
+
+function hasMedia(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(hasMedia)
+  if (!value || typeof value !== "object") return false
+  if (
+    "type" in value &&
+    (value.type === "image" ||
+      value.type === "file" ||
+      value.type === "image-data" ||
+      value.type === "image-url" ||
+      value.type === "file-data" ||
+      value.type === "file-url")
+  )
+    return true
+  if ("mediaType" in value && typeof value.mediaType === "string") return true
+  return Object.values(value).some(hasMedia)
 }
 
 function hasUnsupportedReplayParts(messages: SessionV1.WithParts[]) {
@@ -417,6 +439,7 @@ const layer = Layer.effect(
       const msgs = structuredClone(selected.head)
       yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
       const latest = MessageV2.latest(history)
+      const anthropicReplay = input.replay ? directAnthropicCache(input.replay.model) : false
       const replayMessages =
         input.replay &&
         input.auto &&
@@ -440,6 +463,11 @@ const layer = Layer.effect(
         input.replay.toolChoice !== "required" &&
         !input.replay.prepared.workflow &&
         cacheCompatible(input.replay.model) &&
+        (!anthropicReplay ||
+          (input.replay.prepared.runtime === "ai-sdk" &&
+            input.replay.prepared.messageTransformOptions.cacheControl === undefined &&
+            input.replay.prepared.transformedPrompt !== undefined &&
+            !hasMedia(input.replay.prepared.messages))) &&
         !Object.values(input.replay.prepared.tools).some((tool) => tool.type === "provider") &&
         !hasUnsupportedReplayParts(msgs)
           ? yield* MessageV2.toModelMessagesEffect(msgs, input.replay.model)
@@ -454,7 +482,9 @@ const layer = Layer.effect(
         capturedMessages.length === input.replay.prepared.messages.length &&
         isPrefix(input.replay.prepared.messagePrefix, input.replay.prepared.messages) &&
         isPrefix(capturedMessages, input.replay.prepared.messages) &&
-        (isPrefix(replayMessages, input.replay.messages) || isPrefix(input.replay.messages, replayMessages))
+        (anthropicReplay
+          ? isPrefix(input.replay.messages, replayMessages)
+          : isPrefix(replayMessages, input.replay.messages) || isPrefix(input.replay.messages, replayMessages))
           ? {
               ...input.replay.prepared,
               messages: [

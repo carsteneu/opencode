@@ -1930,6 +1930,163 @@ describe("session.llm.stream", () => {
   )
 
   it.instance(
+    "preserves Anthropic replay mismatch errors through the AI SDK stream",
+    () =>
+      Effect.gen(function* () {
+        const model = loadFixture("anthropic", "claude-opus-4-6").model
+        const chunks = [
+          {
+            type: "message_start",
+            message: {
+              id: "msg-replay-capture",
+              model: model.id,
+              usage: {
+                input_tokens: 3,
+                cache_creation_input_tokens: null,
+                cache_read_input_tokens: null,
+              },
+            },
+          },
+          {
+            type: "content_block_start",
+            index: 0,
+            content_block: { type: "text", text: "" },
+          },
+          {
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "text_delta", text: "captured" },
+          },
+          { type: "content_block_stop", index: 0 },
+          {
+            type: "message_delta",
+            delta: { stop_reason: "end_turn", stop_sequence: null },
+            usage: {
+              input_tokens: 3,
+              output_tokens: 1,
+              cache_creation_input_tokens: null,
+              cache_read_input_tokens: null,
+            },
+          },
+          { type: "message_stop" },
+        ]
+        const request = waitRequest("/messages", createEventResponse(chunks))
+        const resolved = yield* Provider.use.getModel(ProviderV2.ID.make("anthropic"), ModelV2.ID.make(model.id))
+        const sessionID = SessionID.make("session-anthropic-replay-mismatch")
+        const agent = {
+          name: "test",
+          mode: "primary",
+          options: {},
+          permission: [{ permission: "*", pattern: "*", action: "allow" }],
+        } satisfies Agent.Info
+        const user = {
+          id: MessageID.make("msg_anthropic-replay-capture"),
+          sessionID,
+          role: "user",
+          time: { created: Date.now() },
+          agent: agent.name,
+          model: { providerID: ProviderV2.ID.make("anthropic"), modelID: resolved.id },
+        } satisfies SessionV1.User
+        let prepared: LLM.PreparedRequest | undefined
+
+        yield* drain({
+          user,
+          sessionID,
+          model: resolved,
+          agent,
+          system: ["You are a helpful assistant."],
+          messages: [{ role: "user", content: "Capture this prompt" }],
+          tools: {},
+          request: {
+            capture(value) {
+              prepared = value
+            },
+          },
+        })
+        yield* Effect.promise(() => request)
+        if (!prepared?.transformedPrompt) return yield* Effect.die("transformed Anthropic prompt was not captured")
+        expect(prepared.runtime).toBe("ai-sdk")
+
+        const replay = {
+          ...prepared,
+          transformedPrompt: {
+            normalized: [
+              { role: "system" as const, content: "deliberate replay mismatch" },
+              ...structuredClone(prepared.transformedPrompt.normalized),
+            ],
+            cached: [
+              { role: "system" as const, content: "deliberate replay mismatch" },
+              ...structuredClone(prepared.transformedPrompt.cached),
+            ],
+          },
+        } satisfies LLM.PreparedRequest
+        const exit = yield* drain({
+          user: { ...user, id: MessageID.make("msg_anthropic-replay-mismatch") },
+          sessionID,
+          model: resolved,
+          agent,
+          system: [],
+          messages: [],
+          tools: {},
+          request: { replay },
+        }).pipe(Effect.exit)
+
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit)) expect(LLM.isReplayMismatch(Cause.squash(exit.cause))).toBe(true)
+
+        const markerExit = yield* drain({
+          user: { ...user, id: MessageID.make("msg_anthropic-replay-marker") },
+          sessionID,
+          model: resolved,
+          agent,
+          system: [],
+          messages: [],
+          tools: {},
+          request: {
+            replay: {
+              ...prepared,
+              messages: [
+                ...prepared.messages,
+                { role: "assistant", content: [{ type: "text", text: "normal response" }] },
+                {
+                  role: "user",
+                  content: [
+                    {
+                      type: "text",
+                      text: "summary prompt",
+                      providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+        }).pipe(Effect.exit)
+
+        expect(Exit.isFailure(markerExit)).toBe(true)
+        if (Exit.isFailure(markerExit)) expect(LLM.isReplayMismatch(Cause.squash(markerExit.cause))).toBe(true)
+      }),
+    {
+      config: () => {
+        const model = loadFixture("anthropic", "claude-opus-4-6").model
+        return {
+          enabled_providers: ["anthropic"],
+          provider: {
+            anthropic: {
+              name: "Anthropic",
+              env: ["ANTHROPIC_API_KEY"],
+              npm: "@ai-sdk/anthropic",
+              api: "https://api.anthropic.com/v1",
+              models: { [model.id]: configModel(model) as ConfigModel },
+              options: { apiKey: "test-anthropic-key", baseURL: `${state.server!.url.origin}/v1` },
+            },
+          },
+        }
+      },
+    },
+  )
+
+  it.instance(
     "sends anthropic tool_use blocks with tool_result immediately after them",
     () =>
       Effect.gen(function* () {

@@ -466,9 +466,18 @@ function mapProviderOptions(
   })
 }
 
-export function message(msgs: ModelMessage[], model: Provider.Model, options: Record<string, unknown>) {
+export function message(
+  msgs: ModelMessage[],
+  model: Provider.Model,
+  options: Record<string, unknown>,
+  transform?: {
+    readonly automaticCaching?: boolean
+    readonly captureNormalized?: (messages: ModelMessage[]) => void
+  },
+) {
   msgs = unsupportedParts(msgs, model)
   msgs = normalizeMessages(msgs, model, options)
+  transform?.captureNormalized?.(msgs)
   const usesAnthropicAutomaticCaching =
     options.cacheControl !== undefined &&
     (model.api.npm === "@ai-sdk/anthropic" || model.api.npm === "@ai-sdk/google-vertex/anthropic")
@@ -482,6 +491,7 @@ export function message(msgs: ModelMessage[], model: Provider.Model, options: Re
       model.api.npm === "@ai-sdk/anthropic" ||
       model.api.npm === "@ai-sdk/alibaba") &&
     model.api.npm !== "@ai-sdk/gateway" &&
+    transform?.automaticCaching !== false &&
     !usesAnthropicAutomaticCaching
   ) {
     msgs = applyCaching(msgs, model)
@@ -519,6 +529,10 @@ export function message(msgs: ModelMessage[], model: Provider.Model, options: Re
   }
 
   return msgs
+}
+
+export function directAnthropicCaching(model: Provider.Model, options: Record<string, unknown>) {
+  return model.providerID === "anthropic" && model.api.npm === "@ai-sdk/anthropic" && options.cacheControl === undefined
 }
 
 const GEMINI_MODELS_WITH_SAMPLING_DEFAULTS = [

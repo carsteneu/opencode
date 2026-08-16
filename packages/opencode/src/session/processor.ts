@@ -681,19 +681,25 @@ const layer = Layer.effect(
       })
 
       const halt = Effect.fn("SessionProcessor.halt")(function* (e: unknown) {
+        const silentReplayMismatch = ctx.bufferEvents && LLM.isReplayMismatch(e)
         const silentToolError =
           ctx.silentToolError &&
           e instanceof Error &&
           e.message.startsWith("Tool call not allowed while generating summary:")
         const error = parse(e)
         const silentOverflow = ctx.silentOverflow && SessionV1.ContextOverflowError.isInstance(error)
-        if (!silentToolError && !silentOverflow)
+        if (!silentReplayMismatch && !silentToolError && !silentOverflow)
           yield* Effect.logError("process", {
             "session.id": input.sessionID,
             messageID: input.assistantMessage.id,
             error: errorMessage(e),
             stack: e instanceof Error ? e.stack : undefined,
           })
+        if (silentReplayMismatch) {
+          ctx.assistantMessage.error = error
+          ctx.discardAttempt = true
+          return
+        }
         if (silentToolError) {
           ctx.assistantMessage.error = error
           ctx.discardAttempt = ctx.bufferEvents

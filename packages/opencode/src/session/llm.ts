@@ -30,13 +30,15 @@ import { LLMAISDK } from "./llm/ai-sdk"
 import { LLMNativeRuntime } from "./llm/native-runtime"
 import { LLMRequestPrep } from "./llm/request"
 import { LLMAIProcess } from "./llm/ai-process-client"
-import { LLMMessageTransform } from "./llm/message-transform"
+import { LLMMessageTransform, type TransformedPrompt } from "./llm/message-transform"
 import { blockedTools } from "./llm/blocked-tools"
 
 export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
 
 export type PreparedRequest = LLMRequestPrep.Prepared & {
   readonly workflow: boolean
+  readonly runtime?: "ai-sdk"
+  readonly transformedPrompt?: TransformedPrompt
 }
 
 export type StreamInput = {
@@ -160,11 +162,13 @@ const live: Layer.Layer<
             flags,
             isWorkflow,
           })
-      if (input.request?.capture && !input.request.replay) {
+      const capturePrepared = (transformedPrompt?: TransformedPrompt) => {
+        if (!input.request?.capture || input.request.replay) return
         const messages = structuredClone(prepared.messages)
         input.request.capture({
           ...prepared,
           workflow: isWorkflow,
+          ...(transformedPrompt ? { runtime: "ai-sdk" as const, transformedPrompt } : {}),
           system: [...prepared.system],
           messagePrefix: messages.slice(0, prepared.messagePrefix.length),
           messages,
@@ -173,6 +177,14 @@ const live: Layer.Layer<
           headers: { ...prepared.headers },
         })
       }
+      const directAnthropic = input.model.providerID === "anthropic" && input.model.api.npm === "@ai-sdk/anthropic"
+      const directAnthropicCaching = ProviderTransform.directAnthropicCaching(
+        input.model,
+        prepared.messageTransformOptions,
+      )
+      // Image/file presence participates in Anthropic's message-cache key.
+      const captureAnthropic = !!input.request?.capture && directAnthropicCaching && !hasMedia(prepared.messages)
+      if (!directAnthropic) capturePrepared()
       const tools =
         input.request?.toolExecution === "blocked"
           ? yield* Effect.promise(() => blockedTools(prepared.tools))
@@ -297,7 +309,7 @@ const live: Layer.Layer<
 
       // Runtime seam: native is an opt-in adapter over @opencode-ai/llm. It
       // either returns a ready LLMEvent stream or a concrete fallback reason.
-      if (flags.experimentalNativeLlm) {
+      if (flags.experimentalNativeLlm && !input.request?.replay?.transformedPrompt) {
         const native = LLMNativeRuntime.stream({
           model: input.model,
           provider: item,
@@ -343,7 +355,7 @@ const live: Layer.Layer<
       }
 
       const processOptions =
-        !cfg.experimental?.openTelemetry && LLMAIProcess.enabled()
+        !input.request?.replay?.transformedPrompt && !cfg.experimental?.openTelemetry && LLMAIProcess.enabled()
           ? LLMAIProcess.providerOptions(input.model, item)
           : undefined
       const processTools = processOptions ? LLMAIProcess.prepareTools(tools) : undefined
@@ -432,7 +444,17 @@ const live: Layer.Layer<
           messages: prepared.messages,
           model: wrapLanguageModel({
             model: language,
-            middleware: [LLMMessageTransform.middleware(input.model, prepared.messageTransformOptions)],
+            middleware: [
+              LLMMessageTransform.middleware(
+                input.model,
+                prepared.messageTransformOptions,
+                input.request?.replay?.transformedPrompt
+                  ? { replay: input.request.replay.transformedPrompt }
+                  : captureAnthropic
+                    ? { capture: capturePrepared }
+                    : undefined,
+              ),
+            ],
           }),
           experimental_telemetry: {
             isEnabled: cfg.experimental?.openTelemetry,
@@ -492,6 +514,27 @@ const live: Layer.Layer<
 )
 
 export const hasToolCalls = LLMRequestPrep.hasToolCalls
+
+export function isReplayMismatch(error: unknown) {
+  return error instanceof LLMMessageTransform.ReplayMismatchError
+}
+
+function hasMedia(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(hasMedia)
+  if (!value || typeof value !== "object") return false
+  if (
+    "type" in value &&
+    (value.type === "image" ||
+      value.type === "file" ||
+      value.type === "image-data" ||
+      value.type === "image-url" ||
+      value.type === "file-data" ||
+      value.type === "file-url")
+  )
+    return true
+  if ("mediaType" in value && typeof value.mediaType === "string") return true
+  return Object.values(value).some(hasMedia)
+}
 
 export const node = LayerNode.make({
   service: Service,
