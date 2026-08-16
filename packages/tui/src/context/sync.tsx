@@ -209,55 +209,72 @@ export const {
       }
     }
 
-      function listSessions() {
-        return sdk.client.session
-          .list({ start: Date.now() - 30 * 24 * 60 * 60 * 1000, ...sessionListQuery() })
-          .then((x) => (x.data ?? []).toSorted((a, b) => a.id.localeCompare(b.id)))
-      }
+    function listSessions() {
+      return sdk.client.session
+        .list({ start: Date.now() - 30 * 24 * 60 * 60 * 1000, ...sessionListQuery() })
+        .then((x) => (x.data ?? []).toSorted((a, b) => a.id.localeCompare(b.id)))
+    }
 
-      // Fast-streaming models emit message.part.delta faster than the renderer
-      // keeps up; applying every chunk synchronously starves input handling and
-      // freezes scrolling (#36043). Deltas accumulate per part field and flush
-      // together on a short interval instead.
-      const pendingDeltas = new Map<string, { messageID: string; partID: string; field: string; delta: string }>()
-      const appliedDeltas = new Map<string, { fromLength: number; toLength: number; revision: number }>()
-      let deltaRevision = 0
-      let deltaTimer: ReturnType<typeof setTimeout> | undefined
-      const dropPendingDeltas = (messageID: string, partID: string) => {
-        const prefix = `${messageID}|${partID}|`
-        for (const key of pendingDeltas.keys()) if (key.startsWith(prefix)) pendingDeltas.delete(key)
-        for (const key of appliedDeltas.keys()) if (key.startsWith(prefix)) appliedDeltas.delete(key)
-      }
-      const flushDeltas = () => {
-        deltaTimer = undefined
-        if (!pendingDeltas.size) return
-        batch(() => {
-          for (const pending of pendingDeltas.values()) {
-            const parts = store.part[pending.messageID]
-            if (!parts) continue
-            const result = search(parts, pending.partID, (p) => p.id)
-            if (!result.found) continue
-            const part = parts[result.index]
-            const field = pending.field as keyof typeof part
-            const existing = part[field] as string | undefined
-            const value = (existing ?? "") + pending.delta
-            appliedDeltas.set(`${pending.messageID}|${pending.partID}|${pending.field}`, {
-              fromLength: existing?.length ?? 0,
-              toLength: value.length,
-              revision: ++deltaRevision,
-            })
-            setStore("part", pending.messageID, result.index, field, value)
-          }
-          pendingDeltas.clear()
-        })
-      }
+    // Fast-streaming models emit message.part.delta faster than the renderer
+    // keeps up; applying every chunk synchronously starves input handling and
+    // freezes scrolling (#36043). Deltas accumulate per part field and flush
+    // together after each synchronous SDK publication instead.
+    const pendingDeltas = new Map<string, { messageID: string; partID: string; field: string; deltas: string[] }>()
+    const appliedDeltas = new Map<string, { fromLength: number; toLength: number; revision: number }>()
+    let deltaRevision = 0
+    let deltaGeneration = 0
+    let deltaFlushScheduled = false
+    const dropDeltas = (prefix: string) => {
+      for (const key of pendingDeltas.keys()) if (key.startsWith(prefix)) pendingDeltas.delete(key)
+      for (const key of appliedDeltas.keys()) if (key.startsWith(prefix)) appliedDeltas.delete(key)
+    }
+    const dropPartDeltas = (messageID: string, partID: string) => dropDeltas(`${messageID}|${partID}|`)
+    const dropMessageDeltas = (messageID: string) => dropDeltas(`${messageID}|`)
+    const resetDeltas = () => {
+      pendingDeltas.clear()
+      appliedDeltas.clear()
+      deltaGeneration++
+      deltaFlushScheduled = false
+    }
+    const flushDeltas = (generation: number) => {
+      if (generation !== deltaGeneration) return
+      deltaFlushScheduled = false
+      if (!pendingDeltas.size) return
+      const pending = [...pendingDeltas.values()]
+      pendingDeltas.clear()
+      batch(() => {
+        for (const item of pending) {
+          const parts = store.part[item.messageID]
+          if (!parts) continue
+          const result = search(parts, item.partID, (p) => p.id)
+          if (!result.found) continue
+          const part = parts[result.index]
+          const field = item.field as keyof typeof part
+          const existing = part[field] as string | undefined
+          const value = (existing ?? "") + item.deltas.join("")
+          appliedDeltas.set(`${item.messageID}|${item.partID}|${item.field}`, {
+            fromLength: existing?.length ?? 0,
+            toLength: value.length,
+            revision: ++deltaRevision,
+          })
+          setStore("part", item.messageID, result.index, field, value)
+        }
+      })
+    }
+    const scheduleDeltaFlush = () => {
+      if (deltaFlushScheduled) return
+      deltaFlushScheduled = true
+      const generation = deltaGeneration
+      // SDKProvider publishes its 100ms event queue synchronously. Deferring to
+      // the microtask boundary joins that whole publication without another
+      // user-visible timer delay.
+      queueMicrotask(() => flushDeltas(generation))
+    }
 
-      event.subscribe((event, { directory, workspace }) => {
-        switch (event.type) {
+    event.subscribe((event, { directory, workspace }) => {
+      switch (event.type) {
         case "server.instance.disposed":
-          pendingDeltas.clear()
-          appliedDeltas.clear()
-          if (deltaTimer) { clearTimeout(deltaTimer); deltaTimer = undefined }
+          resetDeltas()
           void bootstrap()
           break
         case "permission.replied": {
@@ -423,6 +440,7 @@ export const {
           const updated = store.message[info.sessionID]
           if (updated.length > 100 && !olderLoadedSessions.has(info.sessionID)) {
             const oldest = updated[0]
+            dropMessageDeltas(oldest.id)
             batch(() => {
               setStore(
                 "message",
@@ -442,6 +460,7 @@ export const {
           break
         }
         case "message.removed": {
+          dropMessageDeltas(event.properties.messageID)
           touchMessage(event.properties.sessionID, event.properties.messageID)
           const messages = store.message[event.properties.sessionID]
           const index = messages.findIndex((message) => message.id === event.properties.messageID)
@@ -458,7 +477,7 @@ export const {
         }
         case "message.part.updated": {
           // full snapshot supersedes any buffered deltas for this part
-          dropPendingDeltas(event.properties.part.messageID, event.properties.part.id)
+          dropPartDeltas(event.properties.part.messageID, event.properties.part.id)
           touchPart(event.properties.part.sessionID, event.properties.part.id)
           const parts = store.part[event.properties.part.messageID]
           if (!parts) {
@@ -488,20 +507,20 @@ export const {
           touchPart(event.properties.sessionID, event.properties.partID)
           const key = `${event.properties.messageID}|${event.properties.partID}|${event.properties.field}`
           const pending = pendingDeltas.get(key)
-          if (pending) pending.delta += event.properties.delta
+          if (pending) pending.deltas.push(event.properties.delta)
           else
             pendingDeltas.set(key, {
               messageID: event.properties.messageID,
               partID: event.properties.partID,
               field: event.properties.field,
-              delta: event.properties.delta,
+              deltas: [event.properties.delta],
             })
-          if (!deltaTimer) deltaTimer = setTimeout(flushDeltas, 50)
+          scheduleDeltaFlush()
           break
         }
 
         case "message.part.removed": {
-          dropPendingDeltas(event.properties.messageID, event.properties.partID)
+          dropPartDeltas(event.properties.messageID, event.properties.partID)
           touchPart(event.properties.sessionID, event.properties.partID)
           const parts = store.part[event.properties.messageID]
           const result = search(parts, event.properties.partID, (part) => part.id)
@@ -742,6 +761,7 @@ export const {
               sdk.client.session.todo({ sessionID }),
               sdk.client.session.diff({ sessionID }),
             ])
+            const removedMessageIDs = new Set<string>()
             setStore(
               produce((draft) => {
                 const match = search(draft.session, sessionID, (s) => s.id)
@@ -791,11 +811,15 @@ export const {
                   )
                   draft.part[message.info.id] = parts
                 }
-                for (const message of removed) delete draft.part[message.id]
+                for (const message of removed) {
+                  delete draft.part[message.id]
+                  removedMessageIDs.add(message.id)
+                }
                 draft.message[sessionID] = visible
                 draft.session_diff[sessionID] = diff.data ?? []
               }),
             )
+            removedMessageIDs.forEach(dropMessageDeltas)
             fullSyncedSessions.add(sessionID)
           })().finally(() => {
             syncingSessions.delete(sessionID)

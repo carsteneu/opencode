@@ -1,10 +1,11 @@
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Database } from "@opencode-ai/core/database/database"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { EventV2 } from "@opencode-ai/core/event"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { expect } from "bun:test"
 import { tool } from "ai"
-import { Cause, Effect, Exit, Fiber, Layer, Stream } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, Stream } from "effect"
 import path from "path"
 import z from "zod"
 import type { Agent } from "../../src/agent/agent"
@@ -27,6 +28,7 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { LLMEvent } from "@opencode-ai/llm"
 import { Snapshot } from "@/snapshot"
+import { Plugin } from "../../src/plugin"
 
 const summary = Layer.succeed(
   SessionSummary.Service,
@@ -193,6 +195,140 @@ const env = LayerNode.compile(
 
 const it = testEffect(env)
 
+function llmLayer(stream: Stream.Stream<LLMEvent, unknown>) {
+  return Layer.succeed(
+    LLM.Service,
+    LLM.Service.of({
+      stream: () => stream,
+    }),
+  )
+}
+
+const bufferedRounds = Array.from({ length: 1_024 }, (_, index) => ({
+  reasoningA: `a${index};`,
+  textA: `t${index}:`,
+  reasoningB: `b${index};`,
+  textB: `${index}|`,
+}))
+const reasoningAEndMetadata = { openai: { itemId: "reasoning-a-end" } }
+const reasoningBDeltaMetadata = { openai: { itemId: "reasoning-b-delta" } }
+const textEndMetadata = { openai: { itemId: "text-end" } }
+const bufferedDeltas = bufferedRounds.flatMap((round, index) => [
+  LLMEvent.reasoningDelta({ id: "reasoning-a", text: round.reasoningA }),
+  LLMEvent.textDelta({ id: "text", text: round.textA }),
+  LLMEvent.reasoningDelta({
+    id: "reasoning-b",
+    text: round.reasoningB,
+    providerMetadata: index === bufferedRounds.length - 1 ? reasoningBDeltaMetadata : undefined,
+  }),
+  LLMEvent.textDelta({ id: "text", text: round.textB }),
+])
+const bufferedDeltaText = bufferedRounds.flatMap((round) => [
+  round.reasoningA,
+  round.textA,
+  round.reasoningB,
+  round.textB,
+])
+const bufferedReasoningA = bufferedRounds.map((round) => round.reasoningA).join("")
+const bufferedReasoningB = bufferedRounds.map((round) => round.reasoningB).join("")
+const bufferedText = bufferedRounds.flatMap((round) => [round.textA, round.textB]).join("")
+const bufferedEvents = [
+  LLMEvent.stepStart({ index: 0 }),
+  LLMEvent.reasoningStart({ id: "reasoning-a", providerMetadata: { openai: { itemId: "reasoning-a-start" } } }),
+  LLMEvent.reasoningStart({ id: "reasoning-b", providerMetadata: { openai: { itemId: "reasoning-b-start" } } }),
+  LLMEvent.textStart({ id: "text", providerMetadata: { openai: { itemId: "text-start" } } }),
+  ...bufferedDeltas,
+  LLMEvent.reasoningEnd({ id: "reasoning-b" }),
+  LLMEvent.textEnd({ id: "text", providerMetadata: textEndMetadata }),
+  LLMEvent.reasoningEnd({ id: "reasoning-a", providerMetadata: reasoningAEndMetadata }),
+  LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+  LLMEvent.finish({ reason: "stop" }),
+]
+const bufferedEnv = LayerNode.compile(root, [
+  ...replacements,
+  [LLM.node, llmLayer(Stream.fromIterable(bufferedEvents))],
+])
+const itBuffered = testEffect(bufferedEnv)
+
+const completedText: string[] = []
+const textPlugin = Layer.mock(Plugin.Service)({
+  trigger: <Name extends string, Input, Output>(name: Name, _input: Input, output: Output) => {
+    if (name !== "experimental.text.complete") return Effect.succeed(output)
+    return Effect.sync(() => {
+      const value = output as Output & { text: string }
+      completedText.push(value.text)
+      value.text = `[plugin]${value.text}`
+      return output
+    })
+  },
+  list: () => Effect.succeed([]),
+  init: () => Effect.void,
+})
+const pluginText = ["alpha", "-", "beta", "-", "gamma"]
+const pluginEvents = [
+  LLMEvent.textStart({ id: "plugin-text" }),
+  ...pluginText.map((text) => LLMEvent.textDelta({ id: "plugin-text", text })),
+  LLMEvent.textEnd({ id: "plugin-text", providerMetadata: textEndMetadata }),
+  LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+  LLMEvent.finish({ reason: "stop" }),
+]
+const pluginEnv = LayerNode.compile(root, [
+  ...replacements,
+  [LLM.node, llmLayer(Stream.fromIterable(pluginEvents))],
+  [Plugin.node, textPlugin],
+])
+const itPlugin = testEffect(pluginEnv)
+
+const pluginFailureEvents = Layer.effect(
+  EventV2Bridge.Service,
+  Effect.gen(function* () {
+    const events = yield* EventV2.Service
+    let failed = false
+    const publish: EventV2.Interface["publish"] = (definition, data, options) => {
+      if (failed || definition.type !== SessionV1.Event.PartUpdated.type) {
+        return events.publish(definition, data, options)
+      }
+      const event = data as typeof SessionV1.Event.PartUpdated.data.Type
+      if (event.part.type !== "text" || !event.part.text.startsWith("[plugin]")) {
+        return events.publish(definition, data, options)
+      }
+      failed = true
+      return Effect.die(new Error("final plugin text publication failed"))
+    }
+    return EventV2Bridge.Service.of({ ...events, publish })
+  }),
+)
+const pluginFailureEventNode = LayerNode.make({
+  service: EventV2Bridge.Service,
+  layer: pluginFailureEvents,
+  deps: [EventV2.node],
+})
+const pluginFailureEnv = LayerNode.compile(root, [
+  ...replacements,
+  [LLM.node, llmLayer(Stream.fromIterable(pluginEvents))],
+  [Plugin.node, textPlugin],
+  [EventV2Bridge.node, pluginFailureEventNode],
+])
+const itPluginFailure = testEffect(pluginFailureEnv)
+
+const interruptedText = ["partial", " ", "text"]
+const interruptedReasoning = ["partial", " ", "reasoning"]
+const interruptEvents = [
+  LLMEvent.reasoningStart({ id: "interrupt-reasoning" }),
+  LLMEvent.reasoningDelta({ id: "interrupt-reasoning", text: interruptedReasoning[0] }),
+  LLMEvent.textStart({ id: "interrupt-text" }),
+  LLMEvent.textDelta({ id: "interrupt-text", text: interruptedText[0] }),
+  LLMEvent.reasoningDelta({ id: "interrupt-reasoning", text: interruptedReasoning[1] }),
+  LLMEvent.textDelta({ id: "interrupt-text", text: interruptedText[1] }),
+  LLMEvent.reasoningDelta({ id: "interrupt-reasoning", text: interruptedReasoning[2] }),
+  LLMEvent.textDelta({ id: "interrupt-text", text: interruptedText[2] }),
+]
+const interruptEnv = LayerNode.compile(root, [
+  ...replacements,
+  [LLM.node, llmLayer(Stream.concat(Stream.fromIterable(interruptEvents), Stream.never))],
+])
+const itInterrupt = testEffect(interruptEnv)
+
 const providerErrorLLM = Layer.succeed(
   LLM.Service,
   LLM.Service.of({
@@ -223,9 +359,11 @@ const fragmentFailureLLM = Layer.succeed(
       Stream.make(
         LLMEvent.stepStart({ index: 0 }),
         LLMEvent.reasoningStart({ id: "reasoning-1" }),
-        LLMEvent.reasoningDelta({ id: "reasoning-1", text: "thinking" }),
+        LLMEvent.reasoningDelta({ id: "reasoning-1", text: "think" }),
+        LLMEvent.reasoningDelta({ id: "reasoning-1", text: "ing" }),
         LLMEvent.textStart({ id: "text-1" }),
-        LLMEvent.textDelta({ id: "text-1", text: "partial" }),
+        LLMEvent.textDelta({ id: "text-1", text: "par" }),
+        LLMEvent.textDelta({ id: "text-1", text: "tial" }),
         LLMEvent.providerError({ message: "provider boom" }),
       ),
   }),
@@ -287,6 +425,206 @@ const boot = Effect.fn("test.boot")(function* () {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+itBuffered.live("session.processor buffers text and interleaved reasoning deltas without changing order", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        yield* Database.Service
+        const { processors, session, provider } = yield* boot()
+        const events = yield* EventV2Bridge.Service
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "buffer deltas")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const deltas: string[] = []
+        const off = yield* events.listen((event) => {
+          if (event.type !== MessageV2.Event.PartDelta.type) return Effect.void
+          const data = event.data as typeof MessageV2.Event.PartDelta.data.Type
+          if (data.sessionID === chat.id) deltas.push(data.delta)
+          return Effect.void
+        })
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const result = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies SessionV1.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "buffer deltas" }],
+          tools: {},
+        })
+        yield* off
+
+        const parts = yield* MessageV2.parts(msg.id)
+        const text = parts.find((part): part is SessionV1.TextPart => part.type === "text")
+        const reasoning = parts.filter((part): part is SessionV1.ReasoningPart => part.type === "reasoning")
+        const reasoningA = reasoning.find((part) => part.text === bufferedReasoningA)
+        const reasoningB = reasoning.find((part) => part.text === bufferedReasoningB)
+
+        expect(result).toBe("continue")
+        expect(deltas.join("\0")).toBe(bufferedDeltaText.join("\0"))
+        expect(text?.text).toBe(bufferedText)
+        expect(text?.metadata).toEqual(textEndMetadata)
+        expect(reasoningA?.metadata).toEqual(reasoningAEndMetadata)
+        expect(reasoningB?.metadata).toEqual(reasoningBDeltaMetadata)
+        expect(parts.every((part) => !("chunks" in part))).toBe(true)
+      }),
+    { config: cfg },
+  ),
+)
+
+itPlugin.live("session.processor materializes buffered text before the completion plugin", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        completedText.length = 0
+        yield* Database.Service
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "plugin text")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const result = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies SessionV1.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "plugin text" }],
+          tools: {},
+        })
+
+        const parts = yield* MessageV2.parts(msg.id)
+        const text = parts.find((part): part is SessionV1.TextPart => part.type === "text")
+        const expected = pluginText.join("")
+
+        expect(result).toBe("continue")
+        expect(completedText).toEqual([expected])
+        expect(text?.text).toBe(`[plugin]${expected}`)
+        expect(text?.metadata).toEqual(textEndMetadata)
+      }),
+    { config: cfg },
+  ),
+)
+
+itPluginFailure.live("session.processor cleanup retains transformed plugin text after publication failure", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        completedText.length = 0
+        yield* Database.Service
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "plugin publication failure")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+
+        const result = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies SessionV1.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "plugin publication failure" }],
+          tools: {},
+        })
+
+        const parts = yield* MessageV2.parts(msg.id)
+        const text = parts.find((part): part is SessionV1.TextPart => part.type === "text")
+        const expected = pluginText.join("")
+
+        expect(result).toBe("stop")
+        expect(completedText).toEqual([expected])
+        expect(text?.text).toBe(`[plugin]${expected}`)
+      }),
+    { config: cfg },
+  ),
+)
+
+itInterrupt.live("session.processor materializes buffered fragments during interrupt cleanup", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        yield* Database.Service
+        const { processors, session, provider } = yield* boot()
+        const events = yield* EventV2Bridge.Service
+        const ready = yield* Deferred.make<void>()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "interrupt fragments")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        let received = 0
+        const off = yield* events.listen((event) => {
+          if (event.type !== MessageV2.Event.PartDelta.type) return Effect.void
+          const data = event.data as typeof MessageV2.Event.PartDelta.data.Type
+          if (data.sessionID !== chat.id) return Effect.void
+          received++
+          if (received !== interruptedText.length + interruptedReasoning.length) return Effect.void
+          return Deferred.succeed(ready, undefined).pipe(Effect.asVoid)
+        })
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+        const run = yield* handle
+          .process({
+            user: {
+              id: parent.id,
+              sessionID: chat.id,
+              role: "user",
+              time: parent.time,
+              agent: parent.agent,
+              model: { providerID: ref.providerID, modelID: ref.modelID },
+            } satisfies SessionV1.User,
+            sessionID: chat.id,
+            model: mdl,
+            agent: agent(),
+            system: [],
+            messages: [{ role: "user", content: "interrupt fragments" }],
+            tools: {},
+          })
+          .pipe(Effect.forkChild)
+
+        yield* Deferred.await(ready).pipe(Effect.timeout("2 seconds"))
+        yield* Fiber.interrupt(run)
+        const exit = yield* Fiber.await(run)
+        yield* off
+
+        const parts = yield* MessageV2.parts(msg.id)
+        const text = parts.find((part): part is SessionV1.TextPart => part.type === "text")
+        const reasoning = parts.find((part): part is SessionV1.ReasoningPart => part.type === "reasoning")
+
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit)) expect(Cause.hasInterruptsOnly(exit.cause)).toBe(true)
+        expect(text?.text).toBe(interruptedText.join(""))
+        expect(reasoning?.text).toBe(interruptedReasoning.join(""))
+      }),
+    { config: cfg },
+  ),
+)
 
 it.live("session.processor effect tests capture llm input cleanly", () =>
   provideTmpdirServer(

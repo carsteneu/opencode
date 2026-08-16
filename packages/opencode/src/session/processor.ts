@@ -78,6 +78,11 @@ type ToolInputProgress = {
   publishedAt: number
 }
 
+type BufferedPart<Part extends SessionV1.TextPart | SessionV1.ReasoningPart> = {
+  part: Part
+  chunks: string[]
+}
+
 interface ProcessorContext extends Input {
   toolcalls: Record<string, ToolCall>
   toolInputProgress: Record<string, ToolInputProgress>
@@ -86,8 +91,8 @@ interface ProcessorContext extends Input {
   summarySnapshot: string | undefined
   blocked: boolean
   needsCompaction: boolean
-  currentText: SessionV1.TextPart | undefined
-  reasoningMap: Record<string, SessionV1.ReasoningPart>
+  currentText: BufferedPart<SessionV1.TextPart> | undefined
+  reasoningMap: Record<string, BufferedPart<SessionV1.ReasoningPart>>
   nextSnapshot: string | undefined
 }
 
@@ -226,11 +231,11 @@ const layer = Layer.effect(
       })
 
       const finishReasoning = Effect.fn("SessionProcessor.finishReasoning")(function* (reasoningID: string) {
-        if (!(reasoningID in ctx.reasoningMap)) return
-        // oxlint-disable-next-line no-self-assign -- reactivity trigger
-        ctx.reasoningMap[reasoningID].text = ctx.reasoningMap[reasoningID].text
-        ctx.reasoningMap[reasoningID].time = { ...ctx.reasoningMap[reasoningID].time, end: Date.now() }
-        yield* session.updatePart({ ...ctx.reasoningMap[reasoningID] })
+        const current = ctx.reasoningMap[reasoningID]
+        if (!current) return
+        current.part.text = current.chunks.join("")
+        current.part.time = { ...current.part.time, end: Date.now() }
+        yield* session.updatePart({ ...current.part })
         delete ctx.reasoningMap[reasoningID]
       })
 
@@ -302,37 +307,43 @@ const layer = Layer.effect(
           case "reasoning-start":
             if (value.id in ctx.reasoningMap) return
             ctx.reasoningMap[value.id] = {
-              id: PartID.ascending(),
-              messageID: ctx.assistantMessage.id,
-              sessionID: ctx.assistantMessage.sessionID,
-              type: "reasoning",
-              text: "",
-              time: { start: Date.now() },
-              metadata: value.providerMetadata,
+              part: {
+                id: PartID.ascending(),
+                messageID: ctx.assistantMessage.id,
+                sessionID: ctx.assistantMessage.sessionID,
+                type: "reasoning",
+                text: "",
+                time: { start: Date.now() },
+                metadata: value.providerMetadata,
+              },
+              chunks: [],
             }
-            yield* session.updatePart({ ...ctx.reasoningMap[value.id] })
+            yield* session.updatePart({ ...ctx.reasoningMap[value.id].part })
             return
 
           case "reasoning-delta":
             // Match dev: silently drop orphan deltas (no preceding reasoning-start).
-            if (!(value.id in ctx.reasoningMap)) return
-            ctx.reasoningMap[value.id].text += value.text
-            if (value.providerMetadata) ctx.reasoningMap[value.id].metadata = value.providerMetadata
-            yield* session.updatePartDelta({
-              sessionID: ctx.reasoningMap[value.id].sessionID,
-              messageID: ctx.reasoningMap[value.id].messageID,
-              partID: ctx.reasoningMap[value.id].id,
-              field: "text",
-              delta: value.text,
-            })
+            {
+              const current = ctx.reasoningMap[value.id]
+              if (!current) return
+              current.chunks.push(value.text)
+              if (value.providerMetadata) current.part.metadata = value.providerMetadata
+              yield* session.updatePartDelta({
+                sessionID: current.part.sessionID,
+                messageID: current.part.messageID,
+                partID: current.part.id,
+                field: "text",
+                delta: value.text,
+              })
+            }
             return
 
-          case "reasoning-end":
-            if (value.providerMetadata && value.id in ctx.reasoningMap) {
-              ctx.reasoningMap[value.id].metadata = value.providerMetadata
-            }
+          case "reasoning-end": {
+            const current = ctx.reasoningMap[value.id]
+            if (value.providerMetadata && current) current.part.metadata = value.providerMetadata
             yield* finishReasoning(value.id)
             return
+          }
 
           case "tool-input-start":
             if (ctx.assistantMessage.summary) {
@@ -533,25 +544,28 @@ const layer = Layer.effect(
 
           case "text-start":
             ctx.currentText = {
-              id: PartID.ascending(),
-              messageID: ctx.assistantMessage.id,
-              sessionID: ctx.assistantMessage.sessionID,
-              type: "text",
-              text: "",
-              time: { start: Date.now() },
-              metadata: value.providerMetadata,
+              part: {
+                id: PartID.ascending(),
+                messageID: ctx.assistantMessage.id,
+                sessionID: ctx.assistantMessage.sessionID,
+                type: "text",
+                text: "",
+                time: { start: Date.now() },
+                metadata: value.providerMetadata,
+              },
+              chunks: [],
             }
-            yield* session.updatePart({ ...ctx.currentText })
+            yield* session.updatePart({ ...ctx.currentText.part })
             return
 
           case "text-delta":
             if (!ctx.currentText) return
-            ctx.currentText.text += value.text
-            if (value.providerMetadata) ctx.currentText.metadata = value.providerMetadata
+            ctx.currentText.chunks.push(value.text)
+            if (value.providerMetadata) ctx.currentText.part.metadata = value.providerMetadata
             yield* session.updatePartDelta({
-              sessionID: ctx.currentText.sessionID,
-              messageID: ctx.currentText.messageID,
-              partID: ctx.currentText.id,
+              sessionID: ctx.currentText.part.sessionID,
+              messageID: ctx.currentText.part.messageID,
+              partID: ctx.currentText.part.id,
               field: "text",
               delta: value.text,
             })
@@ -559,23 +573,24 @@ const layer = Layer.effect(
 
           case "text-end":
             if (!ctx.currentText) return
-            // oxlint-disable-next-line no-self-assign -- reactivity trigger
-            ctx.currentText.text = ctx.currentText.text
-            ctx.currentText.text = (yield* plugin.trigger(
+            ctx.currentText.part.text = ctx.currentText.chunks.join("")
+            ctx.currentText.chunks = [ctx.currentText.part.text]
+            ctx.currentText.part.text = (yield* plugin.trigger(
               "experimental.text.complete",
               {
                 sessionID: ctx.sessionID,
                 messageID: ctx.assistantMessage.id,
-                partID: ctx.currentText.id,
+                partID: ctx.currentText.part.id,
               },
-              { text: ctx.currentText.text },
+              { text: ctx.currentText.part.text },
             )).text
+            ctx.currentText.chunks = [ctx.currentText.part.text]
             {
               const end = Date.now()
-              ctx.currentText.time = { start: ctx.currentText.time?.start ?? end, end }
+              ctx.currentText.part.time = { start: ctx.currentText.part.time?.start ?? end, end }
             }
-            if (value.providerMetadata) ctx.currentText.metadata = value.providerMetadata
-            yield* session.updatePart({ ...ctx.currentText })
+            if (value.providerMetadata) ctx.currentText.part.metadata = value.providerMetadata
+            yield* session.updatePart({ ...ctx.currentText.part })
             ctx.currentText = undefined
             return
 
@@ -612,16 +627,18 @@ const layer = Layer.effect(
 
         if (ctx.currentText) {
           const end = Date.now()
-          ctx.currentText.time = { start: ctx.currentText.time?.start ?? end, end }
-          yield* session.updatePart({ ...ctx.currentText })
+          ctx.currentText.part.text = ctx.currentText.chunks.join("")
+          ctx.currentText.part.time = { start: ctx.currentText.part.time?.start ?? end, end }
+          yield* session.updatePart({ ...ctx.currentText.part })
           ctx.currentText = undefined
         }
 
-        for (const part of Object.values(ctx.reasoningMap)) {
+        for (const current of Object.values(ctx.reasoningMap)) {
           const end = Date.now()
+          current.part.text = current.chunks.join("")
           yield* session.updatePart({
-            ...part,
-            time: { start: part.time.start ?? end, end },
+            ...current.part,
+            time: { start: current.part.time.start ?? end, end },
           })
         }
         ctx.reasoningMap = {}

@@ -105,6 +105,30 @@ function global(payload: GlobalEvent["payload"]): GlobalEvent {
   return { directory: "/tmp/other", project: "proj_test", payload }
 }
 
+function textPartUpdated(text: string, id = "evt_part") {
+  return global({
+    id,
+    type: "message.part.updated",
+    properties: {
+      sessionID,
+      time: 1,
+      part: { id: partID, sessionID, messageID, type: "text", text },
+    },
+  })
+}
+
+function textDelta(delta: string, id = "evt_delta") {
+  return global({
+    id,
+    type: "message.part.delta",
+    properties: { sessionID, messageID, partID, field: "text", delta },
+  })
+}
+
+function startSDKPublication(emit: (event: GlobalEvent) => void) {
+  emit(global({ id: "evt_boundary", type: "server.connected", properties: {} }))
+}
+
 test("live messages use creation time with an ID tie-break", async () => {
   await using tmp = await tmpdir()
   await Bun.write(`${tmp.path}/kv.json`, "{}")
@@ -329,6 +353,226 @@ test("batched deltas expose append provenance until a full snapshot arrives", as
   }
 })
 
+test("an 80,000-delta synchronous burst commits once with exact append provenance", async () => {
+  await using tmp = await tmpdir()
+  await Bun.write(`${tmp.path}/kv.json`, "{}")
+
+  const { app, emit, sync } = await mount(() => undefined, tmp.path)
+  const deltas = Array.from({ length: 80_000 }, (_, index) => `${index.toString(36).padStart(4, "0")}|`)
+
+  try {
+    emit(textPartUpdated("base"))
+    await wait(() => sync.data.part[messageID]?.[0]?.type === "text")
+
+    startSDKPublication(emit)
+    deltas.forEach((delta, index) => {
+      emit(textDelta(delta, `evt_delta_${index}`))
+      if ((index + 1) % 10_000 === 0) expect(sync.data.part[messageID]?.[0]).toMatchObject({ text: "base" })
+    })
+    const expected = `base${deltas.join("")}`
+    await wait(
+      () => sync.data.part[messageID]?.[0]?.type === "text" && sync.data.part[messageID][0].text === expected,
+      10_000,
+    )
+
+    expect(sync.data.part[messageID][0]).toMatchObject({ text: expected })
+    expect(sync.partDelta(messageID, partID, "text")).toEqual({
+      fromLength: 4,
+      toLength: expected.length,
+      revision: 1,
+    })
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("reasoning deltas use the same single-publication accumulator", async () => {
+  await using tmp = await tmpdir()
+  await Bun.write(`${tmp.path}/kv.json`, "{}")
+
+  const { app, emit, sync } = await mount(() => undefined, tmp.path)
+
+  try {
+    emit(
+      global({
+        id: "evt_reasoning_part",
+        type: "message.part.updated",
+        properties: {
+          sessionID,
+          time: 1,
+          part: { id: partID, sessionID, messageID, type: "reasoning", text: "Plan: ", time: { start: 1 } },
+        },
+      }),
+    )
+    await wait(() => sync.data.part[messageID]?.[0]?.type === "reasoning")
+
+    startSDKPublication(emit)
+    emit(textDelta("inspect", "evt_reasoning_delta_1"))
+    emit(textDelta(", ", "evt_reasoning_delta_2"))
+    emit(textDelta("verify", "evt_reasoning_delta_3"))
+    await wait(
+      () =>
+        sync.data.part[messageID]?.[0]?.type === "reasoning" &&
+        sync.data.part[messageID][0].text === "Plan: inspect, verify",
+    )
+
+    expect(sync.partDelta(messageID, partID, "text")).toEqual({
+      fromLength: 6,
+      toLength: 21,
+      revision: 1,
+    })
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("a full snapshot cancels a pending delta without a late append", async () => {
+  await using tmp = await tmpdir()
+  await Bun.write(`${tmp.path}/kv.json`, "{}")
+
+  const { app, emit, sync } = await mount(() => undefined, tmp.path)
+
+  try {
+    emit(textPartUpdated("base"))
+    await wait(() => sync.data.part[messageID]?.[0]?.type === "text")
+    emit(textDelta(" applied"))
+    await wait(
+      () => sync.data.part[messageID]?.[0]?.type === "text" && sync.data.part[messageID][0].text === "base applied",
+    )
+    expect(sync.partDelta(messageID, partID, "text")).toBeDefined()
+
+    startSDKPublication(emit)
+    emit(textDelta(" late", "evt_delta_late"))
+    emit(textPartUpdated("replacement", "evt_snapshot"))
+    await wait(
+      () => sync.data.part[messageID]?.[0]?.type === "text" && sync.data.part[messageID][0].text === "replacement",
+    )
+    await Bun.sleep(0)
+
+    expect(sync.data.part[messageID][0]).toMatchObject({ text: "replacement" })
+    expect(sync.partDelta(messageID, partID, "text")).toBeUndefined()
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("part removal cancels pending and applied deltas", async () => {
+  await using tmp = await tmpdir()
+  await Bun.write(`${tmp.path}/kv.json`, "{}")
+
+  const { app, emit, sync } = await mount(() => undefined, tmp.path)
+
+  try {
+    emit(textPartUpdated("base"))
+    await wait(() => sync.data.part[messageID]?.[0]?.type === "text")
+    emit(textDelta(" applied"))
+    await wait(
+      () => sync.data.part[messageID]?.[0]?.type === "text" && sync.data.part[messageID][0].text === "base applied",
+    )
+    expect(sync.partDelta(messageID, partID, "text")).toBeDefined()
+
+    startSDKPublication(emit)
+    emit(textDelta(" late", "evt_delta_late"))
+    emit(
+      global({
+        id: "evt_part_removed",
+        type: "message.part.removed",
+        properties: { sessionID, messageID, partID },
+      }),
+    )
+    await wait(() => sync.data.part[messageID]?.length === 0)
+    await Bun.sleep(0)
+
+    expect(sync.data.part[messageID]).toEqual([])
+    expect(sync.partDelta(messageID, partID, "text")).toBeUndefined()
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("instance disposal invalidates a pending delta generation", async () => {
+  await using tmp = await tmpdir()
+  await Bun.write(`${tmp.path}/kv.json`, "{}")
+
+  const mounted = await mount(() => undefined, tmp.path)
+
+  try {
+    mounted.emit(textPartUpdated("base"))
+    await wait(() => mounted.sync.data.part[messageID]?.[0]?.type === "text")
+    mounted.emit(textDelta(" applied"))
+    await wait(
+      () =>
+        mounted.sync.data.part[messageID]?.[0]?.type === "text" &&
+        mounted.sync.data.part[messageID][0].text === "base applied",
+    )
+    expect(mounted.sync.partDelta(messageID, partID, "text")).toBeDefined()
+    const bootstrapCalls = mounted.session.length
+
+    startSDKPublication(mounted.emit)
+    mounted.emit(textDelta(" late", "evt_delta_late"))
+    mounted.emit(
+      global({
+        id: "evt_disposed",
+        type: "server.instance.disposed",
+        properties: { directory: session.directory },
+      }),
+    )
+    await wait(() => mounted.session.length > bootstrapCalls)
+    await Bun.sleep(0)
+
+    expect(mounted.sync.data.part[messageID][0]).toMatchObject({ text: "base applied" })
+    expect(mounted.sync.partDelta(messageID, partID, "text")).toBeUndefined()
+  } finally {
+    mounted.app.renderer.destroy()
+  }
+})
+
+test("deltas published during hydration survive a stale response", async () => {
+  await using tmp = await tmpdir()
+  await Bun.write(`${tmp.path}/kv.json`, "{}")
+
+  let resolveMessages!: (response: Response) => void
+  const messages = new Promise<Response>((resolve) => {
+    resolveMessages = resolve
+  })
+  let requested = false
+  const { app, emit, sync } = await mount((url) => {
+    if (url.pathname === `/session/${sessionID}`) return json(session)
+    if (url.pathname === `/session/${sessionID}/message`) {
+      requested = true
+      return messages
+    }
+    if (url.pathname === `/session/${sessionID}/todo` || url.pathname === `/session/${sessionID}/diff`) return json([])
+    return undefined
+  }, tmp.path)
+
+  try {
+    emit(global({ id: "evt_message", type: "message.updated", properties: { sessionID, info: assistant } }))
+    emit(textPartUpdated("base"))
+    await wait(() => sync.data.part[messageID]?.[0]?.type === "text")
+
+    const hydrate = sync.session.sync(sessionID)
+    await wait(() => requested)
+    startSDKPublication(emit)
+    emit(textDelta(" during", "evt_delta_1"))
+    emit(textDelta(" hydration", "evt_delta_2"))
+    await wait(
+      () =>
+        sync.data.part[messageID]?.[0]?.type === "text" &&
+        sync.data.part[messageID][0].text === "base during hydration",
+    )
+
+    resolveMessages(
+      json([{ info: assistant, parts: [{ id: partID, sessionID, messageID, type: "text", text: "stale" }] }]),
+    )
+    await hydrate
+
+    expect(sync.data.part[messageID][0]).toMatchObject({ text: "base during hydration" })
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
 test("live messages merged during hydration retain the 100 message window", async () => {
   await using tmp = await tmpdir()
   await Bun.write(`${tmp.path}/kv.json`, "{}")
@@ -371,6 +615,197 @@ test("live messages merged during hydration retain the 100 message window", asyn
     expect(sync.data.message[sessionID].at(-1)?.id).toBe(live.id)
     expect(sync.data.message[sessionID].some((message) => message.id === "msg_000")).toBe(false)
     expect(sync.data.part.msg_000).toBeUndefined()
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("hydration window trimming clears delta provenance for removed messages", async () => {
+  await using tmp = await tmpdir()
+  await Bun.write(`${tmp.path}/kv.json`, "{}")
+
+  let resolveMessages!: (response: Response) => void
+  const messages = new Promise<Response>((resolve) => {
+    resolveMessages = resolve
+  })
+  let requested = false
+  const { app, emit, sync } = await mount((url) => {
+    if (url.pathname === `/session/${sessionID}`) return json(session)
+    if (url.pathname === `/session/${sessionID}/message`) {
+      requested = true
+      return messages
+    }
+    if (url.pathname === `/session/${sessionID}/todo` || url.pathname === `/session/${sessionID}/diff`) return json([])
+    return undefined
+  }, tmp.path)
+  const oldestMessageID = "msg_000"
+  const oldestPartID = "prt_msg_000"
+
+  try {
+    emit(
+      global({
+        id: "evt_oldest",
+        type: "message.updated",
+        properties: {
+          sessionID,
+          info: { ...assistant, id: oldestMessageID, time: { created: 1, completed: 2 } },
+        },
+      }),
+    )
+    emit(
+      global({
+        id: "evt_oldest_part",
+        type: "message.part.updated",
+        properties: {
+          sessionID,
+          time: 1,
+          part: { id: oldestPartID, sessionID, messageID: oldestMessageID, type: "text", text: "base" },
+        },
+      }),
+    )
+    await wait(() => sync.data.part[oldestMessageID]?.[0]?.type === "text")
+    emit(
+      global({
+        id: "evt_oldest_delta",
+        type: "message.part.delta",
+        properties: {
+          sessionID,
+          messageID: oldestMessageID,
+          partID: oldestPartID,
+          field: "text",
+          delta: " appended",
+        },
+      }),
+    )
+    await wait(
+      () =>
+        sync.data.part[oldestMessageID]?.[0]?.type === "text" &&
+        sync.data.part[oldestMessageID][0].text === "base appended",
+    )
+    expect(sync.partDelta(oldestMessageID, oldestPartID, "text")).toBeDefined()
+
+    const hydrate = sync.session.sync(sessionID)
+    await wait(() => requested)
+    emit(
+      global({
+        id: "evt_live",
+        type: "message.updated",
+        properties: {
+          sessionID,
+          info: { ...assistant, id: "msg_100", time: { created: 101, completed: 102 } },
+        },
+      }),
+    )
+    await wait(() => sync.data.message[sessionID]?.some((message) => message.id === "msg_100") ?? false)
+    resolveMessages(
+      json(
+        Array.from({ length: 100 }, (_, index) => {
+          const id = `msg_${String(index).padStart(3, "0")}`
+          return {
+            info: { ...assistant, id, time: { created: index + 1, completed: index + 2 } },
+            parts: [
+              {
+                id: `prt_${id}`,
+                sessionID,
+                messageID: id,
+                type: "text",
+                text: id === oldestMessageID ? "base appended" : id,
+              },
+            ],
+          }
+        }),
+      ),
+    )
+    await hydrate
+
+    expect(sync.data.message[sessionID]).toHaveLength(100)
+    expect(sync.data.message[sessionID].some((message) => message.id === oldestMessageID)).toBe(false)
+    expect(sync.data.part[oldestMessageID]).toBeUndefined()
+    expect(sync.partDelta(oldestMessageID, oldestPartID, "text")).toBeUndefined()
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("100-message eviction clears part storage and delta provenance", async () => {
+  await using tmp = await tmpdir()
+  await Bun.write(`${tmp.path}/kv.json`, "{}")
+
+  const { app, emit, sync } = await mount(undefined, tmp.path)
+  const oldestMessageID = "msg_000"
+  const oldestPartID = "prt_msg_000"
+
+  try {
+    for (let index = 0; index < 100; index++) {
+      const id = `msg_${String(index).padStart(3, "0")}`
+      emit(
+        global({
+          id: `evt_${id}`,
+          type: "message.updated",
+          properties: {
+            sessionID,
+            info: { ...assistant, id, time: { created: index + 1, completed: index + 2 } },
+          },
+        }),
+      )
+    }
+    await wait(() => sync.data.message[sessionID]?.length === 100)
+    emit(
+      global({
+        id: "evt_oldest_part",
+        type: "message.part.updated",
+        properties: {
+          sessionID,
+          time: 1,
+          part: {
+            id: oldestPartID,
+            sessionID,
+            messageID: oldestMessageID,
+            type: "text",
+            text: "base",
+          },
+        },
+      }),
+    )
+    await wait(() => sync.data.part[oldestMessageID]?.[0]?.type === "text")
+    emit(
+      global({
+        id: "evt_oldest_delta",
+        type: "message.part.delta",
+        properties: {
+          sessionID,
+          messageID: oldestMessageID,
+          partID: oldestPartID,
+          field: "text",
+          delta: " appended",
+        },
+      }),
+    )
+    await wait(
+      () =>
+        sync.data.part[oldestMessageID]?.[0]?.type === "text" &&
+        sync.data.part[oldestMessageID][0].text === "base appended",
+    )
+    expect(sync.partDelta(oldestMessageID, oldestPartID, "text")).toBeDefined()
+
+    emit(
+      global({
+        id: "evt_msg_100",
+        type: "message.updated",
+        properties: {
+          sessionID,
+          info: { ...assistant, id: "msg_100", time: { created: 101, completed: 102 } },
+        },
+      }),
+    )
+    await wait(
+      () =>
+        sync.data.message[sessionID]?.length === 100 &&
+        !sync.data.message[sessionID].some((message) => message.id === oldestMessageID),
+    )
+
+    expect(sync.data.part[oldestMessageID]).toBeUndefined()
+    expect(sync.partDelta(oldestMessageID, oldestPartID, "text")).toBeUndefined()
   } finally {
     app.renderer.destroy()
   }
