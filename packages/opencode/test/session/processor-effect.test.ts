@@ -4,7 +4,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { EventV2 } from "@opencode-ai/core/event"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { expect } from "bun:test"
-import { tool } from "ai"
+import { tool, type Tool } from "ai"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer, Stream } from "effect"
 import path from "path"
 import z from "zod"
@@ -294,7 +294,7 @@ const pluginFailureEvents = Layer.effect(
         return events.publish(definition, data, options)
       }
       failed = true
-      return Effect.die(new Error("final plugin text publication failed"))
+      return Effect.die(new Error("service unavailable while publishing final plugin text"))
     }
     return EventV2Bridge.Service.of({ ...events, publish })
   }),
@@ -304,9 +304,19 @@ const pluginFailureEventNode = LayerNode.make({
   layer: pluginFailureEvents,
   deps: [EventV2.node],
 })
+let pluginFailureStreams = 0
+const pluginFailureLLM = Layer.succeed(
+  LLM.Service,
+  LLM.Service.of({
+    stream: () => {
+      pluginFailureStreams += 1
+      return Stream.fromIterable(pluginEvents)
+    },
+  }),
+)
 const pluginFailureEnv = LayerNode.compile(root, [
   ...replacements,
-  [LLM.node, llmLayer(Stream.fromIterable(pluginEvents))],
+  [LLM.node, pluginFailureLLM],
   [Plugin.node, textPlugin],
   [EventV2Bridge.node, pluginFailureEventNode],
 ])
@@ -469,11 +479,153 @@ const toolInputProgressLLM = Layer.succeed(
 const toolInputProgressEnv = LayerNode.compile(root, [...replacements, [LLM.node, toolInputProgressLLM]])
 const itToolInputProgress = testEffect(toolInputProgressEnv)
 
+const retrySafetyCalls = {
+  beforeEvent: 0,
+  partial: 0,
+  partialReasoning: 0,
+  buffered: 0,
+  finishedStep: 0,
+  abort: 0,
+  fallbackPrimary: 0,
+  fallback: 0,
+  explicitlyNonRetryable: 0,
+}
+
+function completedTextEvents(text: string) {
+  return Stream.make(
+    LLMEvent.stepStart({ index: 0 }),
+    LLMEvent.textStart({ id: "text" }),
+    LLMEvent.textDelta({ id: "text", text }),
+    LLMEvent.textEnd({ id: "text" }),
+    LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+    LLMEvent.finish({ reason: "stop" }),
+  )
+}
+
+const retrySafetyLLM = Layer.succeed(
+  LLM.Service,
+  LLM.Service.of({
+    stream: (input) => {
+      const prompt = JSON.stringify(input.messages)
+      if (prompt.includes("retry before semantic event")) {
+        retrySafetyCalls.beforeEvent += 1
+        if (retrySafetyCalls.beforeEvent === 1) {
+          return Stream.make(LLMEvent.providerError({ message: "service unavailable before output" }))
+        }
+        return completedTextEvents("recovered")
+      }
+      if (prompt.includes("retry after partial text")) {
+        retrySafetyCalls.partial += 1
+        if (retrySafetyCalls.partial > 1) return completedTextEvents("duplicate")
+        return Stream.make(
+          LLMEvent.stepStart({ index: 0 }),
+          LLMEvent.textStart({ id: "partial" }),
+          LLMEvent.textDelta({ id: "partial", text: "kept partial" }),
+          LLMEvent.providerError({ message: "service unavailable after output" }),
+        )
+      }
+      if (prompt.includes("retry after partial reasoning")) {
+        retrySafetyCalls.partialReasoning += 1
+        if (retrySafetyCalls.partialReasoning > 1) return completedTextEvents("duplicate")
+        return Stream.make(
+          LLMEvent.stepStart({ index: 0 }),
+          LLMEvent.reasoningStart({ id: "partial-reasoning" }),
+          LLMEvent.reasoningDelta({ id: "partial-reasoning", text: "kept reasoning" }),
+          LLMEvent.providerError({ message: "service unavailable after reasoning" }),
+        )
+      }
+      if (prompt.includes("retry buffered transport")) {
+        retrySafetyCalls.buffered += 1
+        if (retrySafetyCalls.buffered > 1) return completedTextEvents("buffered recovery")
+        return Stream.concat(
+          Stream.make(
+            LLMEvent.stepStart({ index: 0 }),
+            LLMEvent.textStart({ id: "buffered" }),
+            LLMEvent.textDelta({ id: "buffered", text: "not committed" }),
+          ),
+          Stream.fail(new Error("service unavailable while collecting buffered events")),
+        )
+      }
+      if (prompt.includes("retry after finished step")) {
+        retrySafetyCalls.finishedStep += 1
+        if (retrySafetyCalls.finishedStep > 1) return completedTextEvents("duplicate")
+        return Stream.make(
+          LLMEvent.stepStart({ index: 0 }),
+          LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+          LLMEvent.providerError({ message: "service unavailable after finished step" }),
+        )
+      }
+      if (prompt.includes("abort retry backoff")) {
+        retrySafetyCalls.abort += 1
+        if (retrySafetyCalls.abort > 1) return completedTextEvents("late retry")
+        return Stream.make(LLMEvent.providerError({ message: "service unavailable during abort test" }))
+      }
+      if (prompt.includes("retry fallback independently")) {
+        if (input.request?.bufferEvents) {
+          retrySafetyCalls.fallbackPrimary += 1
+          input.request.retry?.disable()
+          return Stream.fail(new LLMMessageTransform.ReplayMismatchError("primary replay mismatch"))
+        }
+        retrySafetyCalls.fallback += 1
+        if (retrySafetyCalls.fallback === 1) {
+          return Stream.make(LLMEvent.providerError({ message: "service unavailable before fallback output" }))
+        }
+        return completedTextEvents("fallback recovered")
+      }
+      if (prompt.includes("explicit non-retryable provider error")) {
+        retrySafetyCalls.explicitlyNonRetryable += 1
+        if (retrySafetyCalls.explicitlyNonRetryable > 1) return completedTextEvents("duplicate")
+        return Stream.make(LLMEvent.providerError({ message: "service unavailable but final", retryable: false }))
+      }
+      return Stream.fail(new Error(`Unexpected retry safety prompt: ${prompt}`))
+    },
+  }),
+)
+const retrySafetyEnv = LayerNode.compile(root, [...replacements, [LLM.node, retrySafetyLLM]])
+const itRetrySafety = testEffect(retrySafetyEnv)
+
 const boot = Effect.fn("test.boot")(function* () {
   const processors = yield* SessionProcessor.Service
   const session = yield* Session.Service
   const provider = yield* Provider.Service
   return { processors, session, provider }
+})
+
+const runTurn = Effect.fn("test.runTurn")(function* (input: {
+  dir: string
+  prompt: string
+  tools?: Record<string, Tool>
+  request?: LLM.StreamInput["request"]
+  fallbackRequest?: LLM.StreamInput["request"]
+}) {
+  const { processors, session, provider } = yield* boot()
+  const chat = yield* session.create({})
+  const parent = yield* user(chat.id, input.prompt)
+  const msg = yield* assistant(chat.id, parent.id, path.resolve(input.dir))
+  const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+  const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+  const streamInput: LLM.StreamInput = {
+    user: {
+      id: parent.id,
+      sessionID: chat.id,
+      role: "user",
+      time: parent.time,
+      agent: parent.agent,
+      model: { providerID: ref.providerID, modelID: ref.modelID },
+    } satisfies SessionV1.User,
+    sessionID: chat.id,
+    model: mdl,
+    agent: agent(),
+    system: [],
+    messages: [{ role: "user", content: input.prompt }],
+    tools: input.tools ?? {},
+    request: input.request,
+  }
+  const value = yield* handle.process(
+    streamInput,
+    input.fallbackRequest ? { fallback: { ...streamInput, request: input.fallbackRequest } } : undefined,
+  )
+  return { chat, handle, msg, parts: yield* MessageV2.parts(msg.id), value }
 })
 
 // ---------------------------------------------------------------------------
@@ -584,6 +736,7 @@ itPluginFailure.live("session.processor cleanup retains transformed plugin text 
     (dir) =>
       Effect.gen(function* () {
         completedText.length = 0
+        pluginFailureStreams = 0
         yield* Database.Service
         const { processors, session, provider } = yield* boot()
         const chat = yield* session.create({})
@@ -614,6 +767,7 @@ itPluginFailure.live("session.processor cleanup retains transformed plugin text 
         const expected = pluginText.join("")
 
         expect(result).toBe("stop")
+        expect(pluginFailureStreams).toBe(1)
         expect(completedText).toEqual([expected])
         expect(text?.text).toBe(`[plugin]${expected}`)
       }),
@@ -910,7 +1064,7 @@ it.live("session.processor effect tests capture reasoning from http mock", () =>
   ),
 )
 
-it.live("session.processor effect tests reset reasoning state across retries", () =>
+it.live("session.processor effect tests retry a reset before reasoning is committed", () =>
   provideTmpdirServer(
     ({ dir, llm }) =>
       Effect.gen(function* () {
@@ -1089,6 +1243,312 @@ it.live("session.processor effect tests retry OpenAI-compatible midstream server
         expect(yield* llm.calls).toBe(2)
         expect(parts.some((part) => part.type === "text" && part.text === "after")).toBe(true)
         expect(handle.message.error).toBeUndefined()
+      }),
+    { config: (url) => providerCfg(url) },
+  ),
+)
+
+itRetrySafety.live("session.processor retries a retryable provider error before the first semantic event", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        retrySafetyCalls.beforeEvent = 0
+        const result = yield* runTurn({ dir, prompt: "retry before semantic event" })
+
+        expect(result.value).toBe("continue")
+        expect(retrySafetyCalls.beforeEvent).toBe(2)
+        expect(result.handle.message.error).toBeUndefined()
+        expect(result.parts.filter((part) => part.type === "text").map((part) => part.text)).toEqual(["recovered"])
+      }),
+    { config: cfg },
+  ),
+)
+
+itRetrySafety.live("session.processor does not retry after partial text and finalizes the single partial part", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        retrySafetyCalls.partial = 0
+        const events = yield* EventV2Bridge.Service
+        const retries: number[] = []
+        const off = yield* events.listen((event) => {
+          if (event.type !== SessionStatus.Event.Status.type) return Effect.void
+          const data = event.data as typeof SessionStatus.Event.Status.data.Type
+          if (data.status.type === "retry") retries.push(data.status.attempt)
+          return Effect.void
+        })
+        const result = yield* runTurn({ dir, prompt: "retry after partial text" })
+        yield* off
+        const text = result.parts.filter((part): part is SessionV1.TextPart => part.type === "text")
+
+        expect(result.value).toBe("stop")
+        expect(retrySafetyCalls.partial).toBe(1)
+        expect(retries).toEqual([])
+        expect(text).toHaveLength(1)
+        expect(text[0]?.text).toBe("kept partial")
+        expect(text[0]?.time?.end).toBeDefined()
+        expect(result.handle.message.error?.name).toBeDefined()
+      }),
+    { config: cfg },
+  ),
+)
+
+itRetrySafety.live("session.processor does not retry after committed reasoning and finalizes the partial part", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        retrySafetyCalls.partialReasoning = 0
+        const result = yield* runTurn({ dir, prompt: "retry after partial reasoning" })
+        const reasoning = result.parts.filter((part): part is SessionV1.ReasoningPart => part.type === "reasoning")
+
+        expect(result.value).toBe("stop")
+        expect(retrySafetyCalls.partialReasoning).toBe(1)
+        expect(reasoning).toHaveLength(1)
+        expect(reasoning[0]?.text).toBe("kept reasoning")
+        expect(reasoning[0]?.time.end).toBeDefined()
+        expect(result.handle.message.error).toBeDefined()
+      }),
+    { config: cfg },
+  ),
+)
+
+itRetrySafety.live("session.processor retries buffered transport failure before uncommitted events are replayed", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        retrySafetyCalls.buffered = 0
+        const result = yield* runTurn({
+          dir,
+          prompt: "retry buffered transport",
+          request: { bufferEvents: true },
+        })
+
+        expect(result.value).toBe("continue")
+        expect(retrySafetyCalls.buffered).toBe(2)
+        expect(result.handle.message.error).toBeUndefined()
+        expect(result.parts.filter((part) => part.type === "text").map((part) => part.text)).toEqual([
+          "buffered recovery",
+        ])
+      }),
+    { config: cfg },
+  ),
+)
+
+itRetrySafety.live("session.processor gives fallback execution an independent retry barrier", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        retrySafetyCalls.fallbackPrimary = 0
+        retrySafetyCalls.fallback = 0
+        const result = yield* runTurn({
+          dir,
+          prompt: "retry fallback independently",
+          request: { bufferEvents: true },
+          fallbackRequest: {},
+        })
+
+        expect(result.value).toBe("continue")
+        expect(retrySafetyCalls.fallbackPrimary).toBe(1)
+        expect(retrySafetyCalls.fallback).toBe(2)
+        expect(result.handle.message.error).toBeUndefined()
+        expect(result.parts.filter((part) => part.type === "text").map((part) => part.text)).toEqual([
+          "fallback recovered",
+        ])
+      }),
+    { config: cfg },
+  ),
+)
+
+itRetrySafety.live("session.processor cancellation during retry backoff prevents the next provider call", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        retrySafetyCalls.abort = 0
+        const { processors, session, provider } = yield* boot()
+        const status = yield* SessionStatus.Service
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "abort retry backoff")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+        const run = yield* handle
+          .process({
+            user: {
+              id: parent.id,
+              sessionID: chat.id,
+              role: "user",
+              time: parent.time,
+              agent: parent.agent,
+              model: { providerID: ref.providerID, modelID: ref.modelID },
+            } satisfies SessionV1.User,
+            sessionID: chat.id,
+            model: mdl,
+            agent: agent(),
+            system: [],
+            messages: [{ role: "user", content: "abort retry backoff" }],
+            tools: {},
+          })
+          .pipe(Effect.forkChild)
+
+        yield* waitFor(
+          status.get(chat.id).pipe(Effect.map((value) => (value.type === "retry" ? value : undefined))),
+          "timed out waiting for retry backoff",
+          1_000,
+        )
+        yield* Fiber.interrupt(run)
+        yield* Effect.sleep("50 millis")
+
+        expect(Exit.isFailure(yield* Fiber.await(run))).toBe(true)
+        expect(retrySafetyCalls.abort).toBe(1)
+        expect((yield* status.get(chat.id)).type).toBe("idle")
+        expect(handle.message.error?.name).toBe("MessageAbortedError")
+      }),
+    { config: cfg },
+  ),
+)
+
+itRetrySafety.live("session.processor does not duplicate a completed step after a retryable trailing failure", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        retrySafetyCalls.finishedStep = 0
+        const result = yield* runTurn({ dir, prompt: "retry after finished step" })
+
+        expect(result.value).toBe("stop")
+        expect(retrySafetyCalls.finishedStep).toBe(1)
+        expect(result.parts.filter((part) => part.type === "step-start")).toHaveLength(1)
+        expect(result.parts.filter((part) => part.type === "step-finish")).toHaveLength(1)
+      }),
+    { config: cfg },
+  ),
+)
+
+itRetrySafety.live("session.processor honors an explicitly non-retryable provider error", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        retrySafetyCalls.explicitlyNonRetryable = 0
+        const result = yield* runTurn({ dir, prompt: "explicit non-retryable provider error" })
+
+        expect(result.value).toBe("stop")
+        expect(retrySafetyCalls.explicitlyNonRetryable).toBe(1)
+        expect(result.handle.message.error).toBeDefined()
+        expect(result.parts.filter((part) => part.type === "text")).toHaveLength(0)
+      }),
+    { config: cfg },
+  ),
+)
+
+it.live("session.processor closes retry before early AI SDK tool hooks and execution", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const marker = path.join(dir, "mutation-marker.txt")
+        const calls = {
+          inputStart: 0,
+          inputDelta: 0,
+          inputAvailable: 0,
+          approval: 0,
+          execute: 0,
+          modelOutput: 0,
+        }
+        const receivers = {
+          inputStart: [] as unknown[],
+          inputDelta: [] as unknown[],
+          inputAvailable: [] as unknown[],
+          approval: [] as unknown[],
+          execute: [] as unknown[],
+          modelOutput: [] as unknown[],
+        }
+        yield* llm.push(reply().toolThenServerError("mutate", { value: "once" }))
+        yield* llm.text("duplicate retry")
+
+        const mutate = tool({
+          description: "Mutate once",
+          inputSchema: z.object({ value: z.string() }),
+          onInputStart: function (this: unknown) {
+            calls.inputStart += 1
+            receivers.inputStart.push(this)
+          },
+          onInputDelta: function (this: unknown) {
+            calls.inputDelta += 1
+            receivers.inputDelta.push(this)
+          },
+          onInputAvailable: function (this: unknown) {
+            calls.inputAvailable += 1
+            receivers.inputAvailable.push(this)
+          },
+          needsApproval: function (this: unknown) {
+            calls.approval += 1
+            receivers.approval.push(this)
+            return false
+          },
+          execute: async function (this: unknown) {
+            calls.execute += 1
+            receivers.execute.push(this)
+            const file = Bun.file(marker)
+            await Bun.write(marker, `${(await file.exists()) ? await file.text() : ""}once\n`)
+            return { title: "mutated", output: "once", metadata: {} }
+          },
+          toModelOutput: function (this: unknown, { output }) {
+            calls.modelOutput += 1
+            receivers.modelOutput.push(this)
+            return { type: "text" as const, value: output.output }
+          },
+        })
+
+        const result = yield* runTurn({
+          dir,
+          prompt: "execute one mutating tool before provider failure",
+          tools: { mutate },
+        })
+
+        expect(result.value).toBe("stop")
+        expect(yield* llm.calls).toBe(1)
+        expect(yield* Effect.promise(() => Bun.file(marker).text())).toBe("once\n")
+        expect(calls).toEqual({
+          inputStart: 1,
+          inputDelta: 1,
+          inputAvailable: 1,
+          approval: 1,
+          execute: 1,
+          modelOutput: 1,
+        })
+        expect(Object.values(receivers).every((items) => items.length === 1 && items[0] === mutate)).toBe(true)
+      }),
+    { config: (url) => providerCfg(url) },
+  ),
+)
+
+it.live("session.processor never retries requests containing provider tools even when local execution is blocked", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        let executed = 0
+        yield* llm.error(503, { error: { message: "provider tool request unavailable" } })
+        yield* llm.text("duplicate retry")
+
+        const result = yield* runTurn({
+          dir,
+          prompt: "provider-defined server tool",
+          request: { toolExecution: "blocked" },
+          tools: {
+            remote: tool({
+              type: "provider",
+              id: "test.remote",
+              args: { mode: "server" },
+              inputSchema: z.object({}),
+              execute: async () => {
+                executed += 1
+                return { output: "remote" }
+              },
+            }),
+          },
+        })
+
+        expect(result.value).toBe("stop")
+        expect(yield* llm.calls).toBe(1)
+        expect(executed).toBe(0)
       }),
     { config: (url) => providerCfg(url) },
   ),

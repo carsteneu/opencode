@@ -61,6 +61,9 @@ export type StreamInput = {
     readonly silentOverflow?: boolean
     readonly silentToolError?: boolean
     readonly bufferEvents?: boolean
+    readonly retry?: {
+      readonly disable: () => void
+    }
   }
 }
 
@@ -162,6 +165,15 @@ const live: Layer.Layer<
             flags,
             isWorkflow,
           })
+      const retry = input.request?.retry
+      if (
+        retry &&
+        (isWorkflow ||
+          input.model.api.npm === "gitlab-ai-provider" ||
+          Object.values(prepared.tools).some((item) => item.type === "provider"))
+      ) {
+        retry.disable()
+      }
       const capturePrepared = (transformedPrompt?: TransformedPrompt) => {
         if (!input.request?.capture || input.request.replay) return
         const messages = structuredClone(prepared.messages)
@@ -185,10 +197,49 @@ const live: Layer.Layer<
       // Image/file presence participates in Anthropic's message-cache key.
       const captureAnthropic = !!input.request?.capture && directAnthropicCaching && !hasMedia(prepared.messages)
       if (!directAnthropic) capturePrepared()
-      const tools =
+      const selectedTools =
         input.request?.toolExecution === "blocked"
           ? yield* Effect.promise(() => blockedTools(prepared.tools))
           : prepared.tools
+      const tools = retry
+        ? Object.fromEntries(
+            Object.entries(selectedTools).map(([name, item]) => {
+              if (item.type === "provider") return [name, item] as const
+              const needsApproval = typeof item.needsApproval === "function" ? item.needsApproval : undefined
+              if (
+                !item.execute &&
+                !item.onInputStart &&
+                !item.onInputDelta &&
+                !item.onInputAvailable &&
+                !needsApproval &&
+                !item.toModelOutput
+              ) {
+                return [name, item] as const
+              }
+              return [
+                name,
+                {
+                  ...item,
+                  ...(item.execute ? { execute: withRetryBarrier(item, item.execute, retry.disable) } : {}),
+                  ...(item.onInputStart
+                    ? { onInputStart: withRetryBarrier(item, item.onInputStart, retry.disable) }
+                    : {}),
+                  ...(item.onInputDelta
+                    ? { onInputDelta: withRetryBarrier(item, item.onInputDelta, retry.disable) }
+                    : {}),
+                  ...(item.onInputAvailable
+                    ? { onInputAvailable: withRetryBarrier(item, item.onInputAvailable, retry.disable) }
+                    : {}),
+                  ...(needsApproval ? { needsApproval: withRetryBarrier(item, needsApproval, retry.disable) } : {}),
+                  ...(item.toModelOutput
+                    ? { toModelOutput: withRetryBarrier(item, item.toModelOutput, retry.disable) }
+                    : {}),
+                } satisfies Tool,
+              ] as const
+            }),
+          )
+        : selectedTools
+      const maxRetries = retry ? 0 : (input.retries ?? 0)
 
       // Wire up toolExecutor for DWS workflow models so that tool calls
       // from the workflow service are executed via opencode's tool system
@@ -378,7 +429,7 @@ const live: Layer.Layer<
               maxOutputTokens: prepared.params.maxOutputTokens,
               providerOptions: ProviderTransform.providerOptions(input.model, prepared.params.options),
               headers: prepared.headers,
-              maxRetries: input.retries ?? 0,
+              maxRetries,
             }
           : undefined
       const isolated = processInput !== undefined && LLMAIProcess.inputSupported(processInput)
@@ -440,7 +491,7 @@ const live: Layer.Layer<
           maxOutputTokens: prepared.params.maxOutputTokens,
           abortSignal: input.abort,
           headers: prepared.headers,
-          maxRetries: input.retries ?? 0,
+          maxRetries,
           messages: prepared.messages,
           model: wrapLanguageModel({
             model: language,
@@ -534,6 +585,17 @@ function hasMedia(value: unknown): boolean {
     return true
   if ("mediaType" in value && typeof value.mediaType === "string") return true
   return Object.values(value).some(hasMedia)
+}
+
+function withRetryBarrier<Args extends unknown[], Result>(
+  receiver: object,
+  callback: (...args: Args) => Result,
+  disable: () => void,
+) {
+  return (...args: Args) => {
+    disable()
+    return callback.apply(receiver, args)
+  }
 }
 
 export const node = LayerNode.make({

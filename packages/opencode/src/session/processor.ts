@@ -738,13 +738,23 @@ const layer = Layer.effect(
         ctx.bufferEvents = streamInput.request?.bufferEvents === true
         ctx.discardAttempt = false
         ctx.shouldBreak = (yield* config.get()).experimental?.continue_loop_on_deny !== true
+        const retry = { safe: true }
+        const disableRetry = () => {
+          retry.safe = false
+        }
 
         return yield* Effect.gen(function* () {
           yield* Effect.gen(function* () {
             ctx.currentText = undefined
             ctx.reasoningMap = {}
             yield* status.set(ctx.sessionID, { type: "busy" })
-            const stream = llm.stream(streamInput)
+            const stream = llm.stream({
+              ...streamInput,
+              request: {
+                ...streamInput.request,
+                retry: { disable: disableRetry },
+              },
+            })
             const source = ctx.bufferEvents
               ? yield* Effect.gen(function* () {
                   const buffered = [...(yield* Stream.runCollect(stream))]
@@ -767,7 +777,11 @@ const layer = Layer.effect(
               : stream
 
             yield* source.pipe(
-              Stream.tap((event) => handleEvent(event)),
+              Stream.tap((event) =>
+                Effect.sync(() => {
+                  if (event.type !== "provider-error" || event.retryable === false) disableRetry()
+                }).pipe(Effect.andThen(handleEvent(event))),
+              ),
               Stream.takeUntil(() => ctx.needsCompaction),
               Stream.runDrain,
             )
@@ -780,6 +794,7 @@ const layer = Layer.effect(
               SessionRetry.policy({
                 provider: input.model.providerID,
                 parse,
+                canRetry: () => retry.safe,
                 set: (info) => {
                   return status.set(ctx.sessionID, {
                     type: "retry",

@@ -597,6 +597,23 @@ export class Reply {
     return this.toolCalls()
   }
 
+  toolThenServerError(name: string, input: unknown, message = "provider failed after tool dispatch") {
+    const id = this.#id()
+    const args = JSON.stringify(input)
+    this.#tail = [
+      ...this.#tail,
+      toolStartLine(id, name),
+      toolArgsLine(args),
+      finishLine("tool_calls"),
+      { error: { type: "server_error", code: "server_error", message } },
+    ]
+    this.#finish = undefined
+    this.#hang = false
+    this.#error = undefined
+    this.#reset = false
+    return this
+  }
+
   pendingTool(name: string, input: unknown) {
     const id = this.#id()
     const args = JSON.stringify(input)

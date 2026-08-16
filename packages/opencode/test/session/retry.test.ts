@@ -4,7 +4,7 @@ import { SessionV1 } from "@opencode-ai/core/v1/session"
 import type { NamedError } from "@opencode-ai/core/util/error"
 import { APICallError } from "ai"
 import { setTimeout as sleep } from "node:timers/promises"
-import { Effect, Schedule, Schema } from "effect"
+import { Effect, Exit, Schedule, Schema } from "effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { SessionRetry } from "../../src/session/retry"
 import { MessageV2 } from "../../src/session/message-v2"
@@ -144,6 +144,31 @@ describe("session.retry.delay", () => {
       )
 
       expect(attempts).toStrictEqual([1, 2, 3, 4, 5])
+    }),
+  )
+
+  it.instance("policy guard stops before publishing retry status", () =>
+    Effect.gen(function* () {
+      let checked = 0
+      let published = 0
+      const step = yield* Schedule.toStepWithMetadata(
+        SessionRetry.policy({
+          provider: "test",
+          parse: Schema.decodeUnknownSync(SessionV1.APIError.Schema),
+          canRetry: () => {
+            checked += 1
+            return false
+          },
+          set: () =>
+            Effect.sync(() => {
+              published += 1
+            }),
+        }),
+      )
+
+      expect(Exit.isFailure(yield* Effect.exit(step(apiError({ "retry-after-ms": "0" }))))).toBe(true)
+      expect(checked).toBe(1)
+      expect(published).toBe(0)
     }),
   )
 })
