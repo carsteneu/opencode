@@ -61,6 +61,13 @@ export const Parameters = Schema.Struct({
   }),
 })
 
+/**
+ * Conservative default: demote a foreground subagent to a background task only
+ * when its wait clearly exceeds any healthy run. Overridable via `subagent_timeout`.
+ */
+const DEFAULT_SUBAGENT_TIMEOUT = 600_000
+const SUBAGENT_TIMEOUT = Symbol("subagent wait timed out")
+
 function renderOutput(input: {
   sessionID: SessionID
   state: "running" | "completed" | "error"
@@ -93,8 +100,9 @@ export const TaskTool = Tool.define(
       params: Schema.Schema.Type<typeof Parameters>,
       ctx: Tool.Context,
     ) {
-      const cfg = yield* config.get()
-      const runInBackground = params.background === true
+        const cfg = yield* config.get()
+        const runInBackground = params.background === true
+        const subagentTimeout = cfg.subagent_timeout ?? DEFAULT_SUBAGENT_TIMEOUT
       if (runInBackground && !flags.experimentalBackgroundSubagents) {
         return yield* Effect.fail(
           new Error("Background subagents require OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true"),
@@ -242,16 +250,17 @@ export const TaskTool = Tool.define(
           .pipe(Effect.ignore, Effect.forkIn(scope, { startImmediately: true }))
       })
 
-      const notify = Effect.fn("TaskTool.notifyBackgroundResult")(function* (jobID: string) {
-        yield* background.wait({ id: jobID }).pipe(
-          Effect.flatMap((result) => {
-            if (result.info?.status === "completed") return inject("completed", result.info.output ?? "")
-            if (result.info?.status === "error") return inject("error", result.info.error ?? "")
-            return Effect.void
-          }),
-          Effect.forkIn(scope, { startImmediately: true }),
-        )
-      })
+        const notify = Effect.fn("TaskTool.notifyBackgroundResult")(function* (jobID: string) {
+          yield* background.wait({ id: jobID, timeout: subagentTimeout }).pipe(
+            Effect.flatMap((result) => {
+              if (result.timedOut) return Effect.void
+              if (result.info?.status === "completed") return inject("completed", result.info.output ?? "")
+              if (result.info?.status === "error") return inject("error", result.info.error ?? "")
+              return Effect.void
+            }),
+            Effect.forkIn(scope, { startImmediately: true }),
+          )
+        })
 
       if (yield* background.extend({ id: nextSession.id, run: runTask() })) {
         return {
@@ -320,11 +329,19 @@ export const TaskTool = Tool.define(
         }),
         () =>
           Effect.gen(function* () {
-            const result = yield* Effect.raceFirst(
-              background.wait({ id: nextSession.id }).pipe(Effect.map((waited) => waited.info)),
-              background.waitForPromotion(nextSession.id),
-            )
-            if (result?.metadata?.background === true) return backgroundResult()
+              const result = yield* Effect.raceFirst(
+                background.wait({ id: nextSession.id, timeout: subagentTimeout }).pipe(
+                  Effect.map((waited) => (waited.timedOut ? SUBAGENT_TIMEOUT : waited.info)),
+                ),
+                background.waitForPromotion(nextSession.id),
+              )
+              // The subagent stalled past the wait budget. Demote it to a background task so the
+              // work is preserved and the caller is handed the job instead of blocking forever.
+              if (result === SUBAGENT_TIMEOUT) {
+                yield* background.promote(nextSession.id).pipe(Effect.ignore)
+                return backgroundResult()
+              }
+              if (result?.metadata?.background === true) return backgroundResult()
             if (result?.status === "error") return yield* Effect.fail(new Error(result.error ?? "Task failed"))
             if (result?.status === "cancelled") return yield* Effect.fail(new Error("Task cancelled"))
             return {

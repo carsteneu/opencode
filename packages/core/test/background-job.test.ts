@@ -1,7 +1,7 @@
 import { describe, expect } from "bun:test"
 import { BackgroundJob } from "@opencode-ai/core/background-job"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Deferred, Effect, Exit, Scope } from "effect"
+import { Cause, Deferred, Effect, Exit, Scope } from "effect"
 import { it } from "./lib/effect"
 
 const jobsLayer = LayerNode.compile(BackgroundJob.node)
@@ -103,4 +103,42 @@ describe("BackgroundJob", () => {
       expect((yield* jobs.get(job.id))?.status).toBe("running")
     }),
   )
+
+    it.live("waitForPromotion resolves a completed job's snapshot instead of hanging", () =>
+      Effect.gen(function* () {
+        const jobs = yield* BackgroundJob.Service
+        const job = yield* jobs.start({ type: "test", run: Effect.succeed("done") })
+        yield* jobs.wait({ id: job.id })
+        const info = yield* jobs.waitForPromotion(job.id).pipe(Effect.timeout("1 second"))
+        expect(info?.status).toBe("completed")
+      }).pipe(Effect.provide(jobsLayer)),
+    )
+
+    it.live("waitForPromotion fails gracefully when the job is missing instead of hanging", () =>
+      Effect.gen(function* () {
+        const jobs = yield* BackgroundJob.Service
+        const outcome: { ok: boolean; message: string } = yield* jobs
+          .waitForPromotion("job_does_not_exist")
+          .pipe(
+            Effect.timeout("1 second"),
+            Effect.matchCauseEffect({
+              onSuccess: (value) => Effect.succeed({ ok: true, message: JSON.stringify(value) }),
+              onFailure: (cause) => Effect.succeed({ ok: false, message: String(Cause.squash(cause)) }),
+            }),
+          )
+        // On the buggy path waitForPromotion hangs and `Effect.timeout` yields `undefined` (ok: true).
+        expect(outcome.ok).toBe(false)
+        expect(outcome.message).toMatch(/not found/i)
+      }).pipe(Effect.provide(jobsLayer)),
+    )
+
+    it.live("waitForPromotion returns the snapshot for a promoted background job", () =>
+      Effect.gen(function* () {
+        const jobs = yield* BackgroundJob.Service
+        const job = yield* jobs.start({ type: "test", run: Effect.never })
+        yield* jobs.promote(job.id)
+        const info = yield* jobs.waitForPromotion(job.id).pipe(Effect.timeout("1 second"))
+        expect(info?.metadata?.background).toBe(true)
+      }).pipe(Effect.provide(jobsLayer)),
+    )
 })
