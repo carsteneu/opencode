@@ -3,6 +3,7 @@ export * as TextDiff from "./text-diff"
 import { formatPatch, structuredPatch, type StructuredPatch } from "diff"
 
 const DEFAULT_TIMEOUT = 250
+const DEFAULT_COARSE_MAX_LINES = 1_000
 
 export interface Info {
   readonly patch: string
@@ -17,13 +18,18 @@ export function create(
   newFile: string,
   before: string,
   after: string,
-  options?: { readonly timeout?: number; readonly maxEditLength?: number },
+  options?: {
+    readonly timeout?: number
+    readonly maxEditLength?: number
+    /** Coarse fallbacks above this many lines per side are elided to keep patch bytes bounded. */
+    readonly coarseMaxLines?: number
+  },
 ): Info {
   const structured = structuredPatch(oldFile, newFile, before, after, undefined, undefined, {
     timeout: options?.timeout ?? DEFAULT_TIMEOUT,
     ...(options?.maxEditLength === undefined ? {} : { maxEditLength: options.maxEditLength }),
   })
-  if (!structured) return coarse(oldFile, newFile, before, after)
+  if (!structured) return coarse(oldFile, newFile, before, after, options?.coarseMaxLines ?? DEFAULT_COARSE_MAX_LINES)
 
   let additions = 0
   let deletions = 0
@@ -36,7 +42,7 @@ export function create(
   return { patch: formatPatch(structured), additions, deletions, coarse: false }
 }
 
-function coarse(oldFile: string, newFile: string, before: string, after: string): Info {
+function coarse(oldFile: string, newFile: string, before: string, after: string, maxLines: number): Info {
   const oldLines = countLines(before)
   const newLines = countLines(after)
 
@@ -59,7 +65,7 @@ function coarse(oldFile: string, newFile: string, before: string, after: string)
           ],
   }
   return {
-    patch: formatPatch(structured) + (before === after ? "" : prefixLines(before, "-") + prefixLines(after, "+")),
+    patch: formatPatch(structured) + (before === after ? "" : prefixLines(before, "-", maxLines) + prefixLines(after, "+", maxLines)),
     additions: before === after ? 0 : newLines,
     deletions: before === after ? 0 : oldLines,
     coarse: true,
@@ -75,10 +81,26 @@ function countLines(value: string) {
   return lines
 }
 
-function prefixLines(value: string, prefix: "+" | "-") {
+function prefixLines(value: string, prefix: "+" | "-", maxLines: number) {
   if (value === "") return ""
   const terminated = value.endsWith("\n")
   const body = terminated ? value.slice(0, -1) : value
+  const total = countLines(body)
+  if (total > maxLines) {
+    let cut = 0
+    let seen = 0
+    for (let index = 0; index < body.length; index++) {
+      if (body.charCodeAt(index) === 10) {
+        seen++
+        if (seen === maxLines) {
+          cut = index
+          break
+        }
+      }
+    }
+    const head = prefix + body.slice(0, cut).replaceAll("\n", `\n${prefix}`)
+    return `${head}\n${prefix}... ${total - maxLines} more lines elided (coarse diff)\n`
+  }
   const lines = prefix + body.replaceAll("\n", `\n${prefix}`) + "\n"
   return terminated ? lines : lines + "\\ No newline at end of file\n"
 }
