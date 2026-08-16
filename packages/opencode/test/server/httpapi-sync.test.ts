@@ -10,7 +10,7 @@ import { MessageID, SessionV1 } from "@opencode-ai/core/v1/session"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { resetDatabase } from "../fixture/db"
-import { disposeAllInstances, TestInstance } from "../fixture/fixture"
+import { disposeAllInstances, provideTmpdirInstance, TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { httpApiLayer, requestInDirectory } from "./httpapi-layer"
 
@@ -124,6 +124,35 @@ describe("sync HttpApi", () => {
         })
       }),
     { git: true, config: { formatter: false, lsp: false } },
+  )
+
+  it.live("scopes history to the current project and accepts large fence maps", () =>
+    Effect.gen(function* () {
+      const foreign = yield* provideTmpdirInstance(
+        () => Session.use.create({ title: "foreign history" }).pipe(Effect.map((session) => session.id)),
+        { git: true, config: { formatter: false, lsp: false } },
+      )
+
+      yield* provideTmpdirInstance(
+        (directory) =>
+          Effect.gen(function* () {
+            const local = yield* Session.use.create({ title: "local history" })
+            const response = yield* requestInDirectory(SyncPaths.history, directory, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(
+                Object.fromEntries(Array.from({ length: 1_100 }, (_, index) => [`unknown-${index}`, 0])),
+              ),
+            })
+
+            expect(response.status).toBe(200)
+            const rows = (yield* response.json) as Array<{ aggregate_id: string }>
+            expect(rows.some((row) => row.aggregate_id === local.id)).toBe(true)
+            expect(rows.some((row) => row.aggregate_id === foreign)).toBe(false)
+          }),
+        { git: true, config: { formatter: false, lsp: false } },
+      )
+    }),
   )
 
   it.instance(

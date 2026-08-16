@@ -1,5 +1,5 @@
 import { Workspace } from "@/control-plane/workspace"
-import * as InstanceState from "@/effect/instance-state"
+import { InstanceState } from "@/effect/instance-state"
 import { Session } from "@/session/session"
 import { SessionSummary } from "@/session/summary"
 import { SessionPrompt } from "@/session/prompt"
@@ -8,12 +8,11 @@ import { EventV2 } from "@opencode-ai/core/event"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { EventTable } from "@opencode-ai/core/event/sql"
 import { MessageDiff } from "@opencode-ai/core/session/message-diff"
+import { SessionTable } from "@opencode-ai/core/session/sql"
 import { asc } from "drizzle-orm"
 import { and } from "drizzle-orm"
 import { eq } from "drizzle-orm"
-import { lte } from "drizzle-orm"
-import { not } from "drizzle-orm"
-import { or } from "drizzle-orm"
+import { gt } from "drizzle-orm"
 import { Effect, Scope } from "effect"
 import { HttpApiBuilder, HttpApiError } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
@@ -80,18 +79,28 @@ export const syncHandlers = HttpApiBuilder.group(InstanceHttpApi, "sync", (handl
     })
 
     const history = Effect.fn("SyncHttpApi.history")(function* (ctx: { payload: typeof HistoryPayload.Type }) {
-      const exclude = Object.entries(ctx.payload)
-      return yield* db
-        .select()
-        .from(EventTable)
+      const instance = yield* InstanceState.context
+      const workspaceID = yield* InstanceState.workspaceID
+      const sessions = yield* db
+        .select({ id: SessionTable.id })
+        .from(SessionTable)
         .where(
-          exclude.length > 0
-            ? not(or(...exclude.map(([id, seq]) => and(eq(EventTable.aggregate_id, id), lte(EventTable.seq, seq))))!)
-            : undefined,
+          workspaceID ? eq(SessionTable.workspace_id, workspaceID) : eq(SessionTable.project_id, instance.project.id),
         )
-        .orderBy(asc(EventTable.seq))
         .all()
         .pipe(Effect.orDie)
+      return yield* Effect.forEach(
+        sessions,
+        (session) =>
+          db
+            .select()
+            .from(EventTable)
+            .where(and(eq(EventTable.aggregate_id, session.id), gt(EventTable.seq, ctx.payload[session.id] ?? -1)))
+            .orderBy(asc(EventTable.seq))
+            .all()
+            .pipe(Effect.orDie),
+        { concurrency: 8 },
+      ).pipe(Effect.map((pages) => pages.flat()))
     })
 
     const messageDiffs = Effect.fn("SyncHttpApi.messageDiffs")(function* (ctx: {
