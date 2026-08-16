@@ -227,6 +227,8 @@ import type {
   SubtaskPartInput,
   SyncHistoryListErrors,
   SyncHistoryListResponses,
+  SyncHistoryPageErrors,
+  SyncHistoryPageResponses,
   SyncMessageDiffsListErrors,
   SyncMessageDiffsListResponses,
   SyncMessageDiffsManifestErrors,
@@ -4441,6 +4443,55 @@ export class History extends HeyApiClient {
     )
     return (options?.client ?? this.client).post<SyncHistoryListResponses, SyncHistoryListErrors, ThrowOnError>({
       url: "/sync/history",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Page sync events
+   *
+   * Capture aggregate heads and page each aggregate through a fixed history snapshot.
+   */
+  public page<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      body?:
+        | {
+            type: "manifest"
+            state: {
+              [key: string]: number
+            }
+          }
+        | {
+            type: "page"
+            aggregateID: string
+            head: number
+            after?: number
+          }
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { key: "body", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<SyncHistoryPageResponses, SyncHistoryPageErrors, ThrowOnError>({
+      url: "/sync/history/v2",
       ...options,
       ...params,
       headers: {

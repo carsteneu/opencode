@@ -2,6 +2,7 @@ import { NonNegativeInt } from "@opencode-ai/core/schema"
 import { EventV2 } from "@opencode-ai/core/event"
 import { MessageDiff } from "@opencode-ai/core/session/message-diff"
 import { SessionID } from "@/session/schema"
+import { WorkspaceSyncProtocol } from "@/control-plane/sync-protocol"
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
 import { Authorization } from "../middleware/authorization"
@@ -28,21 +29,16 @@ export const ReplayResponse = Schema.Struct({
 export const SessionPayload = Schema.Struct({
   sessionID: SessionID,
 })
-export const HistoryPayload = Schema.Record(Schema.String, NonNegativeInt)
+export const HistoryPayload = WorkspaceSyncProtocol.HistoryState
 export const MessageDiffManifestPayload = Schema.Array(SessionID)
-export const HistoryEvent = Schema.Struct({
-  id: EventV2.ID,
-  aggregate_id: Schema.String,
-  seq: NonNegativeInt,
-  type: Schema.String,
-  data: Schema.Record(Schema.String, Schema.Unknown),
-})
+export const HistoryEvent = WorkspaceSyncProtocol.HistoryEvent
 
 export const SyncPaths = {
   start: `${root}/start`,
   replay: `${root}/replay`,
   steal: `${root}/steal`,
-  history: `${root}/history`,
+  history: WorkspaceSyncProtocol.HISTORY_PATH,
+  historyV2: WorkspaceSyncProtocol.HISTORY_V2_PATH,
   messageDiffs: `${root}/message-diffs`,
   messageDiffManifest: `${root}/message-diffs/manifest`,
   materializeMessageDiffs: `${root}/message-diffs/materialize`,
@@ -97,6 +93,18 @@ export const SyncApi = HttpApi.make("sync")
             summary: "List sync events",
             description:
               "List sync events for all aggregates. Keys are aggregate IDs the client already knows about, values are the last known sequence ID. Events with seq > value are returned for those aggregates. Aggregates not listed in the input get their full history.",
+          }),
+        ),
+        HttpApiEndpoint.post("historyV2", SyncPaths.historyV2, {
+          query: WorkspaceRoutingQuery,
+          payload: WorkspaceSyncProtocol.HistoryRequest,
+          success: described(WorkspaceSyncProtocol.HistoryResponse, "Paged sync history"),
+          error: HttpApiError.BadRequest,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "sync.history.page",
+            summary: "Page sync events",
+            description: "Capture aggregate heads and page each aggregate through a fixed history snapshot.",
           }),
         ),
         HttpApiEndpoint.post("messageDiffs", SyncPaths.messageDiffs, {

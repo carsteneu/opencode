@@ -1,6 +1,6 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { httpClient } from "@opencode-ai/core/effect/app-node-platform"
-import { Context, Effect, FiberMap, Iterable, Layer, Schema, Stream } from "effect"
+import { Context, Duration, Effect, FiberMap, Iterable, Layer, Schema, Stream } from "effect"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import {
   FetchHttpClient,
@@ -44,6 +44,8 @@ import { InstanceStore } from "@/project/instance-store"
 import { WorkspaceAdapterRuntime } from "./workspace-adapter-runtime"
 import { AppNodeBuilderV1 } from "@/effect/app-node-builder-v1"
 import { WorkspaceEvent } from "@opencode-ai/schema/workspace-event"
+import { collectBoundedResponseBody } from "@opencode-ai/core/tool/http-body"
+import { WorkspaceSyncProtocol } from "./sync-protocol"
 
 export const Info = Schema.Struct({
   ...WorkspaceInfoSchema.fields,
@@ -222,6 +224,130 @@ const layer = Layer.effect(
       }
       return response.stream
     })
+
+    const historyResponse = Effect.fn("Workspace.historyResponse")(function* (input: {
+      readonly url: URL | string
+      readonly path: string
+      readonly headers: HeadersInit | undefined
+      readonly payload: unknown
+    }) {
+      return yield* Effect.scoped(
+        Effect.gen(function* () {
+          const headers = new Headers(input.headers)
+          headers.set("accept-encoding", "identity")
+          const response = yield* HttpClient.withScope(http).execute(
+            HttpClientRequest.post(route(input.url, input.path), {
+              headers,
+              body: HttpBody.jsonUnsafe(input.payload),
+            }),
+          )
+          if (response.status === 404) return { status: response.status, body: "" }
+          const success = response.status >= 200 && response.status < 300
+          const maximumBytes = success ? WorkspaceSyncProtocol.HISTORY_RESPONSE_BYTES : 64 * 1024
+          const body = success
+            ? yield* collectBoundedResponseBody(response, maximumBytes, () => new Error("response too large")).pipe(
+                Effect.mapError(
+                  () =>
+                    new SyncHttpError({
+                      message: `Workspace history response exceeded ${maximumBytes} bytes or could not be read`,
+                      status: 502,
+                    }),
+                ),
+              )
+            : yield* collectBoundedResponseBody(response, maximumBytes, () => new Error("response too large")).pipe(
+                Effect.catch(() => Effect.succeed(Buffer.from("[response body unavailable]", "utf8"))),
+              )
+          return { status: response.status, body: body.toString("utf8") }
+        }),
+      )
+    })
+
+    const historyV2Response = Effect.fn("Workspace.historyV2Response")(
+      function* (input: {
+        readonly url: URL | string
+        readonly headers: HeadersInit | undefined
+        readonly payload: typeof WorkspaceSyncProtocol.HistoryRequest.Type
+        readonly allowNotFound: boolean
+      }) {
+        const response = yield* historyResponse({
+          url: input.url,
+          path: WorkspaceSyncProtocol.HISTORY_V2_PATH,
+          headers: input.headers,
+          payload: input.payload,
+        })
+        if (response.status === 404 && input.allowNotFound) return { found: false as const }
+        if (response.status < 200 || response.status >= 300)
+          return yield* new SyncHttpError({
+            message: `Workspace history HTTP failure: ${response.status}`,
+            status: response.status,
+            body: response.body,
+          })
+        const value = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(WorkspaceSyncProtocol.HistoryResponse))(
+          response.body,
+        ).pipe(
+          Effect.mapError(
+            () =>
+              new SyncHttpError({
+                message: "Workspace history response was invalid",
+                status: 502,
+              }),
+          ),
+        )
+        return { found: true as const, value }
+      },
+      Effect.timeoutOrElse({
+        duration: Duration.seconds(30),
+        orElse: () =>
+          Effect.fail(
+            new SyncHttpError({
+              message: "Workspace history request timed out",
+              status: 504,
+            }),
+          ),
+      }),
+    )
+
+    const legacyHistoryResponse = Effect.fn("Workspace.legacyHistoryResponse")(
+      function* (input: {
+        readonly url: URL | string
+        readonly headers: HeadersInit | undefined
+        readonly state: typeof WorkspaceSyncProtocol.HistoryState.Type
+      }) {
+        const response = yield* historyResponse({
+          url: input.url,
+          path: WorkspaceSyncProtocol.HISTORY_PATH,
+          headers: input.headers,
+          payload: input.state,
+        })
+        if (response.status < 200 || response.status >= 300)
+          return yield* new SyncHttpError({
+            message: `Workspace history HTTP failure: ${response.status}`,
+            status: response.status,
+            body: response.body,
+          })
+        return yield* Schema.decodeUnknownEffect(
+          Schema.fromJsonString(Schema.Array(WorkspaceSyncProtocol.HistoryEvent)),
+        )(response.body).pipe(
+          Effect.mapError(
+            () =>
+              new SyncHttpError({
+                message: "Workspace legacy history response was invalid",
+                status: 502,
+              }),
+          ),
+        )
+      },
+      Effect.timeoutOrElse({
+        duration: Duration.seconds(30),
+        orElse: () =>
+          Effect.fail(
+            new SyncHttpError({
+              message: "Workspace history request timed out",
+              status: 504,
+            }),
+          ),
+      }),
+    )
 
     const parseSSE = Effect.fn("Workspace.parseSSE")(function* (
       stream: Stream.Stream<Uint8Array, unknown>,
@@ -508,58 +634,111 @@ const layer = Layer.effect(
       url: URL | string,
       headers: HeadersInit | undefined,
     ) {
-      const sessionIDs = (yield* db
-        .select({ id: SessionTable.id })
-        .from(SessionTable)
-        .where(eq(SessionTable.workspace_id, space.id))
-        .all()
-        .pipe(Effect.orDie)).map((row) => row.id)
-      const state = sessionIDs.length
-        ? Object.fromEntries(
-            (yield* db
-              .select()
-              .from(EventSequenceTable)
-              .where(inArray(EventSequenceTable.aggregate_id, sessionIDs))
-              .all()
-              .pipe(Effect.orDie)).map((row) => [row.aggregate_id, row.seq]),
+      const state = Object.fromEntries(
+        (yield* db
+          .select({ aggregateID: SessionTable.id, seq: EventSequenceTable.seq })
+          .from(SessionTable)
+          .innerJoin(EventSequenceTable, eq(EventSequenceTable.aggregate_id, SessionTable.id))
+          .where(eq(SessionTable.workspace_id, space.id))
+          .all()
+          .pipe(Effect.orDie)).map((row) => [row.aggregateID, row.seq]),
+      )
+
+      const replay = (event: typeof WorkspaceSyncProtocol.HistoryEvent.Type) =>
+        events
+          .replay(
+            {
+              id: EventV2.ID.make(event.id),
+              aggregateID: event.aggregate_id,
+              seq: event.seq,
+              type: event.type,
+              data: event.data,
+            },
+            { publish: true, ownerID: space.id },
           )
-        : {}
+          .pipe(Effect.provideService(WorkspaceRef, space.id))
 
-      const response = yield* http.execute(
-        HttpClientRequest.post(route(url, "/sync/history"), {
-          headers: new Headers(headers),
-          body: HttpBody.jsonUnsafe(state),
-        }),
-      )
-
-      if (response.status < 200 || response.status >= 300) {
-        const body = yield* response.text
-        return yield* new SyncHttpError({
-          message: `Workspace history HTTP failure: ${response.status} ${body}`,
-          status: response.status,
-          body,
-        })
+      const manifest = yield* historyV2Response({
+        url,
+        headers,
+        payload: { type: "manifest", state },
+        allowNotFound: true,
+      })
+      // Only the initial feature probe may fall back. Mixing protocols after a page replay could skip history.
+      if (!manifest.found) {
+        yield* Effect.forEach(yield* legacyHistoryResponse({ url, headers, state }), replay, { discard: true })
       }
-
-      const history = (yield* response.json) as HistoryEvent[]
-
-      yield* Effect.forEach(
-        history,
-        (event) =>
-          events
-            .replay(
-              {
-                id: EventV2.ID.make(event.id),
-                aggregateID: event.aggregate_id,
-                seq: event.seq,
-                type: event.type,
-                data: event.data,
-              },
-              { publish: true, ownerID: space.id },
-            )
-            .pipe(Effect.provideService(WorkspaceRef, space.id)),
-        { discard: true },
-      )
+      if (manifest.found) {
+        if (manifest.value.type !== "manifest")
+          return yield* new SyncHttpError({
+            message: "Workspace history manifest response had the wrong type",
+            status: 502,
+          })
+        const seen = new Set<string>()
+        const valid = manifest.value.aggregates.every((aggregate) => {
+          if (seen.has(aggregate.aggregateID)) return false
+          seen.add(aggregate.aggregateID)
+          return aggregate.after === state[aggregate.aggregateID] && (aggregate.after ?? -1) < aggregate.head
+        })
+        if (!valid)
+          return yield* new SyncHttpError({
+            message: "Workspace history manifest response was inconsistent",
+            status: 502,
+          })
+        yield* Effect.forEach(
+          manifest.value.aggregates,
+          (aggregate) =>
+            Effect.gen(function* () {
+              let after = aggregate.after
+              while (true) {
+                const response = yield* historyV2Response({
+                  url,
+                  headers,
+                  payload: {
+                    type: "page",
+                    aggregateID: aggregate.aggregateID,
+                    head: aggregate.head,
+                    ...(after === undefined ? {} : { after }),
+                  },
+                  allowNotFound: false,
+                })
+                if (!response.found || response.value.type !== "page")
+                  return yield* new SyncHttpError({
+                    message: "Workspace history page response had the wrong type",
+                    status: 502,
+                  })
+                const previous = after ?? -1
+                const ordered = response.value.events.every((event, index, history) => {
+                  const prior = index === 0 ? previous : history[index - 1].seq
+                  return (
+                    event.aggregate_id === aggregate.aggregateID && event.seq > prior && event.seq <= aggregate.head
+                  )
+                })
+                if (response.value.aggregateID !== aggregate.aggregateID || !ordered)
+                  return yield* new SyncHttpError({
+                    message: "Workspace history page response did not match the requested range",
+                    status: 502,
+                  })
+                const last = response.value.events.at(-1)?.seq
+                const next = response.value.next
+                if (next !== undefined && (next !== last || next <= previous || next >= aggregate.head))
+                  return yield* new SyncHttpError({
+                    message: "Workspace history page cursor did not advance",
+                    status: 502,
+                  })
+                if (next === undefined && last !== undefined && last !== aggregate.head)
+                  return yield* new SyncHttpError({
+                    message: "Workspace history page ended before the captured head",
+                    status: 502,
+                  })
+                yield* Effect.forEach(response.value.events, replay, { discard: true })
+                if (next === undefined) return
+                after = next
+              }
+            }),
+          { concurrency: 1, discard: true },
+        )
+      }
 
       const reconciledSessionIDs = (yield* db
         .select({ id: SessionTable.id })
@@ -1162,14 +1341,6 @@ const layer = Layer.effect(
 )
 
 const TIMEOUT = 5000
-
-type HistoryEvent = {
-  id: string
-  aggregate_id: string
-  seq: number
-  type: string
-  data: Record<string, unknown>
-}
 
 function waitUntilSynced(input: {
   db: Database.Interface["db"]

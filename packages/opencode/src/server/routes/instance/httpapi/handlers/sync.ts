@@ -6,15 +6,20 @@ import { SessionPrompt } from "@/session/prompt"
 import { Database } from "@opencode-ai/core/database/database"
 import { EventV2 } from "@opencode-ai/core/event"
 import { EventV2Bridge } from "@/event-v2-bridge"
-import { EventTable } from "@opencode-ai/core/event/sql"
+import { EventSequenceTable, EventTable } from "@opencode-ai/core/event/sql"
 import { MessageDiff } from "@opencode-ai/core/session/message-diff"
 import { SessionTable } from "@opencode-ai/core/session/sql"
+import { WorkspaceSyncProtocol } from "@/control-plane/sync-protocol"
 import { asc } from "drizzle-orm"
 import { and } from "drizzle-orm"
 import { eq } from "drizzle-orm"
 import { gt } from "drizzle-orm"
+import { gte } from "drizzle-orm"
+import { lte } from "drizzle-orm"
+import { sql } from "drizzle-orm"
 import { Effect, Scope } from "effect"
 import { HttpApiBuilder, HttpApiError } from "effect/unstable/httpapi"
+import { HttpServerResponse } from "effect/unstable/http"
 import { InstanceHttpApi } from "../api"
 import { HistoryPayload, MessageDiffManifestPayload, ReplayPayload, SessionPayload } from "../groups/sync"
 
@@ -28,6 +33,12 @@ export const syncHandlers = HttpApiBuilder.group(InstanceHttpApi, "sync", (handl
     const events = yield* EventV2Bridge.Service
     const messageDiff = yield* MessageDiff.Service
     const { db } = yield* Database.Service
+
+    const historyScope = Effect.fnUntraced(function* () {
+      const workspaceID = yield* InstanceState.workspaceID
+      if (workspaceID) return eq(SessionTable.workspace_id, workspaceID)
+      return eq(SessionTable.project_id, (yield* InstanceState.context).project.id)
+    })
 
     const start = Effect.fn("SyncHttpApi.start")(function* () {
       yield* workspace
@@ -79,17 +90,13 @@ export const syncHandlers = HttpApiBuilder.group(InstanceHttpApi, "sync", (handl
     })
 
     const history = Effect.fn("SyncHttpApi.history")(function* (ctx: { payload: typeof HistoryPayload.Type }) {
-      const instance = yield* InstanceState.context
-      const workspaceID = yield* InstanceState.workspaceID
       const sessions = yield* db
         .select({ id: SessionTable.id })
         .from(SessionTable)
-        .where(
-          workspaceID ? eq(SessionTable.workspace_id, workspaceID) : eq(SessionTable.project_id, instance.project.id),
-        )
+        .where(yield* historyScope())
         .all()
         .pipe(Effect.orDie)
-      return yield* Effect.forEach(
+      const result = yield* Effect.forEach(
         sessions,
         (session) =>
           db
@@ -101,6 +108,107 @@ export const syncHandlers = HttpApiBuilder.group(InstanceHttpApi, "sync", (handl
             .pipe(Effect.orDie),
         { concurrency: 8 },
       ).pipe(Effect.map((pages) => pages.flat()))
+      return HttpServerResponse.jsonUnsafe(result, { headers: { "Cache-Control": "no-transform" } })
+    })
+
+    const historyV2 = Effect.fn("SyncHttpApi.historyV2")(function* (ctx: {
+      payload: typeof WorkspaceSyncProtocol.HistoryRequest.Type
+    }) {
+      const payload = ctx.payload
+      if (payload.type === "manifest") {
+        const state = payload.state
+        const rows = yield* db
+          .select({ aggregateID: SessionTable.id, head: EventSequenceTable.seq })
+          .from(SessionTable)
+          .innerJoin(EventSequenceTable, eq(EventSequenceTable.aggregate_id, SessionTable.id))
+          .where(yield* historyScope())
+          .orderBy(asc(SessionTable.id))
+          .all()
+          .pipe(Effect.orDie)
+        return HttpServerResponse.jsonUnsafe(
+          {
+            type: "manifest" as const,
+            aggregates: rows.flatMap((row) => {
+              const after = state[row.aggregateID]
+              if (after !== undefined && after >= row.head) return []
+              return [{ aggregateID: row.aggregateID, head: row.head, ...(after === undefined ? {} : { after }) }]
+            }),
+          },
+          { headers: { "Cache-Control": "no-transform" } },
+        )
+      }
+
+      const aggregateID = payload.aggregateID
+      const head = payload.head
+      const after = payload.after ?? -1
+      if (after >= head)
+        return HttpServerResponse.jsonUnsafe(
+          { type: "page" as const, aggregateID, events: [] },
+          { headers: { "Cache-Control": "no-transform" } },
+        )
+      const page = yield* db
+        .transaction(() =>
+          Effect.gen(function* () {
+            const exists = yield* db
+              .select({ id: SessionTable.id })
+              .from(SessionTable)
+              .where(and(eq(SessionTable.id, aggregateID), yield* historyScope()))
+              .get()
+            if (!exists) return { events: [], hasMore: false, oversized: undefined }
+            // Measure stored JSON before decoding it so a page of large events never enters the JS heap at once.
+            const metadata = yield* db
+              .select({
+                seq: EventTable.seq,
+                bytes: sql<number>`length(cast(${EventTable.data} as blob)) + length(cast(${EventTable.id} as blob)) + length(cast(${EventTable.aggregate_id} as blob)) + length(cast(${EventTable.type} as blob)) + 64`,
+              })
+              .from(EventTable)
+              .where(
+                and(eq(EventTable.aggregate_id, aggregateID), gt(EventTable.seq, after), lte(EventTable.seq, head)),
+              )
+              .orderBy(asc(EventTable.seq))
+              .limit(WorkspaceSyncProtocol.HISTORY_PAGE_EVENTS + 1)
+              .all()
+            const selected = boundedHistorySequences(metadata)
+            const first = selected[0]
+            if (!first) return { events: [], hasMore: false, oversized: undefined }
+            if (first.bytes > WorkspaceSyncProtocol.HISTORY_RESPONSE_BYTES - 64 * 1024)
+              return { events: [], hasMore: false, oversized: first }
+            const last = selected.at(-1)
+            if (!last) return { events: [], hasMore: false, oversized: undefined }
+            const events = yield* db
+              .select()
+              .from(EventTable)
+              .where(
+                and(
+                  eq(EventTable.aggregate_id, aggregateID),
+                  gte(EventTable.seq, first.seq),
+                  lte(EventTable.seq, last.seq),
+                ),
+              )
+              .orderBy(asc(EventTable.seq))
+              .all()
+            return { events, hasMore: metadata.length > selected.length, oversized: undefined }
+          }),
+        )
+        .pipe(Effect.orDie)
+      if (page.oversized) {
+        yield* Effect.logWarning("sync history event exceeds response limit", {
+          aggregateID,
+          seq: page.oversized.seq,
+          bytes: page.oversized.bytes,
+        })
+        return yield* new HttpApiError.BadRequest({})
+      }
+      const next = page.hasMore ? page.events.at(-1)?.seq : undefined
+      return HttpServerResponse.jsonUnsafe(
+        {
+          type: "page" as const,
+          aggregateID,
+          events: page.events,
+          ...(next === undefined ? {} : { next }),
+        },
+        { headers: { "Cache-Control": "no-transform" } },
+      )
     })
 
     const messageDiffs = Effect.fn("SyncHttpApi.messageDiffs")(function* (ctx: {
@@ -146,8 +254,22 @@ export const syncHandlers = HttpApiBuilder.group(InstanceHttpApi, "sync", (handl
       .handle("replay", replay)
       .handle("steal", steal)
       .handle("history", history)
+      .handle("historyV2", historyV2)
       .handle("messageDiffs", messageDiffs)
       .handle("messageDiffManifest", messageDiffManifest)
       .handle("materializeMessageDiffs", materializeMessageDiffs)
   }),
 )
+
+function boundedHistorySequences(rows: ReadonlyArray<{ seq: number; bytes: number }>) {
+  const events: { seq: number; bytes: number }[] = []
+  let bytes = 2
+  for (const row of rows) {
+    const size = row.bytes + (events.length > 0 ? 1 : 0)
+    if (events.length > 0 && bytes + size > WorkspaceSyncProtocol.HISTORY_PAGE_BYTES) break
+    events.push(row)
+    bytes += size
+    if (events.length >= WorkspaceSyncProtocol.HISTORY_PAGE_EVENTS) break
+  }
+  return events
+}

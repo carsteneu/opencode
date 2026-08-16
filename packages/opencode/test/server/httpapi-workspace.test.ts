@@ -352,6 +352,7 @@ describe("workspace HttpApi", () => {
         const url = new URL(request.url)
         if (url.pathname === "/base/global/event") return eventStreamResponse()
         if (url.pathname === "/base/event") return eventStreamResponse()
+        if (url.pathname === "/base/sync/history/v2") return new Response(null, { status: 404 })
         if (url.pathname === "/base/sync/history") return Response.json([])
         return new Response(
           JSON.stringify({
@@ -446,6 +447,7 @@ describe("workspace HttpApi", () => {
         proxied.push(request)
         const url = new URL(request.url)
         if (url.pathname === "/base/global/event") return eventStreamResponse()
+        if (url.pathname === "/base/sync/history/v2") return new Response(null, { status: 404 })
         if (url.pathname === "/base/sync/history") return Response.json([])
         return Response.json({ proxied: true, path: new URL(request.url).pathname })
       })

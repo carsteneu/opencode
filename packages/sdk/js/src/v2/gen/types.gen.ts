@@ -10701,6 +10701,68 @@ export type SyncHistoryListResponses = {
 
 export type SyncHistoryListResponse = SyncHistoryListResponses[keyof SyncHistoryListResponses]
 
+export type SyncHistoryPageData = {
+  body?:
+    | {
+        type: "manifest"
+        state: {
+          [key: string]: number
+        }
+      }
+    | {
+        type: "page"
+        aggregateID: string
+        head: number
+        after?: number
+      }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/sync/history/v2"
+}
+
+export type SyncHistoryPageErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+}
+
+export type SyncHistoryPageError = SyncHistoryPageErrors[keyof SyncHistoryPageErrors]
+
+export type SyncHistoryPageResponses = {
+  /**
+   * Paged sync history
+   */
+  200:
+    | {
+        type: "manifest"
+        aggregates: Array<{
+          aggregateID: string
+          head: number
+          after?: number
+        }>
+      }
+    | {
+        type: "page"
+        aggregateID: string
+        events: Array<{
+          id: string
+          aggregate_id: string
+          seq: number
+          type: string
+          data: {
+            [key: string]: unknown
+          }
+        }>
+        next?: number
+      }
+}
+
+export type SyncHistoryPageResponse = SyncHistoryPageResponses[keyof SyncHistoryPageResponses]
+
 export type SyncMessageDiffsListData = {
   body?: Array<{
     sessionID: string
