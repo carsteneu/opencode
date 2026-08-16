@@ -210,6 +210,7 @@ function fake(
     nextSnapshot: undefined,
     updateToolCall: Effect.fn("TestSessionProcessor.updateToolCall")(() => Effect.succeed(undefined)),
     completeToolCall: Effect.fn("TestSessionProcessor.completeToolCall")(() => Effect.void),
+    executeTool: () => (effect) => effect,
     process: Effect.fn("TestSessionProcessor.process")(() => Effect.succeed(result)),
   } satisfies SessionProcessorModule.SessionProcessor.Handle
 }
@@ -1213,7 +1214,6 @@ describe("session.compaction.process", () => {
         Stream.fromAsyncIterable(
           {
             async *[Symbol.asyncIterator]() {
-              yield LLMEvent.stepStart({ index: 0 })
               throw new APICallError({
                 message: "boom",
                 url: "https://example.com/v1/chat/completions",

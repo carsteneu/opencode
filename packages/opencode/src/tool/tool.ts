@@ -60,6 +60,9 @@ export interface Def<
   description: string
   parameters: Parameters
   jsonSchema?: JSONSchema7
+  // Unknown and externally supplied tools default to mutating. Only tools
+  // whose contract cannot change workspace files may explicitly opt out.
+  mutatesWorkspace?: boolean
   execute(args: Schema.Schema.Type<Parameters>, ctx: Context): Effect.Effect<ExecuteResult<M>>
   formatValidationError?(error: unknown): string
 }

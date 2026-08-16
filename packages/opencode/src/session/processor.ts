@@ -2,7 +2,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Image } from "@/image/image"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { Cause, Deferred, Effect, Exit, Layer, Context, Scope, Schema } from "effect"
+import { Cause, Deferred, Effect, Exit, Layer, Context, Scope, Schema, Semaphore } from "effect"
 import * as Stream from "effect/Stream"
 import { Agent } from "@/agent/agent"
 import { Config } from "@/config/config"
@@ -50,6 +50,9 @@ export interface Handle {
       attachments?: SessionV1.FilePart[]
     },
   ) => Effect.Effect<void>
+  readonly executeTool: (
+    mutatesWorkspace: boolean,
+  ) => <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
   readonly process: (streamInput: LLM.StreamInput, options?: { fallback?: LLM.StreamInput }) => Effect.Effect<Result>
 }
 
@@ -87,8 +90,13 @@ interface ProcessorContext extends Input {
   toolcalls: Record<string, ToolCall>
   toolInputProgress: Record<string, ToolInputProgress>
   shouldBreak: boolean
+  closing: boolean
+  mutated: boolean
+  completedSnapshot: string | undefined
+  patchPublished: boolean
   snapshot: string | undefined
   summarySnapshot: string | undefined
+  stepStart: SessionV1.StepStartPart | undefined
   blocked: boolean
   needsCompaction: boolean
   currentText: BufferedPart<SessionV1.TextPart> | undefined
@@ -122,11 +130,15 @@ const layer = Layer.effect(
     const database = yield* Database.Service
 
     const create = Effect.fn("SessionProcessor.create")(function* (input: Input) {
-      // Reuse the preceding step's completed snapshot when available. Otherwise
-      // capture before the LLM stream because tools may execute before start-step.
-      const initialSnapshot = input.assistantMessage.summary
-        ? undefined
-        : (input.initialSnapshot ?? (yield* snapshot.track()))
+      // External hooks can change files during message/system transforms without executing a tool.
+      const externalPlugins = ((yield* config.get()).plugin_origins?.length ?? 0) > 0
+      const initialSnapshot =
+        input.assistantMessage.summary || !externalPlugins
+          ? undefined
+          : (input.initialSnapshot ?? (yield* snapshot.track()))
+      const snapshotLock = Semaphore.makeUnsafe(1)
+      let activeTools = 0
+      let toolsIdle: Deferred.Deferred<void> | undefined
       const ctx: ProcessorContext = {
         assistantMessage: input.assistantMessage,
         sessionID: input.sessionID,
@@ -134,13 +146,18 @@ const layer = Layer.effect(
         toolcalls: {},
         toolInputProgress: {},
         shouldBreak: false,
+        closing: false,
+        mutated: !input.assistantMessage.summary && externalPlugins,
+        completedSnapshot: undefined,
+        patchPublished: false,
         snapshot: initialSnapshot,
         summarySnapshot: input.assistantMessage.summary ? undefined : (input.summarySnapshot ?? initialSnapshot),
+        stepStart: undefined,
         blocked: false,
         needsCompaction: false,
         currentText: undefined,
         reasoningMap: {},
-        nextSnapshot: undefined,
+        nextSnapshot: input.assistantMessage.summary ? undefined : input.initialSnapshot,
         silentOverflow: false,
         silentToolError: false,
         bufferEvents: false,
@@ -153,6 +170,49 @@ const layer = Layer.effect(
           providerID: input.model.providerID,
           aborted,
         })
+
+      const releaseTool = snapshotLock.withPermits(1)(
+        Effect.gen(function* () {
+          activeTools -= 1
+          if (activeTools > 0 || !toolsIdle) return
+          const idle = toolsIdle
+          toolsIdle = undefined
+          yield* Deferred.succeed(idle, undefined).pipe(Effect.ignore)
+        }),
+      )
+
+      // Register before the Effect bridge starts: native runtimes may emit step-finish while the
+      // separately scheduled tool fiber is still running.
+      const executeTool: Handle["executeTool"] = (mutatesWorkspace) => (effect) => {
+        if (ctx.closing) return Effect.interrupt
+        activeTools += 1
+        toolsIdle ??= Deferred.makeUnsafe<void>()
+        const track = !ctx.assistantMessage.summary && (mutatesWorkspace || externalPlugins)
+        return Effect.gen(function* () {
+          if (track) {
+            yield* snapshotLock.withPermits(1)(
+              Effect.gen(function* () {
+                if (ctx.closing) return yield* Effect.interrupt
+                if (ctx.mutated) return
+                const started = ctx.nextSnapshot ?? (yield* snapshot.track())
+                ctx.mutated = true
+                ctx.completedSnapshot = undefined
+                ctx.patchPublished = false
+                ctx.snapshot = started
+                ctx.summarySnapshot ??= started
+                if (!started || !ctx.stepStart || ctx.stepStart.snapshot === started) return
+                ctx.stepStart = { ...ctx.stepStart, snapshot: started }
+                yield* session.updatePart(ctx.stepStart)
+              }),
+            )
+          }
+          return yield* effect
+        }).pipe(Effect.ensuring(releaseTool))
+      }
+
+      const awaitTools = Effect.gen(function* () {
+        while (toolsIdle) yield* Deferred.await(toolsIdle)
+      })
 
       const settleToolCall = Effect.fn("SessionProcessor.settleToolCall")(function* (toolCallID: string) {
         const done = ctx.toolcalls[toolCallID]?.done
@@ -490,19 +550,34 @@ const layer = Layer.effect(
             throw new Error(value.message)
 
           case "step-start":
-            if (!ctx.assistantMessage.summary && !ctx.snapshot) ctx.snapshot = yield* snapshot.track()
-            yield* session.updatePart({
-              id: PartID.ascending(),
-              messageID: ctx.assistantMessage.id,
-              sessionID: ctx.sessionID,
-              snapshot: ctx.snapshot,
-              type: "step-start",
-            })
+            yield* snapshotLock.withPermits(1)(
+              Effect.gen(function* () {
+                ctx.stepStart = {
+                  id: PartID.ascending(),
+                  messageID: ctx.assistantMessage.id,
+                  sessionID: ctx.sessionID,
+                  snapshot: ctx.snapshot ?? ctx.nextSnapshot,
+                  type: "step-start",
+                }
+                yield* session.updatePart(ctx.stepStart)
+              }),
+            )
             return
 
           case "step-finish": {
-            const completedSnapshot = ctx.assistantMessage.summary ? undefined : yield* snapshot.track()
-            ctx.nextSnapshot = completedSnapshot
+            yield* awaitTools
+            const snapshots = yield* snapshotLock.withPermits(1)(
+              Effect.gen(function* () {
+                const started = ctx.snapshot
+                const mutated = ctx.mutated
+                const completed = mutated ? yield* snapshot.track() : ctx.nextSnapshot
+                if (mutated) {
+                  ctx.completedSnapshot = completed
+                  ctx.patchPublished = false
+                }
+                return { started, completed, mutated }
+              }),
+            )
             yield* Effect.forEach(Object.keys(ctx.reasoningMap), finishReasoning)
             const usage = Session.getUsage({
               model: ctx.model,
@@ -515,7 +590,7 @@ const layer = Layer.effect(
             yield* session.updatePart({
               id: PartID.ascending(),
               reason: value.reason,
-              snapshot: completedSnapshot,
+              snapshot: snapshots.completed,
               messageID: ctx.assistantMessage.id,
               sessionID: ctx.assistantMessage.sessionID,
               type: "step-finish",
@@ -523,31 +598,58 @@ const layer = Layer.effect(
               cost: usage.cost,
             })
             yield* session.updateMessage(ctx.assistantMessage)
-            if (ctx.snapshot) {
-              const patch = yield* snapshot.patch(ctx.snapshot, completedSnapshot)
-              if (patch.files.length) {
-                yield* session.updatePart({
-                  id: PartID.ascending(),
-                  messageID: ctx.assistantMessage.id,
-                  sessionID: ctx.sessionID,
-                  type: "patch",
-                  hash: patch.hash,
-                  files: patch.files,
-                })
-              }
-              ctx.snapshot = undefined
+            const patch =
+              snapshots.started && snapshots.completed && snapshots.started !== snapshots.completed
+                ? yield* snapshot.patch(snapshots.started, snapshots.completed)
+                : undefined
+            if (patch?.files.length) {
+              yield* session.updatePart({
+                id: PartID.ascending(),
+                messageID: ctx.assistantMessage.id,
+                sessionID: ctx.sessionID,
+                type: "patch",
+                hash: patch.hash,
+                files: patch.files,
+              })
+            }
+            if (snapshots.mutated) {
+              yield* snapshotLock.withPermits(1)(
+                Effect.sync(() => {
+                  if (ctx.snapshot === snapshots.started && ctx.completedSnapshot === snapshots.completed) {
+                    ctx.patchPublished = true
+                  }
+                }),
+              )
             }
             if (!ctx.assistantMessage.summary) {
-              yield* summary
-                .summarize({
-                  sessionID: ctx.sessionID,
-                  messageID: ctx.assistantMessage.parentID,
-                })
-                .pipe(Effect.ignore)
+              if (patch?.files.length) {
+                yield* summary
+                  .summarize({
+                    sessionID: ctx.sessionID,
+                    messageID: ctx.assistantMessage.parentID,
+                  })
+                  .pipe(Effect.ignore)
+              }
               if (isOverflow({ cfg: yield* config.get(), tokens: usage.tokens, model: ctx.model })) {
                 ctx.needsCompaction = true
               }
             }
+            yield* snapshotLock.withPermits(1)(
+              Effect.gen(function* () {
+                if (
+                  snapshots.mutated &&
+                  (ctx.snapshot !== snapshots.started || ctx.completedSnapshot !== snapshots.completed)
+                ) {
+                  return yield* Effect.die(new Error("Workspace snapshot state changed while finishing a step"))
+                }
+                ctx.nextSnapshot = snapshots.completed
+                ctx.mutated = false
+                ctx.completedSnapshot = undefined
+                ctx.patchPublished = false
+                ctx.snapshot = undefined
+                ctx.stepStart = undefined
+              }),
+            )
             return
           }
 
@@ -609,29 +711,60 @@ const layer = Layer.effect(
       })
 
       const cleanup = Effect.fn("SessionProcessor.cleanup")(function* () {
-        if (!ctx.assistantMessage.summary && ctx.snapshot) {
-          const completedSnapshot = yield* snapshot.track()
-          const patch = yield* snapshot.patch(ctx.snapshot, completedSnapshot)
-          if (patch.files.length) {
-            yield* session.updatePart({
-              id: PartID.ascending(),
+        yield* snapshotLock.withPermits(1)(
+          Effect.sync(() => {
+            ctx.closing = true
+          }),
+        )
+        yield* awaitTools.pipe(
+          Effect.timeout("5 seconds"),
+          Effect.catchTag("TimeoutError", () =>
+            Effect.logWarning("timed out waiting for active tools before snapshot cleanup", {
+              active: activeTools,
+              sessionID: ctx.sessionID,
               messageID: ctx.assistantMessage.id,
-              sessionID: ctx.sessionID,
-              type: "patch",
-              hash: patch.hash,
-              files: patch.files,
-            })
-          }
-          if (completedSnapshot && ctx.summarySnapshot) {
-            ctx.nextSnapshot = completedSnapshot
-            yield* snapshot.pinDiff({
-              sessionID: ctx.sessionID,
-              messageID: ctx.assistantMessage.parentID,
-              from: ctx.summarySnapshot,
-              to: completedSnapshot,
-            })
-          }
-          ctx.snapshot = undefined
+            }),
+          ),
+        )
+        const snapshots = yield* snapshotLock.withPermits(1)(
+          Effect.gen(function* () {
+            if (ctx.assistantMessage.summary || !ctx.mutated) return
+            const started = ctx.snapshot
+            const completed = yield* snapshot.track()
+            const patchPublished = ctx.patchPublished && ctx.completedSnapshot === completed
+            if (completed) ctx.nextSnapshot = completed
+            ctx.mutated = false
+            ctx.completedSnapshot = undefined
+            ctx.patchPublished = false
+            ctx.snapshot = undefined
+            ctx.stepStart = undefined
+            return { started, completed, patchPublished }
+          }),
+        )
+        const patch =
+          !snapshots?.patchPublished &&
+          snapshots?.started &&
+          snapshots.completed &&
+          snapshots.started !== snapshots.completed
+            ? yield* snapshot.patch(snapshots.started, snapshots.completed)
+            : undefined
+        if (patch?.files.length) {
+          yield* session.updatePart({
+            id: PartID.ascending(),
+            messageID: ctx.assistantMessage.id,
+            sessionID: ctx.sessionID,
+            type: "patch",
+            hash: patch.hash,
+            files: patch.files,
+          })
+        }
+        if (snapshots?.completed && ctx.summarySnapshot && ctx.summarySnapshot !== snapshots.completed) {
+          yield* snapshot.pinDiff({
+            sessionID: ctx.sessionID,
+            messageID: ctx.assistantMessage.parentID,
+            from: ctx.summarySnapshot,
+            to: snapshots.completed,
+          })
         }
 
         if (ctx.currentText) {
@@ -864,6 +997,7 @@ const layer = Layer.effect(
         },
         updateToolCall,
         completeToolCall,
+        executeTool,
         process,
       } satisfies Handle
     })

@@ -42,7 +42,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   agent: Agent.Info
   model: Provider.Model
   session: Session.Info
-  processor: Pick<SessionProcessor.Handle, "message" | "updateToolCall" | "completeToolCall">
+  processor: Pick<SessionProcessor.Handle, "message" | "updateToolCall" | "completeToolCall" | "executeTool">
   bypassAgentCheck: boolean
   messages: SessionV1.WithParts[]
   promptOps: TaskPromptOps
@@ -127,7 +127,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
               yield* input.processor.completeToolCall(options.toolCallId, output)
             }
             return output
-          }),
+          }).pipe(input.processor.executeTool(item.mutatesWorkspace !== false)),
         )
       },
     })
@@ -214,7 +214,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
               yield* input.processor.completeToolCall(opts.toolCallId, output)
             }
             return output
-          }),
+          }).pipe(input.processor.executeTool(false)),
         )
       },
     })
@@ -297,7 +297,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
               yield* input.processor.completeToolCall(opts.toolCallId, output)
             }
             return output
-          }),
+          }).pipe(input.processor.executeTool(false)),
         )
       },
     })
@@ -379,7 +379,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
               yield* input.processor.completeToolCall(opts.toolCallId, output)
             }
             return output
-          }),
+          }).pipe(input.processor.executeTool(false)),
         )
       },
     })
@@ -484,7 +484,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
             yield* input.processor.completeToolCall(opts.toolCallId, output)
           }
           return output
-        }),
+        }).pipe(input.processor.executeTool(true)),
       )
     tools[key] = item
   }

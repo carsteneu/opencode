@@ -30,6 +30,8 @@ import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { LLMEvent } from "@opencode-ai/llm"
 import { Snapshot } from "@/snapshot"
 import { Plugin } from "../../src/plugin"
+import { Config } from "@/config/config"
+import { TestConfig } from "../fixture/config"
 
 const summary = Layer.succeed(
   SessionSummary.Service,
@@ -584,6 +586,62 @@ const retrySafetyLLM = Layer.succeed(
 const retrySafetyEnv = LayerNode.compile(root, [...replacements, [LLM.node, retrySafetyLLM]])
 const itRetrySafety = testEffect(retrySafetyEnv)
 
+const snapshotCalls = { track: 0, patch: 0 }
+let failSnapshotPatchOnce = false
+const snapshotLayer = Layer.mock(Snapshot.Service)({
+  init: () => Effect.void,
+  cleanup: () => Effect.void,
+  track: () =>
+    Effect.sync(() => {
+      snapshotCalls.track += 1
+      return `snapshot-${snapshotCalls.track}`
+    }),
+  patch: (from, to) =>
+    Effect.sync(() => {
+      snapshotCalls.patch += 1
+      if (failSnapshotPatchOnce) {
+        failSnapshotPatchOnce = false
+        throw new Error("snapshot patch publication failed")
+      }
+      return {
+        hash: `${from}:${to}`,
+        files: from === to ? [] : ["changed.ts"],
+      }
+    }),
+  pinDiff: () => Effect.succeed(true),
+  unpinDiff: () => Effect.void,
+})
+const snapshotEnv = LayerNode.compile(root, [
+  ...replacements,
+  [LLM.node, llmLayer(completedTextEvents("snapshot complete"))],
+  [Snapshot.node, snapshotLayer],
+])
+const itSnapshot = testEffect(snapshotEnv)
+const externalPluginEnv = LayerNode.compile(root, [
+  ...replacements,
+  [LLM.node, llmLayer(completedTextEvents("external plugin snapshot complete"))],
+  [Snapshot.node, snapshotLayer],
+  [
+    Config.node,
+    TestConfig.layer({
+      get: () =>
+        Effect.succeed({
+          ...cfg,
+          plugin_origins: [{ spec: "test-plugin", source: "/tmp/opencode.json", scope: "local" as const }],
+        }),
+    }),
+  ],
+  [
+    Plugin.node,
+    Layer.mock(Plugin.Service)({
+      init: () => Effect.void,
+      list: () => Effect.succeed([]),
+      trigger: (_name, _input, output) => Effect.succeed(output),
+    }),
+  ],
+])
+const itExternalPlugin = testEffect(externalPluginEnv)
+
 const boot = Effect.fn("test.boot")(function* () {
   const processors = yield* SessionProcessor.Service
   const session = yield* Session.Service
@@ -597,6 +655,7 @@ const runTurn = Effect.fn("test.runTurn")(function* (input: {
   tools?: Record<string, Tool>
   request?: LLM.StreamInput["request"]
   fallbackRequest?: LLM.StreamInput["request"]
+  before?: (handle: SessionProcessor.Handle) => Effect.Effect<void>
 }) {
   const { processors, session, provider } = yield* boot()
   const chat = yield* session.create({})
@@ -604,6 +663,7 @@ const runTurn = Effect.fn("test.runTurn")(function* (input: {
   const msg = yield* assistant(chat.id, parent.id, path.resolve(input.dir))
   const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
   const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+  if (input.before) yield* input.before(handle)
   const streamInput: LLM.StreamInput = {
     user: {
       id: parent.id,
@@ -1439,6 +1499,161 @@ itRetrySafety.live("session.processor honors an explicitly non-retryable provide
   ),
 )
 
+itSnapshot.live("session.processor skips workspace snapshots for text-only and read-only turns", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        snapshotCalls.track = 0
+        snapshotCalls.patch = 0
+
+        const text = yield* runTurn({ dir, prompt: "text-only snapshot test" })
+        const read = yield* runTurn({
+          dir,
+          prompt: "read-only snapshot test",
+          before: (handle) => Effect.void.pipe(handle.executeTool(false)),
+        })
+        const lateTool = yield* Effect.exit(Effect.void.pipe(read.handle.executeTool(false)))
+
+        expect(text.handle.message.error).toBeUndefined()
+        expect(text.value).toBe("continue")
+        expect(read.value).toBe("continue")
+        expect(Exit.isFailure(lateTool) && Cause.hasInterruptsOnly(lateTool.cause)).toBe(true)
+        expect(snapshotCalls).toEqual({ track: 0, patch: 0 })
+        expect(
+          [...text.parts, ...read.parts]
+            .filter((part) => part.type === "step-start" || part.type === "step-finish")
+            .every((part) => part.snapshot === undefined),
+        ).toBe(true)
+      }),
+    { config: cfg },
+  ),
+)
+
+itExternalPlugin.live("session.processor keeps an eager boundary for external plugin hooks", () =>
+  provideTmpdirInstance((dir) =>
+    Effect.gen(function* () {
+      snapshotCalls.track = 0
+      snapshotCalls.patch = 0
+
+      const result = yield* runTurn({ dir, prompt: "external plugin snapshot test" })
+      const start = result.parts.find((part): part is SessionV1.StepStartPart => part.type === "step-start")
+      const finish = result.parts.find((part): part is SessionV1.StepFinishPart => part.type === "step-finish")
+
+      expect(result.handle.message.error).toBeUndefined()
+      expect(result.value).toBe("continue")
+      expect(snapshotCalls).toEqual({ track: 2, patch: 1 })
+      expect(start?.snapshot).toBe("snapshot-1")
+      expect(finish?.snapshot).toBe("snapshot-2")
+    }),
+  ),
+)
+
+itSnapshot.live("session.processor captures one shared boundary before concurrent mutating tools", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        snapshotCalls.track = 0
+        snapshotCalls.patch = 0
+
+        const result = yield* runTurn({
+          dir,
+          prompt: "mutating snapshot test",
+          before: (handle) => {
+            const execute = handle.executeTool(true)
+            return Effect.all(
+              Array.from({ length: 32 }, () => Effect.void.pipe(execute)),
+              {
+                concurrency: "unbounded",
+              },
+            ).pipe(Effect.asVoid)
+          },
+        })
+        const start = result.parts.find((part): part is SessionV1.StepStartPart => part.type === "step-start")
+        const finish = result.parts.find((part): part is SessionV1.StepFinishPart => part.type === "step-finish")
+
+        expect(result.handle.message.error).toBeUndefined()
+        expect(result.value).toBe("continue")
+        expect(snapshotCalls).toEqual({ track: 2, patch: 1 })
+        expect(start?.snapshot).toBe("snapshot-1")
+        expect(finish?.snapshot).toBe("snapshot-2")
+        expect(result.handle.summarySnapshot).toBe("snapshot-1")
+        expect(result.handle.nextSnapshot).toBe("snapshot-2")
+      }),
+    { config: cfg },
+  ),
+)
+
+itSnapshot.live("session.processor waits for a mutating tool before capturing the step end", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        snapshotCalls.track = 0
+        snapshotCalls.patch = 0
+        const started = yield* Deferred.make<void>()
+        const release = yield* Deferred.make<void>()
+        const finished = yield* Deferred.make<void>()
+
+        const run = yield* runTurn({
+          dir,
+          prompt: "delayed mutation snapshot test",
+          before: (handle) =>
+            Deferred.succeed(started, undefined).pipe(
+              Effect.andThen(Deferred.await(release)),
+              handle.executeTool(true),
+              Effect.forkChild,
+              Effect.asVoid,
+            ),
+        }).pipe(
+          Effect.tap(() => Deferred.succeed(finished, undefined)),
+          Effect.forkChild,
+        )
+
+        yield* Deferred.await(started)
+        yield* Effect.sleep("50 millis")
+        expect(yield* Deferred.isDone(finished)).toBe(false)
+        expect(snapshotCalls).toEqual({ track: 1, patch: 0 })
+
+        yield* Deferred.succeed(release, undefined)
+        const result = yield* Fiber.join(run)
+        expect(result.handle.message.error).toBeUndefined()
+        expect(result.value).toBe("continue")
+        expect(snapshotCalls).toEqual({ track: 2, patch: 1 })
+      }),
+    { config: cfg },
+  ),
+)
+
+itSnapshot.live("session.processor retains a pending snapshot when step persistence fails", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        snapshotCalls.track = 0
+        snapshotCalls.patch = 0
+        failSnapshotPatchOnce = true
+
+        const result = yield* runTurn({
+          dir,
+          prompt: "failed step snapshot test",
+          before: (handle) => Effect.void.pipe(handle.executeTool(true)),
+        })
+
+        expect(result.value).toBe("stop")
+        expect(result.handle.message.error).toBeDefined()
+        expect(snapshotCalls).toEqual({ track: 3, patch: 2 })
+        expect(result.parts.some((part) => part.type === "patch" && part.files.includes("changed.ts"))).toBe(true)
+        expect(result.handle.summarySnapshot).toBe("snapshot-1")
+        expect(result.handle.nextSnapshot).toBe("snapshot-3")
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            failSnapshotPatchOnce = false
+          }),
+        ),
+      ),
+    { config: cfg },
+  ),
+)
+
 it.live("session.processor closes retry before early AI SDK tool hooks and execution", () =>
   provideTmpdirServer(
     ({ dir, llm }) =>
@@ -2043,7 +2258,9 @@ it.live("session.processor effect tests pin interrupted later step diff from the
           sessionID: chat.id,
           model: mdl,
         })
-        yield* Effect.promise(() => Bun.write(path.join(dir, "first-step.txt"), "first step\n"))
+        yield* Effect.promise(() => Bun.write(path.join(dir, "first-step.txt"), "first step\n")).pipe(
+          first.executeTool(true),
+        )
         expect(yield* first.process(input)).toBe("continue")
         if (!first.nextSnapshot) throw new Error("Expected completed first-step snapshot")
         if (!first.summarySnapshot) throw new Error("Expected turn-start snapshot")
@@ -2069,7 +2286,21 @@ it.live("session.processor effect tests pin interrupted later step diff from the
           "timed out waiting for the later step to start",
           2_000,
         )
-        yield* Effect.promise(() => Bun.write(path.join(dir, "interrupted-step.txt"), "interrupted step\n"))
+        const mutation = yield* Effect.promise(() =>
+          Bun.write(path.join(dir, "interrupted-step.txt"), "interrupted step\n"),
+        ).pipe(second.executeTool(true), Effect.forkChild)
+        const updatedStart = yield* waitFor(
+          MessageV2.parts(secondMessage.id).pipe(
+            Effect.map((parts) =>
+              parts.find((part): part is SessionV1.StepStartPart => part.type === "step-start" && !!part.snapshot),
+            ),
+            Effect.provideService(Database.Service, database),
+          ),
+          "timed out waiting for the mutating step snapshot",
+          2_000,
+        )
+        expect(updatedStart.snapshot).toBe(first.nextSnapshot)
+        yield* Fiber.join(mutation)
         yield* Fiber.interrupt(run)
         expect(Exit.isFailure(yield* Fiber.await(run))).toBe(true)
 

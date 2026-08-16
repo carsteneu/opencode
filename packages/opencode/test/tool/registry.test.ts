@@ -118,6 +118,24 @@ describe("tool.registry", () => {
     }),
   )
 
+  it.instance("marks only known non-mutating workspace tools as read-only", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const agents = yield* Agent.Service
+      const tools = yield* registry.tools({
+        providerID: ProviderV2.ID.opencode,
+        modelID: ModelV2.ID.make("test"),
+        agent: yield* agents.defaultInfo(),
+      })
+      const byID = new Map(tools.map((tool) => [tool.id, tool]))
+
+      expect(["read", "glob", "grep"].map((id) => byID.get(id)?.mutatesWorkspace)).toEqual([false, false, false])
+      expect(
+        ["bash", "edit", "write", "task", "apply_patch"].every((id) => byID.get(id)?.mutatesWorkspace !== false),
+      ).toBe(true)
+    }),
+  )
+
   withCodeMode.instance("exposes execute when code mode is enabled", () =>
     Effect.gen(function* () {
       const registry = yield* ToolRegistry.Service
@@ -269,6 +287,7 @@ describe("tool.registry", () => {
       const ids = yield* registry.ids()
       expect(ids).toContain("read")
       expect(ids).toContain("broken_plugin_tool")
+      expect((yield* registry.all()).find((tool) => tool.id === "broken_plugin_tool")?.mutatesWorkspace).not.toBe(false)
     }),
   )
 

@@ -1335,6 +1335,7 @@ const layer = Layer.effect(
                 }
               : undefined,
           })
+          summarySnapshot = handle.summarySnapshot
           nextSnapshot = handle.nextSnapshot
 
           if (structured !== undefined) {

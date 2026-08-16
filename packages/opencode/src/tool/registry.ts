@@ -69,6 +69,10 @@ type State = {
   read: ReadDef
 }
 
+function readOnly<T extends { mutatesWorkspace?: boolean }>(tool: T) {
+  return { ...tool, mutatesWorkspace: false as const }
+}
+
 export interface Interface {
   readonly ids: () => Effect.Effect<string[]>
   readonly all: () => Effect.Effect<Tool.Def[]>
@@ -224,23 +228,23 @@ const layer = Layer.effect(
         return {
           custom,
           builtin: [
-            tool.invalid,
-            ...(questionEnabled ? [tool.question] : []),
+            readOnly(tool.invalid),
+            ...(questionEnabled ? [readOnly(tool.question)] : []),
             tool.shell,
-            tool.read,
-            tool.glob,
-            tool.grep,
+            readOnly(tool.read),
+            readOnly(tool.glob),
+            readOnly(tool.grep),
             tool.edit,
             tool.write,
             tool.task,
-            tool.fetch,
-            tool.todo,
-            tool.search,
-            tool.skill,
+            readOnly(tool.fetch),
+            readOnly(tool.todo),
+            readOnly(tool.search),
+            readOnly(tool.skill),
             tool.patch,
             ...(tool.execute ? [tool.execute] : []),
-            ...(flags.experimentalLspTool ? [tool.lsp] : []),
-            ...(flags.experimentalPlanMode && flags.client === "cli" ? [tool.plan] : []),
+            ...(flags.experimentalLspTool ? [readOnly(tool.lsp)] : []),
+            ...(flags.experimentalPlanMode && flags.client === "cli" ? [readOnly(tool.plan)] : []),
           ],
           task: tool.task,
           read: tool.read,
@@ -326,6 +330,7 @@ const layer = Layer.effect(
               .join("\n"),
             parameters: output.parameters,
             jsonSchema,
+            mutatesWorkspace: tool.mutatesWorkspace,
             execute: tool.execute,
             formatValidationError: tool.formatValidationError,
           }
