@@ -31,8 +31,13 @@ import { LLMNativeRuntime } from "./llm/native-runtime"
 import { LLMRequestPrep } from "./llm/request"
 import { LLMAIProcess } from "./llm/ai-process-client"
 import { LLMMessageTransform } from "./llm/message-transform"
+import { blockedTools } from "./llm/blocked-tools"
 
 export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
+
+export type PreparedRequest = LLMRequestPrep.Prepared & {
+  readonly workflow: boolean
+}
 
 export type StreamInput = {
   user: SessionV1.User
@@ -47,6 +52,14 @@ export type StreamInput = {
   tools: Record<string, Tool>
   retries?: number
   toolChoice?: "auto" | "required" | "none"
+  request?: {
+    readonly capture?: (prepared: PreparedRequest) => void
+    readonly replay?: PreparedRequest
+    readonly toolExecution?: "blocked"
+    readonly silentOverflow?: boolean
+    readonly silentToolError?: boolean
+    readonly bufferEvents?: boolean
+  }
 }
 
 export type StreamRequest = StreamInput & {
@@ -129,14 +142,41 @@ const live: Layer.Layer<
       )
 
       const isWorkflow = language instanceof GitLabWorkflowLanguageModel
-      const prepared = yield* LLMRequestPrep.prepare({
-        ...input,
-        provider: item,
-        auth: info,
-        plugin,
-        flags,
-        isWorkflow,
-      })
+      const prepared = input.request?.replay
+        ? {
+            ...input.request.replay,
+            headers: yield* LLMRequestPrep.prepareHeaders({
+              ...input,
+              provider: item,
+              plugin,
+              flags,
+            }),
+          }
+        : yield* LLMRequestPrep.prepare({
+            ...input,
+            provider: item,
+            auth: info,
+            plugin,
+            flags,
+            isWorkflow,
+          })
+      if (input.request?.capture && !input.request.replay) {
+        const messages = structuredClone(prepared.messages)
+        input.request.capture({
+          ...prepared,
+          workflow: isWorkflow,
+          system: [...prepared.system],
+          messagePrefix: messages.slice(0, prepared.messagePrefix.length),
+          messages,
+          tools: { ...prepared.tools },
+          params: { ...prepared.params },
+          headers: { ...prepared.headers },
+        })
+      }
+      const tools =
+        input.request?.toolExecution === "blocked"
+          ? yield* Effect.promise(() => blockedTools(prepared.tools))
+          : prepared.tools
 
       // Wire up toolExecutor for DWS workflow models so that tool calls
       // from the workflow service are executed via opencode's tool system
@@ -151,7 +191,7 @@ const live: Layer.Layer<
         workflowModel.sessionID = input.sessionID
         workflowModel.systemPrompt = prepared.system.join("\n")
         workflowModel.toolExecutor = async (toolName, argsJson, _requestID) => {
-          const t = prepared.tools[toolName]
+          const t = tools[toolName]
           if (!t || !t.execute) {
             return { result: "", error: `Unknown tool: ${toolName}` }
           }
@@ -173,7 +213,7 @@ const live: Layer.Layer<
         }
 
         const ruleset = Permission.merge(input.agent.permission ?? [], input.permission ?? [])
-        workflowModel.sessionPreapprovedTools = Object.keys(prepared.tools).filter((name) => {
+        workflowModel.sessionPreapprovedTools = Object.keys(tools).filter((name) => {
           const match = ruleset.findLast((rule) => Wildcard.match(name, rule.permission))
           return !match || match.action !== "ask"
         })
@@ -229,6 +269,14 @@ const live: Layer.Layer<
             if (unsub) await bridge.promise(unsub)
           }
         })
+        if (input.request?.toolExecution === "blocked") {
+          workflowModel.toolExecutor = async () => ({
+            result: "",
+            error: "Tool execution is disabled for this request",
+          })
+          workflowModel.sessionPreapprovedTools = []
+          workflowModel.approvalHandler = async () => ({ approved: false })
+        }
       }
 
       const tracer = cfg.experimental?.openTelemetry
@@ -256,7 +304,7 @@ const live: Layer.Layer<
           auth: info,
           llmClient,
           messages: prepared.messages,
-          tools: prepared.tools,
+          tools,
           toolChoice: input.toolChoice,
           temperature: prepared.params.temperature,
           topP: prepared.params.topP,
@@ -298,7 +346,7 @@ const live: Layer.Layer<
         !cfg.experimental?.openTelemetry && LLMAIProcess.enabled()
           ? LLMAIProcess.providerOptions(input.model, item)
           : undefined
-      const processTools = processOptions ? LLMAIProcess.prepareTools(prepared.tools) : undefined
+      const processTools = processOptions ? LLMAIProcess.prepareTools(tools) : undefined
       const processInput =
         processOptions && processTools
           ? {
@@ -310,7 +358,7 @@ const live: Layer.Layer<
               messageTransformOptions: prepared.messageTransformOptions,
               messages: prepared.messages,
               tools: processTools,
-              activeTools: Object.keys(prepared.tools).filter((name) => name !== "invalid"),
+              activeTools: Object.keys(tools).filter((name) => name !== "invalid"),
               toolChoice: input.toolChoice,
               temperature: prepared.params.temperature,
               topP: prepared.params.topP,
@@ -330,12 +378,7 @@ const live: Layer.Layer<
       if (isolated && processInput) {
         return {
           type: "ai-process" as const,
-          stream: LLMAIProcess.stream(
-            processInput,
-            prepared.tools,
-            prepared.messages,
-            input.abort,
-          ),
+          stream: LLMAIProcess.stream(processInput, tools, prepared.messages, input.abort),
         }
       }
       // Default runtime path: AI SDK owns provider execution and tool dispatch;
@@ -360,7 +403,7 @@ const live: Layer.Layer<
           includeRawChunks: input.model.providerID.includes("github-copilot"),
           async experimental_repairToolCall(failed) {
             const lower = failed.toolCall.toolName.toLowerCase()
-            if (lower !== failed.toolCall.toolName && prepared.tools[lower]) {
+            if (lower !== failed.toolCall.toolName && tools[lower]) {
               return {
                 ...failed.toolCall,
                 toolName: lower,
@@ -379,8 +422,8 @@ const live: Layer.Layer<
           topP: prepared.params.topP,
           topK: prepared.params.topK,
           providerOptions: ProviderTransform.providerOptions(input.model, prepared.params.options),
-          activeTools: Object.keys(prepared.tools).filter((x) => x !== "invalid"),
-          tools: prepared.tools,
+          activeTools: Object.keys(tools).filter((x) => x !== "invalid"),
+          tools,
           toolChoice: input.toolChoice,
           maxOutputTokens: prepared.params.maxOutputTokens,
           abortSignal: input.abort,

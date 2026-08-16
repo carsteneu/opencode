@@ -6,6 +6,7 @@ import { LLMAIProcess, type AIProcessInput } from "@/session/llm/ai-process-clie
 import type { AISDKEvent } from "@/session/llm/ai-sdk"
 import { LLMWorkerIPC } from "@/session/llm/ipc"
 import { LLMMessageTransform } from "@/session/llm/message-transform"
+import { blockedTools } from "@/session/llm/blocked-tools"
 import { ProviderTest } from "../fake/provider"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -145,6 +146,132 @@ describe("LLM AI process", () => {
     expect(converted).toBeTrue()
     expect(requestBody.tools?.[0]?.function?.strict).toBeFalse()
     expect(events.some((event) => event.type === "tool-result")).toBeTrue()
+  })
+
+  test("blocked tool execution preserves the AI process request without invoking source hooks", async () => {
+    const bodies: string[] = []
+    const baselineServer = serve([chunk({ role: "assistant" }), chunk({}, "stop"), "[DONE]"], 0, async (request) => {
+      bodies.push(await request.text())
+    })
+    const blockedServer = serve(
+      [
+        chunk({ role: "assistant" }),
+        chunk({
+          tool_calls: [
+            { index: 0, id: "call-blocked", type: "function", function: { name: "guarded", arguments: "" } },
+          ],
+        }),
+        chunk({ tool_calls: [{ index: 0, function: { arguments: '{"value":"unsafe"}' } }] }),
+        chunk({}, "tool_calls"),
+        "[DONE]",
+      ],
+      0,
+      async (request) => {
+        bodies.push(await request.text())
+      },
+    )
+    const sideEffects = {
+      execute: 0,
+      inputStart: 0,
+      inputDelta: 0,
+      inputAvailable: 0,
+      approval: 0,
+      modelOutput: 0,
+      inputValidate: 0,
+      outputValidate: 0,
+    }
+    const guarded = tool<{ value: string }, { output: string }>({
+      description: "Guarded process tool",
+      title: "Guarded",
+      providerOptions: { test: { cacheKey: "stable" } },
+      inputSchema: jsonSchema(
+        {
+          type: "object",
+          properties: { value: { type: "string" } },
+          required: ["value"],
+          additionalProperties: false,
+        },
+        {
+          validate: (value) => {
+            sideEffects.inputValidate++
+            return { success: true, value: value as { value: string } }
+          },
+        },
+      ),
+      outputSchema: jsonSchema(
+        { type: "object", properties: { output: { type: "string" } }, required: ["output"] },
+        {
+          validate: (value) => {
+            sideEffects.outputValidate++
+            return { success: true, value: value as { output: string } }
+          },
+        },
+      ),
+      inputExamples: [{ input: { value: "example" } }],
+      strict: false,
+      execute: async ({ value }) => {
+        sideEffects.execute++
+        return { output: value }
+      },
+      onInputStart() {
+        sideEffects.inputStart++
+      },
+      onInputDelta() {
+        sideEffects.inputDelta++
+      },
+      onInputAvailable() {
+        sideEffects.inputAvailable++
+      },
+      needsApproval: async () => {
+        sideEffects.approval++
+        return false
+      },
+      toModelOutput: ({ output }) => {
+        sideEffects.modelOutput++
+        return { type: "text", value: output.output }
+      },
+    })
+    const messages: ModelMessage[] = [{ role: "user", content: "hello" }]
+    const normal = streamText({
+      model: createOpenAICompatible({
+        name: "test",
+        baseURL: `${baselineServer.url}v1`,
+        apiKey: "test",
+      })("test-model"),
+      messages,
+      tools: { guarded },
+      maxRetries: 0,
+    })
+    for await (const _ of normal.fullStream) void _
+
+    const blocked = await blockedTools({ guarded })
+    const processTools = LLMAIProcess.prepareTools(blocked)
+    if (!processTools) throw new Error("Expected blocked tools to be safe for the AI process")
+    const events = await Effect.runPromise(
+      LLMAIProcess.stream(input(blockedServer, processTools), blocked, messages, new AbortController().signal).pipe(
+        Stream.runCollect,
+      ),
+    )
+
+    expect(bodies).toHaveLength(2)
+    expect(bodies[1]).toBe(bodies[0])
+    expect(sideEffects).toEqual({
+      execute: 0,
+      inputStart: 0,
+      inputDelta: 0,
+      inputAvailable: 0,
+      approval: 0,
+      modelOutput: 0,
+      inputValidate: 0,
+      outputValidate: 0,
+    })
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "tool-error",
+        toolCallId: "call-blocked",
+        error: expect.objectContaining({ message: "Tool execution is disabled for this request" }),
+      }),
+    )
   })
 
   test("streams the tool call before parent execution completes", async () => {

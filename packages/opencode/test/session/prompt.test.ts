@@ -8,7 +8,7 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { expect } from "bun:test"
 import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer } from "effect"
 import path from "path"
-import { fileURLToPath } from "url"
+import { fileURLToPath, pathToFileURL } from "url"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { Agent as AgentSvc } from "../../src/agent/agent"
 import { BackgroundJob } from "@/background/job"
@@ -308,6 +308,137 @@ function providerCfg(url: string) {
   }
 }
 
+function cacheCfg(url: string, compaction?: ConfigV1.Info["compaction"]) {
+  const config = providerCfg(url)
+  return {
+    ...config,
+    provider: {
+      test: {
+        ...config.provider.test,
+        models: {
+          "test-model": {
+            ...config.provider.test.models["test-model"],
+            temperature: true,
+          },
+        },
+      },
+    },
+    agent: {
+      build: {
+        temperature: 0.37,
+        top_p: 0.82,
+      },
+    },
+    ...(compaction ? { compaction } : {}),
+  }
+}
+
+function requestMessages(input: Record<string, unknown>) {
+  const messages = input.messages ?? input.input
+  if (!Array.isArray(messages)) throw new Error("expected request messages")
+  return messages
+}
+
+function requestEnvelope(input: Record<string, unknown>) {
+  return Object.fromEntries(Object.entries(input).filter((entry) => !["input", "messages"].includes(entry[0])))
+}
+
+function expectLegacyCompaction(input: Record<string, unknown>, text: string) {
+  expect(JSON.stringify(requestMessages(input))).toContain(`[User]: ${text}`)
+  expect(input.tools ?? []).toEqual([])
+}
+
+type CapturedSessionEvent = {
+  type: string
+  data: unknown
+}
+
+function expectPendingSummaryLifecycle(input: {
+  events: CapturedSessionEvent[]
+  sessionID: SessionID
+  messageID: MessageID
+}) {
+  const messages = input.events.flatMap((event) => {
+    if (event.type !== MessageV2.Event.Updated.type) return []
+    const data = event.data as typeof SessionV1.Event.MessageUpdated.data.Type
+    if (data.sessionID !== input.sessionID || data.info.id !== input.messageID || data.info.role !== "assistant")
+      return []
+    return [data.info]
+  })
+  const removals = input.events.filter((event) => {
+    if (event.type !== MessageV2.Event.PartRemoved.type) return false
+    const data = event.data as typeof SessionV1.Event.PartRemoved.data.Type
+    return data.sessionID === input.sessionID && data.messageID === input.messageID
+  })
+  const errors = input.events.filter((event) => {
+    if (event.type !== Session.Event.Error.type) return false
+    return (event.data as typeof Session.Event.Error.data.Type).sessionID === input.sessionID
+  })
+
+  expect(messages.some((message) => message.error !== undefined || message.time.completed !== undefined)).toBe(false)
+  expect(removals).toEqual([])
+  expect(errors).toEqual([])
+}
+
+function expectCleanSummaryLifecycle(input: {
+  events: CapturedSessionEvent[]
+  sessionID: SessionID
+  summary: SessionV1.WithParts
+  text: string
+}) {
+  const messages = input.events.flatMap((event) => {
+    if (event.type !== MessageV2.Event.Updated.type) return []
+    const data = event.data as typeof SessionV1.Event.MessageUpdated.data.Type
+    if (data.sessionID !== input.sessionID || data.info.id !== input.summary.info.id || data.info.role !== "assistant")
+      return []
+    return [data.info]
+  })
+  const parts = input.events.flatMap((event) => {
+    if (event.type !== MessageV2.Event.PartUpdated.type) return []
+    const data = event.data as typeof SessionV1.Event.PartUpdated.data.Type
+    if (data.sessionID !== input.sessionID || data.part.messageID !== input.summary.info.id) return []
+    return [data.part]
+  })
+  const removals = input.events.filter((event) => {
+    if (event.type !== MessageV2.Event.PartRemoved.type) return false
+    const data = event.data as typeof SessionV1.Event.PartRemoved.data.Type
+    return data.sessionID === input.sessionID && data.messageID === input.summary.info.id
+  })
+  const completed = messages.filter((message) => message.time.completed !== undefined)
+  const completedIndex = input.events.findIndex((event) => {
+    if (event.type !== MessageV2.Event.Updated.type) return false
+    const data = event.data as typeof SessionV1.Event.MessageUpdated.data.Type
+    return (
+      data.sessionID === input.sessionID &&
+      data.info.id === input.summary.info.id &&
+      data.info.role === "assistant" &&
+      data.info.time.completed !== undefined
+    )
+  })
+  const lastPartIndex = input.events.findLastIndex((event) => {
+    if (event.type === MessageV2.Event.PartUpdated.type) {
+      const data = event.data as typeof SessionV1.Event.PartUpdated.data.Type
+      return data.sessionID === input.sessionID && data.part.messageID === input.summary.info.id
+    }
+    if (event.type !== MessageV2.Event.PartDelta.type) return false
+    const data = event.data as typeof SessionV1.Event.PartDelta.data.Type
+    return data.sessionID === input.sessionID && data.messageID === input.summary.info.id
+  })
+  const errors = input.events.filter((event) => {
+    if (event.type !== Session.Event.Error.type) return false
+    return (event.data as typeof Session.Event.Error.data.Type).sessionID === input.sessionID
+  })
+
+  expect(messages.some((message) => message.error !== undefined)).toBe(false)
+  expect(completed).toHaveLength(1)
+  expect(completedIndex).toBeGreaterThan(lastPartIndex)
+  expect(removals).toEqual([])
+  expect(errors).toEqual([])
+  expect(parts.some((part) => part.type === "tool")).toBe(false)
+  expect(input.summary.parts.filter((part) => part.type === "text").map((part) => part.text)).toEqual([input.text])
+  expect(input.summary.parts.some((part) => part.type === "tool")).toBe(false)
+}
+
 const writeText = Effect.fn("test.writeText")(function* (file: string, text: string) {
   const fs = yield* FSUtil.Service
   yield* fs.writeWithDirs(file, text)
@@ -448,6 +579,398 @@ const boot = Effect.fn("test.boot")(function* (input?: { title?: string }) {
 })
 
 // Loop semantics
+
+it.instance("automatic compaction preserves the OpenAI-compatible request prefix", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => cacheCfg(url))
+    const { prompt, chat } = yield* boot()
+    yield* user(chat.id, "cache prefix message")
+    yield* llm.text("normal response", { usage: { input: 90_000, output: 1 } })
+    yield* llm.text("compacted summary")
+
+    yield* prompt.loop({ sessionID: chat.id })
+
+    const inputs = yield* llm.inputs
+    expect(inputs.length).toBeGreaterThanOrEqual(2)
+    const normal = inputs[0]!
+    const compact = inputs[1]!
+    const prefix = requestMessages(normal)
+    const replay = requestMessages(compact)
+    expect(requestEnvelope(compact)).toEqual(requestEnvelope(normal))
+    expect(replay.slice(0, prefix.length)).toEqual(prefix)
+    expect(JSON.stringify(replay.slice(prefix.length))).toContain("normal response")
+    expect(JSON.stringify(replay.at(-1))).toContain("Create an anchored summary")
+    expect(JSON.stringify(replay)).not.toContain("[User]: cache prefix message")
+    expect(compact.tools).toEqual(normal.tools)
+    expect(compact.tool_choice).toEqual(normal.tool_choice)
+    expect(normal.temperature).toBe(0.37)
+    expect(normal.top_p).toBe(0.82)
+  }),
+)
+
+it.instance("automatic compaction preserves the OpenAI Responses input prefix", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => {
+      const config = cacheCfg(url)
+      return {
+        ...config,
+        provider: {
+          test: {
+            ...config.provider.test,
+            npm: "@ai-sdk/openai",
+          },
+        },
+      }
+    })
+    const { prompt, chat } = yield* boot()
+    yield* user(chat.id, "responses cache prefix")
+    yield* llm.text("normal response", { usage: { input: 90_000, output: 1 } })
+    yield* llm.text("compacted summary")
+
+    yield* prompt.loop({ sessionID: chat.id })
+
+    const inputs = yield* llm.inputs
+    expect(inputs.length).toBeGreaterThanOrEqual(2)
+    const normal = inputs[0]!
+    const compact = inputs[1]!
+    const prefix = requestMessages(normal)
+    const replay = requestMessages(compact)
+    expect(requestEnvelope(compact)).toEqual(requestEnvelope(normal))
+    expect(replay.slice(0, prefix.length)).toEqual(prefix)
+    expect(JSON.stringify(replay.slice(prefix.length))).toContain("normal response")
+    expect(JSON.stringify(replay.at(-1))).toContain("Create an anchored summary")
+  }),
+)
+
+it.instance("automatic compaction reuses an exact shorter prefix when retaining the recent tail", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => cacheCfg(url, { preserve_recent_tokens: 100 }))
+    const { prompt, sessions, chat } = yield* boot()
+    const older = yield* user(chat.id, `older request ${"x".repeat(10_000)}`)
+    yield* llm.text("older response", { usage: { input: 1, output: 1 } })
+    yield* prompt.loop({ sessionID: chat.id })
+
+    const recent = yield* user(chat.id, "recent request retained verbatim")
+    yield* llm.text("recent response retained verbatim", { usage: { input: 90_000, output: 1 } })
+    yield* llm.text("compacted summary")
+    yield* prompt.loop({ sessionID: chat.id })
+
+    const inputs = yield* llm.inputs
+    expect(inputs.length).toBeGreaterThanOrEqual(3)
+    const normal = inputs[1]!
+    const compact = inputs[2]!
+    const prefix = requestMessages(normal)
+    const replay = requestMessages(compact)
+    const summarized = replay.slice(0, -1)
+    expect(requestEnvelope(compact)).toEqual(requestEnvelope(normal))
+    expect(prefix.slice(0, summarized.length)).toEqual(summarized)
+    expect(summarized.length).toBeLessThan(prefix.length)
+    expect(JSON.stringify(replay)).not.toContain("recent request retained verbatim")
+    expect(JSON.stringify(replay)).not.toContain("recent response retained verbatim")
+    expect(JSON.stringify(replay.at(-1))).toContain("Create an anchored summary")
+
+    const messages = yield* sessions.messages({ sessionID: chat.id })
+    const part = messages
+      .flatMap((message) => message.parts)
+      .find((item): item is SessionV1.CompactionPart => item.type === "compaction")
+    const olderIndex = messages.findIndex((message) => message.info.id === older.id)
+    const recentIndex = messages.findIndex((message) => message.info.id === recent.id)
+    const tailIndex = messages.findIndex((message) => message.info.id === part?.tail_start_id)
+    const tail = JSON.stringify(messages.slice(tailIndex))
+    expect(tailIndex).toBeGreaterThan(olderIndex)
+    expect(tailIndex).toBeLessThanOrEqual(recentIndex)
+    expect(tail).not.toContain("older request")
+    expect(tail).toContain("recent request retained verbatim")
+    expect(tail).toContain("recent response retained verbatim")
+  }),
+)
+
+it.instance("automatic compaction falls back when a plan-to-build reminder changes the request prefix", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => cacheCfg(url))
+    const { prompt, sessions, chat } = yield* boot()
+    const planned = yield* sessions.updateMessage({
+      id: MessageID.ascending(),
+      role: "user",
+      sessionID: chat.id,
+      agent: "plan",
+      model: ref,
+      time: { created: Date.now() },
+    })
+    yield* sessions.updatePart({
+      id: PartID.ascending(),
+      messageID: planned.id,
+      sessionID: chat.id,
+      type: "text",
+      text: "prepare the plan",
+    })
+    const plan = yield* sessions.updateMessage({
+      id: MessageID.ascending(),
+      role: "assistant",
+      parentID: planned.id,
+      sessionID: chat.id,
+      mode: "plan",
+      agent: "plan",
+      cost: 0,
+      path: { cwd: "/tmp", root: "/tmp" },
+      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      modelID: ref.modelID,
+      providerID: ref.providerID,
+      time: { created: Date.now(), completed: Date.now() },
+      finish: "stop",
+    })
+    yield* sessions.updatePart({
+      id: PartID.ascending(),
+      messageID: plan.id,
+      sessionID: chat.id,
+      type: "text",
+      text: "the implementation plan",
+    })
+    yield* user(chat.id, "implement the plan")
+    yield* llm.text("normal response", { usage: { input: 90_000, output: 1 } })
+    yield* llm.text("compacted summary")
+
+    yield* prompt.loop({ sessionID: chat.id })
+
+    const inputs = yield* llm.inputs
+    expect(inputs.length).toBeGreaterThanOrEqual(2)
+    expect(JSON.stringify(requestMessages(inputs[0]!))).toContain("operational mode has changed from plan to build")
+    expectLegacyCompaction(inputs[1]!, "implement the plan")
+  }),
+)
+
+it.instance("manual compaction keeps the legacy serialized request", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => cacheCfg(url))
+    const { prompt, chat } = yield* boot()
+    const compact = yield* SessionCompaction.Service
+    yield* user(chat.id, "manual cache prefix")
+    yield* llm.text("normal response")
+    yield* prompt.loop({ sessionID: chat.id })
+
+    yield* compact.create({ sessionID: chat.id, agent: "build", model: ref, auto: false })
+    yield* llm.text("compacted summary")
+    yield* prompt.loop({ sessionID: chat.id })
+
+    const inputs = yield* llm.inputs
+    expect(inputs).toHaveLength(2)
+    expectLegacyCompaction(inputs[1]!, "manual cache prefix")
+  }),
+)
+
+it.instance(
+  "a custom compaction prompt keeps the legacy serialized request",
+  () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const file = path.join(test.directory, "compaction-plugin.ts")
+      yield* writeText(
+        file,
+        [
+          "export default async () => ({",
+          '  "experimental.session.compacting": (_input, output) => {',
+          '    output.prompt = "CUSTOM COMPACTION PROMPT"',
+          "  },",
+          "})",
+          "",
+        ].join("\n"),
+      )
+      const { llm } = yield* useServerConfig((url) => ({
+        ...cacheCfg(url),
+        plugin: [pathToFileURL(file).href],
+      }))
+      const { prompt, chat } = yield* boot()
+      yield* user(chat.id, "custom prompt cache prefix")
+      yield* llm.text("normal response", { usage: { input: 90_000, output: 1 } })
+      yield* llm.text("compacted summary")
+
+      yield* prompt.loop({ sessionID: chat.id })
+
+      const inputs = yield* llm.inputs
+      expect(inputs.length).toBeGreaterThanOrEqual(2)
+      expectLegacyCompaction(inputs[1]!, "custom prompt cache prefix")
+      expect(JSON.stringify(requestMessages(inputs[1]!))).toContain("CUSTOM COMPACTION PROMPT")
+    }),
+  15_000,
+)
+
+it.instance(
+  "external request hooks keep automatic compaction on the legacy path",
+  () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const file = path.join(test.directory, "request-plugin.ts")
+      const stateFile = path.join(test.directory, "request-plugin-state.json")
+      yield* writeText(
+        file,
+        [
+          "const state = { headers: [], params: [] }",
+          `const save = () => Bun.write(${JSON.stringify(stateFile)}, JSON.stringify(state))`,
+          "export default async () => ({",
+          '  "chat.headers": async (input, output) => {',
+          "    state.headers.push(input.message.id)",
+          '    output.headers["x-request-nonce"] = `nonce-${state.headers.length}`',
+          "    await save()",
+          "  },",
+          '  "chat.params": async (input, output) => {',
+          "    state.params.push(input.message.id)",
+          "    output.temperature = 0.4 + state.params.length / 100",
+          "    await save()",
+          "  },",
+          "})",
+          "",
+        ].join("\n"),
+      )
+      const href = pathToFileURL(file).href
+      const { llm } = yield* useServerConfig((url) => ({
+        ...cacheCfg(url),
+        plugin: [href],
+      }))
+      const { prompt, chat } = yield* boot()
+      yield* user(chat.id, "dynamic request hooks")
+      yield* llm.text("normal response", { usage: { input: 90_000, output: 1 } })
+      yield* llm.text("compacted summary")
+
+      yield* prompt.loop({ sessionID: chat.id })
+
+      const inputs = yield* llm.inputs
+      expect(inputs.length).toBeGreaterThanOrEqual(2)
+      expectLegacyCompaction(inputs[1]!, "dynamic request hooks")
+      expect(inputs[0]?.temperature).toBeCloseTo(0.41)
+      expect(inputs[1]?.temperature).toBeCloseTo(0.42)
+      const state = (yield* Effect.promise(() => Bun.file(stateFile).json())) as {
+        headers: string[]
+        params: string[]
+      }
+      expect(state.headers.length).toBeGreaterThanOrEqual(2)
+      expect(state.params.length).toBeGreaterThanOrEqual(2)
+      expect(new Set(state.headers.slice(0, 2)).size).toBe(2)
+      expect(new Set(state.params.slice(0, 2)).size).toBe(2)
+    }),
+  15_000,
+)
+
+it.instance(
+  "automatic compaction preserves tool definitions without executing the original tool",
+  () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const file = path.join(test.directory, ".opencode", "tool", "counter.ts")
+      yield* writeText(
+        file,
+        [
+          "export const state = { calls: 0 }",
+          "export default {",
+          '  description: "Increment the test counter",',
+          "  args: {},",
+          "  execute: async () => {",
+          "    state.calls++",
+          '    return "executed"',
+          "  },",
+          "}",
+          "",
+        ].join("\n"),
+      )
+      const { llm } = yield* useServerConfig((url) => cacheCfg(url))
+      const href = pathToFileURL(file).href
+      const registry = yield* ToolRegistry.Service
+      expect((yield* registry.all()).some((item) => item.id === "counter")).toBe(true)
+      const counter = (yield* Effect.promise(() => import(href))) as {
+        state: { calls: number }
+      }
+      const { prompt, sessions, chat } = yield* boot()
+      const events = yield* EventV2Bridge.Service
+      const seen: CapturedSessionEvent[] = []
+      const off = yield* events.listen((event) => {
+        seen.push({ type: event.type, data: structuredClone(event.data) })
+        return Effect.void
+      })
+      yield* Effect.addFinalizer(() => off)
+      const gate = yield* Deferred.make<void>()
+      yield* user(chat.id, "do not execute summary tools")
+      yield* llm.text("normal response", { usage: { input: 90_000, output: 1 } })
+      yield* llm.tool("counter", {})
+      yield* llm.hold("compacted summary", deferredAsPromise(gate))
+
+      const fiber = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+      yield* awaitWithTimeout(llm.wait(3), "timed out waiting for the legacy summary retry", "10 seconds")
+      const pending = (yield* sessions.messages({ sessionID: chat.id })).find(
+        (message) => message.info.role === "assistant" && message.info.summary,
+      )
+      expect(pending).toBeDefined()
+      expectPendingSummaryLifecycle({ events: seen, sessionID: chat.id, messageID: pending!.info.id })
+      yield* Deferred.succeed(gate, undefined)
+      yield* Fiber.join(fiber)
+
+      const inputs = yield* llm.inputs
+      expect(inputs.length).toBeGreaterThanOrEqual(3)
+      expect(inputs[1]?.tools).toEqual(inputs[0]?.tools)
+      expect(inputs[1]?.tool_choice).toEqual(inputs[0]?.tool_choice)
+      expectLegacyCompaction(inputs[2]!, "do not execute summary tools")
+      expect(counter.state.calls).toBe(0)
+      const summaries = (yield* sessions.messages({ sessionID: chat.id })).filter(
+        (message) => message.info.role === "assistant" && message.info.summary,
+      )
+      expect(summaries).toHaveLength(1)
+      expectCleanSummaryLifecycle({
+        events: seen,
+        sessionID: chat.id,
+        summary: summaries[0]!,
+        text: "compacted summary",
+      })
+    }),
+  20_000,
+)
+
+it.instance(
+  "automatic compaction retries a replay overflow without publishing a failed summary lifecycle",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig((url) => cacheCfg(url))
+      const { prompt, sessions, chat } = yield* boot()
+      const events = yield* EventV2Bridge.Service
+      const seen: CapturedSessionEvent[] = []
+      const off = yield* events.listen((event) => {
+        seen.push({ type: event.type, data: structuredClone(event.data) })
+        return Effect.void
+      })
+      yield* Effect.addFinalizer(() => off)
+      const gate = yield* Deferred.make<void>()
+      yield* user(chat.id, "retry an overflowing replay")
+      yield* llm.text("normal response", { usage: { input: 90_000, output: 1 } })
+      yield* llm.error(400, {
+        type: "error",
+        error: { code: "context_length_exceeded", message: "Replay exceeded the context window" },
+      })
+      yield* llm.hold("compacted after overflow", deferredAsPromise(gate))
+
+      const fiber = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+      yield* awaitWithTimeout(llm.wait(3), "timed out waiting for the overflow legacy retry", "10 seconds")
+      const pending = (yield* sessions.messages({ sessionID: chat.id })).find(
+        (message) => message.info.role === "assistant" && message.info.summary,
+      )
+      expect(pending).toBeDefined()
+      expectPendingSummaryLifecycle({ events: seen, sessionID: chat.id, messageID: pending!.info.id })
+      yield* Deferred.succeed(gate, undefined)
+      yield* Fiber.join(fiber)
+
+      const inputs = yield* llm.inputs
+      expect(inputs.length).toBeGreaterThanOrEqual(3)
+      expect(requestEnvelope(inputs[1]!)).toEqual(requestEnvelope(inputs[0]!))
+      expectLegacyCompaction(inputs[2]!, "retry an overflowing replay")
+      const summaries = (yield* sessions.messages({ sessionID: chat.id })).filter(
+        (message) => message.info.role === "assistant" && message.info.summary,
+      )
+      expect(summaries).toHaveLength(1)
+      expectCleanSummaryLifecycle({
+        events: seen,
+        sessionID: chat.id,
+        summary: summaries[0]!,
+        text: "compacted after overflow",
+      })
+    }),
+  20_000,
+)
 
 noLLMServer.instance(
   "loop exits immediately when last assistant has stop finish",

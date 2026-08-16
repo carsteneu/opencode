@@ -1098,6 +1098,7 @@ const layer = Layer.effect(
       let nextSnapshot: string | undefined
       let summarySnapshot: string | undefined
       let summaryMessageID: MessageID | undefined
+      let compactionReplay: SessionCompaction.Replay | undefined
       const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
       while (true) {
         yield* status.set(sessionID, { type: "busy" })
@@ -1163,18 +1164,22 @@ const layer = Layer.effect(
 
         if (task?.type === "subtask") {
           nextSnapshot = undefined
+          compactionReplay = undefined
           yield* handleSubtask({ task, model, lastUser, sessionID, session, msgs })
           continue
         }
 
         if (task?.type === "compaction") {
           nextSnapshot = undefined
+          const replay = task.auto && !task.overflow ? compactionReplay : undefined
+          compactionReplay = undefined
           const result = yield* compaction.process({
             messages: msgs,
             parentID: lastUser.id,
             sessionID,
             auto: task.auto,
             overflow: task.overflow,
+            replay,
           })
           if (result === "stop") break
           continue
@@ -1294,6 +1299,14 @@ const layer = Layer.effect(
           ]
           const format = lastUser.format ?? { type: "text" as const }
           if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
+          const requestMessages = [
+            ...modelMsgs,
+            ...(isLastStep ? [{ role: "assistant" as const, content: MAX_STEPS_PROMPT }] : []),
+          ]
+          const cfg = yield* config.get()
+          const captureReplay =
+            SessionCompaction.cacheCompatible(model) && (flags.pure || (cfg.plugin_origins?.length ?? 0) === 0)
+          compactionReplay = undefined
           const result = yield* handle.process({
             user: lastUser,
             agent,
@@ -1301,13 +1314,26 @@ const layer = Layer.effect(
             sessionID,
             parentSessionID: session.parentID,
             system,
-            messages: [
-              ...modelMsgs,
-              ...(isLastStep ? [{ role: "assistant" as const, content: MAX_STEPS_PROMPT }] : []),
-            ],
+            messages: requestMessages,
             tools,
             model,
             toolChoice: format.type === "json_schema" ? "required" : undefined,
+            request: captureReplay
+              ? {
+                  capture(prepared) {
+                    compactionReplay = {
+                      assistantID: msg.id,
+                      parentSessionID: session.parentID,
+                      user: lastUser,
+                      agent,
+                      model,
+                      messages: prepared.messages.slice(prepared.messagePrefix.length),
+                      prepared,
+                      toolChoice: format.type === "json_schema" ? "required" : undefined,
+                    }
+                  },
+                }
+              : undefined,
           })
           nextSnapshot = handle.nextSnapshot
 

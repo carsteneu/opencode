@@ -6,6 +6,7 @@ import { Effect, Fiber, Layer, Stream } from "effect"
 import { FetchHttpClient } from "effect/unstable/http"
 import { LLMNative } from "@/session/llm/native-request"
 import { LLMNativeRuntime } from "@/session/llm/native-runtime"
+import { blockedTools } from "@/session/llm/blocked-tools"
 import type { Provider } from "@/provider/provider"
 
 import { OAUTH_DUMMY_KEY } from "@/auth"
@@ -537,6 +538,119 @@ describe("session.llm-native.request", () => {
       const failure = yield* Effect.flip(wrapped.incomplete.execute({}, { id: "call-1", name: "incomplete" }))
       expect(failure).toBeInstanceOf(ToolFailure)
       expect(failure.message).toContain("incomplete")
+    }),
+  )
+
+  it.effect("blocked tool execution preserves native definitions without invoking source hooks", () =>
+    Effect.gen(function* () {
+      const sideEffects = {
+        execute: 0,
+        inputStart: 0,
+        inputDelta: 0,
+        inputAvailable: 0,
+        approval: 0,
+        modelOutput: 0,
+        inputValidate: 0,
+        outputValidate: 0,
+      }
+      const guarded = tool<{ value: string }, { output: string }>({
+        description: "Guarded native tool",
+        inputSchema: jsonSchema(
+          {
+            type: "object",
+            properties: { value: { type: "string" } },
+            required: ["value"],
+            additionalProperties: false,
+          },
+          {
+            validate: (value) => {
+              sideEffects.inputValidate++
+              return { success: true, value: value as { value: string } }
+            },
+          },
+        ),
+        outputSchema: jsonSchema(
+          { type: "object", properties: { output: { type: "string" } }, required: ["output"] },
+          {
+            validate: (value) => {
+              sideEffects.outputValidate++
+              return { success: true, value: value as { output: string } }
+            },
+          },
+        ),
+        execute: async ({ value }) => {
+          sideEffects.execute++
+          return { output: value }
+        },
+        onInputStart() {
+          sideEffects.inputStart++
+        },
+        onInputDelta() {
+          sideEffects.inputDelta++
+        },
+        onInputAvailable() {
+          sideEffects.inputAvailable++
+        },
+        needsApproval: async () => {
+          sideEffects.approval++
+          return false
+        },
+        toModelOutput: ({ output }) => {
+          sideEffects.modelOutput++
+          return { type: "text", value: output.output }
+        },
+      })
+      const blocked = yield* Effect.promise(() => blockedTools({ guarded }))
+      const definitions: string[] = []
+      const llmClient = {
+        prepare: () => Effect.die("unused"),
+        stream: (request) => {
+          definitions.push(JSON.stringify(request.tools))
+          if (definitions.length === 1) return Stream.make(LLMEvent.finish({ reason: "stop" }))
+          return Stream.fromIterable([
+            LLMEvent.toolCall({ id: "call-blocked", name: "guarded", input: { value: "unsafe" } }),
+            LLMEvent.finish({ reason: "tool-calls" }),
+          ])
+        },
+        generate: () => Effect.die("unused"),
+      } satisfies LLMClientShape
+      const run = (tools: Record<string, Tool>) => {
+        const native = LLMNativeRuntime.stream({
+          model: baseModel,
+          provider: providerInfo,
+          auth: undefined,
+          llmClient,
+          messages: [],
+          tools,
+          headers: {},
+          abort: new AbortController().signal,
+        })
+        if (native.type === "unsupported") throw new Error(native.reason)
+        return native.stream.pipe(Stream.runCollect)
+      }
+
+      yield* run({ guarded })
+      const events = Array.from(yield* run(blocked))
+
+      expect(definitions).toHaveLength(2)
+      expect(definitions[1]).toBe(definitions[0])
+      expect(sideEffects).toEqual({
+        execute: 0,
+        inputStart: 0,
+        inputDelta: 0,
+        inputAvailable: 0,
+        approval: 0,
+        modelOutput: 0,
+        inputValidate: 0,
+        outputValidate: 0,
+      })
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "tool-error",
+          id: "call-blocked",
+          message: "Tool execution is disabled for this request",
+        }),
+      )
     }),
   )
 

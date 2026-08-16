@@ -20,8 +20,9 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
-import { buildPrompt } from "@opencode-ai/core/session/compaction"
+import { buildPrompt, buildReplayPrompt } from "@opencode-ai/core/session/compaction"
 import { SessionCompactionEvent } from "@opencode-ai/schema/session-compaction-event"
+import type { PreparedRequest, StreamInput } from "./llm"
 
 export const Event = SessionCompactionEvent
 
@@ -174,6 +175,7 @@ export interface Interface {
     sessionID: SessionID
     auto: boolean
     overflow?: boolean
+    replay?: Replay
   }) => Effect.Effect<"continue" | "stop">
   readonly create: (input: {
     sessionID: SessionID
@@ -182,6 +184,41 @@ export interface Interface {
     auto: boolean
     overflow?: boolean
   }) => Effect.Effect<void>
+}
+
+export type Replay = {
+  readonly assistantID: MessageID
+  readonly parentSessionID?: string
+  readonly user: SessionV1.User
+  readonly agent: Agent.Info
+  readonly model: Provider.Model
+  readonly messages: StreamInput["messages"]
+  readonly prepared: PreparedRequest
+  readonly toolChoice?: StreamInput["toolChoice"]
+}
+
+function isPrefix(prefix: StreamInput["messages"], messages: StreamInput["messages"]) {
+  return prefix.every((message, index) => JSON.stringify(message) === JSON.stringify(messages[index]))
+}
+
+export function cacheCompatible(model: Provider.Model) {
+  if (!["@ai-sdk/openai", "@ai-sdk/openai-compatible"].includes(model.api.npm)) return false
+  if (model.providerID.startsWith("opencode")) return false
+  const family = `${model.providerID}/${model.id}/${model.api.id}`.toLowerCase()
+  return !["anthropic", "claude", "github-copilot", "mistral", "devstral", "codestral", "pixtral", "mixtral"].some(
+    (value) => family.includes(value),
+  )
+}
+
+function hasUnsupportedReplayParts(messages: SessionV1.WithParts[]) {
+  return messages.some((message) =>
+    message.parts.some((part) => {
+      if (part.type === "file") return part.mime !== "text/plain" && part.mime !== "application/x-directory"
+      if (part.type !== "tool") return false
+      if (part.metadata?.providerExecuted) return true
+      return part.state.status === "completed" && (part.state.attachments?.length ?? 0) > 0
+    }),
+  )
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionCompaction") {}
@@ -322,6 +359,7 @@ const layer = Layer.effect(
       sessionID: SessionID
       auto: boolean
       overflow?: boolean
+      replay?: Replay
     }) {
       const parent = input.messages.findLast((m) => m.info.id === input.parentID)
       if (!parent || parent.info.role !== "user") {
@@ -331,7 +369,7 @@ const layer = Layer.effect(
       const compactionPart = parent.parts.find((part): part is SessionV1.CompactionPart => part.type === "compaction")
 
       let messages = input.messages
-      let replay:
+      let overflowReplay:
         | {
             info: SessionV1.User
             parts: SessionV1.Part[]
@@ -342,15 +380,16 @@ const layer = Layer.effect(
         for (let i = idx - 1; i >= 0; i--) {
           const msg = input.messages[i]
           if (msg.info.role === "user" && !msg.parts.some((p) => p.type === "compaction")) {
-            replay = { info: msg.info, parts: msg.parts }
+            overflowReplay = { info: msg.info, parts: msg.parts }
             messages = input.messages.slice(0, i)
             break
           }
         }
         const hasContent =
-          replay && messages.some((m) => m.info.role === "user" && !m.parts.some((p) => p.type === "compaction"))
+          overflowReplay &&
+          messages.some((m) => m.info.role === "user" && !m.parts.some((p) => p.type === "compaction"))
         if (!hasContent) {
-          replay = undefined
+          overflowReplay = undefined
           messages = input.messages
         }
       }
@@ -377,8 +416,57 @@ const layer = Layer.effect(
       )
       const msgs = structuredClone(selected.head)
       yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
+      const latest = MessageV2.latest(history)
+      const replayMessages =
+        input.replay &&
+        input.auto &&
+        !input.overflow &&
+        (flags.pure || (cfg.plugin_origins?.length ?? 0) === 0) &&
+        cfg.agent?.compaction === undefined &&
+        compacting.prompt === undefined &&
+        prior.length === 0 &&
+        latest.user?.id === input.replay.user.id &&
+        latest.assistant?.id === input.replay.assistantID &&
+        input.replay.user.sessionID === input.sessionID &&
+        input.replay.user.agent === input.replay.agent.name &&
+        userMessage.agent === input.replay.user.agent &&
+        userMessage.model.providerID === input.replay.user.model.providerID &&
+        userMessage.model.modelID === input.replay.user.model.modelID &&
+        input.replay.user.model.providerID === input.replay.model.providerID &&
+        input.replay.user.model.modelID === input.replay.model.id &&
+        model.providerID === input.replay.model.providerID &&
+        model.id === input.replay.model.id &&
+        input.replay.user.format?.type !== "json_schema" &&
+        input.replay.toolChoice !== "required" &&
+        !input.replay.prepared.workflow &&
+        cacheCompatible(input.replay.model) &&
+        !Object.values(input.replay.prepared.tools).some((tool) => tool.type === "provider") &&
+        !hasUnsupportedReplayParts(msgs)
+          ? yield* MessageV2.toModelMessagesEffect(msgs, input.replay.model)
+          : undefined
+      const capturedMessages = input.replay
+        ? [...input.replay.prepared.messagePrefix, ...input.replay.messages]
+        : undefined
+      const replayPrepared =
+        replayMessages &&
+        input.replay &&
+        capturedMessages &&
+        capturedMessages.length === input.replay.prepared.messages.length &&
+        isPrefix(input.replay.prepared.messagePrefix, input.replay.prepared.messages) &&
+        isPrefix(capturedMessages, input.replay.prepared.messages) &&
+        (isPrefix(replayMessages, input.replay.messages) || isPrefix(input.replay.messages, replayMessages))
+          ? {
+              ...input.replay.prepared,
+              messages: [
+                ...input.replay.prepared.messagePrefix,
+                ...replayMessages,
+                { role: "user" as const, content: buildReplayPrompt({ context: compacting.context }) },
+              ],
+            }
+          : undefined
       const conversation = msgs.map(serialize).filter(Boolean).join("\n\n")
-      const nextPrompt =
+      const replayPrompt = buildReplayPrompt({ context: compacting.context })
+      const legacyPrompt =
         compacting.prompt ??
         [
           buildPrompt({
@@ -422,7 +510,7 @@ const layer = Layer.effect(
         sessionID: input.sessionID,
         model,
       })
-      const result = yield* processor.process({
+      const legacyInput = {
         user: userMessage,
         agent,
         sessionID: input.sessionID,
@@ -430,12 +518,12 @@ const layer = Layer.effect(
         system: [],
         messages: [
           {
-            role: "user",
+            role: "user" as const,
             content: [
               {
-                type: "text",
+                type: "text" as const,
                 text: [
-                  nextPrompt,
+                  legacyPrompt,
                   ...(compacting.prompt ? ["The following is the conversation history:", conversation] : []),
                 ]
                   .filter(Boolean)
@@ -445,11 +533,36 @@ const layer = Layer.effect(
           },
         ],
         model,
-      })
+      } satisfies StreamInput
+      const replayInput =
+        replayPrepared && replayMessages && input.replay
+          ? ({
+              user: input.replay.user,
+              agent: input.replay.agent,
+              sessionID: input.sessionID,
+              parentSessionID: input.replay.parentSessionID,
+              tools: input.replay.prepared.tools,
+              system: [],
+              messages: [...replayMessages, { role: "user" as const, content: replayPrompt }],
+              model,
+              toolChoice: input.replay.toolChoice,
+              request: {
+                replay: replayPrepared,
+                toolExecution: "blocked" as const,
+                silentOverflow: true,
+                silentToolError: true,
+                bufferEvents: true,
+              },
+            } satisfies StreamInput)
+          : undefined
+      const result = yield* processor.process(
+        replayInput ?? legacyInput,
+        replayInput ? { fallback: legacyInput } : undefined,
+      )
 
       if (result === "compact") {
         processor.message.error = new SessionV1.ContextOverflowError({
-          message: replay
+          message: overflowReplay
             ? "Conversation history too large to compact - exceeds model context limit"
             : "Session too large to compact - context exceeds model limit even after stripping media",
         }).toObject()
@@ -466,8 +579,8 @@ const layer = Layer.effect(
       }
 
       if (result === "continue" && input.auto) {
-        if (replay) {
-          const original = replay.info
+        if (overflowReplay) {
+          const original = overflowReplay.info
           const replayMsg = yield* session.updateMessage({
             id: MessageID.ascending(),
             role: "user",
@@ -479,7 +592,7 @@ const layer = Layer.effect(
             tools: original.tools,
             system: original.system,
           })
-          for (const part of replay.parts) {
+          for (const part of overflowReplay.parts) {
             if (part.type === "compaction") continue
             const replayPart =
               part.type === "file" && MessageV2.isMedia(part.mime)
@@ -494,7 +607,7 @@ const layer = Layer.effect(
           }
         }
 
-        if (!replay) {
+        if (!overflowReplay) {
           const info = yield* provider.getProvider(userMessage.model.providerID)
           if (
             (yield* plugin.trigger(

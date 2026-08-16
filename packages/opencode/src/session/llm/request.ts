@@ -37,6 +37,7 @@ type PrepareInput = {
 
 export type Prepared = {
   readonly system: string[]
+  readonly messagePrefix: ModelMessage[]
   readonly messages: ModelMessage[]
   readonly tools: Record<string, Tool>
   readonly params: {
@@ -98,18 +99,16 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
   }
   if (isOpenaiOauth) options.instructions = system.join("\n")
 
-  const messages =
+  const messagePrefix =
     isOpenaiOauth || input.isWorkflow
-      ? input.messages
-      : [
-          ...system.map(
-            (x): ModelMessage => ({
-              role: "system",
-              content: x,
-            }),
-          ),
-          ...input.messages,
-        ]
+      ? []
+      : system.map(
+          (x): ModelMessage => ({
+            role: "system",
+            content: x,
+          }),
+        )
+  const messages = [...messagePrefix, ...input.messages]
 
   const params = yield* input.plugin.trigger(
     "chat.params",
@@ -128,20 +127,6 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
       topK: ProviderTransform.topK(input.model),
       maxOutputTokens: ProviderTransform.maxOutputTokens(input.model, input.flags.outputTokenMax),
       options,
-    },
-  )
-
-  const { headers } = yield* input.plugin.trigger(
-    "chat.headers",
-    {
-      sessionID: input.sessionID,
-      agent: input.agent.name,
-      model: input.model,
-      provider: input.provider,
-      message: input.user,
-    },
-    {
-      headers: {},
     },
   )
 
@@ -174,34 +159,57 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
     })
   }
 
+  return {
+    system,
+    messagePrefix,
+    messages,
+    tools: Object.fromEntries(Object.entries(tools).toSorted(([a], [b]) => a.localeCompare(b))),
+    params,
+    messageTransformOptions: options,
+    headers: yield* prepareHeaders(input),
+  }
+})
+
+export const prepareHeaders = Effect.fn("LLMRequestPrep.prepareHeaders")(function* (
+  input: Pick<
+    PrepareInput,
+    "user" | "sessionID" | "parentSessionID" | "model" | "agent" | "provider" | "plugin" | "flags"
+  >,
+) {
+  const output = yield* input.plugin.trigger(
+    "chat.headers",
+    {
+      sessionID: input.sessionID,
+      agent: input.agent.name,
+      model: input.model,
+      provider: input.provider,
+      message: input.user,
+    },
+    {
+      headers: {},
+    },
+  )
   const opencodeProjectID = input.model.providerID.startsWith("opencode")
     ? (yield* InstanceState.context).project.id
     : undefined
 
   return {
-    system,
-    messages,
-    tools: Object.fromEntries(Object.entries(tools).toSorted(([a], [b]) => a.localeCompare(b))),
-    params,
-    messageTransformOptions: options,
-    headers: {
-      ...(input.model.providerID.startsWith("opencode")
-        ? {
-            ...(opencodeProjectID ? { "x-opencode-project": opencodeProjectID } : {}),
-            "x-opencode-session": input.sessionID,
-            "x-opencode-request": input.user.id,
-            "x-opencode-client": input.flags.client,
-            "User-Agent": USER_AGENT,
-          }
-        : {
-            "x-session-affinity": input.sessionID,
-            "X-Session-Id": input.sessionID,
-            ...(input.parentSessionID ? { "x-parent-session-id": input.parentSessionID } : {}),
-            "User-Agent": USER_AGENT,
-          }),
-      ...input.model.headers,
-      ...headers,
-    },
+    ...(input.model.providerID.startsWith("opencode")
+      ? {
+          ...(opencodeProjectID ? { "x-opencode-project": opencodeProjectID } : {}),
+          "x-opencode-session": input.sessionID,
+          "x-opencode-request": input.user.id,
+          "x-opencode-client": input.flags.client,
+          "User-Agent": USER_AGENT,
+        }
+      : {
+          "x-session-affinity": input.sessionID,
+          "X-Session-Id": input.sessionID,
+          ...(input.parentSessionID ? { "x-parent-session-id": input.parentSessionID } : {}),
+          "User-Agent": USER_AGENT,
+        }),
+    ...input.model.headers,
+    ...output.headers,
   }
 })
 

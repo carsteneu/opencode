@@ -30,6 +30,15 @@ test("compaction prompt gives update instructions for a prior summary", () => {
   expect(prompt).toContain('Update "Objective" and "Next Move" to reflect the current work state.')
 })
 
+test("replay compaction refers to the typed message prefix without serializing it again", () => {
+  const prompt = SessionCompaction.buildReplayPrompt({ context: ["Preserve the deployment constraint."] })
+
+  expect(prompt).toStartWith("Create an anchored summary from the conversation messages above")
+  expect(prompt).toContain("Preserve the deployment constraint.")
+  expect(prompt).toContain("## Work State\n### Completed")
+  expect(prompt).not.toContain("<conversation>")
+})
+
 test("compaction describes tool media without embedding base64", () => {
   const base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"
   const serialized = SessionCompaction.serializeToolContent([

@@ -24,7 +24,7 @@ import { errorMessage } from "@/util/error"
 import { isRecord } from "@/util/record"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@opencode-ai/core/database/database"
-import { Usage, type LLMEvent } from "@opencode-ai/llm"
+import { isContextOverflow, Usage, type LLMEvent } from "@opencode-ai/llm"
 
 const DOOM_LOOP_THRESHOLD = 3
 const TOOL_INPUT_PROGRESS_INTERVAL = 500
@@ -50,7 +50,7 @@ export interface Handle {
       attachments?: SessionV1.FilePart[]
     },
   ) => Effect.Effect<void>
-  readonly process: (streamInput: LLM.StreamInput) => Effect.Effect<Result>
+  readonly process: (streamInput: LLM.StreamInput, options?: { fallback?: LLM.StreamInput }) => Effect.Effect<Result>
 }
 
 type Input = {
@@ -94,6 +94,10 @@ interface ProcessorContext extends Input {
   currentText: BufferedPart<SessionV1.TextPart> | undefined
   reasoningMap: Record<string, BufferedPart<SessionV1.ReasoningPart>>
   nextSnapshot: string | undefined
+  silentOverflow: boolean
+  silentToolError: boolean
+  bufferEvents: boolean
+  discardAttempt: boolean
 }
 
 type StreamEvent = LLMEvent
@@ -135,6 +139,10 @@ const layer = Layer.effect(
         currentText: undefined,
         reasoningMap: {},
         nextSnapshot: undefined,
+        silentOverflow: false,
+        silentToolError: false,
+        bufferEvents: false,
+        discardAttempt: false,
       }
       let aborted = false
 
@@ -673,13 +681,24 @@ const layer = Layer.effect(
       })
 
       const halt = Effect.fn("SessionProcessor.halt")(function* (e: unknown) {
-        yield* Effect.logError("process", {
-          "session.id": input.sessionID,
-          messageID: input.assistantMessage.id,
-          error: errorMessage(e),
-          stack: e instanceof Error ? e.stack : undefined,
-        })
+        const silentToolError =
+          ctx.silentToolError &&
+          e instanceof Error &&
+          e.message.startsWith("Tool call not allowed while generating summary:")
         const error = parse(e)
+        const silentOverflow = ctx.silentOverflow && SessionV1.ContextOverflowError.isInstance(error)
+        if (!silentToolError && !silentOverflow)
+          yield* Effect.logError("process", {
+            "session.id": input.sessionID,
+            messageID: input.assistantMessage.id,
+            error: errorMessage(e),
+            stack: e instanceof Error ? e.stack : undefined,
+          })
+        if (silentToolError) {
+          ctx.assistantMessage.error = error
+          ctx.discardAttempt = ctx.bufferEvents
+          return
+        }
         if (SessionV1.ContextOverflowError.isInstance(error)) {
           if ((yield* config.get()).compaction?.auto === false && !ctx.assistantMessage.summary) {
             ctx.assistantMessage.error = error
@@ -689,7 +708,8 @@ const layer = Layer.effect(
             return
           }
           ctx.needsCompaction = true
-          yield* events.publish(Session.Event.Error, { sessionID: ctx.sessionID, error })
+          ctx.discardAttempt = ctx.bufferEvents && silentOverflow
+          if (!silentOverflow) yield* events.publish(Session.Event.Error, { sessionID: ctx.sessionID, error })
           return
         }
         ctx.assistantMessage.error = error
@@ -700,12 +720,16 @@ const layer = Layer.effect(
         yield* status.set(ctx.sessionID, { type: "idle" })
       })
 
-      const process = Effect.fn("SessionProcessor.process")(function* (streamInput: LLM.StreamInput) {
+      const attempt = Effect.fn("SessionProcessor.attempt")(function* (streamInput: LLM.StreamInput) {
         yield* Effect.logInfo("process", {
           "session.id": input.sessionID,
           messageID: input.assistantMessage.id,
         })
         ctx.needsCompaction = false
+        ctx.silentOverflow = streamInput.request?.silentOverflow === true
+        ctx.silentToolError = streamInput.request?.silentToolError === true
+        ctx.bufferEvents = streamInput.request?.bufferEvents === true
+        ctx.discardAttempt = false
         ctx.shouldBreak = (yield* config.get()).experimental?.continue_loop_on_deny !== true
 
         return yield* Effect.gen(function* () {
@@ -714,21 +738,33 @@ const layer = Layer.effect(
             ctx.reasoningMap = {}
             yield* status.set(ctx.sessionID, { type: "busy" })
             const stream = llm.stream(streamInput)
+            const source = ctx.bufferEvents
+              ? yield* Effect.gen(function* () {
+                  const buffered = [...(yield* Stream.runCollect(stream))]
+                  const overflow = buffered.find(
+                    (event) =>
+                      event.type === "provider-error" &&
+                      (event.classification === "context-overflow" || isContextOverflow(event.message)),
+                  )
+                  if (overflow) {
+                    ctx.needsCompaction = true
+                    ctx.discardAttempt = true
+                    return Stream.empty
+                  }
+                  const tool = buffered.find((event) => event.type.startsWith("tool-") && "name" in event)
+                  if (ctx.assistantMessage.summary && tool && "name" in tool) {
+                    throw new Error(`Tool call not allowed while generating summary: ${tool.name}`)
+                  }
+                  return Stream.fromIterable(buffered)
+                })
+              : stream
 
-            yield* stream.pipe(
+            yield* source.pipe(
               Stream.tap((event) => handleEvent(event)),
               Stream.takeUntil(() => ctx.needsCompaction),
               Stream.runDrain,
             )
           }).pipe(
-            Effect.onInterrupt(() =>
-              Effect.gen(function* () {
-                aborted = true
-                if (!ctx.assistantMessage.error) {
-                  yield* halt(new DOMException("Aborted", "AbortError"))
-                }
-              }),
-            ),
             Effect.catchCauseIf(
               (cause) => !Cause.hasInterruptsOnly(cause),
               (cause) => Effect.fail(Cause.squash(cause)),
@@ -749,13 +785,49 @@ const layer = Layer.effect(
               }),
             ),
             Effect.catch(halt),
-            Effect.ensuring(cleanup()),
           )
 
           if (ctx.needsCompaction) return "compact"
-          if (ctx.blocked || ctx.assistantMessage.error) return "stop"
+          if (ctx.discardAttempt || ctx.blocked || ctx.assistantMessage.error) return "stop"
           return "continue"
         })
+      })
+
+      const process = Effect.fn("SessionProcessor.process")(function* (
+        streamInput: LLM.StreamInput,
+        options?: { fallback?: LLM.StreamInput },
+      ) {
+        return yield* Effect.uninterruptibleMask((restore) =>
+          Effect.gen(function* () {
+            const run = (input: LLM.StreamInput) =>
+              restore(attempt(input)).pipe(
+                Effect.onInterrupt(() =>
+                  Effect.gen(function* () {
+                    aborted = true
+                    if (!ctx.assistantMessage.error) {
+                      yield* halt(new DOMException("Aborted", "AbortError"))
+                    }
+                  }),
+                ),
+              )
+            const result = yield* run(streamInput)
+            if (!ctx.discardAttempt || !options?.fallback) return result
+
+            ctx.assistantMessage.error = undefined
+            ctx.assistantMessage.finish = undefined
+            ctx.assistantMessage.cost = 0
+            ctx.assistantMessage.tokens = {
+              input: 0,
+              output: 0,
+              reasoning: 0,
+              cache: { read: 0, write: 0 },
+            }
+            delete ctx.assistantMessage.time.completed
+            ctx.blocked = false
+            ctx.nextSnapshot = undefined
+            return yield* run(options.fallback)
+          }).pipe(Effect.ensuring(cleanup())),
+        )
       })
 
       return {
