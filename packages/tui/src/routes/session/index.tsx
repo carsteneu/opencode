@@ -62,6 +62,7 @@ import { DialogForkFromTimeline } from "./dialog-fork-from-timeline"
 import { DialogSessionRename } from "../../component/dialog-session-rename"
 import { Sidebar } from "./sidebar"
 import { SubagentFooter } from "./subagent-footer.tsx"
+import { AgentsStatusBlock } from "./agents-status-block.tsx"
 import { Footer } from "./footer.tsx"
 import { filetype } from "../../util/filetype"
 import parsers from "../../parsers-config"
@@ -1633,9 +1634,12 @@ export function Session() {
                     directory={sync.session.get(questions()[0].sessionID)?.directory}
                   />
                 </Show>
-                <Show when={session()?.parentID}>
-                  <SubagentFooter />
-                </Show>
+                  <Show when={session()?.parentID}>
+                    <SubagentFooter />
+                  </Show>
+                  <Show when={!session()?.parentID}>
+                    <AgentsStatusBlock />
+                  </Show>
                 <Show when={visible()}>
                   <pluginRuntime.Slot
                     name="session_prompt"
