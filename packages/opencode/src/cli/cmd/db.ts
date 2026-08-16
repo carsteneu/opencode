@@ -3,7 +3,42 @@ import { spawn } from "child_process"
 import { Database } from "@opencode-ai/core/database/database"
 import { Effect } from "effect"
 import { sql } from "drizzle-orm"
-import { effectCmd } from "../effect-cmd"
+import { CliError, effectCmd } from "../effect-cmd"
+import { cmd } from "./cmd"
+import { isAbsolute } from "path"
+
+type EventsArgs = {
+  database: string
+  format: "json" | "text"
+}
+
+const EventsCommand = cmd<{}, EventsArgs>({
+  command: "events",
+  describe: "analyze event log growth without modifying the database",
+  builder: (yargs) =>
+    yargs
+      .option("database", {
+        type: "string",
+        demandOption: true,
+        describe: "absolute path to the database file to analyze",
+      })
+      .option("format", {
+        type: "string",
+        choices: ["json", "text"] as const,
+        default: "text" as const,
+        describe: "output format",
+      }),
+  async handler(args) {
+    if (!isAbsolute(args.database)) {
+      throw new CliError({ message: "--database must be an absolute path" })
+    }
+    if (!(await Bun.file(args.database).exists())) {
+      throw new CliError({ message: `Database does not exist: ${args.database}` })
+    }
+    const { analyzeEventDatabase, printEventAnalysis } = await import("./db-events")
+    printEventAnalysis(await analyzeEventDatabase(args.database), args.format)
+  },
+})
 
 const QueryCommand = effectCmd({
   command: "$0 [query]",
@@ -23,7 +58,7 @@ const QueryCommand = effectCmd({
       })
   },
   handler: Effect.fn("Cli.db.query")(function* (args: { query?: string; format: string }) {
-    const query = args.query as string | undefined
+    const query = args.query
     if (query) {
       const { db } = yield* Database.Service
       const result = yield* db.all<Record<string, unknown>>(sql.raw(query)).pipe(Effect.orDie)
@@ -51,12 +86,11 @@ const PathCommand = effectCmd({
   }),
 })
 
-export const DbCommand = effectCmd({
+export const DbCommand = cmd({
   command: "db",
   describe: "database tools",
-  instance: false,
   builder: (yargs: Argv) => {
-    return yargs.command(QueryCommand).command(PathCommand).demandCommand()
+    return yargs.command(QueryCommand).command(PathCommand).command(EventsCommand).demandCommand()
   },
-  handler: Effect.fn("Cli.db")(function* () {}),
+  async handler() {},
 })

@@ -405,6 +405,7 @@ export const layerWith = (options?: LayerOptions) =>
 
       function notify(event: Payload, isolateListeners: boolean) {
         return Effect.gen(function* () {
+          if (event.type === Event.Compacted.type) return
           yield* Effect.forEach(
             listeners,
             (listener) => (isolateListeners ? observe(event, listener) : listener(event)),

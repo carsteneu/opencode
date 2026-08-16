@@ -12,7 +12,7 @@ import { EventSequenceTable, EventTable } from "@opencode-ai/core/event/sql"
 import { Location } from "@opencode-ai/core/location"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { WorkspaceV2 } from "@opencode-ai/core/workspace"
-import { eq } from "drizzle-orm"
+import { asc, eq } from "drizzle-orm"
 import { location } from "./fixture/location"
 import { testEffect } from "./lib/effect"
 
@@ -770,6 +770,74 @@ describe("EventV2", () => {
       expect(one).toBe(aggregateID)
       expect(two).toBe(aggregateID)
       expect(rows.map((row) => row.seq)).toEqual([0, 1, 2, 3])
+    }),
+  )
+
+  it.effect("replays compacted checkpoints as no-ops before the next aggregate event", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const database = yield* Database.Service
+      const aggregateID = Session.ID.create()
+      const compactedID = EventV2.ID.create()
+      const nextID = EventV2.ID.create()
+      const projected = new Array<EventV2.ID>()
+      const published = new Array<string>()
+      const compacted = {
+        id: compactedID,
+        type: EventV2.versionedType(Event.Compacted.type, Event.Compacted.durable!.version),
+        seq: 0,
+        aggregateID,
+        data: {
+          aggregateID,
+          supersededType: "message.updated.1",
+          supersededBy: nextID,
+        },
+      }
+      const next = {
+        id: nextID,
+        type: EventV2.versionedType(DurableMessage.type, DurableMessage.durable!.version),
+        seq: 1,
+        aggregateID,
+        data: durableData(aggregateID, "after-compacted"),
+      }
+      yield* events.project(DurableMessage, (event) =>
+        Effect.sync(() => {
+          projected.push(event.id)
+        }),
+      )
+      yield* events.listen((event) =>
+        Effect.sync(() => {
+          published.push(event.type)
+        }),
+      )
+
+      yield* events.replay(compacted, { publish: true })
+      yield* events.replay(next, { publish: true })
+
+      const rows = yield* database.db
+        .select({
+          id: EventTable.id,
+          aggregateID: EventTable.aggregate_id,
+          seq: EventTable.seq,
+          type: EventTable.type,
+          data: EventTable.data,
+        })
+        .from(EventTable)
+        .where(eq(EventTable.aggregate_id, aggregateID))
+        .orderBy(asc(EventTable.seq))
+        .all()
+        .pipe(Effect.orDie)
+      const history = Array.from(yield* events.durable({ aggregateID }).pipe(Stream.take(2), Stream.runCollect))
+
+      expect(projected).toEqual([nextID])
+      expect(published).toEqual([DurableMessage.type])
+      expect(rows).toEqual([compacted, next])
+      expect(
+        history.map((event) => ({ id: event.id, aggregateID: event.durable?.aggregateID, seq: event.durable?.seq })),
+      ).toEqual([
+        { id: compactedID, aggregateID, seq: 0 },
+        { id: nextID, aggregateID, seq: 1 },
+      ])
     }),
   )
 
