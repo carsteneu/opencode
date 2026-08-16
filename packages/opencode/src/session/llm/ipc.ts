@@ -1,5 +1,6 @@
 const binary = "__opencode_uint8array__"
 const error = "__opencode_error__"
+const highWaterMark = 64 * 1024
 
 export function stringify(value: unknown) {
   return JSON.stringify(value, function (key, item) {
@@ -22,4 +23,92 @@ export function parse(value: string) {
   ) as unknown
 }
 
-export const LLMWorkerIPC = { stringify, parse }
+export function lineReader(stream: ReadableStream<Uint8Array>) {
+  const reader = stream.getReader()
+  const decoder = new TextDecoder()
+  let fragments: string[] = []
+  let ready: string[] = []
+  let readyIndex = 0
+  let ended = false
+
+  const append = (value: string) => {
+    let start = 0
+    while (true) {
+      const index = value.indexOf("\n", start)
+      if (index === -1) break
+      const fragment = value.slice(start, index)
+      if (fragments.length === 0) ready.push(fragment)
+      else {
+        fragments.push(fragment)
+        ready.push(fragments.join(""))
+        fragments = []
+      }
+      start = index + 1
+    }
+    if (start < value.length) fragments.push(value.slice(start))
+  }
+
+  const take = () => {
+    if (readyIndex >= ready.length) return undefined
+    const result = ready[readyIndex++]
+    if (readyIndex === ready.length) {
+      ready = []
+      readyIndex = 0
+    }
+    return result
+  }
+
+  const read = async (): Promise<string | undefined> => {
+    while (true) {
+      const line = take()
+      if (line !== undefined) return line
+
+      if (ended) {
+        if (fragments.length === 0) return
+        const result = fragments.join("")
+        fragments = []
+        return result
+      }
+
+      const result = await reader.read()
+      if (result.done) {
+        append(decoder.decode())
+        ended = true
+        continue
+      }
+      append(decoder.decode(result.value, { stream: true }))
+    }
+  }
+
+  const cancel = () => reader.cancel()
+  return { read, cancel }
+}
+
+export function writer(sink: ReturnType<typeof Bun.stdout.writer>) {
+  sink.start({ highWaterMark })
+  let writing = Promise.resolve()
+  let writeError: unknown
+  const enqueue = <T>(run: () => T | Promise<T>) => {
+    const result = writing.then(async () => {
+      if (writeError) throw writeError
+      return run()
+    })
+    writing = result.then(
+      () => undefined,
+      (error) => {
+        writeError = error
+      },
+    )
+    return result
+  }
+
+  const write = (value: unknown) =>
+    enqueue(async () => {
+      await sink.write(stringify(value) + "\n")
+      await sink.flush()
+    })
+  const end = () => enqueue(async () => void (await sink.end()))
+  return { write, end }
+}
+
+export const LLMWorkerIPC = { stringify, parse, lineReader, writer }

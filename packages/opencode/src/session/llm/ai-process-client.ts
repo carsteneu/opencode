@@ -43,7 +43,7 @@ export type AIProcessTool = {
 }
 
 type ProcessEvent =
-  | { readonly type: "events"; readonly events: unknown[] }
+  | { readonly type: "events"; readonly id: number; readonly events: unknown[] }
   | {
       readonly type: "tool"
       readonly action: "execute"
@@ -63,6 +63,14 @@ type ProcessEvent =
     }
   | { readonly type: "end" }
   | { readonly type: "error"; readonly error: string }
+
+export type ProcessOptions = {
+  readonly command?: string[]
+  readonly killGraceMs?: number
+}
+
+const stderrLimit = 64 * 1024
+const killGraceMs = 1_000
 
 function command() {
   if (typeof OPENCODE_LLM_PROCESS !== "undefined" && OPENCODE_LLM_PROCESS)
@@ -148,141 +156,237 @@ export function prepareTools(tools: Record<string, Tool>) {
   return Object.fromEntries(entries.filter((entry) => entry !== undefined))
 }
 
-export function stream(input: AIProcessInput, tools: Record<string, Tool>, messages: ModelMessage[], abort: AbortSignal) {
-  return Stream.callback<AISDKEvent, Error>((queue) =>
-    Effect.acquireRelease(
-      Effect.sync(() => {
-        const child = Bun.spawn(command(), { stdin: "pipe", stdout: "pipe", stderr: "pipe", env: process.env })
-        const lifecycle = new AbortController()
-        const toolSignal = AbortSignal.any([abort, lifecycle.signal])
-        let terminal = false
-        let closed = false
-        let killed = false
-        const close = () => {
-          if (!closed) {
-            closed = true
-            lifecycle.abort()
+export function stream(
+  input: AIProcessInput,
+  tools: Record<string, Tool>,
+  messages: ModelMessage[],
+  abort: AbortSignal,
+  options?: ProcessOptions,
+) {
+  return Stream.callback<AISDKEvent, Error>(
+    (queue) =>
+      Effect.acquireRelease(
+        Effect.sync(() => {
+          const child = Bun.spawn(options?.command ?? command(), {
+            stdin: "pipe",
+            stdout: "pipe",
+            stderr: "pipe",
+            env: process.env,
+            lazy: true,
+          })
+          const stdout = LLMWorkerIPC.lineReader(child.stdout)
+          const stderr = captureStderr(child.stderr)
+          const grace = Math.max(0, options?.killGraceMs ?? killGraceMs)
+          const inputWriter = LLMWorkerIPC.writer(child.stdin)
+          let termination: Promise<void> | undefined
+          let terminationError = ""
+          const lifecycle = new AbortController()
+          const toolSignal = AbortSignal.any([abort, lifecycle.signal])
+          let terminal = false
+          let closed = false
+          const close = () => {
+            if (!closed) {
+              closed = true
+              lifecycle.abort()
+            }
+            if (termination) return termination
+            termination = (async () => {
+              try {
+                if (child.exitCode === null) child.kill("SIGTERM")
+              } catch (error) {
+                terminationError += `\nFailed to send SIGTERM: ${error instanceof Error ? error.message : String(error)}`
+              }
+              if (await settlesWithin(child.exited, grace)) return
+              try {
+                if (child.exitCode === null) child.kill("SIGKILL")
+              } catch (error) {
+                terminationError += `\nFailed to send SIGKILL: ${error instanceof Error ? error.message : String(error)}`
+              }
+              if (await settlesWithin(child.exited, grace)) return
+              void stdout.cancel().catch(() => undefined)
+              void stderr.cancel().catch(() => undefined)
+              try {
+                child.unref()
+              } catch (error) {
+                terminationError += `\nFailed to unref LLM process: ${error instanceof Error ? error.message : String(error)}`
+              }
+              terminationError += "\nLLM process did not exit after SIGKILL"
+            })()
+            return termination
           }
-          if (killed) return
-          killed = true
-          child.kill()
-        }
-        const write = (value: unknown) => {
-          if (closed) return false
-          void child.stdin.write(LLMWorkerIPC.stringify(value) + "\n")
-          return true
-        }
-        const fail = (error: unknown) => {
-          if (terminal) return
-          terminal = true
-          close()
-          Queue.failCauseUnsafe(queue, Cause.fail(error instanceof Error ? error : new Error(String(error))))
-        }
-        const onAbort = () => {
-          fail(new DOMException("Aborted", "AbortError"))
-        }
-        abort.addEventListener("abort", onAbort, { once: true })
-        if (abort.aborted) onAbort()
-        if (!terminal) {
-          try {
-            write(input)
-          } catch (error) {
-            fail(error)
+          const write = async (value: unknown) => {
+            if (closed) return false
+            await inputWriter.write(value)
+            return true
           }
-        }
-        const executeTool = async (message: Extract<ProcessEvent, { type: "tool" }>) => {
-          const tool = tools[message.name]
-          const response = await (async () => {
-            try {
-              if (message.action === "model-output") {
-                if (!tool?.toModelOutput) throw new Error(`Tool has no model output handler: ${message.name}`)
+          const end = inputWriter.end
+          const fail = (error: unknown) => {
+            if (terminal) return
+            terminal = true
+            void close()
+            Queue.failCauseUnsafe(queue, Cause.fail(error instanceof Error ? error : new Error(String(error))))
+          }
+          const onAbort = () => {
+            fail(new DOMException("Aborted", "AbortError"))
+          }
+          abort.addEventListener("abort", onAbort, { once: true })
+          if (abort.aborted) onAbort()
+          if (!terminal) void write(input).catch(fail)
+          const executeTool = async (message: Extract<ProcessEvent, { type: "tool" }>) => {
+            const tool = tools[message.name]
+            const response = await (async () => {
+              try {
+                if (message.action === "model-output") {
+                  if (!tool?.toModelOutput) throw new Error(`Tool has no model output handler: ${message.name}`)
+                  return {
+                    type: "tool-result",
+                    id: message.id,
+                    result: await tool.toModelOutput({
+                      toolCallId: message.callID,
+                      input: message.input,
+                      output: message.output,
+                    }),
+                  }
+                }
+                if (!tool?.execute) throw new Error(`Tool has no execute handler: ${message.name}`)
                 return {
                   type: "tool-result",
                   id: message.id,
-                  result: await tool.toModelOutput({
+                  result: await tool.execute(message.input, {
                     toolCallId: message.callID,
-                    input: message.input,
-                    output: message.output,
+                    messages,
+                    abortSignal: toolSignal,
                   }),
                 }
+              } catch (error) {
+                return {
+                  type: "tool-error",
+                  id: message.id,
+                  error: error instanceof Error ? error.message : String(error),
+                }
               }
-              if (!tool?.execute) throw new Error(`Tool has no execute handler: ${message.name}`)
-              return {
-                type: "tool-result",
-                id: message.id,
-                result: await tool.execute(message.input, {
-                  toolCallId: message.callID,
-                  messages,
-                  abortSignal: toolSignal,
-                }),
-              }
-            } catch (error) {
-              return {
-                type: "tool-error",
-                id: message.id,
-                error: error instanceof Error ? error.message : String(error),
-              }
-            }
-          })()
-          write(response)
-        }
-        const startTool = (message: Extract<ProcessEvent, { type: "tool" }>) => {
-          void executeTool(message).catch(fail)
-        }
-        void read(child.stdout, (message) => {
-          if (terminal) return
-          if (message.type === "events") {
-            Queue.offerAllUnsafe(queue, message.events as AISDKEvent[])
-            return
+            })()
+            await write(response)
           }
-          if (message.type === "tool") {
-            startTool(message)
-            return
+          const startTool = (message: Extract<ProcessEvent, { type: "tool" }>) => {
+            void executeTool(message).catch(fail)
           }
-          if (message.type === "end") {
-            terminal = true
-            closed = true
-            lifecycle.abort()
-            Queue.endUnsafe(queue)
-            void child.stdin.end()
-            return
-          }
-          fail(new Error(message.error))
-        })
-          .then(async () => {
+          void read(stdout, async (message) => {
             if (terminal) return
-            const error = await new Response(child.stderr).text()
-            fail(new Error(error.trim() || `LLM process exited with code ${await child.exited}`))
+            if (message.type === "events") {
+              const remaining = await Effect.runPromise(Queue.offerAll(queue, message.events as AISDKEvent[]))
+              if (remaining.length > 0) throw new DOMException("LLM event queue closed", "AbortError")
+              if (terminal) return
+              if (!(await write({ type: "events-ack", id: message.id })))
+                throw new DOMException("LLM process input closed", "AbortError")
+              return
+            }
+            if (message.type === "tool") {
+              startTool(message)
+              return
+            }
+            if (message.type === "end") {
+              terminal = true
+              closed = true
+              lifecycle.abort()
+              Queue.endUnsafe(queue)
+              void end().catch(() => undefined)
+              return
+            }
+            fail(new Error(message.error))
           })
-          .catch(fail)
-        const release = async () => {
-          terminal = true
-          close()
-          await child.exited
-        }
-        return { onAbort, release }
-      }),
-      ({ onAbort, release }) =>
-        Effect.promise(async () => {
-          abort.removeEventListener("abort", onAbort)
-          await release()
+            .then(async () => {
+              if (terminal) return
+              await close()
+              await settlesWithin(stderr.done, Math.max(grace, 100))
+              fail(
+                new Error(
+                  (stderr.text() + terminationError).trim() ||
+                    `LLM process exited with code ${child.exitCode ?? "unknown"}`,
+                ),
+              )
+            })
+            .catch(fail)
+          const release = async () => {
+            terminal = true
+            await close()
+            await settlesWithin(stderr.done, Math.max(grace, 100))
+          }
+          return { onAbort, release }
         }),
-    ),
+        ({ onAbort, release }) =>
+          Effect.promise(async () => {
+            abort.removeEventListener("abort", onAbort)
+            await release()
+          }),
+      ),
+    { bufferSize: 1, strategy: "suspend" },
   )
 }
 
-async function read(stdout: ReadableStream<Uint8Array>, emit: (message: ProcessEvent) => void | Promise<void>) {
-  const reader = stdout.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ""
+async function read(
+  lines: ReturnType<typeof LLMWorkerIPC.lineReader>,
+  emit: (message: ProcessEvent) => void | Promise<void>,
+) {
   while (true) {
-    const result = await reader.read()
-    if (result.done) break
-    buffer += decoder.decode(result.value, { stream: true })
-    const lines = buffer.split("\n")
-    buffer = lines.pop() ?? ""
-    for (const line of lines.filter(Boolean)) await emit(LLMWorkerIPC.parse(line) as ProcessEvent)
+    const line = await lines.read()
+    if (line === undefined) return
+    if (line) await emit(LLMWorkerIPC.parse(line) as ProcessEvent)
   }
+}
+
+function captureStderr(stderr: ReadableStream<Uint8Array>) {
+  const ring = new Uint8Array(stderrLimit)
+  const reader = stderr.getReader()
+  let size = 0
+  let next = 0
+  let readError = ""
+  const done = (async () => {
+    while (true) {
+      const result = await reader.read()
+      if (result.done) return
+      const chunk = result.value
+      if (chunk.length >= ring.length) {
+        ring.set(chunk.subarray(chunk.length - ring.length))
+        size = ring.length
+        next = 0
+        continue
+      }
+      const first = Math.min(chunk.length, ring.length - next)
+      ring.set(chunk.subarray(0, first), next)
+      if (first < chunk.length) ring.set(chunk.subarray(first), 0)
+      next = (next + chunk.length) % ring.length
+      size = Math.min(ring.length, size + chunk.length)
+    }
+  })().catch((error) => {
+    readError = `\nFailed to read worker stderr: ${error instanceof Error ? error.message : String(error)}`
+  })
+
+  const text = () => {
+    if (size < ring.length) return new TextDecoder().decode(ring.subarray(0, size)) + readError
+    const value = new Uint8Array(size)
+    value.set(ring.subarray(next))
+    value.set(ring.subarray(0, next), ring.length - next)
+    return new TextDecoder().decode(value) + readError
+  }
+  const cancel = () => reader.cancel()
+  return { done, text, cancel }
+}
+
+function settlesWithin(promise: Promise<unknown>, ms: number) {
+  return new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => resolve(false), ms)
+    void promise.then(
+      () => {
+        clearTimeout(timer)
+        resolve(true)
+      },
+      () => {
+        clearTimeout(timer)
+        resolve(true)
+      },
+    )
+  })
 }
 
 export const LLMAIProcess = { enabled, providerOptions, inputSupported, stream, prepareTools }

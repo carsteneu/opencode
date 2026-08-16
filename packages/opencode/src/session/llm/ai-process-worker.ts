@@ -1,6 +1,3 @@
-import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
-import { createOpenAI } from "@ai-sdk/openai"
-import { createAnthropic } from "@ai-sdk/anthropic"
 import { jsonSchema, streamText, tool, type Tool, wrapLanguageModel } from "ai"
 import { LLMWorkerIPC } from "./ipc"
 import type { AIProcessInput } from "./ai-process-client"
@@ -10,39 +7,41 @@ import { LLMMessageTransform } from "./message-transform"
 
 // @ts-ignore AI SDK uses this global flag to suppress provider warnings on stdout.
 globalThis.AI_SDK_LOG_WARNINGS = false
+const deltaFlushMs = 50
 
-const lines = Bun.stdin.stream().getReader()
-const decoder = new TextDecoder()
-let buffer = ""
-
-async function line() {
-  while (true) {
-    const index = buffer.indexOf("\n")
-    if (index !== -1) {
-      const result = buffer.slice(0, index)
-      buffer = buffer.slice(index + 1)
-      return result
-    }
-    const result = await lines.read()
-    if (result.done) return buffer
-    buffer += decoder.decode(result.value, { stream: true })
-  }
-}
-
-const input = LLMWorkerIPC.parse(await line()) as AIProcessInput
+const lines = LLMWorkerIPC.lineReader(Bun.stdin.stream())
+const initial = await lines.read()
+if (!initial) throw new Error("LLM process input ended before the request")
+const input = LLMWorkerIPC.parse(initial) as AIProcessInput
 const pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>()
+const acknowledgements = new Map<number, { resolve: () => void; reject: (error: Error) => void }>()
 const abort = new AbortController()
 let requestID = 0
+let eventID = 0
 void (async () => {
   while (true) {
-    const value = await line()
-    if (!value) {
-      abort.abort()
+    const value = await lines.read()
+    if (value === undefined) {
+      const error = new DOMException("LLM process input ended", "AbortError")
+      abort.abort(error)
+      pending.forEach((item) => item.reject(error))
+      acknowledgements.forEach((item) => item.reject(error))
+      pending.clear()
+      acknowledgements.clear()
       return
     }
+    if (!value) continue
     const message = LLMWorkerIPC.parse(value) as
       | { type: "tool-result"; id: number; result: unknown }
       | { type: "tool-error"; id: number; error: string }
+      | { type: "events-ack"; id: number }
+    if (message.type === "events-ack") {
+      const item = acknowledgements.get(message.id)
+      if (!item) continue
+      acknowledgements.delete(message.id)
+      item.resolve()
+      continue
+    }
     const item = pending.get(message.id)
     if (!item) continue
     pending.delete(message.id)
@@ -51,14 +50,43 @@ void (async () => {
   }
 })()
 
-const write = (value: unknown) => process.stdout.write(LLMWorkerIPC.stringify(value) + "\n")
+const output = LLMWorkerIPC.writer(Bun.stdout.writer())
+const write = output.write
+let eventOutput = Promise.resolve()
+let eventOutputError: unknown
+const writeEvents = (events: unknown[]) => {
+  const result = eventOutput.then(() => {
+    if (eventOutputError) throw eventOutputError
+    abort.signal.throwIfAborted()
+    return new Promise<void>((resolve, reject) => {
+      const id = eventID++
+      acknowledgements.set(id, { resolve, reject })
+      void write({ type: "events", id, events }).catch((error) => {
+        acknowledgements.delete(id)
+        reject(error instanceof Error ? error : new Error(String(error)))
+      })
+    })
+  })
+  eventOutput = result.then(
+    () => undefined,
+    (error) => {
+      eventOutputError = error
+    },
+  )
+  return result
+}
 const options = applyRuntimeFetch({ ...input.options })
-const model = (() => {
+const model = await (async () => {
   if (input.package === "@ai-sdk/openai") {
+    const { createOpenAI } = await import("@ai-sdk/openai")
     const provider = createOpenAI(options)
     return provider.responses(input.model)
   }
-  if (input.package === "@ai-sdk/anthropic") return createAnthropic(options)(input.model)
+  if (input.package === "@ai-sdk/anthropic") {
+    const { createAnthropic } = await import("@ai-sdk/anthropic")
+    return createAnthropic(options)(input.model)
+  }
+  const { createOpenAICompatible } = await import("@ai-sdk/openai-compatible")
   return createOpenAICompatible({
     name: input.provider,
     ...options,
@@ -73,7 +101,10 @@ const requestTool = (message: ToolRequest) =>
   new Promise<unknown>((resolve, reject) => {
     const id = requestID++
     pending.set(id, { resolve, reject })
-    write({ type: "tool", id, ...message })
+    void write({ type: "tool", id, ...message }).catch((error) => {
+      pending.delete(id)
+      reject(error instanceof Error ? error : new Error(String(error)))
+    })
   })
 const tools = Object.fromEntries(
   Object.entries(input.tools).map(([name, item]) => [
@@ -84,14 +115,11 @@ const tools = Object.fromEntries(
       title: item.title,
       providerOptions: item.providerOptions,
       inputSchema: jsonSchema(item.inputSchema as Parameters<typeof jsonSchema>[0]),
-      outputSchema: item.outputSchema
-        ? jsonSchema(item.outputSchema as Parameters<typeof jsonSchema>[0])
-        : undefined,
+      outputSchema: item.outputSchema ? jsonSchema(item.outputSchema as Parameters<typeof jsonSchema>[0]) : undefined,
       inputExamples: item.inputExamples,
       needsApproval: item.needsApproval,
       strict: item.strict,
-      execute: (value, context) =>
-        requestTool({ action: "execute", name, input: value, callID: context.toolCallId }),
+      execute: (value, context) => requestTool({ action: "execute", name, input: value, callID: context.toolCallId }),
       toModelOutput: item.toModelOutput
         ? async (options) =>
             (await requestTool({
@@ -133,31 +161,43 @@ const result = streamText({
   },
 })
 let pendingDelta: { event: unknown & { type: string; id?: string; text?: string } } | undefined
+let currentDelta: { type: string; id?: string } | undefined
 let timer: Timer | undefined
-const flush = () => {
+const flush = async () => {
   if (!pendingDelta) return
-  write({ type: "events", events: [pendingDelta.event] })
+  const event = pendingDelta.event
   pendingDelta = undefined
   if (timer) clearTimeout(timer)
   timer = undefined
+  await writeEvents([event])
 }
 for await (const event of result.fullStream) {
-  if (
-    pendingDelta &&
-    (event.type === "text-delta" || event.type === "reasoning-delta") &&
-    pendingDelta.event.type === event.type &&
-    pendingDelta.event.id === event.id
-  ) {
+  if (event.type !== "text-delta" && event.type !== "reasoning-delta") {
+    await flush()
+    currentDelta = undefined
+    await writeEvents([event])
+    continue
+  }
+
+  if (currentDelta?.type !== event.type || currentDelta.id !== event.id) {
+    await flush()
+    currentDelta = { type: event.type, id: event.id }
+    await writeEvents([event])
+    continue
+  }
+
+  if (pendingDelta) {
     pendingDelta.event = { ...event, text: (pendingDelta.event.text ?? "") + event.text }
     continue
   }
-  flush()
-  if (event.type !== "text-delta" && event.type !== "reasoning-delta") {
-    write({ type: "events", events: [event] })
-    continue
-  }
+
   pendingDelta = { event }
-  timer = setTimeout(flush, 200)
+  timer = setTimeout(() => {
+    void flush().catch((error) => abort.abort(error))
+  }, deltaFlushMs)
 }
-flush()
-write({ type: "end" })
+await flush()
+await eventOutput
+if (eventOutputError) throw eventOutputError
+await write({ type: "end" })
+await output.end()

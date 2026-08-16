@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
+import path from "node:path"
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
 import { jsonSchema, streamText, tool, type ModelMessage, wrapLanguageModel } from "ai"
 import { Effect, Stream } from "effect"
@@ -10,10 +11,36 @@ import { blockedTools } from "@/session/llm/blocked-tools"
 import { ProviderTest } from "../fake/provider"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
+import { tmpdir } from "../fixture/fixture"
 
 const servers: Bun.Server<unknown>[] = []
+const fixtureProcesses = new Set<number>()
+const workerFixture = new URL("../fixture/ai-process-worker.ts", import.meta.url).pathname
+const runtimeWorker = new URL("../../src/session/llm/ai-process-worker.ts", import.meta.url).pathname
 
-afterEach(() => servers.splice(0).map((server) => server.stop(true)))
+afterEach(() => {
+  servers.splice(0).map((server) => server.stop(true))
+  for (const pid of fixtureProcesses) {
+    if (running(pid)) process.kill(pid, "SIGKILL")
+  }
+  fixtureProcesses.clear()
+})
+
+function running(pid: number) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function fixtureCommand(
+  mode: "stderr-before-end" | "stderr-error" | "ignore-term" | "slow-output" | "initial-frame",
+  ...args: string[]
+) {
+  return [process.execPath, workerFixture, mode, ...args]
+}
 
 function input(server: Bun.Server<unknown>, tools: AIProcessInput["tools"] = {}): AIProcessInput {
   const model = ProviderTest.model({
@@ -68,6 +95,148 @@ function chunk(delta: Record<string, unknown>, finish?: string) {
 }
 
 describe("LLM AI process", () => {
+  test("drains stderr beyond pipe capacity before the worker writes stdout", async () => {
+    const server = serve([])
+    const abort = new AbortController()
+    const watchdog = setTimeout(() => abort.abort(), 8_000)
+    try {
+      const events = await Effect.runPromise(
+        LLMAIProcess.stream(input(server), {}, [{ role: "user", content: "hello" }], abort.signal, {
+          command: fixtureCommand("stderr-before-end"),
+          killGraceMs: 25,
+        }).pipe(Stream.runCollect),
+      )
+      expect([...events]).toEqual([])
+    } finally {
+      clearTimeout(watchdog)
+    }
+  }, 10_000)
+
+  test("retains only the bounded stderr tail when the worker exits unexpectedly", async () => {
+    const server = serve([])
+    const abort = new AbortController()
+    const watchdog = setTimeout(() => abort.abort(), 8_000)
+    try {
+      const error = await Effect.runPromise(
+        LLMAIProcess.stream(input(server), {}, [{ role: "user", content: "hello" }], abort.signal, {
+          command: fixtureCommand("stderr-error"),
+          killGraceMs: 25,
+        }).pipe(Stream.runDrain),
+      ).catch((error) => error)
+      expect(error).toBeInstanceOf(Error)
+      if (!(error instanceof Error)) throw error
+      expect(error.message).toContain("TAIL_SHOULD_SURVIVE")
+      expect(error.message).not.toContain("PREFIX_SHOULD_BE_DROPPED")
+      expect(Buffer.byteLength(error.message)).toBeLessThanOrEqual(64 * 1024)
+    } finally {
+      clearTimeout(watchdog)
+    }
+  }, 10_000)
+
+  test("backpressures a fast worker while the stream consumer is gated without dropping frames", async () => {
+    await using tmp = await tmpdir()
+    const progress = path.join(tmp.path, "progress")
+    const complete = path.join(tmp.path, "complete")
+    const started = path.join(tmp.path, "started")
+    const first = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const frameText = "x".repeat(64 * 1024)
+    const received: string[] = []
+    let contentsExact = true
+    const server = serve([])
+    const abort = new AbortController()
+    const watchdog = setTimeout(() => abort.abort(), 10_000)
+    let pid = 0
+    const consuming = Effect.runPromise(
+      LLMAIProcess.stream(input(server), {}, [{ role: "user", content: "hello" }], abort.signal, {
+        command: fixtureCommand("slow-output", progress, complete, started),
+        killGraceMs: 25,
+      }).pipe(
+        Stream.runForEach((event) =>
+          Effect.promise(async () => {
+            if (event.type !== "text-delta") return
+            if (event.id !== "ready") {
+              received.push(event.id)
+              contentsExact = contentsExact && event.text === frameText
+              return
+            }
+            pid = Number(event.text)
+            fixtureProcesses.add(pid)
+            first.resolve()
+            await release.promise
+          }),
+        ),
+      ),
+    )
+
+    let heldError: unknown
+    try {
+      expect(await Promise.race([first.promise.then(() => true), consuming.then(() => false)])).toBeTrue()
+      for (let attempt = 0; attempt < 1_000 && !(await Bun.file(started).exists()); attempt++) {
+        await Bun.sleep(5)
+      }
+      expect(await Bun.file(started).text()).toBe("started")
+
+      let count = 0
+      for (let attempt = 0; attempt < 1_000 && count < 1 && !(await Bun.file(complete).exists()); attempt++) {
+        if (await Bun.file(progress).exists()) count = Number(await Bun.file(progress).text())
+        if (count < 1) await Bun.sleep(5)
+      }
+      let stable = 0
+      let previous = count
+      while (stable < 5 && !(await Bun.file(complete).exists())) {
+        await Bun.sleep(10)
+        const current = Number(await Bun.file(progress).text())
+        stable = current === previous ? stable + 1 : 0
+        previous = current
+      }
+      expect(previous).toBeGreaterThanOrEqual(1)
+      expect(previous).toBeLessThanOrEqual(2)
+      expect(await Bun.file(complete).exists()).toBeFalse()
+    } catch (error) {
+      heldError = error
+    } finally {
+      release.resolve()
+    }
+
+    try {
+      await consuming
+    } finally {
+      clearTimeout(watchdog)
+    }
+    if (heldError) throw heldError
+    expect(received).toHaveLength(512)
+    expect(received).toEqual(Array.from({ length: 512 }, (_, index) => `frame-${index}`))
+    expect(contentsExact).toBeTrue()
+    expect(await Bun.file(complete).text()).toBe("done")
+    expect(running(pid)).toBeFalse()
+    fixtureProcesses.delete(pid)
+  }, 15_000)
+
+  test("writes and acknowledges a 50 MiB initial worker frame", async () => {
+    const server = serve([])
+    const payload = "0123456789abcdef".repeat((50 * 1024 * 1024) / 16)
+    const digest = new Bun.CryptoHasher("sha256").update(payload).digest("hex")
+    const request = input(server)
+    const abort = new AbortController()
+    const watchdog = setTimeout(() => abort.abort(), 15_000)
+    try {
+      const events = await Effect.runPromise(
+        LLMAIProcess.stream(
+          { ...request, options: { ...request.options, fixturePayload: payload } },
+          {},
+          [{ role: "user", content: "hello" }],
+          abort.signal,
+          { command: fixtureCommand("initial-frame"), killGraceMs: 25 },
+        ).pipe(Stream.runCollect),
+      )
+      const acknowledgements = events.filter((event) => event.type === "text-delta")
+      expect(acknowledgements.map((event) => event.text)).toEqual([`${payload.length}:${digest}`])
+    } finally {
+      clearTimeout(watchdog)
+    }
+  }, 20_000)
+
   test("streams through a child and coalesces text without changing content", async () => {
     const text = Array.from({ length: 80 }, (_, index) => String(index % 10))
     const server = serve(
@@ -83,7 +252,66 @@ describe("LLM AI process", () => {
     expect(deltas.map((event) => event.text).join("")).toBe(text.join(""))
     expect(deltas.length).toBeLessThan(20)
     expect(events.some((event) => event.type === "finish")).toBeTrue()
-  })
+  }, 10_000)
+
+  test("emits the first delta immediately and coalesces following deltas in order", async () => {
+    const following = Promise.withResolvers<void>()
+    const encoder = new TextEncoder()
+    let sent = 0
+    const server = Bun.serve({
+      port: 0,
+      fetch() {
+        return new Response(
+          new ReadableStream({
+            async start(controller) {
+              const write = (value: unknown) =>
+                controller.enqueue(encoder.encode(`data: ${value === "[DONE]" ? value : JSON.stringify(value)}\n\n`))
+              write(chunk({ role: "assistant" }))
+              sent = performance.now()
+              write(chunk({ content: "A" }))
+              await following.promise
+              write(chunk({ content: "B" }))
+              write(chunk({ content: "C" }))
+              write(chunk({}, "stop"))
+              write("[DONE]")
+              controller.close()
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        )
+      },
+    })
+    servers.push(server)
+    const abort = new AbortController()
+    const watchdog = setTimeout(() => abort.abort(), 8_000)
+    let latency = Number.POSITIVE_INFINITY
+    try {
+      const events = await Effect.runPromise(
+        LLMAIProcess.stream(input(server), {}, [{ role: "user", content: "hello" }], abort.signal).pipe(
+          Stream.tap((event) =>
+            Effect.sync(() => {
+              if (event.type !== "text-delta" || latency !== Number.POSITIVE_INFINITY) return
+              latency = performance.now() - sent
+              following.resolve()
+            }),
+          ),
+          Stream.runCollect,
+        ),
+      )
+      const output = [...events]
+      const deltas = output.filter((event) => event.type === "text-delta")
+      expect(latency).toBeLessThan(175)
+      expect(deltas.map((event) => event.text)).toEqual(["A", "BC"])
+      expect(
+        output
+          .filter((event) => ["text-start", "text-delta", "text-end", "finish"].includes(event.type))
+          .map((event) => event.type),
+      ).toEqual(["text-start", "text-delta", "text-delta", "text-end", "finish"])
+    } finally {
+      following.resolve()
+      clearTimeout(watchdog)
+    }
+  }, 10_000)
 
   test("executes tools in the parent process", async () => {
     let requestBody: { tools?: Array<{ function?: { strict?: boolean } }> } = {}
@@ -476,10 +704,7 @@ describe("LLM AI process", () => {
       providerID: ProviderV2.ID.make("compatible"),
       api: { id: "compatible", url: "https://example.test/v1", npm: "@ai-sdk/openai-compatible" },
     })
-    const options = LLMAIProcess.providerOptions(
-      model,
-      ProviderTest.info({ options: { baseURL: "" } }, model),
-    )
+    const options = LLMAIProcess.providerOptions(model, ProviderTest.info({ options: { baseURL: "" } }, model))
     expect(options).not.toBeFalse()
     if (!options) throw new Error("Expected compatible provider options")
     expect(options.baseURL).toBe(model.api.url)
@@ -500,10 +725,7 @@ describe("LLM AI process", () => {
       ),
     ).toBeFalse()
     expect(
-      LLMAIProcess.providerOptions(
-        model,
-        ProviderTest.info({ options: { fetch: async () => new Response() } }, model),
-      ),
+      LLMAIProcess.providerOptions(model, ProviderTest.info({ options: { fetch: async () => new Response() } }, model)),
     ).toBeFalse()
     expect(
       LLMAIProcess.providerOptions(
@@ -526,13 +748,9 @@ describe("LLM AI process", () => {
 
   test("matches the normal request body after consecutive tool messages are combined", async () => {
     const bodies: string[] = []
-    const server = serve(
-      [chunk({ role: "assistant" }), chunk({}, "stop"), "[DONE]"],
-      0,
-      async (request) => {
-        bodies.push(await request.text())
-      },
-    )
+    const server = serve([chunk({ role: "assistant" }), chunk({}, "stop"), "[DONE]"], 0, async (request) => {
+      bodies.push(await request.text())
+    })
     const model = ProviderTest.model({
       id: ModelV2.ID.make("claude-compatible"),
       providerID: ProviderV2.ID.make("test"),
@@ -659,6 +877,176 @@ describe("LLM AI process", () => {
     expect(result.error).toBeInstanceOf(Error)
     expect(result.error.message).toBe("broken")
   })
+
+  test("reads large fragmented Unicode frames and the final frame at EOF", async () => {
+    const text = "🙂漢字e\u0301".repeat(650_000)
+    const first = { type: "events", events: [{ type: "text-delta", id: "large", text }] }
+    const second = { type: "events", events: [{ type: "text-delta", id: "tail", text: "終🙂" }] }
+    const bytes = new TextEncoder().encode(
+      `${LLMWorkerIPC.stringify(first)}\n${LLMWorkerIPC.stringify({ type: "end" })}\n${LLMWorkerIPC.stringify(second)}`,
+    )
+    const sizes = [1, 2, 3, 5, 8_191]
+    let offset = 0
+    let index = 0
+    const lines = LLMWorkerIPC.lineReader(
+      new ReadableStream<Uint8Array>({
+        pull(controller) {
+          const end = Math.min(offset + sizes[index++ % sizes.length], bytes.length)
+          controller.enqueue(bytes.subarray(offset, end))
+          offset = end
+          if (offset === bytes.length) controller.close()
+        },
+      }),
+    )
+
+    const firstLine = await lines.read()
+    const endLine = await lines.read()
+    const secondLine = await lines.read()
+    if (firstLine === undefined || endLine === undefined || secondLine === undefined) {
+      throw new Error("Expected all IPC frames")
+    }
+    const firstResult = LLMWorkerIPC.parse(firstLine) as typeof first
+    expect(firstResult.events[0].text).toBe(text)
+    expect(LLMWorkerIPC.parse(endLine)).toEqual({ type: "end" })
+    expect(LLMWorkerIPC.parse(secondLine)).toEqual(second)
+    expect(await lines.read()).toBeUndefined()
+  }, 5_000)
+
+  test("force-kills a TERM-resistant worker when the stream closes", async () => {
+    if (process.platform === "win32") return
+    const server = serve([])
+    let pid = 0
+    let rescued = false
+    let rescue: ReturnType<typeof setTimeout> | undefined
+    try {
+      await Effect.runPromise(
+        LLMAIProcess.stream(input(server), {}, [{ role: "user", content: "hello" }], new AbortController().signal, {
+          command: fixtureCommand("ignore-term"),
+          killGraceMs: 25,
+        }).pipe(
+          Stream.tap((event) =>
+            Effect.sync(() => {
+              if (event.type !== "text-delta") return
+              pid = Number(event.text)
+              fixtureProcesses.add(pid)
+              rescue = setTimeout(() => {
+                if (!running(pid)) return
+                rescued = true
+                process.kill(pid, "SIGKILL")
+              }, 8_000)
+            }),
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+        ),
+      )
+    } finally {
+      if (rescue) clearTimeout(rescue)
+    }
+    expect(pid).toBeGreaterThan(0)
+    expect(rescued).toBeFalse()
+    expect(running(pid)).toBeFalse()
+    fixtureProcesses.delete(pid)
+  }, 10_000)
+
+  test("exits when stdin ends with an event acknowledgement and a later delta queued", async () => {
+    const server = serve(
+      [
+        chunk({ role: "assistant" }),
+        chunk({ content: "A" }),
+        chunk({ content: "B" }),
+        chunk({ content: "C" }),
+        chunk({}, "stop"),
+        "[DONE]",
+      ],
+      150,
+    )
+    const child = Bun.spawn([process.execPath, runtimeWorker], {
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: process.env,
+      lazy: true,
+    })
+    fixtureProcesses.add(child.pid)
+    const stderr = new Response(child.stderr).text()
+    const stdout = LLMWorkerIPC.lineReader(child.stdout)
+    const stdin = LLMWorkerIPC.writer(child.stdin)
+    let rescued = false
+    let rescue: ReturnType<typeof setTimeout> | undefined
+    try {
+      await stdin.write(input(server))
+      while (true) {
+        const line = await stdout.read()
+        if (line === undefined) throw new Error(`Worker exited before the gated delta: ${await stderr}`)
+        const message = LLMWorkerIPC.parse(line) as {
+          type: string
+          id?: number
+          events?: Array<{ type?: string; text?: string }>
+        }
+        if (message.type !== "events" || message.id === undefined || !message.events) continue
+        if (message.events.some((event) => event.type === "text-delta" && event.text === "B")) break
+        await stdin.write({ type: "events-ack", id: message.id })
+      }
+
+      rescue = setTimeout(() => {
+        if (!running(child.pid)) return
+        rescued = true
+        child.kill("SIGKILL")
+      }, 3_000)
+      // C's coalescing timer queues another event behind the deliberately unacknowledged B frame.
+      await Bun.sleep(350)
+      await stdin.end()
+      await child.exited
+    } finally {
+      if (rescue) clearTimeout(rescue)
+      await stdout.cancel().catch(() => undefined)
+      if (running(child.pid)) child.kill("SIGKILL")
+    }
+    expect(rescued).toBeFalse()
+    expect(running(child.pid)).toBeFalse()
+    fixtureProcesses.delete(child.pid)
+  }, 10_000)
+
+  test("force-kills a TERM-resistant worker when the caller aborts", async () => {
+    if (process.platform === "win32") return
+    const server = serve([])
+    const abort = new AbortController()
+    let pid = 0
+    let rescued = false
+    let rescue: ReturnType<typeof setTimeout> | undefined
+    try {
+      await expect(
+        Effect.runPromise(
+          LLMAIProcess.stream(input(server), {}, [{ role: "user", content: "hello" }], abort.signal, {
+            command: fixtureCommand("ignore-term"),
+            killGraceMs: 25,
+          }).pipe(
+            Stream.tap((event) =>
+              Effect.sync(() => {
+                if (event.type !== "text-delta") return
+                pid = Number(event.text)
+                fixtureProcesses.add(pid)
+                rescue = setTimeout(() => {
+                  if (!running(pid)) return
+                  rescued = true
+                  process.kill(pid, "SIGKILL")
+                }, 8_000)
+                abort.abort()
+              }),
+            ),
+            Stream.runDrain,
+          ),
+        ),
+      ).rejects.toThrow("Aborted")
+    } finally {
+      if (rescue) clearTimeout(rescue)
+    }
+    expect(pid).toBeGreaterThan(0)
+    expect(rescued).toBeFalse()
+    expect(running(pid)).toBeFalse()
+    fixtureProcesses.delete(pid)
+  }, 10_000)
 
   test("terminates the child when aborted", async () => {
     const server = Bun.serve({
