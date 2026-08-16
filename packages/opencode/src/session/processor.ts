@@ -124,7 +124,9 @@ const layer = Layer.effect(
     const create = Effect.fn("SessionProcessor.create")(function* (input: Input) {
       // Reuse the preceding step's completed snapshot when available. Otherwise
       // capture before the LLM stream because tools may execute before start-step.
-      const initialSnapshot = input.initialSnapshot ?? (yield* snapshot.track())
+      const initialSnapshot = input.assistantMessage.summary
+        ? undefined
+        : (input.initialSnapshot ?? (yield* snapshot.track()))
       const ctx: ProcessorContext = {
         assistantMessage: input.assistantMessage,
         sessionID: input.sessionID,
@@ -133,7 +135,7 @@ const layer = Layer.effect(
         toolInputProgress: {},
         shouldBreak: false,
         snapshot: initialSnapshot,
-        summarySnapshot: input.summarySnapshot ?? initialSnapshot,
+        summarySnapshot: input.assistantMessage.summary ? undefined : (input.summarySnapshot ?? initialSnapshot),
         blocked: false,
         needsCompaction: false,
         currentText: undefined,
@@ -488,7 +490,7 @@ const layer = Layer.effect(
             throw new Error(value.message)
 
           case "step-start":
-            if (!ctx.snapshot) ctx.snapshot = yield* snapshot.track()
+            if (!ctx.assistantMessage.summary && !ctx.snapshot) ctx.snapshot = yield* snapshot.track()
             yield* session.updatePart({
               id: PartID.ascending(),
               messageID: ctx.assistantMessage.id,
@@ -499,7 +501,7 @@ const layer = Layer.effect(
             return
 
           case "step-finish": {
-            const completedSnapshot = yield* snapshot.track()
+            const completedSnapshot = ctx.assistantMessage.summary ? undefined : yield* snapshot.track()
             ctx.nextSnapshot = completedSnapshot
             yield* Effect.forEach(Object.keys(ctx.reasoningMap), finishReasoning)
             const usage = Session.getUsage({
@@ -535,17 +537,16 @@ const layer = Layer.effect(
               }
               ctx.snapshot = undefined
             }
-            yield* summary
-              .summarize({
-                sessionID: ctx.sessionID,
-                messageID: ctx.assistantMessage.parentID,
-              })
-              .pipe(Effect.ignore)
-            if (
-              !ctx.assistantMessage.summary &&
-              isOverflow({ cfg: yield* config.get(), tokens: usage.tokens, model: ctx.model })
-            ) {
-              ctx.needsCompaction = true
+            if (!ctx.assistantMessage.summary) {
+              yield* summary
+                .summarize({
+                  sessionID: ctx.sessionID,
+                  messageID: ctx.assistantMessage.parentID,
+                })
+                .pipe(Effect.ignore)
+              if (isOverflow({ cfg: yield* config.get(), tokens: usage.tokens, model: ctx.model })) {
+                ctx.needsCompaction = true
+              }
             }
             return
           }
@@ -608,7 +609,7 @@ const layer = Layer.effect(
       })
 
       const cleanup = Effect.fn("SessionProcessor.cleanup")(function* () {
-        if (ctx.snapshot) {
+        if (!ctx.assistantMessage.summary && ctx.snapshot) {
           const completedSnapshot = yield* snapshot.track()
           const patch = yield* snapshot.patch(ctx.snapshot, completedSnapshot)
           if (patch.files.length) {
