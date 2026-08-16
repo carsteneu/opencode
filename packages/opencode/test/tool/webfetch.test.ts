@@ -1,7 +1,7 @@
 import { describe, expect } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { httpClient } from "@opencode-ai/core/effect/app-node-platform"
-import { Effect, Layer } from "effect"
+import { Cause, Effect, Layer } from "effect"
 import { FetchHttpClient, HttpClient } from "effect/unstable/http"
 import { Agent } from "../../src/agent/agent"
 import { Truncate } from "@/tool/truncate"
@@ -98,22 +98,56 @@ describe("tool.webfetch", () => {
     ),
   )
 
-  it.instance("extracts text from html without scripts or styles", () =>
-    withFetch(
-      () =>
-        new Response(
-          "<html><head><style>.hidden{}</style><script>alert('x')</script></head><body>Hello <b>world</b></body></html>",
-          {
-            status: 200,
-            headers: { "content-type": "text/html; charset=utf-8" },
-          },
-        ),
-      (url) =>
-        Effect.gen(function* () {
-          const result = yield* exec({ url: new URL("/page.html", url).toString(), format: "text" })
-          expect(result.output).toBe("Hello world")
-          expect(result.attachments).toBeUndefined()
-        }),
-    ),
-  )
+    it.instance("extracts text from html without scripts or styles", () =>
+      withFetch(
+        () =>
+          new Response(
+            "<html><head><style>.hidden{}</style><script>alert('x')</script></head><body>Hello <b>world</b></body></html>",
+            {
+              status: 200,
+              headers: { "content-type": "text/html; charset=utf-8" },
+            },
+          ),
+        (url) =>
+          Effect.gen(function* () {
+            const result = yield* exec({ url: new URL("/page.html", url).toString(), format: "text" })
+            expect(result.output).toBe("Hello world")
+            expect(result.attachments).toBeUndefined()
+          }),
+      ),
+    )
+
+    it.instance("rejects an endless chunked body without buffering it first", () =>
+      withFetch(
+        () => {
+          const chunk = new Uint8Array(1024 * 1024).fill(65)
+          const endless = new ReadableStream<Uint8Array>({
+            // Async pull: a synchronous enqueue storm starves the server event
+            // loop before headers flush, which would hang any client.
+            pull(controller) {
+              return new Promise((resolve) =>
+                setTimeout(() => {
+                  try {
+                    controller.enqueue(chunk)
+                  } catch {
+                    // client canceled the body mid-flight; controller is closed
+                  }
+                  resolve(undefined)
+                }, 2),
+              )
+            },
+          })
+          // No content-length header: only a bounded reader can terminate this.
+          return new Response(endless, { status: 200, headers: { "content-type": "text/plain" } })
+        },
+        (url) =>
+          Effect.gen(function* () {
+            const exit = yield* exec({ url: new URL("/endless", url).toString(), format: "text" }).pipe(Effect.exit)
+            expect(exit._tag).toBe("Failure")
+            if (exit._tag === "Failure") {
+              expect(String(Cause.squash(exit.cause))).toContain("Response too large")
+            }
+          }),
+      ),
+    )
 })

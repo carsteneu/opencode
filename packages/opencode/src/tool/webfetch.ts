@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect"
+import { Effect, Schema, Stream } from "effect"
 import { HttpClient, HttpClientRequest } from "effect/unstable/http"
 import { Parser } from "htmlparser2"
 import * as Tool from "./tool"
@@ -98,10 +98,28 @@ export const WebFetchTool = Tool.define(
             throw new Error("Response too large (exceeds 5MB limit)")
           }
 
-          const arrayBuffer = yield* response.arrayBuffer
-          if (arrayBuffer.byteLength > MAX_RESPONSE_SIZE) {
-            throw new Error("Response too large (exceeds 5MB limit)")
-          }
+            // Stream the body with a hard cap: chunked responses carry no
+            // content-length, so buffering the whole body first (arrayBuffer)
+            // would allow an unbounded allocation.
+            let received = 0
+            const chunks = yield* response.stream.pipe(
+              Stream.mapEffect((chunk) =>
+                Effect.suspend(() => {
+                  received += chunk.byteLength
+                  return received > MAX_RESPONSE_SIZE
+                    ? Effect.fail(new Error("Response too large (exceeds 5MB limit)"))
+                    : Effect.succeed(chunk)
+                }),
+              ),
+              Stream.runCollect,
+            )
+            const body = new Uint8Array(received)
+            let offset = 0
+            for (const chunk of chunks) {
+              body.set(chunk, offset)
+              offset += chunk.byteLength
+            }
+            const arrayBuffer = body
 
           const contentType = response.headers["content-type"] || ""
           const mime = contentType.split(";")[0]?.trim().toLowerCase() || ""
