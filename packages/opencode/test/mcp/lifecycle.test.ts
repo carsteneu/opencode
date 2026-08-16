@@ -14,10 +14,11 @@ import {
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Cause, Effect, Exit } from "effect"
+import { Cause, Effect, Exit, Fiber } from "effect"
 import type { MCP as MCPNS } from "../../src/mcp/index"
 import { MCP } from "../../src/mcp/index"
 import { McpOAuthCallback } from "../../src/mcp/oauth-callback"
+import { InstanceStore } from "../../src/project/instance-store"
 import { TestInstance } from "../fixture/fixture"
 import { pollWithTimeout, testEffect } from "../lib/effect"
 
@@ -181,6 +182,88 @@ function statusName(status: Record<string, MCPNS.Status> | MCPNS.Status, server:
 }
 
 const remote = (url: string, timeout?: number) => ({ type: "remote" as const, url, oauth: false as const, timeout })
+
+const treeNames = ["root", "child", "grandchild"] as const
+const initializationServers = Array.from({ length: 8 }, (_, index) => `barrier-${index}`)
+const initializationBarrier = "mcp-initialization-barrier"
+const initializationMcp = Object.fromEntries(
+  initializationServers.map((name) => [
+    name,
+    {
+      type: "local" as const,
+      command: [process.execPath, stdioFixture, "--barrier"],
+      environment: {
+        MCP_LIFECYCLE_BARRIER_DIR: initializationBarrier,
+        MCP_LIFECYCLE_BARRIER_NAME: name,
+      },
+      timeout: 10_000,
+    },
+  ]),
+)
+const interruptedInitializationMcp = {
+  "ready-stdio": {
+    type: "local" as const,
+    command: [process.execPath, stdioFixture],
+    environment: {
+      MCP_LIFECYCLE_PID_FILE: path.join(initializationBarrier, "ready.pid"),
+      MCP_LIFECYCLE_LISTED_FILE: path.join(initializationBarrier, "ready.listed"),
+    },
+    timeout: 10_000,
+  },
+  ...initializationMcp,
+}
+
+function registerPidCleanup(files: string[], release?: string) {
+  return Effect.addFinalizer(() =>
+    Effect.tryPromise(async () => {
+      if (release) {
+        await Bun.write(release, "release")
+        const deadline = Date.now() + 2_000
+        while (
+          Date.now() < deadline &&
+          !(await Promise.all(files.map((file) => Bun.file(file).exists()))).every(Boolean)
+        ) {
+          await Bun.sleep(10)
+        }
+      }
+
+      await Promise.allSettled(
+        files.map(async (file) => {
+          const value = Bun.file(file)
+          if (!(await value.exists())) return
+          process.kill(Number(await value.text()), "SIGKILL")
+        }),
+      )
+    }).pipe(Effect.ignore),
+  )
+}
+
+function readTree(directory: string) {
+  return pollWithTimeout(
+    Effect.promise(async () => {
+      const files = treeNames.map((name) => Bun.file(path.join(directory, `${name}.pid`)))
+      if (!(await Promise.all(files.map((file) => file.exists()))).every(Boolean)) return undefined
+      return Promise.all(files.map(async (file) => Number(await file.text())))
+    }),
+    "stdio fixture did not publish its process tree",
+  )
+}
+
+function processRunning(pid: number) {
+  return Effect.try({
+    try: () => process.kill(pid, 0),
+    catch: () => undefined,
+  }).pipe(Effect.match({ onFailure: () => false, onSuccess: () => true }))
+}
+
+function waitForTreeExit(pids: number[]) {
+  return pollWithTimeout(
+    Effect.forEach(pids, processRunning).pipe(
+      Effect.map((running) => (running.every((value) => !value) ? true : undefined)),
+    ),
+    "stdio fixture process tree was not terminated",
+  )
+}
 
 it.instance("advertises and lists the instance directory as its root", () =>
   Effect.gen(function* () {
@@ -498,6 +581,7 @@ it.instance("local stdio timeout terminates the real server process", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance
     const pidFile = path.join(test.directory, "mcp.pid")
+    yield* registerPidCleanup([pidFile])
     const mcp = yield* MCP.Service
     const result = yield* mcp.add("hanging-stdio", {
       type: "local",
@@ -527,6 +611,237 @@ it.instance("local stdio timeout terminates the real server process", () =>
     )
   }),
 )
+
+it.instance("drains more than one MiB of local stdio stderr before initialization", () =>
+  Effect.gen(function* () {
+    const test = yield* TestInstance
+    const pidFile = path.join(test.directory, "chatty.pid")
+    const doneFile = path.join(test.directory, "chatty.done")
+    yield* registerPidCleanup([pidFile])
+    const mcp = yield* MCP.Service
+    const result = yield* mcp.add("chatty-stdio", {
+      type: "local",
+      command: [process.execPath, stdioFixture, "--chatty-stderr"],
+      environment: {
+        MCP_LIFECYCLE_PID_FILE: pidFile,
+        MCP_LIFECYCLE_STDERR_DONE: doneFile,
+      },
+      timeout: 10_000,
+    })
+
+    expect(statusName(result.status, "chatty-stdio")).toBe("connected")
+    expect(yield* Effect.promise(() => Bun.file(doneFile).exists())).toBe(true)
+  }),
+)
+
+it.instance(
+  "initializes no more than four configured MCP servers concurrently",
+  () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const directory = path.join(test.directory, initializationBarrier)
+      const files = initializationServers.map((name) => path.join(directory, `${name}.started`))
+      const release = path.join(directory, "release")
+      yield* registerPidCleanup(files, release)
+      const mcp = yield* MCP.Service
+      const loading = yield* Effect.forkScoped(mcp.status())
+
+      const firstWave = yield* pollWithTimeout(
+        Effect.promise(async () => {
+          const count = (await Promise.all(files.map((file) => Bun.file(file).exists()))).filter(Boolean).length
+          return count >= 4 ? count : undefined
+        }),
+        "configured MCP servers did not reach the initialization barrier",
+      )
+      expect(firstWave).toBe(4)
+
+      const overflow = yield* pollWithTimeout(
+        Effect.promise(async () => {
+          const count = (await Promise.all(files.map((file) => Bun.file(file).exists()))).filter(Boolean).length
+          return count > 4 ? count : undefined
+        }),
+        "unused",
+      ).pipe(Effect.timeoutOption("750 millis"))
+      expect(overflow._tag).toBe("None")
+
+      yield* Effect.promise(() => Bun.write(release, "release"))
+      const statuses = yield* Fiber.join(loading)
+      expect(initializationServers.filter((name) => statuses[name]?.status === "connected")).toHaveLength(
+        initializationServers.length,
+      )
+    }),
+  {
+    config: {
+      mcp: initializationMcp,
+    },
+    init: (directory) =>
+      Effect.promise(() => Bun.$`mkdir -p ${path.join(directory, initializationBarrier)}`.quiet()).pipe(Effect.asVoid),
+  },
+  30_000,
+)
+
+it.instance(
+  "instance disposal during MCP initialization stops connected and starting servers",
+  () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const directory = path.join(test.directory, initializationBarrier)
+      const barrierFiles = initializationServers.map((name) => path.join(directory, `${name}.started`))
+      const readyPid = path.join(directory, "ready.pid")
+      const readyListed = path.join(directory, "ready.listed")
+      const files = [readyPid, ...barrierFiles]
+      yield* registerPidCleanup(files)
+      const mcp = yield* MCP.Service
+      const loading = yield* Effect.forkScoped(mcp.status())
+      const pids = yield* pollWithTimeout(
+        Effect.promise(async () => {
+          if (!(await Bun.file(readyListed).exists())) return undefined
+          const started = await Promise.all(
+            barrierFiles.map(async (file) => {
+              const value = Bun.file(file)
+              return (await value.exists()) ? Number(await value.text()) : undefined
+            }),
+          )
+          const running = started.filter((pid): pid is number => pid !== undefined)
+          if (running.length < 4) return undefined
+          return [Number(await Bun.file(readyPid).text()), ...running]
+        }),
+        "configured MCP servers did not reach connected and starting states",
+      )
+      expect(pids).toHaveLength(5)
+
+      yield* InstanceStore.Service.use((store) => store.disposeDirectory(test.directory))
+
+      yield* waitForTreeExit(pids)
+      expect(Exit.isFailure(yield* Fiber.await(loading))).toBe(true)
+    }),
+  {
+    config: { mcp: interruptedInitializationMcp },
+    init: (directory) =>
+      Effect.promise(() => Bun.$`mkdir -p ${path.join(directory, initializationBarrier)}`.quiet()).pipe(Effect.asVoid),
+  },
+  20_000,
+)
+
+if (process.platform !== "win32") {
+  it.instance(
+    "stdio setup failure terminates a real process tree",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const files = treeNames.map((name) => path.join(test.directory, `${name}.pid`))
+        yield* registerPidCleanup(files)
+        const mcp = yield* MCP.Service
+        const result = yield* mcp.add("tree-setup-failure", {
+          type: "local",
+          command: [process.execPath, stdioFixture, "--tree", "--hang"],
+          environment: {
+            MCP_LIFECYCLE_TREE_DIR: test.directory,
+            MCP_LIFECYCLE_PID_FILE: files[0],
+          },
+          timeout: 3_000,
+        })
+        const pids = yield* readTree(test.directory)
+
+        expect(statusName(result.status, "tree-setup-failure")).toBe("failed")
+        yield* waitForTreeExit(pids)
+      }),
+    20_000,
+  )
+
+  it.instance(
+    "stdio tool discovery failure terminates a real process tree",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        yield* registerPidCleanup(treeNames.map((name) => path.join(test.directory, `${name}.pid`)))
+        const mcp = yield* MCP.Service
+        const result = yield* mcp.add("tree-defs-failure", {
+          type: "local",
+          command: [process.execPath, stdioFixture, "--tree", "--list-error"],
+          environment: { MCP_LIFECYCLE_TREE_DIR: test.directory },
+        })
+        const pids = yield* readTree(test.directory)
+
+        expect(statusName(result.status, "tree-defs-failure")).toBe("failed")
+        yield* waitForTreeExit(pids)
+      }),
+    20_000,
+  )
+
+  it.instance(
+    "disconnect terminates a real stdio process tree",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        yield* registerPidCleanup(treeNames.map((name) => path.join(test.directory, `${name}.pid`)))
+        const mcp = yield* MCP.Service
+        const result = yield* mcp.add("tree-disconnect", {
+          type: "local",
+          command: [process.execPath, stdioFixture, "--tree"],
+          environment: { MCP_LIFECYCLE_TREE_DIR: test.directory },
+        })
+        const pids = yield* readTree(test.directory)
+        expect(statusName(result.status, "tree-disconnect")).toBe("connected")
+        expect(yield* Effect.forEach(pids, processRunning)).toEqual([true, true, true])
+
+        yield* mcp.disconnect("tree-disconnect")
+
+        yield* waitForTreeExit(pids)
+        expect(yield* Effect.promise(() => Bun.file(path.join(test.directory, "grandchild.term")).exists())).toBe(true)
+      }),
+    20_000,
+  )
+
+  it.instance(
+    "replacement terminates only the old stdio process tree",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const nextPid = path.join(test.directory, "replacement.pid")
+        yield* registerPidCleanup([...treeNames.map((name) => path.join(test.directory, `${name}.pid`)), nextPid])
+        const mcp = yield* MCP.Service
+        yield* mcp.add("tree-replacement", {
+          type: "local",
+          command: [process.execPath, stdioFixture, "--tree"],
+          environment: { MCP_LIFECYCLE_TREE_DIR: test.directory },
+        })
+        const pids = yield* readTree(test.directory)
+
+        const result = yield* mcp.add("tree-replacement", {
+          type: "local",
+          command: [process.execPath, stdioFixture],
+          environment: { MCP_LIFECYCLE_PID_FILE: nextPid },
+        })
+
+        expect(statusName(result.status, "tree-replacement")).toBe("connected")
+        yield* waitForTreeExit(pids)
+        expect(Object.keys(yield* mcp.tools())).toEqual(["tree-replacement_current_directory"])
+      }),
+    20_000,
+  )
+
+  it.instance(
+    "instance disposal terminates a real stdio process tree",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        yield* registerPidCleanup(treeNames.map((name) => path.join(test.directory, `${name}.pid`)))
+        const mcp = yield* MCP.Service
+        yield* mcp.add("tree-dispose", {
+          type: "local",
+          command: [process.execPath, stdioFixture, "--tree"],
+          environment: { MCP_LIFECYCLE_TREE_DIR: test.directory },
+        })
+        const pids = yield* readTree(test.directory)
+
+        yield* InstanceStore.Service.use((store) => store.disposeDirectory(test.directory))
+
+        yield* waitForTreeExit(pids)
+      }),
+    20_000,
+  )
+}
 
 it.instance("remote timeout aborts both real HTTP transport attempts", () =>
   Effect.gen(function* () {

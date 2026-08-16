@@ -6,7 +6,7 @@ import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import { Client, type ClientOptions } from "@modelcontextprotocol/sdk/client/index.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js"
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js"
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js"
 import {
   ListRootsRequestSchema,
@@ -26,14 +26,15 @@ import { McpOAuthCallback } from "./oauth-callback"
 import { McpAuth } from "./auth"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { TuiEvent } from "@/server/tui-event"
-import { Cause, Effect, Exit, Layer, Context, Schema, Stream } from "effect"
+import { Cause, Effect, Exit, Layer, Context, Schema } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
+import { ChildProcessSpawner } from "effect/unstable/process"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { McpCatalog } from "./catalog"
 import { McpEvent } from "@opencode-ai/schema/mcp-event"
 import { McpBrowser } from "./browser"
+import { MCPStdio } from "./stdio"
 
 const DEFAULT_TIMEOUT = 30_000
 const CLIENT_OPTIONS = {
@@ -140,11 +141,13 @@ interface AuthResult {
 // --- Effect Service ---
 
 interface State {
+  disposed: boolean
   config: Record<string, ConfigMCPV1.Info>
   status: Record<string, Status>
   clients: Record<string, MCPClient>
   defs: Record<string, MCPToolDef[]>
   instructions: Record<string, string>
+  localTransports: Set<Transport>
 }
 
 export interface ServerInstructions {
@@ -208,8 +211,6 @@ const layer = Layer.effect(
     const auth = yield* McpAuth.Service
     const events = yield* EventV2Bridge.Service
     const browser = yield* McpBrowser.Service
-
-    type Transport = StdioClientTransport | StreamableHTTPClientTransport | SSEClientTransport
 
     /**
      * Connect a client via the given transport with resource safety:
@@ -338,23 +339,29 @@ const layer = Layer.effect(
     })
 
     const connectLocal = Effect.fn("MCP.connectLocal")(function* (
+      s: State,
       key: string,
       mcp: ConfigMCPV1.Info & { type: "local" },
     ) {
       const [cmd, ...args] = mcp.command
       const baseDir = yield* InstanceState.directory
       const cwd = mcp.cwd ? path.resolve(baseDir, mcp.cwd) : baseDir
-      const transport = new StdioClientTransport({
-        stderr: "pipe",
+      const transport = yield* MCPStdio.make({
+        spawner,
         command: cmd,
         args,
         cwd,
-        env: {
-          ...process.env,
+        environment: {
           ...(cmd === "opencode" ? { BUN_BE_BUN: "1" } : {}),
           ...mcp.environment,
         },
+        onClosed: (item) => s.localTransports.delete(item),
       })
+      if (s.disposed) {
+        yield* Effect.promise(() => transport.close()).pipe(Effect.ignore)
+        return yield* Effect.interrupt
+      }
+      s.localTransports.add(transport)
 
       const connectTimeout = mcp.timeout ?? DEFAULT_TIMEOUT
       return yield* connectTransport(transport, connectTimeout).pipe(
@@ -363,6 +370,7 @@ const layer = Layer.effect(
           status: { status: "connected" },
         })),
         Effect.catch((error): Effect.Effect<{ client: MCPClient | undefined; status: Status }> => {
+          if (s.disposed) return Effect.interrupt
           const msg = error instanceof Error ? error.message : String(error)
           return Effect.succeed({ client: undefined, status: { status: "failed", error: msg } })
         }),
@@ -370,7 +378,8 @@ const layer = Layer.effect(
     })
 
     const create = Effect.fn("MCP.create")(
-      function* (key: string, mcp: ConfigMCPV1.Info) {
+      function* (s: State, key: string, mcp: ConfigMCPV1.Info) {
+        if (s.disposed) return yield* Effect.interrupt
         if (mcp.enabled === false) {
           return DISABLED_RESULT
         }
@@ -378,7 +387,12 @@ const layer = Layer.effect(
         const { client: mcpClient, status } =
           mcp.type === "remote"
             ? yield* connectRemote(key, mcp as ConfigMCPV1.Info & { type: "remote" })
-            : yield* connectLocal(key, mcp as ConfigMCPV1.Info & { type: "local" })
+            : yield* connectLocal(s, key, mcp as ConfigMCPV1.Info & { type: "local" })
+
+        if (s.disposed) {
+          if (mcpClient) yield* Effect.tryPromise(() => mcpClient.close()).pipe(Effect.ignore)
+          return yield* Effect.interrupt
+        }
 
         if (!mcpClient) {
           if (status.status !== "connected" && status.status !== "disabled") {
@@ -392,6 +406,7 @@ const layer = Layer.effect(
           if (!listed) {
             return yield* Effect.fail(new Error("Failed to get tools"))
           }
+          if (s.disposed) return yield* Effect.interrupt
           return {
             mcpClient,
             status,
@@ -414,30 +429,6 @@ const layer = Layer.effect(
       }),
     )
     const cfgSvc = yield* Config.Service
-
-    const descendants = Effect.fnUntraced(
-      function* (pid: number) {
-        if (process.platform === "win32") return [] as number[]
-        const pids: number[] = []
-        const queue = [pid]
-        for (let index = 0; index < queue.length; index++) {
-          const current = queue[index]
-          const handle = yield* spawner.spawn(ChildProcess.make("pgrep", ["-P", String(current)], { stdin: "ignore" }))
-          const text = yield* Stream.mkString(Stream.decodeText(handle.stdout))
-          yield* handle.exitCode
-          for (const tok of text.split("\n")) {
-            const cpid = parseInt(tok, 10)
-            if (!isNaN(cpid) && !pids.includes(cpid)) {
-              pids.push(cpid)
-              queue.push(cpid)
-            }
-          }
-        }
-        return pids
-      },
-      Effect.scoped,
-      Effect.catch(() => Effect.succeed([] as number[])),
-    )
 
     function watch(s: State, name: string, client: MCPClient, bridge: EffectBridge.Shape, timeout?: number) {
       client.onclose = () => {
@@ -495,12 +486,35 @@ const layer = Layer.effect(
         const bridge = yield* EffectBridge.make()
         const config = cfg.mcp ?? {}
         const s: State = {
+          disposed: false,
           config: {},
           status: {},
           clients: {},
           defs: {},
           instructions: {},
+          localTransports: new Set(),
         }
+
+        yield* Effect.addFinalizer(() =>
+          Effect.gen(function* () {
+            s.disposed = true
+            const clients = Object.values(s.clients)
+            const transports = [...s.localTransports]
+            s.clients = {}
+            s.defs = {}
+            s.instructions = {}
+            s.localTransports.clear()
+            yield* Effect.forEach(
+              transports,
+              (transport) => Effect.tryPromise(() => transport.close()).pipe(Effect.ignore),
+              { concurrency: 4 },
+            )
+            yield* Effect.forEach(clients, (client) => Effect.tryPromise(() => client.close()).pipe(Effect.ignore), {
+              concurrency: 4,
+            })
+            pendingOAuthTransports.clear()
+          }),
+        )
 
         yield* Effect.forEach(
           Object.entries(config),
@@ -516,7 +530,11 @@ const layer = Layer.effect(
                 return
               }
 
-              const result = yield* create(key, mcp)
+              const result = yield* create(s, key, mcp)
+              if (s.disposed) {
+                if (result.mcpClient) yield* Effect.tryPromise(() => result.mcpClient!.close()).pipe(Effect.ignore)
+                return yield* Effect.interrupt
+              }
               s.status[key] = result.status
               if (result.mcpClient) {
                 s.clients[key] = result.mcpClient
@@ -525,34 +543,7 @@ const layer = Layer.effect(
                 watch(s, key, result.mcpClient, bridge, mcp.timeout)
               }
             }),
-          { concurrency: "unbounded" },
-        )
-
-        yield* Effect.addFinalizer(() =>
-          Effect.gen(function* () {
-            const clients = Object.values(s.clients)
-            s.clients = {}
-            s.defs = {}
-            s.instructions = {}
-            yield* Effect.forEach(
-              clients,
-              (client) =>
-                Effect.gen(function* () {
-                  const pid = client.transport instanceof StdioClientTransport ? client.transport.pid : null
-                  if (typeof pid === "number") {
-                    const pids = yield* descendants(pid)
-                    for (const dpid of pids) {
-                      try {
-                        process.kill(dpid, "SIGTERM")
-                      } catch {}
-                    }
-                  }
-                  yield* Effect.tryPromise(() => client.close()).pipe(Effect.ignore)
-                }),
-              { concurrency: "unbounded" },
-            )
-            pendingOAuthTransports.clear()
-          }),
+          { concurrency: 4 },
         )
 
         return s
@@ -577,6 +568,10 @@ const layer = Layer.effect(
       timeout?: number,
     ) {
       const bridge = yield* EffectBridge.make()
+      if (s.disposed) {
+        yield* Effect.tryPromise(() => client.close()).pipe(Effect.ignore)
+        return yield* Effect.interrupt
+      }
       const previous = s.clients[name]
       s.status[name] = { status: "connected" }
       s.clients[name] = client
@@ -626,7 +621,12 @@ const layer = Layer.effect(
 
     const createAndStore = Effect.fn("MCP.createAndStore")(function* (name: string, mcp: ConfigMCPV1.Info) {
       const s = yield* InstanceState.get(state)
-      const result = yield* create(name, mcp)
+      const result = yield* create(s, name, mcp)
+
+      if (s.disposed) {
+        if (result.mcpClient) yield* Effect.tryPromise(() => result.mcpClient!.close()).pipe(Effect.ignore)
+        return yield* Effect.interrupt
+      }
 
       s.status[name] = result.status
       if (!result.mcpClient) {
