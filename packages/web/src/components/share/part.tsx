@@ -577,33 +577,34 @@ export function WriteTool(props: ToolProps) {
   )
 }
 
-export function EditTool(props: ToolProps) {
-  const messages = useShareMessages()
-  const filePath = createMemo(() => stripWorkingDirectory(props.state.input.filePath, props.message.path.cwd))
-  const diagnostics = createMemo(() =>
-    getDiagnostics(props.state.metadata?.diagnostics, props.state.input.filePath, messages.error),
-  )
+  export function EditTool(props: ToolProps) {
+    const messages = useShareMessages()
+    const filePath = createMemo(() => stripWorkingDirectory(props.state.input.filePath, props.message.path.cwd))
+    const diagnostics = createMemo(() =>
+      getDiagnostics(props.state.metadata?.diagnostics, props.state.input.filePath, messages.error),
+    )
+    const diff = createMemo(() => props.state.metadata?.filediff?.patch ?? props.state.metadata?.diff)
 
-  return (
-    <>
-      <div data-component="tool-title">
-        <span data-slot="name">Edit</span>
-        <span data-slot="target" title={props.state.input?.filePath}>
-          {filePath()}
-        </span>
-      </div>
-      <div data-component="tool-result">
-        <Switch>
-          <Match when={props.state.metadata?.error}>
-            <ContentError>{formatErrorString(props.state.metadata?.message || "", messages.error)}</ContentError>
-          </Match>
-          <Match when={props.state.metadata?.diff}>
-            <div data-component="diff">
-              <ContentDiff diff={props.state.metadata?.diff} lang={getShikiLang(filePath() || "")} />
-            </div>
-          </Match>
-        </Switch>
-      </div>
+    return (
+      <>
+        <div data-component="tool-title">
+          <span data-slot="name">Edit</span>
+          <span data-slot="target" title={props.state.input?.filePath}>
+            {filePath()}
+          </span>
+        </div>
+        <div data-component="tool-result">
+          <Switch>
+            <Match when={props.state.metadata?.error}>
+              <ContentError>{formatErrorString(props.state.metadata?.message || "", messages.error)}</ContentError>
+            </Match>
+            <Match when={diff()}>
+              <div data-component="diff">
+                <ContentDiff diff={diff()} lang={getShikiLang(filePath() || "")} />
+              </div>
+            </Match>
+          </Switch>
+        </div>
       <Show when={diagnostics().length > 0}>
         <ContentError>{diagnostics()}</ContentError>
       </Show>

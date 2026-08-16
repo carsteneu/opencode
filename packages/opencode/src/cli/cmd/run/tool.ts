@@ -346,14 +346,14 @@ function runWebfetch(p: ToolProps<typeof WebFetchTool>): ToolInline {
   }
 }
 
-function runEdit(p: ToolProps<typeof EditTool>): ToolInline {
-  return {
-    icon: "←",
-    title: `Edit ${toolPath(p.input.filePath)}`,
-    mode: "block",
-    body: p.metadata.diff,
+  function runEdit(p: ToolProps<typeof EditTool>): ToolInline {
+    return {
+      icon: "←",
+      title: `Edit ${toolPath(p.input.filePath)}`,
+      mode: "block",
+      body: p.metadata.filediff?.patch,
+    }
   }
-}
 
 function runWebSearch(p: ToolProps<typeof WebSearchTool>): ToolInline {
   const title = webSearchProviderLabel(p.metadata.provider)
@@ -512,9 +512,9 @@ function snapWrite(p: ToolProps<typeof WriteTool>): ToolSnapshot | undefined {
   }
 }
 
-function snapEdit(p: ToolProps<typeof EditTool>): ToolSnapshot | undefined {
-  const file = p.input.filePath || ""
-  const diff = p.metadata.diff || ""
+  function snapEdit(p: ToolProps<typeof EditTool>): ToolSnapshot | undefined {
+    const file = p.input.filePath || ""
+    const diff = p.metadata.filediff?.patch || ""
   if (!file || !diff.trim()) {
     return undefined
   }
@@ -924,7 +924,8 @@ function permEdit(p: ToolPermissionProps<typeof EditTool>): ToolPermissionInfo {
     icon: "→",
     title: `Edit ${toolPath(file, { home: true })}`,
     lines: [],
-    diff: p.metadata.diff ?? input.diff,
+      // Permission ask metadata carries { filepath, diff } regardless of the result metadata shape.
+      diff: (p.metadata as { diff?: string }).diff ?? input.diff,
     file,
   }
 }

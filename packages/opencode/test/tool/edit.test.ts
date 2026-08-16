@@ -136,8 +136,9 @@ describe("tool.edit", () => {
         const filepath = path.join(test.directory, "newfile.txt")
         const result = yield* run({ filePath: filepath, oldString: "", newString: "new content" })
 
-        expect(result.metadata.diff).toContain("new content")
-        expect(yield* load(filepath)).toBe("new content")
+          expect(result.metadata.filediff?.patch).toContain("new content")
+          expect("diff" in result.metadata).toBe(false)
+          expect(yield* load(filepath)).toBe("new content")
       }),
     )
 
@@ -203,9 +204,10 @@ describe("tool.edit", () => {
 
         const result = yield* run({ filePath: filepath, oldString: "using System;", newString: "using Up;" })
 
-        expect(result.metadata.diff).toContain("-using System;")
-        expect(result.metadata.diff).toContain("+using Up;")
-        expect(result.metadata.diff).not.toContain(bom)
+          expect(result.metadata.filediff?.patch).toContain("-using System;")
+          expect(result.metadata.filediff?.patch).toContain("+using Up;")
+          expect(result.metadata.filediff?.patch).not.toContain(bom)
+          expect("diff" in result.metadata).toBe(false)
 
         const content = yield* loadRaw(filepath)
         expect(content.charCodeAt(0)).toBe(0xfeff)

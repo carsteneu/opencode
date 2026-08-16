@@ -190,13 +190,12 @@ export const EditTool = Tool.define(
             deletions,
           }
 
-          yield* ctx.metadata({
-            metadata: {
-              diff,
-              filediff,
-              diagnostics: {},
-            },
-          })
+            yield* ctx.metadata({
+              metadata: {
+                filediff,
+                diagnostics: {},
+              },
+            })
 
           let output = "Edit applied successfully."
           yield* lsp.touchFile(filePath, "document")
@@ -205,15 +204,14 @@ export const EditTool = Tool.define(
           const block = LSP.Diagnostic.report(filePath, diagnostics[normalizedFilePath] ?? [])
           if (block) output += `\n\nLSP errors detected in this file, please fix:\n${block}`
 
-          return {
-            metadata: {
-              diagnostics,
-              diff,
-              filediff,
-            },
-            title: `${path.relative(instance.worktree, filePath)}`,
-            output,
-          }
+            return {
+              metadata: {
+                diagnostics,
+                filediff,
+              },
+              title: `${path.relative(instance.worktree, filePath)}`,
+              output,
+            }
         }),
     }
   }),
