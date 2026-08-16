@@ -2,7 +2,6 @@ export * as ApplyPatchTool from "./apply-patch"
 
 import { ToolFailure } from "@opencode-ai/llm"
 import { FileDiff } from "@opencode-ai/schema/file-diff"
-import { createTwoFilesPatch, diffLines } from "diff"
 import { Effect, Layer, Schema } from "effect"
 import { makeLocationNode } from "../effect/app-node"
 import { FileMutation } from "../file-mutation"
@@ -10,6 +9,7 @@ import { FSUtil } from "../fs-util"
 import { LocationMutation } from "../location-mutation"
 import { Patch } from "../patch"
 import { PermissionV2 } from "../permission"
+import { TextDiff } from "../text-diff"
 import { ToolRegistry } from "./registry"
 import { Tool } from "./tool"
 import { Tools } from "./tools"
@@ -203,17 +203,12 @@ export const node = makeLocationNode({
 })
 
 function patchFile(change: Prepared): typeof FileDiff.Info.Type {
-  const counts = diffLines(change.before, change.after).reduce(
-    (result, item) => ({
-      additions: result.additions + (item.added ? (item.count ?? 0) : 0),
-      deletions: result.deletions + (item.removed ? (item.count ?? 0) : 0),
-    }),
-    { additions: 0, deletions: 0 },
-  )
+  const diff = TextDiff.create(change.target.resource, change.target.resource, change.before, change.after)
   return {
     file: change.target.resource,
-    patch: createTwoFilesPatch(change.target.resource, change.target.resource, change.before, change.after),
+    patch: diff.patch,
     status: change.type === "add" ? "added" : change.type === "delete" ? "deleted" : "modified",
-    ...counts,
+    additions: diff.additions,
+    deletions: diff.deletions,
   }
 }

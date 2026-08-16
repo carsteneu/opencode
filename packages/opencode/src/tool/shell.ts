@@ -1,4 +1,4 @@
-import { Effect, Stream } from "effect"
+import { Effect, Fiber, Stream } from "effect"
 import os from "os"
 import { createWriteStream } from "node:fs"
 import * as Tool from "./tool"
@@ -6,7 +6,7 @@ import path from "path"
 import { containsPath, type InstanceContext } from "../project/instance-context"
 import { InstanceState } from "@/effect/instance-state"
 import { lazy } from "@/util/lazy"
-import { Language, type Node } from "web-tree-sitter"
+import type { Node } from "web-tree-sitter"
 
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { fileURLToPath } from "url"
@@ -25,6 +25,8 @@ import { BashArity } from "@/permission/arity"
 export { Parameters } from "./shell/prompt"
 
 const MAX_METADATA_LENGTH = 30_000
+const METADATA_INTERVAL = "100 millis"
+const OUTPUT_DRAIN_TIMEOUT = "5 seconds"
 const CWD = new Set(["cd", "chdir", "popd", "pushd", "push-location", "set-location"])
 const FILES = new Set([
   ...CWD,
@@ -255,7 +257,7 @@ function tail(text: string, maxLines: number, maxBytes: number) {
 }
 
 const parse = Effect.fn("ShellTool.parse")(function* (command: string, ps: boolean) {
-  const tree = yield* Effect.promise(() => parser().then((p) => (ps ? p.ps : p.bash).parse(command)))
+  const tree = yield* Effect.promise(() => (ps ? powershellParser() : bashParser()).then((p) => p.parse(command)))
   if (!tree) throw new Error("Failed to parse command")
   return tree
 })
@@ -308,8 +310,8 @@ function cmd(shell: string, command: string, cwd: string, env: NodeJS.ProcessEnv
     detached: process.platform !== "win32",
   })
 }
-const parser = lazy(async () => {
-  const { Parser } = await import("web-tree-sitter")
+const parserRuntime = lazy(async () => {
+  const { Language, Parser } = await import("web-tree-sitter")
   const { default: treeWasm } = await import("web-tree-sitter/tree-sitter.wasm" as string, {
     with: { type: "wasm" },
   })
@@ -319,20 +321,27 @@ const parser = lazy(async () => {
       return treePath
     },
   })
+  return { Language, Parser }
+})
+
+const bashParser = lazy(async () => {
+  const { Language, Parser } = await parserRuntime()
   const { default: bashWasm } = await import("tree-sitter-bash/tree-sitter-bash.wasm" as string, {
     with: { type: "wasm" },
   })
+  const bash = new Parser()
+  bash.setLanguage(await Language.load(resolveWasm(bashWasm)))
+  return bash
+})
+
+const powershellParser = lazy(async () => {
+  const { Language, Parser } = await parserRuntime()
   const { default: psWasm } = await import("tree-sitter-powershell/tree-sitter-powershell.wasm" as string, {
     with: { type: "wasm" },
   })
-  const bashPath = resolveWasm(bashWasm)
-  const psPath = resolveWasm(psWasm)
-  const [bashLanguage, psLanguage] = await Promise.all([Language.load(bashPath), Language.load(psPath)])
-  const bash = new Parser()
-  bash.setLanguage(bashLanguage)
   const ps = new Parser()
-  ps.setLanguage(psLanguage)
-  return { bash, ps }
+  ps.setLanguage(await Language.load(resolveWasm(psWasm)))
+  return ps
 })
 
 export const ShellTool = Tool.define(
@@ -446,6 +455,60 @@ export const ShellTool = Tool.define(
       let cut = false
       let expired = false
       let aborted = false
+      let outputVersion = 0
+      let publishedVersion = 0
+      let sinkError: Error | undefined
+      let failAppend: ((error: Error) => void) | undefined
+
+      const sinkFailed = (error: Error) => {
+        sinkError ??= error
+        failAppend?.(error)
+      }
+
+      const publish = Effect.fnUntraced(function* () {
+        if (publishedVersion === outputVersion) return
+        const version = outputVersion
+        const output = last
+        yield* ctx.metadata({
+          metadata: {
+            output,
+          },
+        })
+        publishedVersion = version
+      })
+
+      const append = Effect.fnUntraced(function* (chunk: string) {
+        const stream = sink
+        if (!stream) return
+        if (sinkError) return yield* Effect.fail(sinkError)
+        if (stream.destroyed || stream.closed) return
+        yield* Effect.callback<void, Error>((resume) => {
+          let settled = false
+          const cleanup = () => {
+            if (failAppend === failed) failAppend = undefined
+          }
+          const finish = (effect: Effect.Effect<void, Error>) => {
+            if (settled) return
+            settled = true
+            cleanup()
+            resume(effect)
+          }
+          const failed = (error: Error) => {
+            sinkError ??= error
+            finish(Effect.fail(error))
+          }
+          failAppend = failed
+          try {
+            stream.write(chunk, (error) => {
+              if (error) return failed(error)
+              finish(Effect.void)
+            })
+          } catch (error) {
+            failed(error instanceof Error ? error : new Error(String(error)))
+          }
+          return Effect.sync(cleanup)
+        })
+      })
 
       const closeSink = Effect.fnUntraced(function* () {
         const stream = sink
@@ -469,7 +532,17 @@ export const ShellTool = Tool.define(
               stream.once("finish", done)
               stream.end(done)
             }),
-        ).pipe(Effect.catch(() => Effect.void))
+        ).pipe(
+          Effect.timeoutOrElse({
+            duration: OUTPUT_DRAIN_TIMEOUT,
+            orElse: () =>
+              Effect.sync(() => {
+                sinkError ??= new Error(`Timed out while closing shell output file ${file}`)
+                stream.destroy(sinkError)
+              }),
+          }),
+          Effect.catch(() => Effect.void),
+        )
       })
 
       yield* ctx.metadata({
@@ -483,51 +556,45 @@ export const ShellTool = Tool.define(
           yield* Effect.addFinalizer(closeSink)
           const handle = yield* spawner.spawn(cmd(input.shell, input.command, input.cwd, input.env))
 
-          yield* Effect.forkScoped(
-            Stream.runForEach(Stream.decodeText(handle.all), (chunk) => {
-              const size = Buffer.byteLength(chunk, "utf-8")
-              list.push({ text: chunk, size })
-              used += size
-              while (used > keep && list.length > 1) {
-                const item = list.shift()
-                if (!item) break
-                used -= item.size
-                cut = true
-              }
+          const publisher = yield* Effect.gen(function* () {
+            while (true) {
+              yield* Effect.sleep(METADATA_INTERVAL)
+              yield* publish()
+            }
+          }).pipe(Effect.forkScoped)
 
-              last = preview(last + chunk)
+          const output = yield* Effect.forkScoped(
+            Stream.runForEach(Stream.decodeText(handle.all), (chunk) =>
+              Effect.gen(function* () {
+                const size = Buffer.byteLength(chunk, "utf-8")
+                list.push({ text: chunk, size })
+                used += size
+                while (used > keep && list.length > 1) {
+                  const item = list.shift()
+                  if (!item) break
+                  used -= item.size
+                  cut = true
+                }
 
-              if (file) {
-                sink?.write(chunk)
-              } else {
+                last = preview(last + chunk)
+                outputVersion++
+
+                if (file) {
+                  yield* append(chunk)
+                  return
+                }
                 full += chunk
                 if (Buffer.byteLength(full, "utf-8") > limits.maxBytes) {
-                  return trunc.write(full).pipe(
-                    Effect.andThen((next) =>
-                      Effect.sync(() => {
-                        file = next
-                        cut = true
-                        sink = createWriteStream(next, { flags: "a" })
-                        full = ""
-                      }),
-                    ),
-                    Effect.andThen(
-                      ctx.metadata({
-                        metadata: {
-                          output: last,
-                        },
-                      }),
-                    ),
-                  )
+                  const next = yield* trunc.write(full)
+                  file = next
+                  cut = true
+                  const stream = createWriteStream(next, { flags: "a" })
+                  stream.on("error", sinkFailed)
+                  sink = stream
+                  full = ""
                 }
-              }
-
-              return ctx.metadata({
-                metadata: {
-                  output: last,
-                },
-              })
-            }),
+              }),
+            ),
           )
 
           const abort = Effect.callback<void>((resume) => {
@@ -553,6 +620,17 @@ export const ShellTool = Tool.define(
             expired = true
             yield* handle.kill({ forceKillAfter: "3 seconds" }).pipe(Effect.orDie)
           }
+
+          yield* Fiber.join(output).pipe(
+            Effect.timeoutOrElse({
+              duration: OUTPUT_DRAIN_TIMEOUT,
+              orElse: () => Fiber.interrupt(output).pipe(Effect.asVoid),
+            }),
+          )
+          yield* Fiber.interrupt(publisher)
+          yield* publish()
+          yield* closeSink()
+          if (sinkError) return yield* Effect.fail(sinkError)
 
           return exit.kind === "exit" ? exit.code : null
         }),

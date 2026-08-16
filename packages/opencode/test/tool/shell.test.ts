@@ -1113,7 +1113,7 @@ describe("tool.shell abort", () => {
         const updates: string[] = []
         const result = yield* run(
           {
-            command: `echo first && sleep 0.1 && echo second`,
+            command: `echo first && sleep 0.25 && echo second`,
           },
           {
             ...ctx,
@@ -1126,7 +1126,60 @@ describe("tool.shell abort", () => {
         )
         expect(result.output).toContain("first")
         expect(result.output).toContain("second")
+        expect(updates.length).toBeGreaterThan(0)
+      }),
+    ),
+  )
+
+  it.live("coalesces frequent metadata updates without losing output", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        const updates: string[] = []
+        const code = `for(let i=0;i<40;i++){process.stdout.write(i+String.fromCharCode(10));await Bun.sleep(10)}`
+        const result = yield* run(
+          {
+            command: `${bin} -e ${evalarg(code)}`,
+          },
+          {
+            ...ctx,
+            metadata: (input) =>
+              Effect.sync(() => {
+                updates.push(((input.metadata as { output?: string })?.output ?? "").trim())
+              }),
+          },
+        )
+
+        expect(result.output).toContain("0")
+        expect(result.output).toContain("39")
+        expect(updates.at(-1)).toContain("39")
         expect(updates.length).toBeGreaterThan(1)
+        expect(updates.length).toBeLessThan(15)
+      }),
+    ),
+  )
+
+  it.live("flushes final metadata before returning", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        const updates: string[] = []
+        const result = yield* run(
+          { command: fill("bytes", 1) },
+          {
+            ...ctx,
+            metadata: (input) =>
+              Effect.sync(() => {
+                updates.push((input.metadata as { output?: string })?.output ?? "")
+              }),
+          },
+        )
+
+        expect(result.output).toBe("a")
+        expect(result.metadata.output).toBe("a")
+        expect(updates).toEqual(["", "a"])
+        yield* Effect.sleep("150 millis")
+        expect(updates).toEqual(["", "a"])
       }),
     ),
   )
@@ -1194,6 +1247,24 @@ describe("tool.shell truncation", () => {
         expect(lines.length).toBe(lineCount)
         expect(lines[0]).toBe("1")
         expect(lines[lineCount - 1]).toBe(String(lineCount))
+      }),
+    ),
+  )
+
+  it.live("drains fast output completely into the spill file", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        const lineCount = 50_000
+        const result = yield* run({ command: fill("lines", lineCount) })
+        mustTruncate(result)
+
+        const filepath = (result.metadata as { outputPath?: string }).outputPath
+        const saved = yield* (yield* FSUtil.Service).readFileString(filepath!)
+        const lines = saved.trim().split(/\r?\n/)
+        expect(lines).toHaveLength(lineCount)
+        expect(lines[0]).toBe("1")
+        expect(lines.at(-1)).toBe(String(lineCount))
       }),
     ),
   )

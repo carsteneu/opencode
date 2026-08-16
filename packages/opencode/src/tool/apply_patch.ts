@@ -5,7 +5,6 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { Watcher } from "@opencode-ai/core/filesystem/watcher"
 import { InstanceState } from "@/effect/instance-state"
 import { Patch } from "../patch"
-import { createTwoFilesPatch, diffLines } from "diff"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { trimDiff } from "./edit"
 import { LSP } from "@/lsp/lsp"
@@ -13,6 +12,7 @@ import { FSUtil } from "@opencode-ai/core/fs-util"
 import DESCRIPTION from "./apply_patch.txt"
 import { FileSystem } from "@opencode-ai/core/filesystem"
 import { Format } from "../format"
+import { TextDiff } from "@opencode-ai/core/text-diff"
 import * as Bom from "@/util/bom"
 
 export const Parameters = Schema.Struct({
@@ -79,14 +79,8 @@ export const ApplyPatchTool = Tool.define(
             const newContent =
               hunk.contents.length === 0 || hunk.contents.endsWith("\n") ? hunk.contents : `${hunk.contents}\n`
             const next = Bom.split(newContent)
-            const diff = trimDiff(createTwoFilesPatch(filePath, filePath, oldContent, next.text))
-
-            let additions = 0
-            let deletions = 0
-            for (const change of diffLines(oldContent, next.text)) {
-              if (change.added) additions += change.count || 0
-              if (change.removed) deletions += change.count || 0
-            }
+            const info = TextDiff.create(filePath, filePath, oldContent, next.text)
+            const diff = trimDiff(info.patch)
 
             fileChanges.push({
               filePath,
@@ -94,8 +88,8 @@ export const ApplyPatchTool = Tool.define(
               newContent: next.text,
               type: "add",
               diff,
-              additions,
-              deletions,
+              additions: info.additions,
+              deletions: info.deletions,
               bom: next.bom,
             })
 
@@ -119,7 +113,7 @@ export const ApplyPatchTool = Tool.define(
 
             // Apply the update chunks to get new content
             try {
-              const fileUpdate = Patch.deriveNewContentsFromChunks(
+              const fileUpdate = Patch.deriveContentsFromChunks(
                 filePath,
                 hunk.chunks,
                 Bom.join(source.text, source.bom),
@@ -130,14 +124,8 @@ export const ApplyPatchTool = Tool.define(
               return yield* Effect.fail(new Error(`apply_patch verification failed: ${error}`))
             }
 
-            const diff = trimDiff(createTwoFilesPatch(filePath, filePath, oldContent, newContent))
-
-            let additions = 0
-            let deletions = 0
-            for (const change of diffLines(oldContent, newContent)) {
-              if (change.added) additions += change.count || 0
-              if (change.removed) deletions += change.count || 0
-            }
+            const info = TextDiff.create(filePath, filePath, oldContent, newContent)
+            const diff = trimDiff(info.patch)
 
             const movePath = hunk.move_path ? path.resolve(instance.directory, hunk.move_path) : undefined
             yield* assertExternalDirectoryEffect(ctx, movePath)
@@ -149,8 +137,8 @@ export const ApplyPatchTool = Tool.define(
               type: hunk.move_path ? "move" : "update",
               movePath,
               diff,
-              additions,
-              deletions,
+              additions: info.additions,
+              deletions: info.deletions,
               bom,
             })
 
@@ -169,9 +157,8 @@ export const ApplyPatchTool = Tool.define(
               ),
             )
             const contentToDelete = source.text
-            const deleteDiff = trimDiff(createTwoFilesPatch(filePath, filePath, contentToDelete, ""))
-
-            const deletions = contentToDelete.split("\n").length
+            const info = TextDiff.create(filePath, filePath, contentToDelete, "")
+            const deleteDiff = trimDiff(info.patch)
 
             fileChanges.push({
               filePath,
@@ -179,8 +166,8 @@ export const ApplyPatchTool = Tool.define(
               newContent: "",
               type: "delete",
               diff: deleteDiff,
-              additions: 0,
-              deletions,
+              additions: info.additions,
+              deletions: info.deletions,
               bom: source.bom,
             })
 
@@ -268,7 +255,10 @@ export const ApplyPatchTool = Tool.define(
         const target = change.movePath ?? change.filePath
         yield* lsp.touchFile(target, "document")
       }
-      const diagnostics = yield* lsp.diagnostics()
+      const diagnosticFiles = fileChanges.flatMap((change) =>
+        change.type === "delete" ? [] : [FSUtil.normalizePath(change.movePath ?? change.filePath)],
+      )
+      const diagnostics = yield* lsp.diagnostics({ files: diagnosticFiles, limit: 20 })
 
       // Generate output summary
       const summaryLines = fileChanges.map((change) => {

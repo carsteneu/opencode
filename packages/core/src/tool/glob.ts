@@ -14,6 +14,7 @@ import { Tool } from "./tool"
 import { Tools } from "./tools"
 
 export const name = "glob"
+const DEFAULT_LIMIT = 100
 
 export const Input = Schema.Struct({
   pattern: FileSystem.GlobInput.fields.pattern.annotate({ description: "Glob pattern to match files against" }),
@@ -77,7 +78,7 @@ const layer = Layer.effectDiscard(
                 .glob({
                   cwd,
                   pattern: input.pattern,
-                  limit: input.limit ?? Number.MAX_SAFE_INTEGER,
+                  limit: input.limit ?? DEFAULT_LIMIT,
                 })
                 .pipe(
                   Effect.map((result) =>

@@ -132,6 +132,27 @@ describe("LSP service lifecycle", () => {
 })
 
 describe("LSP.Diagnostic", () => {
+  test("compact keeps bounded unique errors", () => {
+    const errors = Array.from({ length: 25 }, (_, index) => ({
+      range: { start: { line: index, character: 0 }, end: { line: index, character: 1 } },
+      message: `error ${index}`,
+      severity: 1 as const,
+    }))
+    const result = LSP.Diagnostic.compact([
+      ...errors,
+      errors[0],
+      {
+        range: { start: { line: 30, character: 0 }, end: { line: 30, character: 1 } },
+        message: "warning",
+        severity: 2,
+      },
+    ])
+
+    expect(result).toHaveLength(20)
+    expect(result.every((item) => item.severity === 1)).toBe(true)
+    expect(new Set(result.map((item) => item.message)).size).toBe(20)
+  })
+
   test("pretty() formats error diagnostic", () => {
     const result = LSP.Diagnostic.pretty({
       range: { start: { line: 9, character: 4 }, end: { line: 9, character: 10 } },

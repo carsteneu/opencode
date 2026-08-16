@@ -15,6 +15,7 @@ import { Tool } from "./tool"
 import { Tools } from "./tools"
 
 export const name = "grep"
+const DEFAULT_LIMIT = 100
 
 export const Input = Schema.Struct({
   pattern: FileSystem.GrepInput.fields.pattern.annotate({
@@ -94,13 +95,14 @@ const layer = Layer.effectDiscard(
               })
               const target = path.resolve(location.directory, input.path ?? ".")
               const info = yield* fs.stat(target).pipe(Effect.catch(() => Effect.succeed(undefined)))
+              if (!info) return yield* Effect.fail(new Error(`Path not found: ${target}`))
               return yield* ripgrep
                 .grep({
                   cwd: info?.type === "Directory" ? target : path.dirname(target),
                   pattern: input.pattern,
                   file: info?.type === "File" ? path.basename(target) : undefined,
                   include: input.include,
-                  limit: input.limit ?? Number.MAX_SAFE_INTEGER,
+                  limit: input.limit ?? DEFAULT_LIMIT,
                 })
                 .pipe(
                   Effect.map((result) =>

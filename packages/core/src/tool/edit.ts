@@ -8,13 +8,13 @@ export * as EditTool from "./edit"
 
 import { ToolFailure } from "@opencode-ai/llm"
 import { FileDiff } from "@opencode-ai/schema/file-diff"
-import { createTwoFilesPatch, diffLines } from "diff"
 import { Effect, Layer, Schema } from "effect"
 import { makeLocationNode } from "../effect/app-node"
 import { FileMutation } from "../file-mutation"
 import { FSUtil } from "../fs-util"
 import { LocationMutation } from "../location-mutation"
 import { PermissionV2 } from "../permission"
+import { TextDiff } from "../text-diff"
 import { ToolRegistry } from "./registry"
 import { Tool } from "./tool"
 import { Tools } from "./tools"
@@ -180,13 +180,7 @@ const layer = Layer.effectDiscard(
                   input.replaceAll === true
                     ? source.text.replaceAll(oldString, newString)
                     : source.text.replace(oldString, newString)
-                const counts = diffLines(source.text, replaced).reduce(
-                  (result, item) => ({
-                    additions: result.additions + (item.added ? (item.count ?? 0) : 0),
-                    deletions: result.deletions + (item.removed ? (item.count ?? 0) : 0),
-                  }),
-                  { additions: 0, deletions: 0 },
-                )
+                const diff = TextDiff.create(target.resource, target.resource, source.text, replaced)
                 const next = splitBom(replaced)
                 const result = yield* unableToEdit(
                   files.writeIfUnchanged({
@@ -199,9 +193,10 @@ const layer = Layer.effectDiscard(
                   files: [
                     {
                       file: result.resource,
-                      patch: createTwoFilesPatch(result.resource, result.resource, source.text, replaced),
+                      patch: diff.patch,
                       status: "modified" as const,
-                      ...counts,
+                      additions: diff.additions,
+                      deletions: diff.deletions,
                     },
                   ],
                   replacements,

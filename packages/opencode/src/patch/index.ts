@@ -304,13 +304,24 @@ interface ApplyPatchFileUpdate {
   bom: boolean
 }
 
+export function deriveContentsFromChunks(filePath: string, chunks: UpdateFileChunk[], originalText: string) {
+  return deriveContents(filePath, chunks, Bom.split(originalText))
+}
+
 export function deriveNewContentsFromChunks(
   filePath: string,
   chunks: UpdateFileChunk[],
   originalText: string,
 ): ApplyPatchFileUpdate {
   const originalContent = Bom.split(originalText)
+  const next = deriveContents(filePath, chunks, originalContent)
+  return {
+    unified_diff: generateUnifiedDiff(originalContent.text, next.content),
+    ...next,
+  }
+}
 
+function deriveContents(filePath: string, chunks: UpdateFileChunk[], originalContent: ReturnType<typeof Bom.split>) {
   let originalLines = originalContent.text.split("\n")
 
   // Drop trailing empty element for consistent line counting
@@ -327,14 +338,8 @@ export function deriveNewContentsFromChunks(
   }
 
   const next = Bom.split(newLines.join("\n"))
-  const newContent = next.text
-
-  // Generate unified diff
-  const unifiedDiff = generateUnifiedDiff(originalContent.text, newContent)
-
   return {
-    unified_diff: unifiedDiff,
-    content: newContent,
+    content: next.text,
     bom: originalContent.bom || next.bom,
   }
 }

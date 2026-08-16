@@ -15,6 +15,7 @@ const MAX_LINE_LENGTH = 2000
 const MAX_LINE_SUFFIX = `... (line truncated to ${MAX_LINE_LENGTH} chars)`
 const MAX_BYTES = 50 * 1024
 const MAX_BYTES_LABEL = `${MAX_BYTES / 1024} KB`
+const MAX_MEDIA_BYTES = 20 * 1024 * 1024
 const SAMPLE_BYTES = 4096
 const SUPPORTED_IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"])
 
@@ -50,7 +51,7 @@ type Display =
       text: string
       lineStart: number
       lineEnd: number
-      totalLines: number
+      totalLines?: number
       truncated: boolean
     }
 
@@ -110,7 +111,7 @@ export const ReadTool = Tool.define<
           if (target?.type === "Directory") return item.name + "/"
           return item.name
         }),
-        { concurrency: "unbounded" },
+        { concurrency: 32 },
       ).pipe(Effect.map((items: string[]) => items.sort((a, b) => a.localeCompare(b))))
     })
 
@@ -138,43 +139,64 @@ export const ReadTool = Tool.define<
       const start = opts.offset - 1
       const raw: string[] = []
       const flags = { bytes: 0, count: 0, cut: false, more: false, done: false }
-
-      // Note: prefer manual TextDecoder over Stream.decodeText — when the source stream
-      // ends without flushing, decodeText drops the final unterminated line. We also
-      // avoid Stream.runForEachWhile (it currently swallows the final unterminated
-      // line of the upstream splitLines pipeline) and use a tagged error to stop the
-      // upstream file stream as soon as the byte cap is reached.
       const decoder = new TextDecoder("utf-8")
+      let pending = ""
+      let discard = false
+
+      const append = (input: string) => {
+        flags.count++
+        if (flags.count <= start) return true
+        if (raw.length >= opts.limit) {
+          flags.more = true
+          flags.done = true
+          return false
+        }
+        const line = input.length > MAX_LINE_LENGTH ? input.substring(0, MAX_LINE_LENGTH) + MAX_LINE_SUFFIX : input
+        const size = Buffer.byteLength(line, "utf-8") + (raw.length > 0 ? 1 : 0)
+        if (flags.bytes + size > MAX_BYTES) {
+          flags.cut = true
+          flags.more = true
+          flags.done = true
+          return false
+        }
+        raw.push(line)
+        flags.bytes += size
+        return true
+      }
+
+      // Keep only the visible prefix of an unterminated line so one huge line cannot
+      // force splitLines to buffer the whole file before the limit is applied.
+      const consume = (input: string) => {
+        let start = 0
+        while (true) {
+          const index = input.indexOf("\n", start)
+          if (index === -1) {
+            if (!discard) {
+              pending += input.slice(start)
+              if (pending.length > MAX_LINE_LENGTH) {
+                pending = pending.slice(0, MAX_LINE_LENGTH + 1)
+                discard = true
+              }
+            }
+            return true
+          }
+          const current = pending + (discard ? "" : input.slice(start, index))
+          pending = ""
+          discard = false
+          start = index + 1
+          if (!append(current.endsWith("\r") ? current.slice(0, -1) : current)) return false
+        }
+      }
+
       yield* fs.stream(filepath).pipe(
-        Stream.map((bytes) => decoder.decode(bytes, { stream: true })),
-        Stream.splitLines,
-        Stream.runForEach((text) =>
-          Effect.gen(function* () {
-            if (flags.done) return yield* new ReadStop()
-            flags.count += 1
-            if (flags.count <= start) return
-
-            if (raw.length >= opts.limit) {
-              flags.more = true
-              return
-            }
-
-            const line = text.length > MAX_LINE_LENGTH ? text.substring(0, MAX_LINE_LENGTH) + MAX_LINE_SUFFIX : text
-            const size = Buffer.byteLength(line, "utf-8") + (raw.length > 0 ? 1 : 0)
-            if (flags.bytes + size <= MAX_BYTES) {
-              raw.push(line)
-              flags.bytes += size
-              return
-            }
-
-            flags.cut = true
-            flags.more = true
-            flags.done = true
-            return yield* new ReadStop()
-          }),
-        ),
+        Stream.runForEach((bytes) => (consume(decoder.decode(bytes, { stream: true })) ? Effect.void : new ReadStop())),
         Effect.catchTag("ReadStop", () => Effect.void),
       )
+      if (!flags.done) {
+        const tail = decoder.decode()
+        if (!discard) pending += tail
+        if (pending || discard) append(pending.endsWith("\r") ? pending.slice(0, -1) : pending)
+      }
 
       return { raw, count: flags.count, cut: flags.cut, more: flags.more, offset: opts.offset }
     })
@@ -304,6 +326,9 @@ export const ReadTool = Tool.define<
       const isImage = SUPPORTED_IMAGE_MIMES.has(mime)
 
       if (isImage || isPdfAttachment(mime)) {
+        if (Number(stat.size) > MAX_MEDIA_BYTES) {
+          return yield* Effect.fail(new Error(`Media exceeds ${MAX_MEDIA_BYTES} byte ingestion limit: ${filepath}`))
+        }
         const bytes = yield* fs.readFile(filepath)
         const msg = isPdfAttachment(mime) ? "PDF read successfully" : "Image read successfully"
         return {
@@ -344,7 +369,7 @@ export const ReadTool = Tool.define<
       if (file.cut) {
         output += `\n\n(Output capped at ${MAX_BYTES_LABEL}. Showing lines ${file.offset}-${last}. Use offset=${next} to continue.)`
       } else if (file.more) {
-        output += `\n\n(Showing lines ${file.offset}-${last} of ${file.count}. Use offset=${next} to continue.)`
+        output += `\n\n(Showing lines ${file.offset}-${last}. Use offset=${next} to continue.)`
       } else {
         output += `\n\n(End of file - total ${file.count} lines)`
       }
@@ -369,7 +394,7 @@ export const ReadTool = Tool.define<
             text: file.raw.join("\n"),
             lineStart: file.offset,
             lineEnd: last,
-            totalLines: file.count,
+            ...(truncated ? {} : { totalLines: file.count }),
             truncated,
           },
         },

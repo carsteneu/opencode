@@ -7,7 +7,6 @@ import * as path from "path"
 import { Effect, Schema, Semaphore } from "effect"
 import * as Tool from "./tool"
 import { LSP } from "@/lsp/lsp"
-import { createTwoFilesPatch, diffLines } from "diff"
 import DESCRIPTION from "./edit.txt"
 import { FileSystem } from "@opencode-ai/core/filesystem"
 import { Watcher } from "@opencode-ai/core/filesystem/watcher"
@@ -17,6 +16,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { Snapshot } from "@/snapshot"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { FSUtil } from "@opencode-ai/core/fs-util"
+import { TextDiff } from "@opencode-ai/core/text-diff"
 import * as Bom from "@/util/bom"
 
 function normalizeLineEndings(text: string): string {
@@ -85,6 +85,8 @@ export const EditTool = Tool.define(
           let diff = ""
           let contentOld = ""
           let contentNew = ""
+          let additions = 0
+          let deletions = 0
           yield* lock(filePath).withPermits(1)(
             Effect.gen(function* () {
               if (params.oldString === "") {
@@ -98,7 +100,10 @@ export const EditTool = Tool.define(
                 const desiredBom = next.bom
                 contentOld = ""
                 contentNew = next.text
-                diff = trimDiff(createTwoFilesPatch(filePath, filePath, contentOld, contentNew))
+                const initialDiff = TextDiff.create(filePath, filePath, contentOld, contentNew)
+                diff = trimDiff(initialDiff.patch)
+                additions = initialDiff.additions
+                deletions = initialDiff.deletions
                 yield* ctx.ask({
                   permission: "edit",
                   patterns: [path.relative(instance.worktree, filePath)],
@@ -111,6 +116,10 @@ export const EditTool = Tool.define(
                 yield* afs.writeWithDirs(filePath, Bom.join(contentNew, desiredBom))
                 if (yield* format.file(filePath)) {
                   contentNew = yield* Bom.syncFile(afs, filePath, desiredBom)
+                  const formattedDiff = TextDiff.create(filePath, filePath, contentOld, contentNew)
+                  diff = trimDiff(formattedDiff.patch)
+                  additions = formattedDiff.additions
+                  deletions = formattedDiff.deletions
                 }
                 yield* events.publish(FileSystem.Event.Edited, { file: filePath })
                 yield* events.publish(Watcher.Event.Updated, {
@@ -134,14 +143,15 @@ export const EditTool = Tool.define(
               const desiredBom = source.bom || next.bom
               contentNew = next.text
 
-              diff = trimDiff(
-                createTwoFilesPatch(
-                  filePath,
-                  filePath,
-                  normalizeLineEndings(contentOld),
-                  normalizeLineEndings(contentNew),
-                ),
+              const initialDiff = TextDiff.create(
+                filePath,
+                filePath,
+                normalizeLineEndings(contentOld),
+                normalizeLineEndings(contentNew),
               )
+              diff = trimDiff(initialDiff.patch)
+              additions = initialDiff.additions
+              deletions = initialDiff.deletions
               yield* ctx.ask({
                 permission: "edit",
                 patterns: [path.relative(instance.worktree, filePath)],
@@ -155,29 +165,24 @@ export const EditTool = Tool.define(
               yield* afs.writeWithDirs(filePath, Bom.join(contentNew, desiredBom))
               if (yield* format.file(filePath)) {
                 contentNew = yield* Bom.syncFile(afs, filePath, desiredBom)
+                const formattedDiff = TextDiff.create(
+                  filePath,
+                  filePath,
+                  normalizeLineEndings(contentOld),
+                  normalizeLineEndings(contentNew),
+                )
+                diff = trimDiff(formattedDiff.patch)
+                additions = formattedDiff.additions
+                deletions = formattedDiff.deletions
               }
               yield* events.publish(FileSystem.Event.Edited, { file: filePath })
               yield* events.publish(Watcher.Event.Updated, {
                 file: filePath,
                 event: "change",
               })
-              diff = trimDiff(
-                createTwoFilesPatch(
-                  filePath,
-                  filePath,
-                  normalizeLineEndings(contentOld),
-                  normalizeLineEndings(contentNew),
-                ),
-              )
             }).pipe(Effect.orDie),
           )
 
-          let additions = 0
-          let deletions = 0
-          for (const change of diffLines(contentOld, contentNew)) {
-            if (change.added) additions += change.count || 0
-            if (change.removed) deletions += change.count || 0
-          }
           const filediff: Snapshot.FileDiff = {
             file: filePath,
             patch: diff,
@@ -195,8 +200,8 @@ export const EditTool = Tool.define(
 
           let output = "Edit applied successfully."
           yield* lsp.touchFile(filePath, "document")
-          const diagnostics = yield* lsp.diagnostics()
           const normalizedFilePath = FSUtil.normalizePath(filePath)
+          const diagnostics = yield* lsp.diagnostics({ files: [normalizedFilePath], limit: 20 })
           const block = LSP.Diagnostic.report(filePath, diagnostics[normalizedFilePath] ?? [])
           if (block) output += `\n\nLSP errors detected in this file, please fix:\n${block}`
 
@@ -224,21 +229,25 @@ const MULTIPLE_CANDIDATES_SIMILARITY_THRESHOLD = 0.65
  * Levenshtein distance algorithm implementation
  */
 function levenshtein(a: string, b: string): number {
-  // Handle empty strings
   if (a === "" || b === "") {
     return Math.max(a.length, b.length)
   }
-  const matrix = Array.from({ length: a.length + 1 }, (_, i) =>
-    Array.from({ length: b.length + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0)),
-  )
 
-  for (let i = 1; i <= a.length; i++) {
-    for (let j = 1; j <= b.length; j++) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1
-      matrix[i][j] = Math.min(matrix[i - 1][j] + 1, matrix[i][j - 1] + 1, matrix[i - 1][j - 1] + cost)
+  const columns = a.length <= b.length ? a : b
+  const rows = a.length <= b.length ? b : a
+  const matrix = [new Uint32Array(columns.length + 1), new Uint32Array(columns.length + 1)]
+  for (let column = 0; column <= columns.length; column++) matrix[0][column] = column
+
+  for (let row = 1; row <= rows.length; row++) {
+    const current = matrix[row % 2]
+    const previous = matrix[(row - 1) % 2]
+    current[0] = row
+    for (let column = 1; column <= columns.length; column++) {
+      const cost = rows[row - 1] === columns[column - 1] ? 0 : 1
+      current[column] = Math.min(previous[column] + 1, current[column - 1] + 1, previous[column - 1] + cost)
     }
   }
-  return matrix[a.length][b.length]
+  return matrix[rows.length % 2][columns.length]
 }
 
 export const SimpleReplacer: Replacer = function* (_content, find) {
@@ -301,23 +310,22 @@ export const BlockAnchorReplacer: Replacer = function* (content, find) {
   const lastLineSearch = searchLines[searchLines.length - 1].trim()
   const searchBlockSize = searchLines.length
   const maxLineDelta = Math.max(1, Math.floor(searchBlockSize * 0.25))
+  const lastLineIndexes = originalLines.flatMap((line, index) => (line.trim() === lastLineSearch ? [index] : []))
 
   // Collect all candidate positions where both anchors match
   const candidates: Array<{ startLine: number; endLine: number }> = []
+  let lastLineCursor = 0
   for (let i = 0; i < originalLines.length; i++) {
     if (originalLines[i].trim() !== firstLineSearch) {
       continue
     }
 
-    // Look for the matching last line after this first line
-    for (let j = i + 2; j < originalLines.length; j++) {
-      if (originalLines[j].trim() === lastLineSearch) {
-        const actualBlockSize = j - i + 1
-        if (Math.abs(actualBlockSize - searchBlockSize) <= maxLineDelta) {
-          candidates.push({ startLine: i, endLine: j })
-        }
-        break // Only match the first occurrence of the last line
-      }
+    while (lastLineIndexes[lastLineCursor] < i + 2) lastLineCursor++
+    const endLine = lastLineIndexes[lastLineCursor]
+    if (endLine === undefined) break
+    const actualBlockSize = endLine - i + 1
+    if (Math.abs(actualBlockSize - searchBlockSize) <= maxLineDelta) {
+      candidates.push({ startLine: i, endLine })
     }
   }
 
@@ -602,43 +610,35 @@ export const ContextAwareReplacer: Replacer = function* (content, find) {
   // Extract first and last lines as context anchors
   const firstLine = findLines[0].trim()
   const lastLine = findLines[findLines.length - 1].trim()
+  const lastLineIndexes = contentLines.flatMap((line, index) => (line.trim() === lastLine ? [index] : []))
 
   // Find blocks that start and end with the context anchors
+  let lastLineCursor = 0
   for (let i = 0; i < contentLines.length; i++) {
     if (contentLines[i].trim() !== firstLine) continue
 
-    // Look for the matching last line
-    for (let j = i + 2; j < contentLines.length; j++) {
-      if (contentLines[j].trim() === lastLine) {
-        // Found a potential context block
-        const blockLines = contentLines.slice(i, j + 1)
-        const block = blockLines.join("\n")
+    while (lastLineIndexes[lastLineCursor] < i + 2) lastLineCursor++
+    const endLine = lastLineIndexes[lastLineCursor]
+    if (endLine === undefined) break
+    const blockLines = contentLines.slice(i, endLine + 1)
+    if (blockLines.length !== findLines.length) continue
 
-        // Check if the middle content has reasonable similarity
-        // (simple heuristic: at least 50% of non-empty lines should match when trimmed)
-        if (blockLines.length === findLines.length) {
-          let matchingLines = 0
-          let totalNonEmptyLines = 0
+    let matchingLines = 0
+    let totalNonEmptyLines = 0
+    for (let k = 1; k < blockLines.length - 1; k++) {
+      const blockLine = blockLines[k].trim()
+      const findLine = findLines[k].trim()
 
-          for (let k = 1; k < blockLines.length - 1; k++) {
-            const blockLine = blockLines[k].trim()
-            const findLine = findLines[k].trim()
-
-            if (blockLine.length > 0 || findLine.length > 0) {
-              totalNonEmptyLines++
-              if (blockLine === findLine) {
-                matchingLines++
-              }
-            }
-          }
-
-          if (totalNonEmptyLines === 0 || matchingLines / totalNonEmptyLines >= 0.5) {
-            yield block
-            break // Only match the first occurrence
-          }
+      if (blockLine.length > 0 || findLine.length > 0) {
+        totalNonEmptyLines++
+        if (blockLine === findLine) {
+          matchingLines++
         }
-        break
       }
+    }
+
+    if (totalNonEmptyLines === 0 || matchingLines / totalNonEmptyLines >= 0.5) {
+      yield blockLines.join("\n")
     }
   }
 }

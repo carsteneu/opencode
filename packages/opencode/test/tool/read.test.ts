@@ -1,5 +1,6 @@
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { afterEach, describe, expect } from "bun:test"
+import { open } from "node:fs/promises"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Cause, Effect, Exit, Layer, Stream } from "effect"
 import path from "path"
@@ -368,11 +369,69 @@ describe("tool.read truncation", () => {
 
       const result = yield* run({ filePath: path.join(test.directory, "many-lines.txt"), limit: 10 })
       expect(result.metadata.truncated).toBe(true)
-      expect(result.output).toContain("Showing lines 1-10 of 100")
+      expect(result.output).toContain("Showing lines 1-10")
       expect(result.output).toContain("Use offset=11")
       expect(result.output).toContain("line0")
       expect(result.output).toContain("line9")
       expect(result.output).not.toContain("line10")
+    }),
+  )
+
+  it.instance("stops streaming after the requested line page", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "many-lines.txt")
+      const content = `${"x".repeat(80)}\n`.repeat(50_000)
+      yield* put(filepath, content)
+
+      const fs = yield* FSUtil.Service
+      const counter = { bytes: 0 }
+      const result = yield* run({ filePath: filepath, limit: 10 }).pipe(
+        Effect.provideService(
+          FSUtil.Service,
+          FSUtil.Service.of({
+            ...fs,
+            stream: (file, options) =>
+              fs.stream(file, options).pipe(
+                Stream.tap((chunk) =>
+                  Effect.sync(() => {
+                    counter.bytes += chunk.length
+                  }),
+                ),
+              ),
+          }),
+        ),
+      )
+
+      expect(result.metadata.truncated).toBe(true)
+      expect(result.output).toContain("Showing lines 1-10")
+      expect(result.metadata.display).not.toHaveProperty("totalLines")
+      expect(counter.bytes).toBeLessThan(Buffer.byteLength(content, "utf-8") / 2)
+    }),
+  )
+
+  it.instance("preserves UTF-8 and CRLF across small stream chunks", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "chunked.txt")
+      yield* put(filepath, "ä\r\n🙂\r\nlast")
+
+      const fs = yield* FSUtil.Service
+      const result = yield* run({ filePath: filepath }).pipe(
+        Effect.provideService(
+          FSUtil.Service,
+          FSUtil.Service.of({
+            ...fs,
+            stream: (file, options) =>
+              fs
+                .stream(file, options)
+                .pipe(Stream.flatMap((chunk) => Stream.fromIterable(Array.from(chunk, (byte) => Uint8Array.of(byte))))),
+          }),
+        ),
+      )
+
+      expect(result.output).toContain("1: ä\n2: 🙂\n3: last")
+      expect(result.output).toContain("End of file - total 3 lines")
     }),
   )
 
@@ -524,6 +583,23 @@ describe("tool.read truncation", () => {
       expect(result.attachments?.[0]).not.toHaveProperty("id")
       expect(result.attachments?.[0]).not.toHaveProperty("sessionID")
       expect(result.attachments?.[0]).not.toHaveProperty("messageID")
+    }),
+  )
+
+  it.live("rejects oversized media before loading it into memory", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const filepath = path.join(dir, "oversized.png")
+      yield* Effect.promise(async () => {
+        const file = await open(filepath, "w")
+        await file.write(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+        await file.truncate(20 * 1024 * 1024 + 1)
+        await file.close()
+      })
+
+      const error = yield* fail(dir, { filePath: filepath })
+      expect(error.message).toContain("Media exceeds")
+      expect(error.message).toContain(filepath)
     }),
   )
 

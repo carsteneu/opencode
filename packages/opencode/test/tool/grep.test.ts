@@ -4,7 +4,7 @@ import fs from "fs/promises"
 import os from "os"
 import path from "path"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Effect, Layer } from "effect"
+import { Cause, Effect, Layer } from "effect"
 import { GrepTool } from "../../src/tool/grep"
 import { provideInstance, testInstanceStoreLayer, TestInstance, tmpdirScoped } from "../fixture/fixture"
 import { SessionID, MessageID } from "../../src/session/schema"
@@ -155,6 +155,7 @@ describe("tool.grep", () => {
       const test = yield* TestInstance
       const file = path.join(test.directory, "test.txt")
       yield* Effect.promise(() => Bun.write(file, "line1\nline2\nline3"))
+      yield* Effect.promise(() => Bun.write(path.join(test.directory, "sibling.txt"), "line2 from sibling"))
       const info = yield* GrepTool
       const grep = yield* info.init()
       const result = yield* grep.execute(
@@ -167,6 +168,43 @@ describe("tool.grep", () => {
       expect(result.metadata.matches).toBe(1)
       expect(result.output).toContain(file)
       expect(result.output).toContain("Line 2: line2")
+      expect(result.output).not.toContain("sibling.txt")
+    }),
+  )
+
+  if (process.platform !== "win32") {
+    it.instance("preserves an exact symlink file path in results", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const target = path.join(test.directory, "target-name.txt")
+        const alias = path.join(test.directory, "alias-name.txt")
+        yield* Effect.promise(() => Bun.write(target, "needle"))
+        yield* Effect.promise(() => fs.symlink(target, alias))
+
+        const info = yield* GrepTool
+        const grep = yield* info.init()
+        const result = yield* grep.execute({ pattern: "needle", path: alias }, ctx)
+
+        expect(result.metadata.matches).toBe(1)
+        expect(result.output).toContain(alias)
+        expect(result.output).not.toContain(target)
+      }),
+    )
+  }
+
+  it.instance("fails an explicit missing path instead of scanning its parent", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() => Bun.write(path.join(test.directory, "sibling.txt"), "needle"))
+      const info = yield* GrepTool
+      const grep = yield* info.init()
+      const result = yield* Effect.exit(
+        grep.execute({ pattern: "needle", path: path.join(test.directory, "missing.txt") }, ctx),
+      )
+
+      expect(result._tag).toBe("Failure")
+      if (result._tag === "Success") return
+      expect(Cause.pretty(result.cause)).toContain("Path not found")
     }),
   )
 

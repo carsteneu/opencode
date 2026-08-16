@@ -52,27 +52,32 @@ export const GrepTool = Tool.define(
             ? (params.path ?? ins.directory)
             : path.join(ins.directory, params.path ?? ".")
           const requestedInfo = yield* fs.stat(requested).pipe(Effect.catch(() => Effect.succeed(undefined)))
+          if (params.path && !requestedInfo) throw new Error(`Path not found: ${requested}`)
           yield* assertExternalDirectoryEffect(ctx, requested, {
             bypass: false,
             kind: requestedInfo?.type === "Directory" ? "directory" : "file",
           })
 
-          const search = FSUtil.resolve(requested)
+          const search = yield* fs.resolve(requested)
           const info = yield* fs.stat(search).pipe(Effect.catch(() => Effect.succeed(undefined)))
           const cwd = info?.type === "Directory" ? search : path.dirname(search)
           const result = yield* ripgrep.grep({
             cwd,
             pattern: params.pattern,
+            file: info?.type === "File" ? path.basename(search) : undefined,
             include: params.include,
             limit: 100,
           })
           if (result.length === 0) return empty
 
           const rows = result.map((item) => ({
-            path: path.resolve(
-              requestedInfo?.type === "Directory" ? requested : path.dirname(requested),
-              item.entry.path,
-            ),
+            path:
+              requestedInfo?.type === "File"
+                ? requested
+                : path.resolve(
+                    requestedInfo?.type === "Directory" ? requested : path.dirname(requested),
+                    item.entry.path,
+                  ),
             line: item.line,
             text: item.text,
           }))

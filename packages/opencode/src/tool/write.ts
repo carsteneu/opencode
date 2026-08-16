@@ -3,13 +3,13 @@ import * as path from "path"
 import { Effect } from "effect"
 import * as Tool from "./tool"
 import { LSP } from "@/lsp/lsp"
-import { createTwoFilesPatch } from "diff"
 import DESCRIPTION from "./write.txt"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { FileSystem } from "@opencode-ai/core/filesystem"
 import { Watcher } from "@opencode-ai/core/filesystem/watcher"
 import { Format } from "../format"
 import { FSUtil } from "@opencode-ai/core/fs-util"
+import { TextDiff } from "@opencode-ai/core/text-diff"
 import { InstanceState } from "@/effect/instance-state"
 import { trimDiff } from "./edit"
 import { assertExternalDirectoryEffect } from "./external-directory"
@@ -50,7 +50,7 @@ export const WriteTool = Tool.define(
           const contentOld = source.text
           const contentNew = next.text
 
-          const diff = trimDiff(createTwoFilesPatch(filepath, filepath, contentOld, contentNew))
+          const diff = trimDiff(TextDiff.create(filepath, filepath, contentOld, contentNew).patch)
           yield* ctx.ask({
             permission: "edit",
             patterns: [path.relative(instance.worktree, filepath)],
@@ -73,19 +73,20 @@ export const WriteTool = Tool.define(
 
           let output = "Wrote file successfully."
           yield* lsp.touchFile(filepath, "document")
-          const diagnostics = yield* lsp.diagnostics()
           const normalizedFilepath = FSUtil.normalizePath(filepath)
-          let projectDiagnosticsCount = 0
+          const diagnostics = yield* lsp.diagnostics({
+            files: [normalizedFilepath],
+            limit: 20,
+            otherFiles: MAX_PROJECT_DIAGNOSTICS_FILES,
+          })
           for (const [file, issues] of Object.entries(diagnostics)) {
             const current = file === normalizedFilepath
-            if (!current && projectDiagnosticsCount >= MAX_PROJECT_DIAGNOSTICS_FILES) continue
             const block = LSP.Diagnostic.report(current ? filepath : file, issues)
             if (!block) continue
             if (current) {
               output += `\n\nLSP errors detected in this file, please fix:\n${block}`
               continue
             }
-            projectDiagnosticsCount++
             output += `\n\nLSP errors detected in other files:\n${block}`
           }
 

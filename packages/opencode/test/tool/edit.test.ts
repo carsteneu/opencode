@@ -3,7 +3,7 @@ import path from "path"
 import fs from "fs/promises"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
-import { EditTool } from "../../src/tool/edit"
+import { BlockAnchorReplacer, ContextAwareReplacer, EditTool } from "../../src/tool/edit"
 import { disposeAllInstances, TestInstance } from "../fixture/fixture"
 import { LSP } from "@/lsp/lsp"
 import { FSUtil } from "@opencode-ai/core/fs-util"
@@ -62,6 +62,26 @@ const fail = Effect.fn("EditToolTest.fail")(function* (args: Tool.InferParameter
 const put = Effect.fn("EditToolTest.put")(function* (p: string, content: string) {
   const fs = yield* FSUtil.Service
   yield* fs.writeWithDirs(p, content)
+})
+
+describe("edit replacer bounds", () => {
+  it.live("does not rescan the full file for repeated anchors", () =>
+    Effect.sync(() => {
+      const content = Array.from({ length: 16_000 }, () => "start").join("\n")
+      const started = performance.now()
+      expect([...BlockAnchorReplacer(content, "start\nmiddle\nmissing")]).toEqual([])
+      expect([...ContextAwareReplacer(content, "start\nmiddle\nmissing")]).toEqual([])
+      expect(performance.now() - started).toBeLessThan(1_000)
+    }),
+  )
+
+  it.live("compares long candidate lines without a quadratic allocation", () =>
+    Effect.sync(() => {
+      const content = `start\n${"a".repeat(4_000)}\nend`
+      const search = `start\n${"b".repeat(4_000)}\nend`
+      expect([...BlockAnchorReplacer(content, search)]).toEqual([])
+    }),
+  )
 })
 
 const load = Effect.fn("EditToolTest.load")(function* (p: string) {

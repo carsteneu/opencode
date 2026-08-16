@@ -14,6 +14,7 @@ import { containsPath } from "@/project/instance-context"
 import { NonNegativeInt } from "@opencode-ai/core/schema"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { LspEvent } from "@opencode-ai/schema/lsp-event"
+import { compact } from "./diagnostic"
 
 export const Event = LspEvent
 
@@ -121,7 +122,12 @@ export interface Interface {
   readonly status: () => Effect.Effect<Status[]>
   readonly hasClients: (file: string) => Effect.Effect<boolean>
   readonly touchFile: (input: string, diagnostics?: "document" | "full") => Effect.Effect<void>
-  readonly diagnostics: () => Effect.Effect<Record<string, LSPClient.Diagnostic[]>>
+  /** Return all diagnostics, or a compact error-only view for selected files. */
+  readonly diagnostics: (options?: {
+    readonly files: readonly string[]
+    readonly limit?: number
+    readonly otherFiles?: number
+  }) => Effect.Effect<Record<string, LSPClient.Diagnostic[]>>
   readonly hover: (input: LocInput) => Effect.Effect<any>
   readonly definition: (input: LocInput) => Effect.Effect<any[]>
   readonly references: (input: LocInput) => Effect.Effect<any[]>
@@ -361,10 +367,37 @@ const layer = Layer.effect(
       )
     })
 
-    const diagnostics = Effect.fn("LSP.diagnostics")(function* () {
-      const results: Record<string, LSPClient.Diagnostic[]> = {}
+    const diagnostics = Effect.fn("LSP.diagnostics")(function* (options?: {
+      readonly files: readonly string[]
+      readonly limit?: number
+      readonly otherFiles?: number
+    }) {
+      const files = options?.files.map(FSUtil.normalizePath)
+      const selected = new Set(files)
+      const others = new Set<string>()
+      const results: Record<string, LSPClient.Diagnostic[]> = Object.fromEntries(
+        (files ?? []).map((file) => [file, []]),
+      )
       const all = yield* runAll(async (client) => client.diagnostics)
       for (const result of all) {
+        if (files) {
+          for (const file of files) {
+            const issues = result.get(file)
+            if (!issues) continue
+            results[file] = compact([...results[file], ...compact(issues, options?.limit)], options?.limit)
+          }
+          if (!options?.otherFiles) continue
+          for (const [file, issues] of result.entries()) {
+            const normalized = FSUtil.normalizePath(file)
+            if (selected.has(normalized)) continue
+            const errors = compact(issues, options.limit)
+            if (errors.length === 0) continue
+            if (!others.has(normalized) && others.size >= options.otherFiles) continue
+            others.add(normalized)
+            results[normalized] = compact([...(results[normalized] ?? []), ...errors], options.limit)
+          }
+          continue
+        }
         for (const [p, diags] of result.entries()) {
           const arr = results[p] || []
           arr.push(...diags)
