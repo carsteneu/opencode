@@ -257,7 +257,7 @@ describe("ReadTool", () => {
         ...toolIdentity,
         call: { type: "tool-call", id: "call-image-settle", name: "read", input: { path: "pixel.png" } },
       })
-      expect(settled.output?.structured).toMatchObject({
+      expect(settled.output?.structured).toEqual({
         uri: "file:///pixel.png",
         name: "pixel.png",
         mime: "image/png",
@@ -267,6 +267,7 @@ describe("ReadTool", () => {
         { type: "text", text: "Image read successfully" },
         { type: "file", mime: "image/png", uri: `data:image/png;base64,${png}` },
       ])
+      expect(JSON.stringify(settled.output).split(png)).toHaveLength(2)
     }),
   )
 
@@ -294,7 +295,7 @@ describe("ReadTool", () => {
       })
 
       expect(settled.outputPaths).toBeUndefined()
-      expect(settled.output?.structured).toMatchObject({
+      expect(settled.output?.structured).toEqual({
         uri: "file:///large.png",
         name: "large.png",
         mime: "image/png",
@@ -322,15 +323,21 @@ describe("ReadTool", () => {
       }
       const registry = yield* ToolRegistry.Service
 
-      expect(
-        yield* executeTool(registry, {
-          sessionID,
-          ...toolIdentity,
-          call: { type: "tool-call", id: "call-image-fallback", name: "read", input: { path: "pixel.png" } },
-        }),
-      ).toMatchObject({
+      const settled = yield* settleTool(registry, {
+        sessionID,
+        ...toolIdentity,
+        call: { type: "tool-call", id: "call-image-fallback", name: "read", input: { path: "pixel.png" } },
+      })
+
+      expect(settled.result).toMatchObject({
         type: "content",
         value: [{ type: "text" }, { type: "file", uri: `data:image/png;base64,${png}`, mime: "image/png" }],
+      })
+      expect(settled.output?.structured).toEqual({
+        uri: "file:///pixel.png",
+        name: "pixel.png",
+        encoding: "base64",
+        mime: "image/png",
       })
     }),
   )

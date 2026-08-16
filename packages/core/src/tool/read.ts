@@ -26,6 +26,13 @@ const LocationInput = Schema.Struct({
 })
 const Input = LocationInput
 const Output = Schema.Union([FileSystem.Content, ReadToolFileSystem.TextPage, ReadToolFileSystem.ListPage])
+const ImageMetadata = Schema.Struct({
+  uri: FileSystem.Content.fields.uri,
+  name: FileSystem.Content.fields.name,
+  encoding: Schema.Literal("base64"),
+  mime: FileSystem.Content.fields.mime,
+})
+const StructuredOutput = Schema.Union([ImageMetadata, Schema.toEncoded(Output)])
 
 const layer = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -42,6 +49,17 @@ const layer = Layer.effectDiscard(
             "Read a text file or supported image, page through a large UTF-8 text file by line offset, or list a directory page. Relative paths resolve from the current location; absolute paths inside it are accepted, while external absolute paths require external_directory approval.",
           input: Input,
           output: Output,
+          structured: StructuredOutput,
+          toStructuredOutput: ({ output }) => {
+            if (!("encoding" in output) || output.encoding !== "base64" || !SUPPORTED_IMAGE_MIMES.has(output.mime))
+              return output
+            return {
+              uri: output.uri,
+              ...(output.name === undefined ? {} : { name: output.name }),
+              encoding: output.encoding,
+              mime: output.mime,
+            }
+          },
           toModelOutput: ({ input, output }) => {
             if (!("encoding" in output) || output.encoding !== "base64" || !SUPPORTED_IMAGE_MIMES.has(output.mime))
               return []
