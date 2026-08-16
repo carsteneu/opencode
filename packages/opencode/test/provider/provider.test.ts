@@ -287,19 +287,41 @@ it.instance(
   },
 )
 
-it.instance(
-  "env variable takes precedence, config merges options",
-  Effect.gen(function* () {
-    yield* setProcessEnv("ANTHROPIC_API_KEY", "env-api-key")
-    const providers = yield* list
-    expect(providers[ProviderV2.ID.anthropic]).toBeDefined()
-    // Config options should be merged
-    expect(providers[ProviderV2.ID.anthropic].options.timeout).toBe(60000)
-    expect(providers[ProviderV2.ID.anthropic].options.headerTimeout).toBe(10000)
-    expect(providers[ProviderV2.ID.anthropic].options.chunkTimeout).toBe(15000)
-  }),
-  { config: { provider: { anthropic: { options: { timeout: 60000, headerTimeout: 10000, chunkTimeout: 15000 } } } } },
-)
+  it.instance(
+    "env variable takes precedence, config merges options",
+    Effect.gen(function* () {
+      yield* setProcessEnv("ANTHROPIC_API_KEY", "env-api-key")
+      const providers = yield* list
+      expect(providers[ProviderV2.ID.anthropic]).toBeDefined()
+      // Config options should be merged
+      expect(providers[ProviderV2.ID.anthropic].options.timeout).toBe(60000)
+      expect(providers[ProviderV2.ID.anthropic].options.headerTimeout).toBe(10000)
+      expect(providers[ProviderV2.ID.anthropic].options.chunkTimeout).toBe(15000)
+    }),
+    { config: { provider: { anthropic: { options: { timeout: 60000, headerTimeout: 10000, chunkTimeout: 15000 } } } } },
+  )
+
+  it.instance(
+    "first-byte stream timeouts default to a generous deadline when config leaves them unset",
+    Effect.gen(function* () {
+      yield* setProcessEnv("ANTHROPIC_API_KEY", "env-api-key")
+      const providers = yield* list
+      expect(providers[ProviderV2.ID.anthropic].options.headerTimeout).toBe(300_000)
+      expect(providers[ProviderV2.ID.anthropic].options.chunkTimeout).toBe(300_000)
+    }),
+    { config: { provider: { anthropic: { options: { apiKey: "test-api-key" } } } } },
+  )
+
+  it.instance(
+    "explicit headerTimeout false is respected and only unset values are defaulted",
+    Effect.gen(function* () {
+      yield* setProcessEnv("ANTHROPIC_API_KEY", "env-api-key")
+      const providers = yield* list
+      expect(providers[ProviderV2.ID.anthropic].options.headerTimeout).toBe(false)
+      expect(providers[ProviderV2.ID.anthropic].options.chunkTimeout).toBe(300_000)
+    }),
+    { config: { provider: { anthropic: { options: { headerTimeout: false } } } } },
+  )
 
 it.instance("getModel returns model for valid provider/model", () =>
   Effect.gen(function* () {

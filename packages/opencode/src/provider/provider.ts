@@ -33,6 +33,12 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { applyRuntimeFetch } from "./runtime-fetch"
 
 const OPENAI_HEADER_TIMEOUT_DEFAULT = 300_000
+// First-byte deadlines for every provider unless configured otherwise: without
+// them a provider that accepts the connection but never responds (or stalls
+// mid-stream) hangs the generation forever. Generous enough to be inert for
+// healthy streams; both surface as retryable API errors.
+const HEADER_TIMEOUT_DEFAULT = 300_000
+const CHUNK_TIMEOUT_DEFAULT = 300_000
 
 function googleVertexAnthropicBaseURL(project: string | undefined, location: string | undefined) {
   if (!project) return
@@ -1551,12 +1557,15 @@ const layer = Layer.effect(
           })
         }
 
-        for (const [id, provider] of Object.entries(providers)) {
-          const providerID = ProviderV2.ID.make(id)
-          if (!isProviderAllowed(providerID)) {
-            delete providers[providerID]
-            continue
-          }
+          for (const [id, provider] of Object.entries(providers)) {
+            const providerID = ProviderV2.ID.make(id)
+            if (!isProviderAllowed(providerID)) {
+              delete providers[providerID]
+              continue
+            }
+
+            provider.options.headerTimeout ??= HEADER_TIMEOUT_DEFAULT
+            provider.options.chunkTimeout ??= CHUNK_TIMEOUT_DEFAULT
 
           const configProvider = cfg.provider?.[providerID]
 
