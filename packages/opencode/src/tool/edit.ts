@@ -262,6 +262,14 @@ export const LineTrimmedReplacer: Replacer = function* (content, find) {
     searchLines.pop()
   }
 
+  // Prefix sum of line start offsets so each match's extent is O(1) instead of
+  // re-summing line lengths from the start of the file on every match.
+  const lineStarts = new Array(originalLines.length + 1)
+  lineStarts[0] = 0
+  for (let k = 0; k < originalLines.length; k++) {
+    lineStarts[k + 1] = lineStarts[k] + originalLines[k].length + 1
+  }
+
   for (let i = 0; i <= originalLines.length - searchLines.length; i++) {
     let matches = true
 
@@ -276,18 +284,9 @@ export const LineTrimmedReplacer: Replacer = function* (content, find) {
     }
 
     if (matches) {
-      let matchStartIndex = 0
-      for (let k = 0; k < i; k++) {
-        matchStartIndex += originalLines[k].length + 1
-      }
-
-      let matchEndIndex = matchStartIndex
-      for (let k = 0; k < searchLines.length; k++) {
-        matchEndIndex += originalLines[i + k].length
-        if (k < searchLines.length - 1) {
-          matchEndIndex += 1 // Add newline character except for the last line
-        }
-      }
+      const matchStartIndex = lineStarts[i]
+      // Offset just past the last search line, minus its trailing newline.
+      const matchEndIndex = lineStarts[i + searchLines.length] - 1
 
       yield content.substring(matchStartIndex, matchEndIndex)
     }

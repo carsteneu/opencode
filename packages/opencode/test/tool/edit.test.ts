@@ -3,7 +3,7 @@ import path from "path"
 import fs from "fs/promises"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
-import { BlockAnchorReplacer, ContextAwareReplacer, EditTool } from "../../src/tool/edit"
+import { BlockAnchorReplacer, ContextAwareReplacer, EditTool, LineTrimmedReplacer } from "../../src/tool/edit"
 import { disposeAllInstances, TestInstance } from "../fixture/fixture"
 import { LSP } from "@/lsp/lsp"
 import { FSUtil } from "@opencode-ai/core/fs-util"
@@ -80,6 +80,25 @@ describe("edit replacer bounds", () => {
       const content = `start\n${"a".repeat(4_000)}\nend`
       const search = `start\n${"b".repeat(4_000)}\nend`
       expect([...BlockAnchorReplacer(content, search)]).toEqual([])
+    }),
+  )
+})
+
+describe("LineTrimmedReplacer", () => {
+  it.live("yields every trimmed match at the correct offsets into the original content", () =>
+    Effect.sync(() => {
+      const content = "  a\n  b\n  c\n  a\n  b\n  d"
+      expect([...LineTrimmedReplacer(content, "a\nb")]).toEqual(["  a\n  b", "  a\n  b"])
+    }),
+  )
+
+  it.live("is O(n), not O(n*k): does not re-sum match offsets from the file start for every match", () =>
+    Effect.sync(() => {
+      const content = Array.from({ length: 64_000 }, () => "same").join("\n")
+      const started = performance.now()
+      const found = [...LineTrimmedReplacer(content, "same\nsame\nsame")]
+      expect(found.length).toBe(64_000 - 2)
+      expect(performance.now() - started).toBeLessThan(2_500)
     }),
   )
 })
