@@ -24,7 +24,7 @@ export function parse(value: string) {
 }
 
 export function lineReader(stream: ReadableStream<Uint8Array>) {
-  const reader = stream.getReader()
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
   const decoder = new TextDecoder()
   let fragments: string[] = []
   let ready: string[] = []
@@ -70,6 +70,7 @@ export function lineReader(stream: ReadableStream<Uint8Array>) {
         return result
       }
 
+      reader ??= stream.getReader()
       const result = await reader.read()
       if (result.done) {
         append(decoder.decode())
@@ -80,8 +81,13 @@ export function lineReader(stream: ReadableStream<Uint8Array>) {
     }
   }
 
-  const cancel = () => reader.cancel()
-  return { read, cancel }
+  const release = () => {
+    if (!reader) return
+    reader.releaseLock()
+    reader = undefined
+  }
+  const cancel = () => (reader ? reader.cancel() : stream.cancel())
+  return { read, release, cancel }
 }
 
 export function writer(sink: ReturnType<typeof Bun.stdout.writer>) {

@@ -7,26 +7,38 @@ async function connect() {
   const input = LLMWorkerIPC.lineReader(Bun.stdin.stream())
   const line = await input.read()
   if (line === undefined) throw new Error("Initial frame is required")
-  const request = LLMWorkerIPC.parse(line) as { options?: { fixturePayload?: unknown } }
+  const initial = LLMWorkerIPC.parse(line) as {
+    type?: unknown
+    run?: unknown
+    input?: { options?: { fixturePayload?: unknown } }
+  }
+  if (initial.type !== "run" || typeof initial.run !== "number" || !initial.input) {
+    throw new Error("Initial run frame is required")
+  }
   let messageID = 0
   const send = async (events: unknown[]) => {
     const id = messageID++
-    await output.write({ type: "events", id, events })
+    await output.write({ type: "events", run: initial.run, id, events })
     const line = await input.read()
     if (line === undefined) throw new Error(`Missing acknowledgement for events frame ${id}`)
-    const acknowledgement = LLMWorkerIPC.parse(line) as { type?: unknown; id?: unknown }
-    if (acknowledgement.type !== "events-ack" || acknowledgement.id !== id) {
+    const acknowledgement = LLMWorkerIPC.parse(line) as { type?: unknown; run?: unknown; id?: unknown }
+    if (acknowledgement.type !== "events-ack" || acknowledgement.run !== initial.run || acknowledgement.id !== id) {
       throw new Error(`Invalid acknowledgement for events frame ${id}`)
     }
   }
-  return { request, send }
+  const end = async () => {
+    await output.write({ type: "end", run: initial.run })
+    await output.write({ type: "ready", run: initial.run, rss: process.memoryUsage().rss })
+  }
+  return { request: initial.input, send, end }
 }
 
 if (mode === "stderr-before-end") {
+  const client = await connect()
   await new Promise<void>((resolve, reject) =>
     process.stderr.write(Buffer.alloc(2 * 1024 * 1024, "x"), (error) => (error ? reject(error) : resolve())),
   )
-  await output.write({ type: "end" })
+  await client.end()
   await output.end()
   process.exit(0)
 }
@@ -63,7 +75,7 @@ if (mode === "slow-output") {
     await Bun.write(progress, String(index + 1))
   }
   await Bun.write(complete, "done")
-  await output.write({ type: "end" })
+  await client.end()
   await output.end()
   process.exit(0)
 }
@@ -74,7 +86,7 @@ if (mode === "initial-frame") {
   if (typeof payload !== "string") throw new Error("Initial frame payload is required")
   const digest = new Bun.CryptoHasher("sha256").update(payload).digest("hex")
   await client.send([{ type: "text-delta", id: "ack", text: `${payload.length}:${digest}` }])
-  await output.write({ type: "end" })
+  await client.end()
   await output.end()
   process.exit(0)
 }

@@ -975,18 +975,19 @@ describe("LLM AI process", () => {
     let rescued = false
     let rescue: ReturnType<typeof setTimeout> | undefined
     try {
-      await stdin.write(input(server))
+      await stdin.write({ type: "run", run: 1, input: input(server) })
       while (true) {
         const line = await stdout.read()
         if (line === undefined) throw new Error(`Worker exited before the gated delta: ${await stderr}`)
         const message = LLMWorkerIPC.parse(line) as {
           type: string
+          run?: number
           id?: number
           events?: Array<{ type?: string; text?: string }>
         }
         if (message.type !== "events" || message.id === undefined || !message.events) continue
         if (message.events.some((event) => event.type === "text-delta" && event.text === "B")) break
-        await stdin.write({ type: "events-ack", id: message.id })
+        await stdin.write({ type: "events-ack", run: message.run, id: message.id })
       }
 
       rescue = setTimeout(() => {
