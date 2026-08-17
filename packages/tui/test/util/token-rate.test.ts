@@ -54,4 +54,16 @@ describe("util.token-rate", () => {
     meter.add(10, 2000)
     expect(meter.rate(2000)).toBe(0)
   })
+
+  test("rate decays to 0 when the newest sample is older than the window", () => {
+    const meter = new TokenRateMeter(3000)
+    meter.add(10, 0)
+    meter.add(40, 1000)
+    expect(meter.rate(1500)).toBeCloseTo(30, 5)
+    // just inside the window: still live
+    expect(meter.rate(1000 + 3000)).toBeCloseTo(30, 5)
+    // past the window: needle returns to 0
+    expect(meter.rate(1000 + 3001)).toBe(0)
+    expect(meter.rate(60_000)).toBe(0)
+  })
 })

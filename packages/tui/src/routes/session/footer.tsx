@@ -7,7 +7,6 @@ import { createStore } from "solid-js/store"
 import { useRoute } from "../../context/route"
 import { useEvent } from "../../context/event"
 import { TokenRateMeter } from "../../util/token-rate"
-import { Locale } from "../../util/locale"
 
 function TokenRate() {
   const { theme } = useTheme()
@@ -54,13 +53,12 @@ function TokenRate() {
     return {
       out: outMeter.rate(now),
       input: inMeter.rate(now),
-      total: currentOut,
     }
   })
 
   return (
     <text fg={theme.textMuted} flexShrink={0}>
-      out {Math.round(view().out)}/s · in {Math.round(view().input)}/s · {Locale.number(view().total)} tok
+      out {Math.round(view().out)}/s · in {Math.round(view().input)}/s
     </text>
   )
 }

@@ -23,12 +23,15 @@ export class TokenRateMeter {
     this.samples = []
   }
 
-  // Average tokens/second across the retained window.
+  // Average tokens/second across the retained window. When the newest sample
+  // is older than the window the stream has stalled — the rate reads 0 so the
+  // needle falls back to idle instead of freezing at the last value.
   rate(at = Date.now()): number {
     this.prune(at)
     if (this.samples.length < 2) return 0
     const first = this.samples[0]
     const last = this.samples[this.samples.length - 1]
+    if (at - last.at > this.windowMs) return 0
     const elapsed = (last.at - first.at) / 1000
     if (elapsed <= 0) return 0
     return (last.tokens - first.tokens) / elapsed
