@@ -186,7 +186,9 @@ const layer = Layer.effectDiscard(
                   input.replaceAll === true
                     ? source.text.replaceAll(oldString, newString)
                     : source.text.replace(oldString, newString)
-                const diff = TextDiff.create(target.resource, target.resource, source.text, replaced)
+                const diff = TextDiff.createBounded(target.resource, target.resource, source.text, replaced, {
+                  maxSerializedPatchBytes: StructuredFileDiff.MAX_PATCH_BYTES,
+                })
                 const next = splitBom(replaced)
                 const result = yield* unableToEdit(
                   files.writeIfUnchanged({

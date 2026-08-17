@@ -437,20 +437,23 @@ describe("ApplyPatchTool", () => {
     ),
   )
 
-  it.live("omits every structured patch when a real multi-file patch exceeds the shared budget", () =>
+  it.live("omits every structured patch when individually bounded files cumulatively exceed the budget", () =>
     Effect.acquireUseRelease(
       Effect.promise(() => tmpdir()),
       (tmp) => {
         reset()
         const marker = "APPLY-PATCH-STRUCTURED-MARKER"
-        const small = "small"
-        const large = `${marker}${"😀".repeat(Math.ceil(StructuredFileDiff.MAX_PATCH_BYTES / 4))}`
-        const patchText = `*** Begin Patch\n*** Add File: small.txt\n+${small}\n*** Add File: large.txt\n+${large}\n*** End Patch`
-        const smallDiff = TextDiff.create("small.txt", "small.txt", "", `${small}\n`)
-        const largeDiff = TextDiff.create("large.txt", "large.txt", "", `${large}\n`)
+        const first = "a".repeat(140 * 1024)
+        const second = `${marker}${"b".repeat(140 * 1024 - marker.length)}`
+        const patchText = `*** Begin Patch\n*** Add File: first.txt\n+${first}\n*** Add File: second.txt\n+${second}\n*** End Patch`
+        const firstDiff = TextDiff.create("first.txt", "first.txt", "", `${first}\n`)
+        const secondDiff = TextDiff.create("second.txt", "second.txt", "", `${second}\n`)
 
-        expect(Buffer.byteLength(JSON.stringify(smallDiff.patch))).toBeLessThan(StructuredFileDiff.MAX_PATCH_BYTES)
-        expect(Buffer.byteLength(JSON.stringify(largeDiff.patch))).toBeGreaterThan(StructuredFileDiff.MAX_PATCH_BYTES)
+        expect(Buffer.byteLength(JSON.stringify(firstDiff.patch))).toBeLessThan(StructuredFileDiff.MAX_PATCH_BYTES)
+        expect(Buffer.byteLength(JSON.stringify(secondDiff.patch))).toBeLessThan(StructuredFileDiff.MAX_PATCH_BYTES)
+        expect(
+          Buffer.byteLength(JSON.stringify(firstDiff.patch)) + Buffer.byteLength(JSON.stringify(secondDiff.patch)),
+        ).toBeGreaterThan(StructuredFileDiff.MAX_PATCH_BYTES)
 
         return withTool(tmp.path, (registry) =>
           Effect.gen(function* () {
@@ -460,29 +463,29 @@ describe("ApplyPatchTool", () => {
             const root = yield* Effect.promise(() => fs.realpath(tmp.path))
             const structured = {
               applied: [
-                { type: "add" as const, resource: "small.txt", target: path.join(root, "small.txt") },
-                { type: "add" as const, resource: "large.txt", target: path.join(root, "large.txt") },
+                { type: "add" as const, resource: "first.txt", target: path.join(root, "first.txt") },
+                { type: "add" as const, resource: "second.txt", target: path.join(root, "second.txt") },
               ],
               files: [
                 {
-                  file: "small.txt",
+                  file: "first.txt",
                   status: "added" as const,
-                  additions: smallDiff.additions,
-                  deletions: smallDiff.deletions,
+                  additions: firstDiff.additions,
+                  deletions: firstDiff.deletions,
                 },
                 {
-                  file: "large.txt",
+                  file: "second.txt",
                   status: "added" as const,
-                  additions: largeDiff.additions,
-                  deletions: largeDiff.deletions,
+                  additions: secondDiff.additions,
+                  deletions: secondDiff.deletions,
                 },
               ],
             }
             const full = {
               ...structured,
               files: [
-                { ...structured.files[0], patch: smallDiff.patch },
-                { ...structured.files[1], patch: largeDiff.patch },
+                { ...structured.files[0], patch: firstDiff.patch },
+                { ...structured.files[1], patch: secondDiff.patch },
               ],
             }
 
@@ -493,13 +496,13 @@ describe("ApplyPatchTool", () => {
             expect(settled.result).toEqual({ type: "text", value: output.content[0].text })
             expect(settled.outputPaths).toBeUndefined()
             expect(assertions).toMatchObject([
-              { sessionID, action: "edit", resources: ["small.txt", "large.txt"], save: ["*"] },
+              { sessionID, action: "edit", resources: ["first.txt", "second.txt"], save: ["*"] },
             ])
-            expect(yield* Effect.promise(() => fs.readFile(path.join(tmp.path, "small.txt"), "utf8"))).toBe(
-              `${small}\n`,
+            expect(yield* Effect.promise(() => fs.readFile(path.join(tmp.path, "first.txt"), "utf8"))).toBe(
+              `${first}\n`,
             )
-            expect(yield* Effect.promise(() => fs.readFile(path.join(tmp.path, "large.txt"), "utf8"))).toBe(
-              `${large}\n`,
+            expect(yield* Effect.promise(() => fs.readFile(path.join(tmp.path, "second.txt"), "utf8"))).toBe(
+              `${second}\n`,
             )
 
             const event = Schema.encodeSync(SessionEvent.Tool.Success.data)(

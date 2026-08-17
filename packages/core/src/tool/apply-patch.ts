@@ -161,7 +161,17 @@ const layer = Layer.effectDiscard(
                   }).pipe(Effect.mapError(() => fail(hunk.path)))
                 }
 
-                const patchFiles = prepared.map(patchFile)
+                let remainingPatchBytes = StructuredFileDiff.MAX_PATCH_BYTES
+                let patchOverflow = false
+                const generatedPatchFiles = prepared.map((change) => {
+                  const result = patchFile(change, remainingPatchBytes)
+                  if (result.file.patch === undefined) patchOverflow = true
+                  remainingPatchBytes = patchOverflow ? 0 : remainingPatchBytes - result.serializedBytes
+                  return result.file
+                })
+                const patchFiles = patchOverflow
+                  ? generatedPatchFiles.map((file) => ({ ...file, patch: undefined }))
+                  : generatedPatchFiles
                 yield* Effect.forEach(
                   prepared,
                   (change) =>
@@ -208,13 +218,23 @@ export const node = makeLocationNode({
   deps: [ToolRegistry.node, LocationMutation.node, FileMutation.node, FSUtil.node, PermissionV2.node],
 })
 
-function patchFile(change: Prepared): typeof FileDiff.Info.Type {
-  const diff = TextDiff.create(change.target.resource, change.target.resource, change.before, change.after)
+function patchFile(change: Prepared, maxSerializedPatchBytes: number) {
+  const diff = TextDiff.createBounded(change.target.resource, change.target.resource, change.before, change.after, {
+    maxSerializedPatchBytes,
+  })
   return {
-    file: change.target.resource,
-    patch: diff.patch,
-    status: change.type === "add" ? "added" : change.type === "delete" ? "deleted" : "modified",
-    additions: diff.additions,
-    deletions: diff.deletions,
+    file: {
+      file: change.target.resource,
+      patch: diff.patch,
+      status:
+        change.type === "add"
+          ? ("added" as const)
+          : change.type === "delete"
+            ? ("deleted" as const)
+            : ("modified" as const),
+      additions: diff.additions,
+      deletions: diff.deletions,
+    } satisfies typeof FileDiff.Info.Type,
+    serializedBytes: diff.serializedBytes,
   }
 }
