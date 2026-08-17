@@ -6,6 +6,7 @@ import { Cause, Context, Effect, Layer, Schema, Scope } from "effect"
 import { ModelV2 } from "./model"
 import { ProviderV2 } from "./provider"
 import { State } from "./state"
+import { CHUNK_TIMEOUT_DEFAULT, HEADER_TIMEOUT_DEFAULT } from "@opencode-ai/llm"
 
 type SDK = any
 
@@ -26,43 +27,46 @@ export interface LanguageEvent {
 function wrapSSE(res: Response, ms: number, ctl: AbortController) {
   if (typeof ms !== "number" || ms <= 0) return res
   if (!res.body) return res
-  if (!res.headers.get("content-type")?.includes("text/event-stream")) return res
+  if (!res.headers.get("content-type")?.toLowerCase().includes("text/event-stream")) return res
 
   const reader = res.body.getReader()
-  const body = new ReadableStream<Uint8Array>({
-    async pull(ctrl) {
-      const part = await new Promise<Awaited<ReturnType<typeof reader.read>>>((resolve, reject) => {
-        const id = setTimeout(() => {
-          const err = new Error("SSE read timed out")
-          ctl.abort(err)
-          void reader.cancel(err)
-          reject(err)
-        }, ms)
-
-        reader.read().then(
-          (part) => {
-            clearTimeout(id)
-            resolve(part)
-          },
-          (err) => {
-            clearTimeout(id)
+  const body = new ReadableStream<Uint8Array>(
+    {
+      async pull(ctrl) {
+        const part = await new Promise<Awaited<ReturnType<typeof reader.read>>>((resolve, reject) => {
+          const id = setTimeout(() => {
+            const err = new Error("SSE read timed out")
+            ctl.abort(err)
+            void reader.cancel(err).catch(() => undefined)
             reject(err)
-          },
-        )
-      })
+          }, ms)
 
-      if (part.done) {
-        ctrl.close()
-        return
-      }
+          reader.read().then(
+            (part) => {
+              clearTimeout(id)
+              resolve(part)
+            },
+            (err) => {
+              clearTimeout(id)
+              reject(err)
+            },
+          )
+        })
 
-      ctrl.enqueue(part.value)
+        if (part.done) {
+          ctrl.close()
+          return
+        }
+
+        ctrl.enqueue(part.value)
+      },
+      async cancel(reason) {
+        ctl.abort(reason)
+        await reader.cancel(reason)
+      },
     },
-    async cancel(reason) {
-      ctl.abort(reason)
-      await reader.cancel(reason)
-    },
-  })
+    { highWaterMark: 0 },
+  )
 
   return new Response(body, {
     headers: new Headers(res.headers),
@@ -80,21 +84,13 @@ function prepareOptions(model: ModelV2.Info, pkg: string) {
   if (model.api.type === "aisdk" && model.api.url) options.baseURL = model.api.url
 
   const customFetch = options.fetch
-  const chunkTimeout = options.chunkTimeout
+  const chunkTimeout = transportTimeout(options.chunkTimeout) ?? CHUNK_TIMEOUT_DEFAULT
+  const headerTimeout = transportTimeout(options.headerTimeout) ?? HEADER_TIMEOUT_DEFAULT
   delete options.chunkTimeout
+  delete options.headerTimeout
   options.fetch = async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
     const opts = { ...(init ?? {}) }
-    const signals = [
-      opts.signal,
-      typeof chunkTimeout === "number" && chunkTimeout > 0 ? new AbortController() : undefined,
-      options.timeout !== undefined && options.timeout !== null && options.timeout !== false
-        ? AbortSignal.timeout(options.timeout)
-        : undefined,
-    ].filter((item): item is AbortSignal | AbortController => Boolean(item))
-    const chunkAbortCtl = signals.find((item): item is AbortController => item instanceof AbortController)
-    const abortSignals = signals.map((item) => (item instanceof AbortController ? item.signal : item))
-    if (abortSignals.length === 1) opts.signal = abortSignals[0]
-    if (abortSignals.length > 1) opts.signal = AbortSignal.any(abortSignals)
+    const chunkAbortCtl = chunkTimeout === false ? undefined : new AbortController()
 
     if (
       (pkg === "@ai-sdk/openai" || pkg === "@ai-sdk/azure" || pkg === "@ai-sdk/amazon-bedrock/mantle") &&
@@ -110,15 +106,47 @@ function prepareOptions(model: ModelV2.Info, pkg: string) {
       }
     }
 
-    const res = await (typeof customFetch === "function" ? customFetch : fetch)(input, {
-      ...opts,
-      timeout: false,
-    })
-    if (!chunkAbortCtl || typeof chunkTimeout !== "number") return res
+    const signals = [
+      opts.signal,
+      chunkAbortCtl?.signal,
+      options.timeout !== undefined && options.timeout !== null && options.timeout !== false
+        ? AbortSignal.timeout(options.timeout)
+        : undefined,
+    ].filter((item): item is AbortSignal => Boolean(item))
+    const res = await (async () => {
+      const headerTimeoutCtl = headerTimeout === false ? undefined : timeoutController(headerTimeout)
+      try {
+        const allSignals = headerTimeoutCtl ? [...signals, headerTimeoutCtl.signal] : signals
+        if (allSignals.length === 1) opts.signal = allSignals[0]
+        if (allSignals.length > 1) opts.signal = AbortSignal.any(allSignals)
+        return await (typeof customFetch === "function" ? customFetch : fetch)(input, {
+          ...opts,
+          timeout: false,
+        })
+      } finally {
+        headerTimeoutCtl?.clear()
+      }
+    })()
+    if (!chunkAbortCtl || chunkTimeout === false) return res
     return wrapSSE(res, chunkTimeout, chunkAbortCtl)
   }
 
   return options
+}
+
+function transportTimeout(value: unknown): number | false | undefined {
+  if (value === false) return false
+  if (typeof value === "number" && Number.isInteger(value) && value > 0) return value
+  return undefined
+}
+
+function timeoutController(ms: number) {
+  const ctl = new AbortController()
+  const id = setTimeout(() => ctl.abort(new Error(`Provider response headers timed out after ${ms}ms`)), ms)
+  return {
+    signal: ctl.signal,
+    clear: () => clearTimeout(id),
+  }
 }
 
 export class InitError extends Schema.TaggedErrorClass<InitError>()("AISDK.InitError", {

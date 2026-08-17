@@ -1,4 +1,5 @@
 import { Schema } from "effect"
+import { PositiveInt } from "@opencode-ai/schema"
 import { ModelID, ProviderID, ProviderMetadata, RouteID } from "./ids"
 
 export const ProviderFailureClassification = Schema.Literal("context-overflow")
@@ -131,6 +132,17 @@ export class TransportReason extends Schema.Class<TransportReason>("LLM.Error.Tr
   }
 }
 
+export class TimeoutReason extends Schema.Class<TimeoutReason>("LLM.Error.Timeout")({
+  _tag: Schema.tag("Timeout"),
+  message: Schema.String,
+  phase: Schema.Literals(["headers", "chunk"]),
+  timeoutMs: PositiveInt,
+}) {
+  get retryable() {
+    return true
+  }
+}
+
 export class InvalidProviderOutputReason extends Schema.Class<InvalidProviderOutputReason>(
   "LLM.Error.InvalidProviderOutput",
 )({
@@ -166,6 +178,7 @@ export const LLMErrorReason = Schema.Union([
   ContentPolicyReason,
   ProviderInternalReason,
   TransportReason,
+  TimeoutReason,
   InvalidProviderOutputReason,
   UnknownProviderReason,
 ]).pipe(Schema.toTaggedUnion("_tag"))

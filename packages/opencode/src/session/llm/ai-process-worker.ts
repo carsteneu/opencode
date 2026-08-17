@@ -4,6 +4,7 @@ import type { AIProcessInput } from "./ai-process-client"
 import type { SharedV3ProviderOptions } from "@ai-sdk/provider"
 import { applyRuntimeFetch } from "@/provider/runtime-fetch"
 import { LLMMessageTransform } from "./message-transform"
+import { ProviderError } from "@/provider/error"
 
 // @ts-ignore AI SDK uses this global flag to suppress provider warnings on stdout.
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -48,12 +49,34 @@ const fail = async (error: unknown, run = active?.run ?? -1) => {
   if (active) reset(active, error instanceof Error ? error : new Error(String(error)))
   active = undefined
   queued = undefined
+  const detail = providerFailure(error)
   await output
-    .write({ type: "error", run, error: error instanceof Error ? error.message : String(error) })
+    .write({
+      type: "error",
+      run,
+      error: detail?.error ?? (error instanceof Error ? error.message : String(error)),
+      kind: detail?.kind,
+      timeoutMs: detail?.timeoutMs,
+    })
     .catch(() => undefined)
   await output.end().catch(() => undefined)
   await lines.cancel().catch(() => undefined)
   process.exitCode = 1
+}
+
+const providerFailure = (error: unknown) => {
+  let current = error
+  for (let depth = 0; depth < 8; depth++) {
+    if (current instanceof ProviderError.HeaderTimeoutError) {
+      return { kind: "header-timeout" as const, error: current.message, timeoutMs: current.ms }
+    }
+    if (current instanceof ProviderError.ResponseStreamError) {
+      return { kind: "response-stream" as const, error: current.message }
+    }
+    if (!(current instanceof Error) || current.cause === current) return undefined
+    current = current.cause
+  }
+  return undefined
 }
 
 const execute = async (turn: Turn, input: AIProcessInput) => {
@@ -278,6 +301,10 @@ async function run(turn: Turn, input: AIProcessInput) {
   }
   try {
     for await (const event of result.fullStream) {
+      if (event.type === "error" && providerFailure(event.error)) {
+        await flush()
+        throw event.error
+      }
       if (event.type !== "text-delta" && event.type !== "reasoning-delta") {
         await flush()
         currentDelta = undefined

@@ -1,7 +1,7 @@
 export * as SessionRunnerModel from "./model"
 
 import { makeLocationNode } from "../../effect/app-node"
-import { type Model } from "@opencode-ai/llm"
+import { CHUNK_TIMEOUT_DEFAULT, HEADER_TIMEOUT_DEFAULT, type Model } from "@opencode-ai/llm"
 import * as AnthropicMessages from "@opencode-ai/llm/protocols/anthropic-messages"
 import * as OpenAICompatibleChat from "@opencode-ai/llm/protocols/openai-compatible-chat"
 import * as OpenAIResponses from "@opencode-ai/llm/protocols/openai-responses"
@@ -96,9 +96,19 @@ const withDefaults = (model: ModelV2.Info, route: AnyRoute) => {
     provider: model.providerID,
     endpoint: model.api.url === undefined ? undefined : { baseURL: model.api.url },
     headers: model.request.headers,
-    http: { body: httpBody },
+    http: {
+      body: httpBody,
+      headerTimeout: transportTimeout(model.api.settings?.headerTimeout) ?? HEADER_TIMEOUT_DEFAULT,
+      chunkTimeout: transportTimeout(model.api.settings?.chunkTimeout) ?? CHUNK_TIMEOUT_DEFAULT,
+    },
     limits: { context: model.limit.context, output: model.limit.output },
   })
+}
+
+const transportTimeout = (value: unknown): number | false | undefined => {
+  if (value === false) return false
+  if (typeof value === "number" && Number.isInteger(value) && value > 0) return value
+  return undefined
 }
 
 const withVariant = (

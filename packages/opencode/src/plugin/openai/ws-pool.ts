@@ -8,8 +8,9 @@ export const TITLE_HEADER = "x-opencode-title"
 export interface CreateWebSocketFetchOptions {
   httpFetch?: typeof globalThis.fetch
   url?: string
-  connectTimeout?: number
+  connectTimeout?: number | false
   idleTimeout?: number
+  streamIdleTimeout?: number | false
   maxConnectionAge?: number
   streamRetries?: number
 }
@@ -31,8 +32,11 @@ const CONNECTION_LIMIT_REACHED_CODE = "websocket_connection_limit_reached"
 export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
   const httpFetch = options?.httpFetch ?? globalThis.fetch
   const pool = new Map<string, PoolEntry>()
-  const connectTimeout = options?.connectTimeout ?? DEFAULT_CONNECT_TIMEOUT
+  const connectTimeout =
+    options?.connectTimeout === false ? undefined : (options?.connectTimeout ?? DEFAULT_CONNECT_TIMEOUT)
   const idleTimeout = options?.idleTimeout ?? DEFAULT_IDLE_TIMEOUT
+  const streamIdleTimeout =
+    options?.streamIdleTimeout === false ? undefined : (options?.streamIdleTimeout ?? idleTimeout)
   const maxConnectionAge = options?.maxConnectionAge ?? DEFAULT_MAX_CONNECTION_AGE
   const streamRetries = options?.streamRetries ?? 5
   const pruneTimer = setInterval(() => prune(), Math.min(idleTimeout, 60_000))
@@ -99,7 +103,7 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
       const response = OpenAIWebSocket.streamResponsesWebSocket({
         socket: entry.socket,
         body,
-        idleTimeout,
+        idleTimeout: streamIdleTimeout,
         signal: init?.signal ?? undefined,
         onFirstEvent: (error) => resolveFirstEvent(error ?? true),
         onTerminal: (event) => {
@@ -143,6 +147,11 @@ export function createWebSocketFetch(options?: CreateWebSocketFetchOptions) {
     } catch (error) {
       entry.busy = false
       entry.lastUsedAt = Date.now()
+      if (httpInit?.signal?.aborted) {
+        entry.streamFailures = 0
+        invalidate(entry)
+        throw httpInit.signal.reason instanceof Error ? httpInit.signal.reason : error
+      }
       if (OpenAIWebSocket.isAbortError(error)) {
         entry.streamFailures = 0
         invalidate(entry)
@@ -217,7 +226,7 @@ async function socket(
   entry: PoolEntry,
   url: string,
   headers: Record<string, string>,
-  connectTimeout: number,
+  connectTimeout: number | undefined,
   maxConnectionAge: number,
   signal?: AbortSignal | null,
 ) {

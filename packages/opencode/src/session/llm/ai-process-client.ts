@@ -4,6 +4,7 @@ import type { Provider } from "@/provider/provider"
 import { asSchema } from "ai"
 import { LLMWorkerIPC } from "./ipc"
 import type { AISDKEvent } from "./ai-sdk"
+import { ProviderError } from "@/provider/error"
 
 declare global {
   const OPENCODE_LLM_PROCESS: boolean
@@ -65,7 +66,13 @@ type ProcessEvent =
     }
   | { readonly type: "end"; readonly run: number }
   | { readonly type: "ready"; readonly run: number; readonly rss: number }
-  | { readonly type: "error"; readonly run: number; readonly error: string }
+  | {
+      readonly type: "error"
+      readonly run: number
+      readonly error: string
+      readonly kind?: "header-timeout" | "response-stream"
+      readonly timeoutMs?: number
+    }
 
 export type ProcessOptions = {
   readonly command?: string[]
@@ -483,6 +490,8 @@ export function stream(
               Queue.endUnsafe(queue)
               return false
             }
+            if (message.kind === "header-timeout") throw new ProviderError.HeaderTimeoutError(message.timeoutMs!)
+            if (message.kind === "response-stream") throw new ProviderError.ResponseStreamError(message.error)
             throw new Error(message.error)
           })
             .then(async () => {
@@ -539,7 +548,12 @@ function validEvent(value: ProcessEvent, run: number): value is ProcessEvent {
   if (!Number.isSafeInteger(value.run) || value.run !== run) return false
   if (value.type === "end") return true
   if (value.type === "ready") return Number.isSafeInteger(value.rss) && value.rss >= 0
-  if (value.type === "error") return typeof value.error === "string"
+  if (value.type === "error") {
+    if (typeof value.error !== "string") return false
+    if (value.kind === undefined) return value.timeoutMs === undefined
+    if (value.kind === "response-stream") return value.timeoutMs === undefined
+    return value.kind === "header-timeout" && Number.isSafeInteger(value.timeoutMs) && value.timeoutMs! > 0
+  }
   if (!Number.isSafeInteger(value.id) || value.id < 0) return false
   if (value.type === "events") return Array.isArray(value.events)
   if (value.type !== "tool") return false

@@ -1,8 +1,18 @@
 import { describe, expect, test } from "bun:test"
 import { Schema } from "effect"
-import * as OpenAIChat from "../src/protocols/openai-chat"
-import * as OpenAIResponses from "../src/protocols/openai-responses"
-import { ContentPart, LLMEvent, LLMRequest, Model, ModelID, ProviderID, Usage } from "../src/schema"
+import { OpenAIChat } from "../src/protocols/openai-chat"
+import { OpenAIResponses } from "../src/protocols/openai-responses"
+import {
+  ContentPart,
+  LLMError,
+  LLMEvent,
+  LLMRequest,
+  Model,
+  ModelID,
+  ProviderID,
+  TimeoutReason,
+  Usage,
+} from "../src/schema"
 import { ProviderShared } from "../src/protocols/shared"
 
 const model = new Model({
@@ -55,6 +65,30 @@ describe("llm schema", () => {
   test("content part tagged union exposes guards", () => {
     expect(ContentPart.guards.text({ type: "text", text: "hi" })).toBe(true)
     expect(ContentPart.guards.media({ type: "text", text: "hi" })).toBe(false)
+  })
+
+  test("round-trips timeout errors through the public schema", () => {
+    const input = new LLMError({
+      module: "Transport",
+      method: "stream",
+      reason: new TimeoutReason({
+        message: "provider idle timeout",
+        phase: "chunk",
+        timeoutMs: 1_234,
+      }),
+    })
+    const encoded = Schema.encodeSync(LLMError)(input)
+    const decoded = Schema.decodeUnknownSync(LLMError)(JSON.parse(JSON.stringify(encoded)))
+
+    expect(decoded).toBeInstanceOf(LLMError)
+    expect(decoded.reason).toBeInstanceOf(TimeoutReason)
+    expect(decoded.reason).toMatchObject({
+      _tag: "Timeout",
+      message: "provider idle timeout",
+      phase: "chunk",
+      timeoutMs: 1_234,
+    })
+    expect(decoded.retryable).toBe(true)
   })
 })
 

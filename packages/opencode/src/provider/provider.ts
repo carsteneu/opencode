@@ -31,8 +31,7 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { ModelStatus } from "./model-status"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { applyRuntimeFetch } from "./runtime-fetch"
-
-const OPENAI_HEADER_TIMEOUT_DEFAULT = 300_000
+import { CHUNK_TIMEOUT_DEFAULT, HEADER_TIMEOUT_DEFAULT } from "@opencode-ai/llm"
 
 function googleVertexAnthropicBaseURL(project: string | undefined, location: string | undefined) {
   if (!project) return
@@ -148,7 +147,7 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         async getModel(sdk: any, modelID: string, _options?: Record<string, any>) {
           return sdk.responses(modelID)
         },
-        options: { headerTimeout: OPENAI_HEADER_TIMEOUT_DEFAULT },
+        options: { headerTimeout: HEADER_TIMEOUT_DEFAULT },
       }),
     meta: () =>
       Effect.succeed({
@@ -1557,6 +1556,9 @@ const layer = Layer.effect(
             delete providers[providerID]
             continue
           }
+
+          provider.options.headerTimeout ??= HEADER_TIMEOUT_DEFAULT
+          provider.options.chunkTimeout ??= CHUNK_TIMEOUT_DEFAULT
 
           const configProvider = cfg.provider?.[providerID]
 

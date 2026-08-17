@@ -367,8 +367,8 @@ function cancelError(reason: unknown) {
 
 function abortError(signal: AbortSignal | undefined) {
   const reason = signal?.reason
-  if (isAbortError(reason)) return reason
-  return new DOMException(reason instanceof Error ? reason.message : "Aborted", "AbortError")
+  if (reason instanceof Error) return reason
+  return new DOMException("Aborted", "AbortError")
 }
 
 function closeMessage(message: string, code: number, reason: Buffer) {

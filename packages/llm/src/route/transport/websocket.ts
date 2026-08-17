@@ -3,6 +3,7 @@ import { Headers } from "effect/unstable/http"
 import { LLMError, TransportReason } from "../../schema"
 import * as HttpTransport from "./http"
 import type { Transport } from "./index"
+import { TransportTimeout } from "./timeout"
 
 export interface WebSocketRequest {
   readonly url: string
@@ -237,7 +238,7 @@ export const json = <Body, Message>(input: JsonInput<Body, Message>): JsonTransp
         message: input.encodeMessage(yield* input.toMessage(parts.jsonBody)),
       }
     }),
-  frames: (prepared, _request, runtime) => {
+  frames: (prepared, request, runtime) => {
     const webSocket = runtime.webSocket
     if (!webSocket) {
       return Stream.fail(
@@ -251,11 +252,19 @@ export const json = <Body, Message>(input: JsonInput<Body, Message>): JsonTransp
     return Stream.unwrap(
       Effect.gen(function* () {
         const connection = yield* Effect.acquireRelease(
-          webSocket.open({ url: prepared.url, headers: prepared.headers }),
+          TransportTimeout.effect(webSocket.open({ url: prepared.url, headers: prepared.headers }), {
+            module: "WebSocketTransport",
+            phase: "headers",
+            timeout: request.http?.headerTimeout,
+          }),
           (connection) => connection.close,
         )
         yield* connection.sendText(prepared.message)
-        return connection.messages.pipe(Stream.map((message) => messageText(message, decoder)))
+        return TransportTimeout.stream(connection.messages, {
+          module: "WebSocketTransport",
+          phase: "chunk",
+          timeout: request.http?.chunkTimeout,
+        }).pipe(Stream.map((message) => messageText(message, decoder)))
       }),
     )
   },

@@ -504,6 +504,49 @@ describe("session.llm-native.request", () => {
     })
   })
 
+  it.effect("maps provider transport settings into native HTTP options without adding them to provider JSON", () =>
+    Effect.gen(function* () {
+      const requests: Array<Parameters<LLMClientShape["stream"]>[0]> = []
+      const llmClient = {
+        prepare: () => Effect.die("unused"),
+        stream: (request) => {
+          requests.push(request)
+          return Stream.empty
+        },
+        generate: () => Effect.die("unused"),
+      } satisfies LLMClientShape
+      const run = (options: Provider.Info["options"]) => {
+        const native = LLMNativeRuntime.stream({
+          model: baseModel,
+          provider: { ...providerInfo, options },
+          auth: undefined,
+          llmClient,
+          messages: [{ role: "user", content: "hello" }],
+          tools: {},
+          headers: {},
+          abort: new AbortController().signal,
+        })
+        if (native.type === "unsupported") throw new Error(native.reason)
+        return native.stream.pipe(Stream.runDrain)
+      }
+
+      yield* run({ apiKey: "test-openai-key", headerTimeout: 1_234, chunkTimeout: false })
+      yield* run({ apiKey: "test-openai-key", headerTimeout: false, chunkTimeout: 5_678 })
+
+      expect(requests[0].http).toMatchObject({ headerTimeout: 1_234, chunkTimeout: false })
+      expect(requests[1].http).toMatchObject({ headerTimeout: false, chunkTimeout: 5_678 })
+      requests.forEach((request) => {
+        expect(JSON.stringify(request.providerOptions)).not.toContain("headerTimeout")
+        expect(JSON.stringify(request.providerOptions)).not.toContain("chunkTimeout")
+      })
+      const prepared = yield* Effect.forEach(requests, LLMClient.prepare)
+      prepared.forEach((request) => {
+        expect(JSON.stringify(request.body)).not.toContain("headerTimeout")
+        expect(JSON.stringify(request.body)).not.toContain("chunkTimeout")
+      })
+    }),
+  )
+
   it.effect("native tool wrapper converts thrown errors into typed ToolFailure", () =>
     Effect.gen(function* () {
       const wrapped = LLMNativeRuntime.nativeTools(

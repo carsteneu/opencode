@@ -5,6 +5,7 @@ import net, { type AddressInfo, type Socket } from "node:net"
 import WebSocket, { WebSocketServer } from "ws"
 import { APICallError } from "ai"
 import { ProviderError } from "../../src/provider/error"
+import { applyRuntimeFetch } from "../../src/provider/runtime-fetch"
 import { OpenAIWebSocket } from "../../src/plugin/openai/ws"
 import { OpenAIWebSocketPool, TITLE_HEADER } from "../../src/plugin/openai/ws-pool"
 
@@ -506,6 +507,79 @@ describe("plugin.openai.ws-pool", () => {
     expect(await second.text()).toBe("http")
     expect(connections).toBe(2)
     expect(server.httpRequests).toHaveLength(1)
+    fetch.close()
+  })
+
+  test("preserves an outer header timeout while waiting for the first websocket event", async () => {
+    let closed = 0
+    let connections = 0
+    await using server = await createWebSocketServer((socket) => {
+      connections++
+      socket.on("close", () => closed++)
+      socket.once("message", () => {})
+    })
+    const websocketFetch = OpenAIWebSocketPool.createWebSocketFetch({
+      url: server.url,
+      connectTimeout: false,
+      streamIdleTimeout: false,
+      streamRetries: 0,
+    })
+    const signals: AbortSignal[] = []
+    const runtimeFetch = applyRuntimeFetch({
+      headerTimeout: 100,
+      chunkTimeout: false,
+      fetch: (input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.signal) signals.push(init.signal)
+        return websocketFetch(input, init)
+      },
+    }).fetch as typeof fetch
+
+    const pending = runtimeFetch(server.url, streamRequest()).catch((cause) => cause)
+    await waitFor(() => connections === 1, "websocket did not connect before the header deadline")
+    const error = await pending
+
+    expect(error).toBeInstanceOf(ProviderError.HeaderTimeoutError)
+    expect(error).toBe(signals[0].reason)
+    expect((error as ProviderError.HeaderTimeoutError).ms).toBe(100)
+    await waitFor(() => closed === 1, "timed out websocket was not terminated")
+    expect(connections).toBe(1)
+    expect(server.httpRequests).toHaveLength(0)
+    websocketFetch.close()
+  })
+
+  test("normalizes non-error websocket abort reasons without activating HTTP fallback", async () => {
+    let closed = 0
+    let connections = 0
+    await using server = await createWebSocketServer((socket) => {
+      connections++
+      socket.on("close", () => closed++)
+      socket.once("message", () => {})
+    })
+    const fetch = OpenAIWebSocketPool.createWebSocketFetch({
+      url: server.url,
+      connectTimeout: false,
+      streamIdleTimeout: false,
+      streamRetries: 0,
+    })
+
+    const abortRequest = async (reason?: string) => {
+      const abort = new AbortController()
+      const pending = fetch(server.url, streamRequest({}, abort.signal)).catch((cause) => cause)
+      await waitFor(() => connections === closed + 1, "websocket did not connect")
+      if (reason === undefined) abort.abort()
+      else abort.abort(reason)
+      const error = await pending
+
+      expect(error).toBeInstanceOf(DOMException)
+      expect((error as DOMException).name).toBe("AbortError")
+      if (reason === undefined) expect(error).toBe(abort.signal.reason)
+      await waitFor(() => closed === connections, "aborted websocket was not terminated")
+    }
+    await abortRequest()
+    await abortRequest("caller reason")
+
+    expect(connections).toBe(2)
+    expect(server.httpRequests).toHaveLength(0)
     fetch.close()
   })
 

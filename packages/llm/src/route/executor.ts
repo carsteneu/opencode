@@ -1,4 +1,4 @@
-import { Cause, Context, Effect, Layer, Random } from "effect"
+import { Cause, Context, Effect, Layer, Random, Stream } from "effect"
 import {
   FetchHttpClient,
   Headers,
@@ -23,10 +23,17 @@ import {
   UnknownProviderReason,
 } from "../schema"
 import { isContextOverflow } from "../provider-error"
+import { TransportTimeout } from "./transport/timeout"
+
+export interface ExecuteOptions {
+  readonly headerTimeout?: number | false
+  readonly chunkTimeout?: number | false
+}
 
 export interface Interface {
   readonly execute: (
     request: HttpClientRequest.HttpClientRequest,
+    options?: ExecuteOptions,
   ) => Effect.Effect<HttpClientResponse.HttpClientResponse, LLMError>
 }
 
@@ -194,11 +201,53 @@ const redactBody = (body: string, request: HttpClientRequest.HttpClientRequest) 
     body.replace(REDACT_JSON_FIELD, `$1"${REDACTED}"`).replace(REDACT_QUERY_FIELD, `$1${REDACTED}`),
   )
 
-const responseBody = (body: string | void, request: HttpClientRequest.HttpClientRequest) => {
+const responseBody = (
+  body: { readonly text: string; readonly truncated: boolean } | void,
+  request: HttpClientRequest.HttpClientRequest,
+) => {
   if (body === undefined) return {}
-  const redacted = redactBody(body, request)
-  if (redacted.length <= BODY_LIMIT) return { body: redacted }
+  const redacted = redactBody(body.text, request)
+  if (!body.truncated && redacted.length <= BODY_LIMIT) return { body: redacted }
   return { body: redacted.slice(0, BODY_LIMIT), bodyTruncated: true }
+}
+
+const readResponseBody = (
+  response: HttpClientResponse.HttpClientResponse,
+  redactedNames: ReadonlyArray<string | RegExp>,
+  options: ExecuteOptions | undefined,
+) => {
+  let remaining = BODY_LIMIT + 1
+  return TransportTimeout.stream(response.stream.pipe(Stream.mapError(toHttpError(redactedNames))), {
+    module: "RequestExecutor",
+    phase: "chunk",
+    timeout: options?.chunkTimeout,
+  }).pipe(
+    Stream.map((bytes) => {
+      const next = bytes.slice(0, remaining)
+      remaining -= next.byteLength
+      return next
+    }),
+    Stream.takeUntil(() => remaining === 0),
+    Stream.runCollect,
+    Effect.map((chunks) => {
+      const parts = chunks
+      const bytes = new Uint8Array(parts.reduce((size, part) => size + part.byteLength, 0))
+      parts.reduce((offset, part) => {
+        bytes.set(part, offset)
+        return offset + part.byteLength
+      }, 0)
+      if (bytes.byteLength > BODY_LIMIT) {
+        return {
+          text: `[Provider response body exceeded ${BODY_LIMIT} bytes]`,
+          truncated: true,
+        }
+      }
+      return {
+        text: new TextDecoder().decode(bytes),
+        truncated: false,
+      }
+    }),
+  )
 }
 
 const providerMessage = (status: number, body: { readonly body?: string }) => {
@@ -275,11 +324,17 @@ const statusReason = (input: {
 }
 
 const statusError =
-  (request: HttpClientRequest.HttpClientRequest, redactedNames: ReadonlyArray<string | RegExp>) =>
+  (
+    request: HttpClientRequest.HttpClientRequest,
+    redactedNames: ReadonlyArray<string | RegExp>,
+    options: ExecuteOptions | undefined,
+  ) =>
   (response: HttpClientResponse.HttpClientResponse) =>
     Effect.gen(function* () {
       if (response.status < 400) return response
-      const body = yield* response.text.pipe(Effect.catch(() => Effect.void))
+      const body = yield* readResponseBody(response, redactedNames, options).pipe(
+        Effect.catch((error) => (error.reason._tag === "Timeout" ? Effect.fail(error) : Effect.void)),
+      )
       const headers = normalizedHeaders(response.headers)
       const retryAfter = retryAfterMs(headers)
       const rateLimit = rateLimitDetails(headers, retryAfter)
@@ -356,7 +411,7 @@ const retryStatusFailures = <A, R>(
   attempt = 0,
 ): Effect.Effect<A, LLMError, R> =>
   Effect.catchTag(effect, "LLM.Error", (error): Effect.Effect<A, LLMError, R> => {
-    if (!error.retryable || retries <= 0) return Effect.fail(error)
+    if (error.reason._tag === "Timeout" || !error.retryable || retries <= 0) return Effect.fail(error)
     return retryDelay(error, attempt).pipe(
       Effect.flatMap((delay) => Effect.sleep(delay)),
       Effect.flatMap(() => retryStatusFailures(effect, retries - 1, attempt + 1)),
@@ -367,15 +422,21 @@ export const layer: Layer.Layer<Service, never, HttpClient.HttpClient> = Layer.e
   Service,
   Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient
-    const executeOnce = (request: HttpClientRequest.HttpClientRequest) =>
+    const executeOnce = (request: HttpClientRequest.HttpClientRequest, options?: ExecuteOptions) =>
       Effect.gen(function* () {
         const redactedNames = yield* Headers.CurrentRedactedNames
-        return yield* http
-          .execute(request)
-          .pipe(Effect.mapError(toHttpError(redactedNames)), Effect.flatMap(statusError(request, redactedNames)))
+        const response = yield* TransportTimeout.effect(
+          http.execute(request).pipe(Effect.mapError(toHttpError(redactedNames))),
+          {
+            module: "RequestExecutor",
+            phase: "headers",
+            timeout: options?.headerTimeout,
+          },
+        )
+        return yield* statusError(request, redactedNames, options)(response)
       })
     return Service.of({
-      execute: (request) => retryStatusFailures(executeOnce(request)),
+      execute: (request, options) => retryStatusFailures(executeOnce(request, options)),
     })
   }),
 )

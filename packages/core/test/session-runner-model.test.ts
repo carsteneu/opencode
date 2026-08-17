@@ -55,9 +55,35 @@ describe("SessionRunnerModel", () => {
         defaults: {
           headers: { "x-test": "header" },
           limits: { context: 100, output: 20 },
-          http: { body: { custom_extension: { enabled: true } } },
+          http: {
+            body: { custom_extension: { enabled: true } },
+            headerTimeout: 300_000,
+            chunkTimeout: 300_000,
+          },
         },
       })
+    }),
+  )
+
+  it.effect("maps explicit transport timeout settings without adding them to provider JSON", () =>
+    Effect.gen(function* () {
+      const resolved = yield* SessionRunnerModel.fromCatalogModel(
+        model({
+          type: "aisdk",
+          package: "@ai-sdk/openai",
+          url: "https://openai.example/v1",
+          settings: { headerTimeout: false, chunkTimeout: 1_234 },
+        }),
+      )
+      const prepared = yield* LLMClient.prepare(LLM.request({ model: resolved, prompt: "Hello" }))
+
+      expect(resolved.route.defaults.http).toMatchObject({
+        body: { custom_extension: { enabled: true } },
+        headerTimeout: false,
+        chunkTimeout: 1_234,
+      })
+      expect(JSON.stringify(prepared.body)).not.toContain("headerTimeout")
+      expect(JSON.stringify(prepared.body)).not.toContain("chunkTimeout")
     }),
   )
 

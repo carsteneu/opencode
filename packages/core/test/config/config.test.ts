@@ -9,6 +9,7 @@ import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { ConfigMigrateV1 } from "@opencode-ai/core/v1/config/migrate"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
+import { ConfigProviderV1 } from "@opencode-ai/core/v1/config/provider"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Global } from "@opencode-ai/core/global"
 import { Location } from "@opencode-ai/core/location"
@@ -112,6 +113,20 @@ describe("Config", () => {
         headers: { "x-test": "1" },
         body: { trace: true },
       })
+    }),
+  )
+
+  it.effect("accepts positive or disabled provider transport timeouts and rejects zero", () =>
+    Effect.sync(() => {
+      const decode = Schema.decodeUnknownSync(ConfigProviderV1.Info)
+
+      expect(decode({ options: { headerTimeout: false, chunkTimeout: 1_234 } }).options).toMatchObject({
+        headerTimeout: false,
+        chunkTimeout: 1_234,
+      })
+      expect(() => decode({ options: { headerTimeout: 0 } })).toThrow()
+      expect(() => decode({ options: { chunkTimeout: -1 } })).toThrow()
+      expect(() => decode({ options: { headerTimeout: true } })).toThrow()
     }),
   )
 

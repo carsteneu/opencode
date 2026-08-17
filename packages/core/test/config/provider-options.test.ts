@@ -27,6 +27,8 @@ describe("ConfigProviderOptionsV1", () => {
         headers: { "x-test": "1" },
         body: { store: true },
         timeout: 1000,
+        headerTimeout: false,
+        chunkTimeout: 1_234,
       }),
     ).toEqual({
       url: "https://openai.example/v1",
@@ -37,7 +39,7 @@ describe("ConfigProviderOptionsV1", () => {
         "x-test": "1",
       },
       body: { store: true },
-      settings: { timeout: 1000 },
+      settings: { timeout: 1000, headerTimeout: false, chunkTimeout: 1_234 },
     })
     expect(
       lowerer.request({

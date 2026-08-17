@@ -37,6 +37,7 @@ import { isMedia } from "@/util/media"
 import type { SystemError } from "bun"
 import type { Provider } from "@/provider/provider"
 import { Effect, Schema } from "effect"
+import { LLMError } from "@opencode-ai/llm"
 
 /** Error shape thrown by Bun's fetch() when gzip/br decompression fails mid-stream */
 interface FetchDecompressionError extends Error {
@@ -666,6 +667,19 @@ export function fromError(
         {
           cause: e,
         },
+      ).toObject()
+    case e instanceof LLMError && e.reason._tag === "Timeout":
+      return new APIError(
+        {
+          message: e.message,
+          isRetryable: true,
+          metadata: {
+            code: e.reason._tag,
+            phase: e.reason.phase,
+            timeoutMs: String(e.reason.timeoutMs),
+          },
+        },
+        { cause: e },
       ).toObject()
     case OutputLengthError.isInstance(e):
       return e

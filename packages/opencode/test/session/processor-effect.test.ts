@@ -27,7 +27,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
-import { LLMEvent } from "@opencode-ai/llm"
+import { LLMError, LLMEvent, TimeoutReason } from "@opencode-ai/llm"
 import { Snapshot } from "@/snapshot"
 import { Plugin } from "../../src/plugin"
 import { Config } from "@/config/config"
@@ -483,6 +483,8 @@ const itToolInputProgress = testEffect(toolInputProgressEnv)
 
 const retrySafetyCalls = {
   beforeEvent: 0,
+  timeoutBeforeEvent: 0,
+  timeoutAfterEvent: 0,
   partial: 0,
   partialReasoning: 0,
   buffered: 0,
@@ -504,6 +506,14 @@ function completedTextEvents(text: string) {
   )
 }
 
+function timeoutFailure(phase: "headers" | "chunk") {
+  return new LLMError({
+    module: "Transport",
+    method: "stream",
+    reason: new TimeoutReason({ message: "provider idle timeout", phase, timeoutMs: 50 }),
+  })
+}
+
 const retrySafetyLLM = Layer.succeed(
   LLM.Service,
   LLM.Service.of({
@@ -515,6 +525,23 @@ const retrySafetyLLM = Layer.succeed(
           return Stream.make(LLMEvent.providerError({ message: "service unavailable before output" }))
         }
         return completedTextEvents("recovered")
+      }
+      if (prompt.includes("retry timeout before semantic event")) {
+        retrySafetyCalls.timeoutBeforeEvent += 1
+        if (retrySafetyCalls.timeoutBeforeEvent === 1) return Stream.fail(timeoutFailure("headers"))
+        return completedTextEvents("timeout recovered")
+      }
+      if (prompt.includes("retry timeout after partial text")) {
+        retrySafetyCalls.timeoutAfterEvent += 1
+        if (retrySafetyCalls.timeoutAfterEvent > 1) return completedTextEvents("duplicate")
+        return Stream.concat(
+          Stream.make(
+            LLMEvent.stepStart({ index: 0 }),
+            LLMEvent.textStart({ id: "timeout-partial" }),
+            LLMEvent.textDelta({ id: "timeout-partial", text: "timeout partial" }),
+          ),
+          Stream.fail(timeoutFailure("chunk")),
+        )
       }
       if (prompt.includes("retry after partial text")) {
         retrySafetyCalls.partial += 1
@@ -545,7 +572,7 @@ const retrySafetyLLM = Layer.succeed(
             LLMEvent.textStart({ id: "buffered" }),
             LLMEvent.textDelta({ id: "buffered", text: "not committed" }),
           ),
-          Stream.fail(new Error("service unavailable while collecting buffered events")),
+          Stream.fail(timeoutFailure("chunk")),
         )
       }
       if (prompt.includes("retry after finished step")) {
@@ -1319,6 +1346,52 @@ itRetrySafety.live("session.processor retries a retryable provider error before 
         expect(retrySafetyCalls.beforeEvent).toBe(2)
         expect(result.handle.message.error).toBeUndefined()
         expect(result.parts.filter((part) => part.type === "text").map((part) => part.text)).toEqual(["recovered"])
+      }),
+    { config: cfg },
+  ),
+)
+
+itRetrySafety.live(
+  "session.processor retries a provider header timeout before the first semantic event",
+  () =>
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          retrySafetyCalls.timeoutBeforeEvent = 0
+          const result = yield* runTurn({ dir, prompt: "retry timeout before semantic event" })
+
+          expect(result.value).toBe("continue")
+          expect(retrySafetyCalls.timeoutBeforeEvent).toBe(2)
+          expect(result.handle.message.error).toBeUndefined()
+          expect(result.parts.filter((part) => part.type === "text").map((part) => part.text)).toEqual([
+            "timeout recovered",
+          ])
+        }),
+      { config: cfg },
+    ),
+  10_000,
+)
+
+itRetrySafety.live("session.processor does not retry a provider chunk timeout after partial text", () =>
+  provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        retrySafetyCalls.timeoutAfterEvent = 0
+        const result = yield* runTurn({ dir, prompt: "retry timeout after partial text" })
+        const text = result.parts.filter((part): part is SessionV1.TextPart => part.type === "text")
+
+        expect(result.value).toBe("stop")
+        expect(retrySafetyCalls.timeoutAfterEvent).toBe(1)
+        expect(text).toHaveLength(1)
+        expect(text[0]?.text).toBe("timeout partial")
+        expect(text[0]?.time?.end).toBeDefined()
+        expect(result.handle.message.error).toMatchObject({
+          name: "APIError",
+          data: {
+            isRetryable: true,
+            metadata: { code: "Timeout", phase: "chunk", timeoutMs: "50" },
+          },
+        })
       }),
     { config: cfg },
   ),

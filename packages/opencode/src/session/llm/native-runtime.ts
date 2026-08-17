@@ -99,6 +99,7 @@ export function stream(input: StreamInput): StreamResult {
     maxOutputTokens: input.maxOutputTokens,
     providerOptions: ProviderTransform.providerOptions(input.model, input.providerOptions ?? {}),
     headers: { ...providerHeaders(input.provider.options.headers), ...input.headers },
+    http: providerHttp(input.provider.options),
   })
   const stream = Stream.scoped(
     Stream.unwrap(
@@ -157,6 +158,19 @@ function providerHeaders(value: unknown): Record<string, string> | undefined {
   return Object.fromEntries(
     Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
   )
+}
+
+function providerHttp(options: Provider.Info["options"]) {
+  const headerTimeout = transportTimeout(options.headerTimeout)
+  const chunkTimeout = transportTimeout(options.chunkTimeout)
+  if (headerTimeout === undefined && chunkTimeout === undefined) return undefined
+  return { headerTimeout, chunkTimeout }
+}
+
+function transportTimeout(value: unknown): number | false | undefined {
+  if (value === false) return false
+  if (typeof value === "number" && Number.isInteger(value) && value > 0) return value
+  return undefined
 }
 
 function nativeSchema(value: unknown): JsonSchema {

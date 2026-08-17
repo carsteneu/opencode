@@ -322,7 +322,12 @@ export async function CodexAuthPlugin(input: PluginInput, options: CodexAuthPlug
       async loader(getAuth) {
         const auth = await getAuth()
         const websocketFetch = options.experimentalWebSockets
-          ? OpenAIWebSocketPool.createWebSocketFetch({ httpFetch: fetch })
+          ? // The provider fetch wrapper owns connect/first-event and between-event deadlines.
+            OpenAIWebSocketPool.createWebSocketFetch({
+              httpFetch: fetch,
+              connectTimeout: false,
+              streamIdleTimeout: false,
+            })
           : undefined
         if (websocketFetch) {
           websocketFetches.push(websocketFetch)

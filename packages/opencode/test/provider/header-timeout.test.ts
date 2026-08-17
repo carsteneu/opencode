@@ -13,6 +13,7 @@ import { Env } from "@/env"
 import { Plugin } from "@/plugin"
 import { Provider } from "@/provider/provider"
 import { ProviderError } from "@/provider/error"
+import { applyRuntimeFetch } from "@/provider/runtime-fetch"
 
 afterEach(async () => {
   await disposeAllInstances()
@@ -112,7 +113,7 @@ it.live("headerTimeout aborts when response headers do not arrive", () =>
   }),
 )
 
-it.live("headerTimeout is opt-in for non-OpenAI providers", () =>
+it.live("provider transport timeouts default to five minutes", () =>
   Effect.gen(function* () {
     const server = yield* Effect.acquireRelease(
       Effect.promise(() => delayedHeaderServer(100)),
@@ -123,12 +124,15 @@ it.live("headerTimeout is opt-in for non-OpenAI providers", () =>
       () =>
         Effect.gen(function* () {
           const provider = yield* Provider.Service
+          const info = yield* provider.getProvider(ProviderV2.ID.make("test"))
           const model = yield* provider.getModel(ProviderV2.ID.make("test"), ModelV2.ID.make("test-model"))
           const result = streamText({
             model: yield* provider.getLanguage(model),
             messages: [{ role: "user", content: "hello" }],
           })
 
+          expect(info.options.headerTimeout).toBe(300_000)
+          expect(info.options.chunkTimeout).toBe(300_000)
           expect(yield* Effect.promise(() => result.text)).toBe("ok")
         }),
       { config: providerConfig(server.url) },
@@ -136,7 +140,7 @@ it.live("headerTimeout is opt-in for non-OpenAI providers", () =>
   }),
 )
 
-it.live("OpenAI Codex headerTimeout default can be disabled by config", () =>
+it.live("OpenAI Codex transport timeout defaults can be disabled by config", () =>
   Effect.gen(function* () {
     yield* withAuthContent(
       Effect.gen(function* () {
@@ -146,15 +150,16 @@ it.live("OpenAI Codex headerTimeout default can be disabled by config", () =>
               const provider = yield* Provider.Service
               const openai = yield* provider.getProvider(ProviderV2.ID.openai)
               expect(openai.options.headerTimeout).toBe(false)
+              expect(openai.options.chunkTimeout).toBe(false)
             }),
-          { config: { provider: { openai: { options: { headerTimeout: false } } } } },
+          { config: { provider: { openai: { options: { headerTimeout: false, chunkTimeout: false } } } } },
         )
       }),
     )
   }),
 )
 
-it.live("OpenAI API auth gets default headerTimeout", () =>
+it.live("OpenAI API auth gets default transport timeouts", () =>
   Effect.gen(function* () {
     yield* withAuthContent(
       Effect.gen(function* () {
@@ -163,11 +168,79 @@ it.live("OpenAI API auth gets default headerTimeout", () =>
             const provider = yield* Provider.Service
             const openai = yield* provider.getProvider(ProviderV2.ID.openai)
             expect(openai.options.headerTimeout).toBe(300_000)
+            expect(openai.options.chunkTimeout).toBe(300_000)
           }),
         )
       }),
       { openai: { type: "api", key: "sk-test" } },
     )
+  }),
+)
+
+it.live("runtime fetch clears the header timer when a custom fetch throws synchronously", () =>
+  Effect.gen(function* () {
+    const original = new Error("synchronous fetch failure")
+    const signals: AbortSignal[] = []
+    const options = applyRuntimeFetch({
+      headerTimeout: 20,
+      chunkTimeout: false,
+      fetch: (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.signal) signals.push(init.signal)
+        throw original
+      },
+    })
+    const runtimeFetch = options.fetch as typeof fetch
+
+    const error = yield* Effect.promise(() =>
+      runtimeFetch("https://provider.example").then(
+        () => undefined,
+        (cause) => cause,
+      ),
+    )
+    yield* Effect.promise(() => Bun.sleep(40))
+
+    expect(error).toBe(original)
+    expect(signals).toHaveLength(1)
+    expect(signals[0].aborted).toBe(false)
+  }),
+)
+
+it.live("runtime fetch starts case-insensitive SSE timeouts only when downstream reads", () =>
+  Effect.gen(function* () {
+    const cancellations: unknown[] = []
+    const controllers: Array<ReadableStreamDefaultController<Uint8Array>> = []
+    const options = applyRuntimeFetch({
+      headerTimeout: false,
+      chunkTimeout: 20,
+      fetch: () =>
+        Promise.resolve(
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controllers.push(controller)
+              },
+              cancel(reason) {
+                cancellations.push(reason)
+                return Promise.reject(new Error("producer cancellation failed"))
+              },
+            }),
+            { headers: { "content-type": "Text/Event-Stream; Charset=UTF-8" } },
+          ),
+        ),
+    })
+    const runtimeFetch = options.fetch as typeof fetch
+    const response = yield* Effect.promise(() => runtimeFetch("https://provider.example"))
+
+    yield* Effect.promise(() => Bun.sleep(40))
+    controllers[0].enqueue(new TextEncoder().encode(": keepalive\n\n"))
+    const reader = response.body!.getReader()
+    const first = yield* Effect.promise(() => reader.read())
+    const error = yield* Effect.promise(() => reader.read().then(undefined, (cause: unknown) => cause))
+
+    expect(new TextDecoder().decode(first.value)).toBe(": keepalive\n\n")
+    expect(error).toBeInstanceOf(ProviderError.ResponseStreamError)
+    expect((error as Error).message).toBe("SSE read timed out")
+    expect(cancellations).toEqual([error])
   }),
 )
 

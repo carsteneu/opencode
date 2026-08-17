@@ -9,6 +9,7 @@ import { SessionID, MessageID, PartID } from "../../src/session/schema"
 import { Question } from "../../src/question"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
+import { LLMError, TimeoutReason } from "@opencode-ai/llm"
 
 const sessionID = SessionID.make("session")
 const providerID = ProviderV2.ID.make("test")
@@ -1392,6 +1393,29 @@ describe("session.message-v2.toModelMessage", () => {
 })
 
 describe("session.message-v2.fromError", () => {
+  test("serializes provider transport timeout diagnostics as retryable API errors", () => {
+    const timeouts = [
+      ["headers", 321],
+      ["chunk", 654],
+    ] as const
+    timeouts.forEach(([phase, timeoutMs]) => {
+      const input = new LLMError({
+        module: "Transport",
+        method: "execute",
+        reason: new TimeoutReason({ message: "provider idle timeout", phase, timeoutMs }),
+      })
+
+      expect(MessageV2.fromError(input, { providerID })).toStrictEqual({
+        name: "APIError",
+        data: {
+          message: "Transport.execute: provider idle timeout",
+          isRetryable: true,
+          metadata: { code: "Timeout", phase, timeoutMs: String(timeoutMs) },
+        },
+      })
+    })
+  })
+
   test("serializes context_length_exceeded as ContextOverflowError", () => {
     const input = {
       type: "error",

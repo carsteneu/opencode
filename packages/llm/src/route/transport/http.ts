@@ -4,6 +4,7 @@ import { Auth } from "../auth"
 import { render as renderEndpoint } from "../endpoint"
 import { Framing, type Framing as FramingDef } from "../framing"
 import type { Transport, TransportPrepareInput } from "./index"
+import { TransportTimeout } from "./timeout"
 import * as ProviderShared from "../../protocols/shared"
 import { mergeJsonRecords, type LLMRequest } from "../../schema"
 
@@ -130,18 +131,28 @@ export const httpJson = <Body, Frame>(input: HttpJsonInput<Body, Frame>): HttpJs
   frames: (prepared, request, runtime) =>
     Stream.unwrap(
       runtime.http
-        .execute(prepared.request)
+        .execute(prepared.request, {
+          headerTimeout: request.http?.headerTimeout,
+          chunkTimeout: request.http?.chunkTimeout,
+        })
         .pipe(
           Effect.map((response) =>
             prepared.framing.frame(
-              response.stream.pipe(
-                Stream.mapError((error) =>
-                  ProviderShared.eventError(
-                    `${request.model.provider}/${request.model.route.id}`,
-                    `Failed to read ${request.model.provider}/${request.model.route.id} stream`,
-                    ProviderShared.errorText(error),
+              TransportTimeout.stream(
+                response.stream.pipe(
+                  Stream.mapError((error) =>
+                    ProviderShared.eventError(
+                      `${request.model.provider}/${request.model.route.id}`,
+                      `Failed to read ${request.model.provider}/${request.model.route.id} stream`,
+                      ProviderShared.errorText(error),
+                    ),
                   ),
                 ),
+                {
+                  module: "HttpTransport",
+                  phase: "chunk",
+                  timeout: request.http?.chunkTimeout,
+                },
               ),
             ),
           ),

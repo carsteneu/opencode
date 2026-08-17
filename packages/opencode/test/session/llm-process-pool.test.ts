@@ -8,6 +8,7 @@ import { ProviderTest } from "../fake/provider"
 import { tmpdir } from "../fixture/fixture"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
+import { ProviderError } from "@/provider/error"
 
 const pools = new Set<ReturnType<typeof LLMAIProcess.createPool>>()
 const processes = new Set<number>()
@@ -267,6 +268,168 @@ describe("LLM AI process pool", () => {
     expect(pool.stats()).toMatchObject({ spawned: 1, reused: 49, pooled: 1, idle: 1, busy: 0 })
   }, 30_000)
 
+  test("keeps generic provider error events visible and reuses the real runtime worker", async () => {
+    const requests: Array<{ body: string; headers: Headers; remotePort: number | undefined }> = []
+    const server = providerServer(
+      [{ error: { message: "generic provider error", type: "invalid_request_error" } }, chunk({}, "stop"), "[DONE]"],
+      requests,
+    )
+    const spawned: number[] = []
+    const pool = LLMAIProcess.createPool({
+      max: 1,
+      idleMs: 60_000,
+      killGraceMs: 25,
+      onSpawn(info) {
+        spawned.push(info.pid)
+        processes.add(info.pid)
+      },
+    })
+    pools.add(pool)
+    const request = fixtureInput(
+      { label: "generic-error" },
+      { baseURL: `${server.url}v1`, apiKey: "error-key", headers: { "x-error": "stable" } },
+    )
+
+    const first = await collect(pool, request)
+    const second = await collect(pool, request)
+
+    expect(first).toContainEqual({
+      type: "error",
+      error: { message: "generic provider error", type: "invalid_request_error" },
+    })
+    expect(second).toContainEqual({
+      type: "error",
+      error: { message: "generic provider error", type: "invalid_request_error" },
+    })
+    expect(requests).toHaveLength(2)
+    expect(spawned).toHaveLength(1)
+    expect(pool.stats()).toMatchObject({ spawned: 1, reused: 1, pooled: 1, idle: 1, busy: 0 })
+  })
+
+  test("reconstructs a response stream timeout and replaces the unhealthy real runtime worker", async () => {
+    let stalled = true
+    let requests = 0
+    const server = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        await request.text()
+        requests++
+        if (stalled)
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode(": keepalive\n\n"))
+              },
+              pull: () => new Promise<void>(() => {}),
+            }),
+            { headers: { "content-type": "text/event-stream" } },
+          )
+        return new Response(
+          [chunk({ role: "assistant" }), chunk({ content: "recovered" }), chunk({}, "stop"), "[DONE]"]
+            .map((value) => `data: ${value === "[DONE]" ? value : JSON.stringify(value)}\n\n`)
+            .join(""),
+          { headers: { "content-type": "text/event-stream" } },
+        )
+      },
+    })
+    servers.push(server)
+    const spawned: number[] = []
+    const pool = LLMAIProcess.createPool({
+      max: 1,
+      idleMs: 60_000,
+      killGraceMs: 25,
+      onSpawn(info) {
+        spawned.push(info.pid)
+        processes.add(info.pid)
+      },
+    })
+    pools.add(pool)
+    const request = fixtureInput(
+      { label: "stream-timeout" },
+      {
+        baseURL: `${server.url}v1`,
+        apiKey: "timeout-key",
+        headers: { "x-timeout": "stable" },
+        extraOptions: { chunkTimeout: 30 },
+      },
+    )
+
+    const error = await collect(pool, request).catch((cause) => cause)
+
+    expect(error).toBeInstanceOf(ProviderError.ResponseStreamError)
+    expect((error as Error).message).toBe("SSE read timed out")
+    expect(spawned).toHaveLength(1)
+    await waitStopped(spawned[0])
+
+    stalled = false
+    const recovered = await collect(pool, request)
+
+    expect(recovered.filter((event) => event.type === "text-delta").map((event) => event.text)).toEqual(["recovered"])
+    expect(requests).toBe(2)
+    expect(spawned).toHaveLength(2)
+    expect(spawned[1]).not.toBe(spawned[0])
+    expect(pool.stats()).toMatchObject({ spawned: 2, pooled: 1, idle: 1, busy: 0 })
+    expect(pool.stats().retired).toBeGreaterThanOrEqual(1)
+  }, 15_000)
+
+  test("reconstructs a header timeout with its duration and replaces the unhealthy worker", async () => {
+    let stalled = true
+    let requests = 0
+    const server = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        await request.text()
+        requests++
+        if (stalled) return new Promise<Response>(() => {})
+        return new Response(
+          [chunk({ role: "assistant" }), chunk({ content: "recovered" }), chunk({}, "stop"), "[DONE]"]
+            .map((value) => `data: ${value === "[DONE]" ? value : JSON.stringify(value)}\n\n`)
+            .join(""),
+          { headers: { "content-type": "text/event-stream" } },
+        )
+      },
+    })
+    servers.push(server)
+    const spawned: number[] = []
+    const pool = LLMAIProcess.createPool({
+      max: 1,
+      idleMs: 60_000,
+      killGraceMs: 25,
+      onSpawn(info) {
+        spawned.push(info.pid)
+        processes.add(info.pid)
+      },
+    })
+    pools.add(pool)
+    const request = fixtureInput(
+      { label: "header-timeout" },
+      {
+        baseURL: `${server.url}v1`,
+        apiKey: "timeout-key",
+        headers: { "x-timeout": "stable" },
+        extraOptions: { headerTimeout: 100, chunkTimeout: false },
+      },
+    )
+
+    const error = await collect(pool, request).catch((cause) => cause)
+
+    expect(error).toBeInstanceOf(ProviderError.HeaderTimeoutError)
+    expect((error as ProviderError.HeaderTimeoutError).ms).toBe(100)
+    expect((error as Error).message).toBe("Provider response headers timed out after 100ms")
+    expect(spawned).toHaveLength(1)
+    await waitStopped(spawned[0])
+
+    stalled = false
+    const recovered = await collect(pool, request)
+
+    expect(recovered.filter((event) => event.type === "text-delta").map((event) => event.text)).toEqual(["recovered"])
+    expect(requests).toBe(2)
+    expect(spawned).toHaveLength(2)
+    expect(spawned[1]).not.toBe(spawned[0])
+    expect(pool.stats()).toMatchObject({ spawned: 2, pooled: 1, idle: 1, busy: 0 })
+    expect(pool.stats().retired).toBeGreaterThanOrEqual(1)
+  }, 15_000)
+
   test("reuses the real runtime worker across repeated completed tool turns", async () => {
     const requests: Array<{ body: string; headers: Headers; remotePort: number | undefined }> = []
     const server = providerServer(
@@ -301,7 +464,10 @@ describe("LLM AI process pool", () => {
           properties: { run: { type: "number" } },
           required: ["run"],
         }),
-        execute: async () => current,
+        execute: async () => {
+          if (index === 0) await Bun.sleep(100)
+          return current
+        },
       })
       const processTools = LLMAIProcess.prepareTools({ fixture: currentTool })
       if (!processTools) throw new Error("Expected process-safe repeated tool")
@@ -311,6 +477,7 @@ describe("LLM AI process pool", () => {
           baseURL: `${server.url}v1`,
           apiKey: "tool-ready-key",
           headers: { "x-tool-ready": "stable" },
+          extraOptions: { chunkTimeout: 20 },
           tools: processTools,
         },
       )

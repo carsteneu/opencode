@@ -1,4 +1,4 @@
-import type { JsonSchema, LLMRequest, ProviderMetadata } from "@opencode-ai/llm"
+import type { HttpOptions, JsonSchema, LLMRequest, ProviderMetadata } from "@opencode-ai/llm"
 import { LLM, Message, SystemPart, ToolCallPart, ToolDefinition, ToolResultPart } from "@opencode-ai/llm"
 import {
   AmazonBedrock,
@@ -32,6 +32,7 @@ export type RequestInput = {
   readonly maxOutputTokens?: number
   readonly providerOptions?: LLMRequest["providerOptions"]
   readonly headers?: Record<string, string>
+  readonly http?: HttpOptions.Input
 }
 
 const providerMetadata = (value: unknown): ProviderMetadata | undefined => {
@@ -190,6 +191,7 @@ export const request = (input: RequestInput) => {
     toolChoice: input.toolChoice,
     generation: generation(input),
     providerOptions: input.providerOptions,
+    http: input.http,
   })
 }
 

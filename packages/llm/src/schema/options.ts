@@ -1,4 +1,5 @@
 import { Schema } from "effect"
+import { PositiveInt } from "@opencode-ai/schema"
 import { JsonSchema, ModelID, ProviderID } from "./ids"
 import type { AnyRoute } from "../route/client"
 import { isRecord } from "../utils/record"
@@ -36,6 +37,11 @@ const mergeStringRecords = (
 export const ProviderOptions = Schema.Record(Schema.String, Schema.Record(Schema.String, Schema.Unknown))
 export type ProviderOptions = Schema.Schema.Type<typeof ProviderOptions>
 
+export const HEADER_TIMEOUT_DEFAULT = 300_000
+export const CHUNK_TIMEOUT_DEFAULT = 300_000
+
+const TransportTimeout = Schema.Union([PositiveInt, Schema.Literal(false)])
+
 export const mergeProviderOptions = (
   ...items: ReadonlyArray<ProviderOptions | undefined>
 ): ProviderOptions | undefined => {
@@ -54,6 +60,8 @@ export class HttpOptions extends Schema.Class<HttpOptions>("LLM.HttpOptions")({
   body: Schema.optional(JsonSchema),
   headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   query: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  headerTimeout: Schema.optional(TransportTimeout),
+  chunkTimeout: Schema.optional(TransportTimeout),
 }) {}
 
 export namespace HttpOptions {
@@ -67,8 +75,10 @@ export const mergeHttpOptions = (...items: ReadonlyArray<HttpOptions | undefined
   const body = mergeJsonRecords(...items.map((item) => item?.body))
   const headers = mergeStringRecords(...items.map((item) => item?.headers))
   const query = mergeStringRecords(...items.map((item) => item?.query))
-  if (!body && !headers && !query) return undefined
-  return new HttpOptions({ body, headers, query })
+  const headerTimeout = items.findLast((item) => item?.headerTimeout !== undefined)?.headerTimeout
+  const chunkTimeout = items.findLast((item) => item?.chunkTimeout !== undefined)?.chunkTimeout
+  if (!body && !headers && !query && headerTimeout === undefined && chunkTimeout === undefined) return undefined
+  return new HttpOptions({ body, headers, query, headerTimeout, chunkTimeout })
 }
 
 export class GenerationOptions extends Schema.Class<GenerationOptions>("LLM.GenerationOptions")({

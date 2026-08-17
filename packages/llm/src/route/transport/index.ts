@@ -31,3 +31,4 @@ export interface TransportPrepareInput<Body> {
 
 export * as HttpTransport from "./http"
 export { WebSocketExecutor, WebSocketTransport } from "./websocket"
+export { TransportTimeout } from "./timeout"
