@@ -153,20 +153,20 @@ const layer = Layer.effect(
       const resolved = yield* limits()
       const maxLines = options.maxLines ?? resolved.maxLines
       const maxBytes = options.maxBytes ?? resolved.maxBytes
-        const direction = options.direction ?? "head"
-        const totalBytes = Buffer.byteLength(text, "utf-8")
-        const totalLines = countLines(text)
+      const direction = options.direction ?? "head"
+      const totalBytes = Buffer.byteLength(text, "utf-8")
+      const totalLines = countLines(text)
 
-        if (totalLines <= maxLines && totalBytes <= maxBytes) {
-          return { content: text, truncated: false } as const
-        }
+      if (totalLines <= maxLines && totalBytes <= maxBytes) {
+        return { content: text, truncated: false } as const
+      }
 
-        const { lines: kept, bytes, hitBytes } = buildPreview(text, maxLines, maxBytes, direction)
+      const { lines: kept, bytes, hitBytes } = buildPreview(text, maxLines, maxBytes, direction)
 
-        const removed = hitBytes ? totalBytes - bytes : totalLines - kept.length
-        const unit = hitBytes ? "bytes" : "lines"
-        const preview = kept.join("\n")
-        const file = yield* write(text)
+      const removed = hitBytes ? totalBytes - bytes : totalLines - kept.length
+      const unit = hitBytes ? "bytes" : "lines"
+      const preview = kept.join("\n")
+      const file = yield* write(text)
 
       const hint = hasTaskTool(agent)
         ? `The tool call succeeded but the output was truncated. Full output saved to: ${file}\nUse the Task tool to have explore agent process this file with Grep and Read (with offset/limit). Do NOT read the full file yourself - delegate to save context.`
