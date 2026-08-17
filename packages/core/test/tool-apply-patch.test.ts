@@ -527,4 +527,71 @@ describe("ApplyPatchTool", () => {
       (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
     ),
   )
+
+  it.live(
+    "uses coarse statistics after an exact cumulative patch budget leaves zero bytes",
+    () =>
+      Effect.acquireUseRelease(
+        Effect.promise(() => tmpdir()),
+        (tmp) => {
+          reset()
+          const prefix = "APPLY-PATCH-EXACT-FIRST"
+          const seed = TextDiff.create("first.txt", "first.txt", "", `${prefix}\n`)
+          const fill = StructuredFileDiff.MAX_PATCH_BYTES - Buffer.byteLength(JSON.stringify(seed.patch))
+          const first = `${prefix}${"x".repeat(fill)}`
+          const firstDiff = TextDiff.create("first.txt", "first.txt", "", `${first}\n`)
+          const lines = 100_000
+          const second = "line\n".repeat(lines)
+          const patchText = `*** Begin Patch\n*** Add File: first.txt\n+${first}\n*** Add File: second.txt\n${"+line\n".repeat(lines)}*** End Patch`
+
+          expect(fill).toBeGreaterThan(0)
+          expect(Buffer.byteLength(JSON.stringify(firstDiff.patch))).toBe(StructuredFileDiff.MAX_PATCH_BYTES)
+
+          return withTool(tmp.path, (registry) =>
+            Effect.gen(function* () {
+              const settled = yield* settleTool(registry, call(patchText, "call-apply-patch-zero-remaining"))
+              const output = settled.output
+              if (!output || output.content[0]?.type !== "text") return yield* Effect.die("missing apply_patch output")
+              const root = yield* Effect.promise(() => fs.realpath(tmp.path))
+              const structured = {
+                applied: [
+                  { type: "add" as const, resource: "first.txt", target: path.join(root, "first.txt") },
+                  { type: "add" as const, resource: "second.txt", target: path.join(root, "second.txt") },
+                ],
+                files: [
+                  {
+                    file: "first.txt",
+                    status: "added" as const,
+                    additions: 1,
+                    deletions: 0,
+                  },
+                  {
+                    file: "second.txt",
+                    status: "added" as const,
+                    additions: lines,
+                    deletions: 0,
+                  },
+                ],
+              }
+
+              expect(output).toEqual({
+                structured,
+                content: [{ type: "text", text: ApplyPatchTool.toModelOutput(structured) }],
+              })
+              expect(settled.result).toEqual({ type: "text", value: output.content[0].text })
+              expect(settled.outputPaths).toBeUndefined()
+              expect(assertions).toMatchObject([
+                { sessionID, action: "edit", resources: ["first.txt", "second.txt"], save: ["*"] },
+              ])
+              expect(yield* Effect.promise(() => fs.readFile(path.join(tmp.path, "first.txt"), "utf8"))).toBe(
+                `${first}\n`,
+              )
+              expect(yield* Effect.promise(() => fs.readFile(path.join(tmp.path, "second.txt"), "utf8"))).toBe(second)
+            }),
+          )
+        },
+        (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+      ),
+    30_000,
+  )
 })

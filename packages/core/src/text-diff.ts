@@ -4,6 +4,9 @@ import { formatPatch, structuredPatch, type StructuredPatch } from "diff"
 import { JsonString } from "./util/json-string"
 
 const DEFAULT_TIMEOUT = 250
+// diff@8 allocates line-token arrays before honoring timeout or edit-length limits.
+const MAX_BOUNDED_INPUT_CODE_UNITS = 4 * 1024 * 1024
+const MAX_BOUNDED_LINE_TOKENS = 128 * 1024
 
 export interface Info {
   readonly patch: string
@@ -45,7 +48,7 @@ export function create(
   return { patch: formatPatch(structured), additions, deletions, coarse: false }
 }
 
-/** Build a patch only when its JSON-serialized string fits the caller's byte budget. */
+/** Build a patch within serialized-output and fixed diff-work budgets, falling back to coarse statistics. */
 export function createBounded(
   oldFile: string,
   newFile: string,
@@ -61,18 +64,50 @@ export function createBounded(
     throw new RangeError("maxSerializedPatchBytes must be a non-negative safe integer")
 
   const maximum = options.maxSerializedPatchBytes
+  if (before === after) {
+    const serializedBytes = headerBytes(oldFile, newFile, maximum)
+    if (serializedBytes > maximum) return { serializedBytes, additions: 0, deletions: 0 }
+    return {
+      patch: formatPatch({
+        oldFileName: oldFile,
+        newFileName: newFile,
+        oldHeader: undefined,
+        newHeader: undefined,
+        hunks: [],
+      }),
+      serializedBytes,
+      additions: 0,
+      deletions: 0,
+    }
+  }
+
+  if (
+    (options.maxEditLength != null && (Number.isNaN(options.maxEditLength) || options.maxEditLength < 1)) ||
+    (options.timeout != null && (Number.isNaN(options.timeout) || options.timeout <= 0))
+  )
+    return coarseBounded(oldFile, newFile, before, after, maximum)
+
   if (options.timeout === undefined && options.maxEditLength === undefined && singleLine(before) && singleLine(after)) {
-    const additions = before === after || after === "" ? 0 : 1
-    const deletions = before === after || before === "" ? 0 : 1
+    const additions = after === "" ? 0 : 1
+    const deletions = before === "" ? 0 : 1
     const serializedBytes = simplePatchBytes(oldFile, newFile, before, after, maximum)
     if (serializedBytes > maximum) return { serializedBytes, additions, deletions }
   }
+
+  const oldLines = countLines(before)
+  const newLines = countLines(after)
+  if (
+    before.length + after.length > MAX_BOUNDED_INPUT_CODE_UNITS ||
+    oldLines + newLines > MAX_BOUNDED_LINE_TOKENS ||
+    headerBytes(oldFile, newFile, maximum) > maximum
+  )
+    return coarseBounded(oldFile, newFile, before, after, maximum, oldLines, newLines)
 
   const structured = structuredPatch(oldFile, newFile, before, after, undefined, undefined, {
     timeout: options.timeout ?? DEFAULT_TIMEOUT,
     ...(options.maxEditLength === undefined ? {} : { maxEditLength: options.maxEditLength }),
   })
-  if (!structured) return coarseBounded(oldFile, newFile, before, after, maximum)
+  if (!structured) return coarseBounded(oldFile, newFile, before, after, maximum, oldLines, newLines)
 
   const changes = countChanges(structured)
   const serializedBytes = patchBytes(structured, maximum)
@@ -109,6 +144,12 @@ function writeSingleLine(result: ReturnType<typeof JsonString.counter>, value: s
 function patchBytes(patch: StructuredPatch, maximum: number) {
   const result = JsonString.counter(maximum)
   writePatch(result, patch)
+  return result.end()
+}
+
+function headerBytes(oldFile: string, newFile: string, maximum: number) {
+  const result = JsonString.counter(maximum)
+  writeHeader(result, oldFile, newFile)
   return result.end()
 }
 
@@ -157,9 +198,17 @@ function countChanges(patch: StructuredPatch) {
   return { additions, deletions }
 }
 
-function coarseBounded(oldFile: string, newFile: string, before: string, after: string, maximum: number): BoundedInfo {
-  const additions = before === after ? 0 : countLines(after)
-  const deletions = before === after ? 0 : countLines(before)
+function coarseBounded(
+  oldFile: string,
+  newFile: string,
+  before: string,
+  after: string,
+  maximum: number,
+  oldLines = countLines(before),
+  newLines = countLines(after),
+): BoundedInfo {
+  const additions = before === after ? 0 : newLines
+  const deletions = before === after ? 0 : oldLines
   const result = JsonString.counter(maximum)
   const structured = coarsePatch(oldFile, newFile, before, after, deletions, additions)
   if (writePatch(result, structured) && before !== after) {
