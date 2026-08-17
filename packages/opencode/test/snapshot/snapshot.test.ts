@@ -4,6 +4,7 @@ import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Global } from "@opencode-ai/core/global"
+import { StructuredFileDiff } from "@opencode-ai/core/tool/structured-file-diff"
 import { Hash } from "@opencode-ai/core/util/hash"
 import fs from "fs/promises"
 import path from "path"
@@ -24,6 +25,7 @@ const it = testEffect(
 )
 // Windows forbids both * and : in directory names.
 const nonWindowsIt = process.platform === "win32" ? it.live.skip : it.live
+const nonWindowsInstanceIt = process.platform === "win32" ? it.instance.skip : it.instance
 
 // Git always outputs /-separated paths internally. Snapshot.patch() joins them
 // with path.join (which produces \ on Windows) then normalizes back to /.
@@ -94,20 +96,98 @@ const cleanupWorktree = (repo: string, worktree: string, files: string[] = []) =
     await Promise.all(files.map((file) => fs.rm(file, { recursive: true, force: true }).catch(() => undefined)))
   })
 
-const withGitConfigGlobal = <A, E, R>(config: string, self: Effect.Effect<A, E, R>) =>
+const withProcessEnvironment = <A, E, R>(values: Record<string, string>, self: Effect.Effect<A, E, R>) =>
   Effect.acquireUseRelease(
-    Effect.sync(() => {
-      const previous = process.env.GIT_CONFIG_GLOBAL
-      process.env.GIT_CONFIG_GLOBAL = config
-      return previous
-    }),
-    () => self,
+    Effect.sync(() => Object.fromEntries(Object.keys(values).map((key) => [key, process.env[key]] as const))),
+    () =>
+      Effect.sync(() => {
+        Object.entries(values).forEach(([key, value]) => {
+          process.env[key] = value
+        })
+      }).pipe(Effect.andThen(self)),
     (previous) =>
       Effect.sync(() => {
-        if (previous) process.env.GIT_CONFIG_GLOBAL = previous
-        else delete process.env.GIT_CONFIG_GLOBAL
+        Object.entries(previous).forEach(([key, value]) => {
+          if (value === undefined) delete process.env[key]
+          else process.env[key] = value
+        })
       }),
   )
+
+const withGitConfigGlobal = <A, E, R>(config: string, self: Effect.Effect<A, E, R>) =>
+  withProcessEnvironment({ GIT_CONFIG_GLOBAL: config }, self)
+
+const makeGitWrapper = Effect.fn("SnapshotTest.makeGitWrapper")(function* (dir: string) {
+  const git = Bun.which("git")
+  if (!git) return yield* Effect.die("git is required")
+  const wrapperDir = path.join(dir, "git-wrapper")
+  const wrapper = path.join(wrapperDir, "git")
+  const log = path.join(wrapperDir, "commands.jsonl")
+  yield* mkdirp(wrapperDir)
+  yield* write(
+    wrapper,
+    `#!/usr/bin/env bun
+import { appendFile } from "node:fs/promises"
+
+const args = Bun.argv.slice(2)
+const log = Bun.env.OPENCODE_SNAPSHOT_GIT_LOG
+if (log) await appendFile(log, JSON.stringify(args) + "\\n")
+
+const catFile = args.indexOf("cat-file")
+const option = catFile < 0 ? undefined : args[catFile + 1]
+const mode = Bun.env.OPENCODE_SNAPSHOT_GIT_MODE
+if (option?.startsWith("--batch-check")) {
+  if (mode === "check-failure") process.exit(42)
+  if (mode === "check-malformed") {
+    process.stdout.write("malformed\\n")
+    process.exit(0)
+  }
+}
+if (option === "--batch" && mode === "batch-failure") process.exit(43)
+
+const child = Bun.spawn([${JSON.stringify(git)}, ...args], {
+  stdin: "inherit",
+  stdout: "inherit",
+  stderr: "inherit",
+})
+process.exit(await child.exited)
+`,
+  )
+  yield* Effect.promise(() => fs.chmod(wrapper, 0o755))
+  return { directory: wrapperDir, log }
+})
+
+const withGitWrapper = <A, E, R>(
+  wrapper: { directory: string; log: string },
+  mode: "record" | "check-failure" | "check-malformed" | "batch-failure",
+  self: Effect.Effect<A, E, R>,
+) =>
+  withProcessEnvironment(
+    {
+      PATH: `${wrapper.directory}${path.delimiter}${process.env.PATH ?? ""}`,
+      OPENCODE_SNAPSHOT_GIT_LOG: wrapper.log,
+      OPENCODE_SNAPSHOT_GIT_MODE: mode,
+    },
+    self,
+  )
+
+const gitCommands = (value: string) =>
+  value
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as string[])
+
+const serializedPatchBytes = (diffs: readonly Snapshot.FileDiff[]) =>
+  diffs.reduce((sum, item) => {
+    if (item.patch === undefined) throw new Error(`missing patch for ${item.file}`)
+    return sum + Buffer.byteLength(JSON.stringify(item.patch))
+  }, 0)
+
+const catFileOption = (command: string[]) => {
+  const index = command.indexOf("cat-file")
+  return index < 0 ? undefined : command[index + 1]
+}
 
 it.instance(
   "tracks deleted files correctly",
@@ -908,6 +988,283 @@ it.instance(
     expect(trim.status).toBe("modified")
     expect(trim.additions).toBe(0)
     expect(trim.deletions).toBeGreaterThan(0)
+  }),
+  { git: true },
+)
+
+nonWindowsInstanceIt(
+  "diffFull keeps small full-context text, binary, and mode-only patches byte-identical",
+  Effect.gen(function* () {
+    const tmp = yield* bootstrap()
+    const snapshot = yield* Snapshot.Service
+    yield* write(`${tmp.path}/exact-é.txt`, "one\r\ntwo")
+    yield* write(`${tmp.path}/binary.bin`, new Uint8Array([0, 1, 2]))
+    yield* write(`${tmp.path}/mode.txt`, "mode\n")
+    const before = yield* snapshot.track()
+    expect(before).toBeTruthy()
+
+    yield* write(`${tmp.path}/exact-é.txt`, "one\r\nthree")
+    yield* write(`${tmp.path}/binary.bin`, new Uint8Array([0, 2, 3]))
+    yield* Effect.promise(() => fs.chmod(`${tmp.path}/mode.txt`, 0o755))
+    const after = yield* snapshot.track()
+    expect(after).toBeTruthy()
+
+    const diffs = yield* snapshot.diffFull(before!, after!)
+    expect(diffs).toHaveLength(3)
+    expect(diffs.find((item) => item.file === "exact-é.txt")).toEqual({
+      file: "exact-é.txt",
+      patch:
+        "Index: exact-é.txt\n===================================================================\n--- exact-é.txt\t\n+++ exact-é.txt\t\n@@ -1,2 +1,2 @@\n one\r\n-two\n\\ No newline at end of file\n+three\n\\ No newline at end of file\n",
+      additions: 1,
+      deletions: 1,
+      status: "modified",
+    })
+    expect(diffs.find((item) => item.file === "binary.bin")).toEqual({
+      file: "binary.bin",
+      patch: "",
+      additions: 0,
+      deletions: 0,
+      status: "modified",
+    })
+    expect(diffs.find((item) => item.file === "mode.txt")).toEqual({
+      file: "mode.txt",
+      patch:
+        "Index: mode.txt\n===================================================================\n--- mode.txt\t\n+++ mode.txt\t\n",
+      additions: 0,
+      deletions: 0,
+      status: "modified",
+    })
+  }),
+  { git: true },
+)
+
+it.instance(
+  "diffFull keeps the exact aggregate JSON patch boundary and omits every patch one byte over",
+  Effect.gen(function* () {
+    const tmp = yield* bootstrap()
+    const snapshot = yield* Snapshot.Service
+    yield* write(`${tmp.path}/a.txt`, "a")
+    yield* write(`${tmp.path}/b.txt`, "a")
+    yield* write(`${tmp.path}/z.bin`, new Uint8Array([0, 1]))
+    const before = yield* snapshot.track()
+    expect(before).toBeTruthy()
+
+    yield* write(`${tmp.path}/a.txt`, "b")
+    yield* write(`${tmp.path}/b.txt`, "c")
+    yield* write(`${tmp.path}/z.bin`, new Uint8Array([0, 2]))
+    const base = yield* snapshot.track()
+    expect(base).toBeTruthy()
+    const baseDiff = yield* snapshot.diffFull(before!, base!)
+    expect(baseDiff.every((item) => item.patch !== undefined)).toBe(true)
+    expect(baseDiff.find((item) => item.file === "z.bin")?.patch).toBe("")
+    expect(Buffer.byteLength(JSON.stringify(""))).toBe(2)
+    const baseBytes = serializedPatchBytes(baseDiff)
+    expect(baseBytes).toBeLessThan(StructuredFileDiff.MAX_PATCH_BYTES)
+
+    const extra = StructuredFileDiff.MAX_PATCH_BYTES - baseBytes
+    yield* write(`${tmp.path}/b.txt`, "c".repeat(1 + extra))
+    const exactSnapshot = yield* snapshot.track()
+    expect(exactSnapshot).toBeTruthy()
+    const exact = yield* snapshot.diffFull(before!, exactSnapshot!)
+    expect(exact.every((item) => item.patch !== undefined)).toBe(true)
+    expect(serializedPatchBytes(exact)).toBe(StructuredFileDiff.MAX_PATCH_BYTES)
+
+    yield* write(`${tmp.path}/b.txt`, "c".repeat(2 + extra))
+    const overSnapshot = yield* snapshot.track()
+    expect(overSnapshot).toBeTruthy()
+    const over = yield* snapshot.diffFull(before!, overSnapshot!)
+    expect(over.map((item) => item.file)).toEqual(exact.map((item) => item.file))
+    expect(over.map((item) => [item.additions, item.deletions, item.status])).toEqual(
+      exact.map((item) => [item.additions, item.deletions, item.status]),
+    )
+    expect(over.every((item) => !("patch" in item))).toBe(true)
+    expect(JSON.stringify(over)).not.toContain("c".repeat(100))
+  }),
+  { git: true },
+)
+
+it.instance(
+  "diffFull rejects excessive changed lines before inspecting or loading blobs",
+  Effect.gen(function* () {
+    const tmp = yield* bootstrap()
+    const snapshot = yield* Snapshot.Service
+    const lines = 65_537
+    yield* write(`${tmp.path}/dense.txt`, Array.from({ length: lines }, (_, i) => `before-${i}`).join("\n"))
+    const before = yield* snapshot.track()
+    expect(before).toBeTruthy()
+    yield* write(`${tmp.path}/dense.txt`, Array.from({ length: lines }, (_, i) => `after-${i}`).join("\n"))
+    const after = yield* snapshot.track()
+    expect(after).toBeTruthy()
+
+    const wrapper = yield* makeGitWrapper(tmp.path)
+    yield* write(wrapper.log, "")
+    const diffs = yield* withGitWrapper(wrapper, "record", snapshot.diffFull(before!, after!))
+    expect(diffs).toEqual([
+      {
+        file: "dense.txt",
+        additions: lines,
+        deletions: lines,
+        status: "modified",
+      },
+    ])
+    const commands = gitCommands(yield* readText(wrapper.log))
+    expect(commands.some((command) => catFileOption(command)?.startsWith("--batch-check"))).toBe(false)
+    expect(commands.some((command) => catFileOption(command) === "--batch")).toBe(false)
+    expect(commands.some((command) => command.includes("show"))).toBe(false)
+  }),
+  { git: true },
+  { timeout: 10_000 },
+)
+
+it.instance(
+  "diffFull inspects blob sizes but never loads oversized full-context inputs",
+  Effect.gen(function* () {
+    const tmp = yield* bootstrap()
+    const snapshot = yield* Snapshot.Service
+    const size = StructuredFileDiff.MAX_PATCH_BYTES + 1
+    yield* write(`${tmp.path}/huge.txt`, "a".repeat(size))
+    const before = yield* snapshot.track()
+    expect(before).toBeTruthy()
+    yield* write(`${tmp.path}/huge.txt`, "b".repeat(size))
+    const after = yield* snapshot.track()
+    expect(after).toBeTruthy()
+
+    const wrapper = yield* makeGitWrapper(tmp.path)
+    yield* write(wrapper.log, "")
+    expect(yield* withGitWrapper(wrapper, "record", snapshot.diffFull(before!, after!))).toEqual([
+      {
+        file: "huge.txt",
+        additions: 1,
+        deletions: 1,
+        status: "modified",
+      },
+    ])
+    const commands = gitCommands(yield* readText(wrapper.log))
+    expect(commands.filter((command) => catFileOption(command)?.startsWith("--batch-check"))).toHaveLength(1)
+    expect(commands.some((command) => catFileOption(command) === "--batch")).toBe(false)
+    expect(commands.some((command) => command.includes("show"))).toBe(false)
+  }),
+  { git: true },
+)
+
+it.instance(
+  "diffFull fails closed when blob inspection fails or returns malformed output",
+  Effect.gen(function* () {
+    const tmp = yield* bootstrap()
+    const snapshot = yield* Snapshot.Service
+    yield* write(`${tmp.path}/checked.txt`, "before")
+    const before = yield* snapshot.track()
+    expect(before).toBeTruthy()
+    yield* write(`${tmp.path}/checked.txt`, "after")
+    const after = yield* snapshot.track()
+    expect(after).toBeTruthy()
+    const wrapper = yield* makeGitWrapper(tmp.path)
+
+    yield* Effect.forEach(["check-failure", "check-malformed"] as const, (mode) =>
+      Effect.gen(function* () {
+        yield* write(wrapper.log, "")
+        expect(yield* withGitWrapper(wrapper, mode, snapshot.diffFull(before!, after!))).toEqual([
+          {
+            file: "checked.txt",
+            additions: 1,
+            deletions: 1,
+            status: "modified",
+          },
+        ])
+        const commands = gitCommands(yield* readText(wrapper.log))
+        expect(commands.filter((command) => catFileOption(command)?.startsWith("--batch-check"))).toHaveLength(1)
+        expect(commands.some((command) => catFileOption(command) === "--batch")).toBe(false)
+        expect(commands.some((command) => command.includes("show"))).toBe(false)
+      }),
+    )
+  }),
+  { git: true },
+)
+
+it.instance(
+  "diffFull falls back to bounded per-ref reads only after successful blob inspection",
+  Effect.gen(function* () {
+    const tmp = yield* bootstrap()
+    const snapshot = yield* Snapshot.Service
+    yield* write(`${tmp.path}/fallback.txt`, "before")
+    const before = yield* snapshot.track()
+    expect(before).toBeTruthy()
+    yield* write(`${tmp.path}/fallback.txt`, "after")
+    const after = yield* snapshot.track()
+    expect(after).toBeTruthy()
+    const wrapper = yield* makeGitWrapper(tmp.path)
+    yield* write(wrapper.log, "")
+
+    const diffs = yield* withGitWrapper(wrapper, "batch-failure", snapshot.diffFull(before!, after!))
+    expect(diffs).toHaveLength(1)
+    expect(diffs[0]?.patch).toContain("-before")
+    expect(diffs[0]?.patch).toContain("+after")
+    const commands = gitCommands(yield* readText(wrapper.log))
+    expect(commands.filter((command) => catFileOption(command)?.startsWith("--batch-check"))).toHaveLength(1)
+    expect(commands.filter((command) => catFileOption(command) === "--batch")).toHaveLength(1)
+    expect(commands.filter((command) => command.includes("show"))).toHaveLength(2)
+  }),
+  { git: true },
+)
+
+it.instance(
+  "diffFull shares one diff deadline and removes earlier patches after a later timeout",
+  Effect.gen(function* () {
+    const tmp = yield* bootstrap()
+    const snapshot = yield* Snapshot.Service
+    const files = Array.from({ length: 48 }, (_, i) => `dense/${i.toString().padStart(2, "0")}.txt`)
+    yield* write(`${tmp.path}/00-small.txt`, "before")
+    yield* Effect.all(
+      files.map((file) => write(`${tmp.path}/${file}`, Array.from({ length: 250 }, (_, i) => `a${i}`).join("\n"))),
+      { concurrency: "unbounded" },
+    )
+    const before = yield* snapshot.track()
+    expect(before).toBeTruthy()
+    yield* write(`${tmp.path}/00-small.txt`, "after")
+    yield* Effect.all(
+      files.map((file) => write(`${tmp.path}/${file}`, Array.from({ length: 250 }, (_, i) => `b${i}`).join("\n"))),
+      { concurrency: "unbounded" },
+    )
+    const after = yield* snapshot.track()
+    expect(after).toBeTruthy()
+
+    const diffs = yield* snapshot.diffFull(before!, after!)
+    expect(diffs.map((item) => item.file)).toEqual(["00-small.txt", ...files])
+    expect(diffs.every((item) => !("patch" in item))).toBe(true)
+    expect(diffs[0]).toEqual({
+      file: "00-small.txt",
+      additions: 1,
+      deletions: 1,
+      status: "modified",
+    })
+    expect(diffs.slice(1).every((item) => item.additions === 250 && item.deletions === 250)).toBe(true)
+  }),
+  { git: true },
+  { timeout: 10_000 },
+)
+
+it.instance(
+  "patchless full-context previews do not limit snapshot revert or restore",
+  Effect.gen(function* () {
+    const tmp = yield* bootstrap()
+    const snapshot = yield* Snapshot.Service
+    const original = "a".repeat(StructuredFileDiff.MAX_PATCH_BYTES + 1)
+    const changed = "b".repeat(StructuredFileDiff.MAX_PATCH_BYTES + 1)
+    yield* write(`${tmp.path}/restore.txt`, original)
+    const before = yield* snapshot.track()
+    expect(before).toBeTruthy()
+    yield* write(`${tmp.path}/restore.txt`, changed)
+    const after = yield* snapshot.track()
+    expect(after).toBeTruthy()
+    expect(yield* snapshot.diffFull(before!, after!)).toEqual([
+      { file: "restore.txt", additions: 1, deletions: 1, status: "modified" },
+    ])
+
+    const patch = yield* snapshot.patch(before!, after!)
+    yield* snapshot.revert([patch])
+    expect(yield* readText(`${tmp.path}/restore.txt`)).toBe(original)
+    yield* snapshot.restore(after!)
+    expect(yield* readText(`${tmp.path}/restore.txt`)).toBe(changed)
   }),
   { git: true },
 )

@@ -1,6 +1,6 @@
 import { describe, expect } from "bun:test"
 import { eq } from "drizzle-orm"
-import { Effect, Exit } from "effect"
+import { Effect, Exit, Schema } from "effect"
 import { Database } from "@opencode-ai/core/database/database"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -89,6 +89,45 @@ describe("MessageDiff", () => {
         toSnapshot: "tree-after",
         diffs: [],
       })
+    }),
+  )
+
+  it.effect("round-trips patchless diff metadata through the schema and store", () =>
+    Effect.gen(function* () {
+      const messageID = SessionV1.MessageID.ascending("msg_message_diff_patchless")
+      yield* projectMessages([messageID])
+      const messageDiff = yield* MessageDiff.Service
+      const diffs = [
+        {
+          file: "src/oversized.ts",
+          additions: 131_072,
+          deletions: 131_071,
+          status: "modified",
+        },
+      ] satisfies ReadonlyArray<FileDiff.Info>
+
+      yield* messageDiff.put({ messageID, fromSnapshot: "tree-before", toSnapshot: "tree-after", diffs })
+
+      const stored = yield* messageDiff.get(messageID)
+      expect(stored).toEqual({ fromSnapshot: "tree-before", toSnapshot: "tree-after", diffs })
+      expect(Object.hasOwn(stored?.diffs[0] ?? {}, "patch")).toBe(false)
+
+      const listed = yield* messageDiff.list({ sessionID })
+      expect(listed).toHaveLength(1)
+      expect(listed[0]).toMatchObject({
+        messageID,
+        fromSnapshot: "tree-before",
+        toSnapshot: "tree-after",
+        diffs,
+      })
+      expect(Object.hasOwn(listed[0]?.diffs[0] ?? {}, "patch")).toBe(false)
+
+      const snapshot = { sessionID, rows: listed } satisfies MessageDiff.Snapshot
+      const encoded = Schema.encodeSync(MessageDiff.Snapshot)(snapshot)
+      expect(Object.hasOwn(encoded.rows[0]?.diffs[0] ?? {}, "patch")).toBe(false)
+      const decoded = Schema.decodeUnknownSync(MessageDiff.Snapshot)(encoded)
+      expect(decoded).toEqual(snapshot)
+      expect(Object.hasOwn(decoded.rows[0]?.diffs[0] ?? {}, "patch")).toBe(false)
     }),
   )
 

@@ -19,9 +19,12 @@ export function resolveMessageDiff(
 ): SnapshotFileDiff | undefined {
   if (hasMessageDiffPatch(summary)) return summary
   if (!summary.file) return
-  const detail = loaded?.find((diff) => diff.file === summary.file && hasMessageDiffPatch(diff))
+  const detail =
+    loaded?.find((diff) => diff.file === summary.file && hasMessageDiffPatch(diff)) ??
+    loaded?.find((diff) => diff.file === summary.file)
   if (!detail) return
-  return { ...detail, ...summary, patch: detail.patch }
+  if (hasMessageDiffPatch(detail)) return { ...detail, ...summary, file: summary.file, patch: detail.patch }
+  return { ...detail, ...summary, file: summary.file }
 }
 
 export function hydrateMessageDiffs(
@@ -42,10 +45,21 @@ export function hydrateMessageDiffs(
   })
 }
 
-export function messageDiffNeedsLoad(diffs: readonly SnapshotFileDiff[], files: readonly string[]) {
+export function messageDiffNeedsLoad(
+  diffs: readonly SnapshotFileDiff[],
+  files: readonly string[],
+  loaded?: readonly SnapshotFileDiff[],
+) {
   if (files.length === 0) return false
-  const requested = new Set(files)
-  return diffs.some((diff) => !!diff.file && requested.has(diff.file) && !hasMessageDiffPatch(diff))
+  const pending = messageDiffPendingFiles(diffs, loaded)
+  return files.some((file) => pending.has(file))
+}
+
+export function messageDiffPendingFiles(diffs: readonly SnapshotFileDiff[], loaded?: readonly SnapshotFileDiff[]) {
+  const terminal = new Set(loaded?.flatMap((diff) => (diff.file ? [diff.file] : [])))
+  return new Set(
+    diffs.flatMap((diff) => (diff.file && !hasMessageDiffPatch(diff) && !terminal.has(diff.file) ? [diff.file] : [])),
+  )
 }
 
 export function messageDiffSessionQueryKey(input: { scope: string; directory: string; sessionID: string }) {

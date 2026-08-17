@@ -174,12 +174,13 @@ function TimelineDiffSummaryRow(props: {
   const overflow = createMemo(() => Math.max(0, props.diffs.length - maxFiles))
   const visible = createMemo(() => (showAll() ? props.diffs : props.diffs.slice(0, maxFiles)))
   const [loaded, setLoaded] = createSignal<MessageDiffResult>()
-  const hydrated = createMemo(() => {
+  const loadedDiffs = createMemo(() => {
     const result = loaded()
-    return hydrateMessageDiffs(
-      props.diffs,
-      result?.revision === props.revision() && result.invalidation === props.invalidation() ? result.diffs : undefined,
-    )
+    if (result?.revision !== props.revision() || result.invalidation !== props.invalidation()) return
+    return result.diffs
+  })
+  const hydrated = createMemo(() => {
+    return hydrateMessageDiffs(props.diffs, loadedDiffs())
   })
   const details = createMemo(
     () => new Map(hydrated().flatMap((diff) => (diff.file ? [[diff.file, diff] as const] : []))),
@@ -274,7 +275,7 @@ function TimelineDiffSummaryRow(props: {
           onChange={(value) => {
             const next = Array.isArray(value) ? value : value ? [value] : []
             setState("expanded", next)
-            if (messageDiffNeedsLoad(hydrated(), next)) setRequest((value) => value + 1)
+            if (messageDiffNeedsLoad(hydrated(), next, loadedDiffs())) setRequest((value) => value + 1)
           }}
         >
           <For each={visible()}>

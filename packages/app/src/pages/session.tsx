@@ -101,6 +101,7 @@ import {
   hydrateMessageDiffs,
   loadMessageDiff,
   messageDiffNeedsLoad,
+  messageDiffPendingFiles,
   messageDiffQueryKey,
   messageDiffSessionQueryKey,
   resolveMessageDiff,
@@ -704,18 +705,16 @@ export default function Page() {
     const message = lastUserMessage()
     return message ? sync().session.messageDiffAvailable(message.sessionID, message.id) : undefined
   })
-  const turnDiffs = createMemo(() => {
+  const turnDiffDetails = createMemo(() => {
     const message = lastUserMessage()
-    if (!message) return turnSummaryDiffs()
     const loaded = store.turnDiff
-    return hydrateMessageDiffs(
-      turnSummaryDiffs(),
-      loaded?.messageID === message.id &&
-        loaded.revision === turnDiffRevision() &&
-        loaded.invalidation === turnDiffInvalidation()
-        ? loaded.diffs
-        : undefined,
-    )
+    if (!message || loaded?.messageID !== message.id) return
+    if (loaded.revision !== turnDiffRevision() || loaded.invalidation !== turnDiffInvalidation()) return
+    return loaded.diffs
+  })
+  const turnDiffs = createMemo(() => {
+    if (!lastUserMessage()) return turnSummaryDiffs()
+    return hydrateMessageDiffs(turnSummaryDiffs(), turnDiffDetails())
   })
   const loadTurnDiffs = async () => {
     const sessionID = params.id
@@ -806,14 +805,14 @@ export default function Page() {
   const reviewOpen = () => {
     const open = view().review.open()
     if (reviewMode() !== "turn") return open
-    const missing = new Set(turnDiffs().flatMap((diff) => (diff.file && !hasMessageDiffPatch(diff) ? [diff.file] : [])))
-    return open.filter((file) => !missing.has(file))
+    const pending = messageDiffPendingFiles(turnDiffs(), turnDiffDetails())
+    return open.filter((file) => !pending.has(file))
   }
   const setReviewOpen = (open: string[]) => {
     view().review.setOpen(open)
     if (reviewMode() !== "turn") return
     if (turnDiffAvailable() === false) return
-    if (!messageDiffNeedsLoad(turnDiffs(), open)) return
+    if (!messageDiffNeedsLoad(turnDiffs(), open, turnDiffDetails())) return
     void loadTurnDiffs().catch((error) => {
       console.debug("[session-review] failed to load turn diff", { sessionID: params.id, error })
     })
@@ -867,7 +866,7 @@ export default function Page() {
           if (!wantsReview()) return
           if (turnDiffAvailable() === false) return
           const open = view().review.open()
-          if (!messageDiffNeedsLoad(turnDiffs(), open)) return
+          if (!messageDiffNeedsLoad(turnDiffs(), open, turnDiffDetails())) return
           void loadTurnDiffs().catch((error) => {
             console.debug("[session-review] failed to restore turn diff", { sessionID: params.id, error })
           })
@@ -891,7 +890,11 @@ export default function Page() {
       if (turnDiffAvailable() === false) return
       const source = reviewDiffs().find((diff) => diff.file === file)
       if (!source || !filterRenderableDiff(source)) return
-      if (!messageDiffNeedsLoad([source], [source.file])) return source
+      if (!messageDiffNeedsLoad([source], [source.file], turnDiffDetails())) {
+        const resolved = resolveMessageDiff(source, turnDiffDetails())
+        if (!resolved || !filterRenderableDiff(resolved)) return
+        return resolved
+      }
       const loaded = resolveMessageDiff(source, await loadTurnDiffs())
       if (!loaded || !filterRenderableDiff(loaded)) return
       return loaded
@@ -1491,7 +1494,7 @@ export default function Page() {
     needsDiffLoad: (diff: RenderDiff) => {
       if (reviewMode() !== "turn") return reviewDiffNeedsLoad(diff)
       if (turnDiffAvailable() === false) return false
-      return messageDiffNeedsLoad([diff], [diff.file])
+      return messageDiffNeedsLoad([diff], [diff.file], turnDiffDetails())
     },
     loadDiff: loadReviewDiff,
     get activeFile() {

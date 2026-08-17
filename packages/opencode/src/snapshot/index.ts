@@ -10,6 +10,8 @@ import { Hash } from "@opencode-ai/core/util/hash"
 import { Config } from "@/config/config"
 import { Global } from "@opencode-ai/core/global"
 import { Info } from "@opencode-ai/schema/file-diff"
+import { StructuredFileDiff } from "@opencode-ai/core/tool/structured-file-diff"
+import { JsonString } from "@opencode-ai/core/util/json-string"
 
 export const Patch = Schema.Struct({
   hash: Schema.String,
@@ -27,6 +29,9 @@ type DiffPin = {
 
 const prune = "7.days"
 const limit = 2 * 1024 * 1024
+const diffLineLimit = 128 * 1024
+// Full-context patches are optional review payloads, so stop Myers before dense edits can monopolize the runtime.
+const diffTimeout = 250
 const core = ["-c", "core.longpaths=true", "-c", "core.symlinks=true"]
 const cfg = ["-c", "core.autocrlf=false", ...core]
 const quote = [...cfg, "-c", "core.quotepath=false"]
@@ -660,6 +665,48 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
                 ref: string
               }
 
+              const needsContent = (row: Row) => !row.binary && (row.additions !== 0 || row.deletions !== 0)
+              const refs = (rows: readonly Row[]) =>
+                rows.flatMap((row) => {
+                  if (!needsContent(row)) return []
+                  if (row.status === "added")
+                    return [{ file: row.file, side: "after", ref: `${to}:${row.file}` } satisfies Ref]
+                  if (row.status === "deleted")
+                    return [{ file: row.file, side: "before", ref: `${from}:${row.file}` } satisfies Ref]
+                  return [
+                    { file: row.file, side: "before", ref: `${from}:${row.file}` } satisfies Ref,
+                    { file: row.file, side: "after", ref: `${to}:${row.file}` } satisfies Ref,
+                  ]
+                })
+
+              const inspect = Effect.fnUntraced(function* (rows: readonly Row[]) {
+                const list = refs(rows)
+                if (!list.length) return new Map<string, { before?: number; after?: number }>()
+                const batch = yield* git(
+                  [...cfg, ...args(["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"])],
+                  {
+                    cwd: state.directory,
+                    stdin: list.map((item) => item.ref).join("\n") + "\n",
+                  },
+                )
+                if (batch.code !== 0) return
+                const lines = (batch.text.endsWith("\n") ? batch.text.slice(0, -1) : batch.text).split("\n")
+                if (lines.length !== list.length) return
+
+                const map = new Map<string, { before?: number; after?: number }>()
+                for (let i = 0; i < list.length; i++) {
+                  const match = lines[i]?.match(/^[0-9a-f]+ blob (\d+)$/)
+                  if (!match) return
+                  const size = Number(match[1])
+                  if (!Number.isSafeInteger(size) || size < 0) return
+                  const ref = list[i]!
+                  const hit = map.get(ref.file) ?? {}
+                  hit[ref.side] = size
+                  map.set(ref.file, hit)
+                }
+                return map
+              })
+
               const show = Effect.fnUntraced(function* (row: Row) {
                 if (row.binary) return ["", ""]
                 if (row.status === "added") {
@@ -687,33 +734,22 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
 
               const load = Effect.fnUntraced(
                 function* (rows: Row[]) {
-                  const refs = rows.flatMap((row) => {
-                    if (row.binary) return []
-                    if (row.status === "added")
-                      return [{ file: row.file, side: "after", ref: `${to}:${row.file}` } satisfies Ref]
-                    if (row.status === "deleted") {
-                      return [{ file: row.file, side: "before", ref: `${from}:${row.file}` } satisfies Ref]
-                    }
-                    return [
-                      { file: row.file, side: "before", ref: `${from}:${row.file}` } satisfies Ref,
-                      { file: row.file, side: "after", ref: `${to}:${row.file}` } satisfies Ref,
-                    ]
-                  })
-                  if (!refs.length) return new Map<string, { before: string; after: string }>()
+                  const list = refs(rows)
+                  if (!list.length) return new Map<string, { before: string; after: string }>()
 
                   const batch = yield* appProcess.run(
                     ChildProcess.make("git", [...cfg, ...args(["cat-file", "--batch"])], {
                       cwd: state.directory,
                       extendEnv: true,
                     }),
-                    { stdin: refs.map((item) => item.ref).join("\n") + "\n" },
+                    { stdin: list.map((item) => item.ref).join("\n") + "\n" },
                   )
                   if (batch.exitCode !== 0) {
                     yield* Effect.logInfo(
                       "git cat-file --batch failed during snapshot diff, falling back to per-file git show",
                       {
                         stderr: batch.stderr.toString("utf8"),
-                        refs: refs.length,
+                        refs: list.length,
                       },
                     )
                     return
@@ -727,7 +763,7 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
                   const map = new Map<string, { before: string; after: string }>()
                   const dec = new TextDecoder()
                   let i = 0
-                  for (const ref of refs) {
+                  for (const ref of list) {
                     let end = i
                     while (end < out.length && out[end] !== 10) end += 1
                     if (end >= out.length) {
@@ -785,21 +821,99 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
               const source = yield* diffRows(from, to)
               if (!source.available) return
               const rows = source.rows
+              const metadata = (row: Row): FileDiff => ({
+                file: row.file,
+                additions: row.additions,
+                deletions: row.deletions,
+                status: row.status,
+              })
+
+              let changedLines = 0
+              for (const row of rows) {
+                const lines = row.additions + row.deletions
+                if (lines > diffLineLimit - changedLines) return rows.map(metadata)
+                changedLines += lines
+              }
+
+              const sizes = yield* inspect(rows)
+              if (!sizes) return rows.map(metadata)
+              let contentBytes = 0
+              for (const row of rows) {
+                if (!needsContent(row)) continue
+                const hit = sizes.get(row.file)
+                const before = row.status === "added" ? 0 : hit?.before
+                const after = row.status === "deleted" ? 0 : hit?.after
+                if (before === undefined || after === undefined) return rows.map(metadata)
+                const size = Math.max(before, after)
+                if (size > StructuredFileDiff.MAX_PATCH_BYTES - contentBytes) return rows.map(metadata)
+                contentBytes += size
+              }
 
               const step = 100
-              const patch = (file: string, before: string, after: string) =>
-                formatPatch(structuredPatch(file, file, before, after, "", "", { context: Number.MAX_SAFE_INTEGER }))
+              let remainingDiffTime = diffTimeout
+              const patch = (file: string, before: string, after: string) => {
+                if (remainingDiffTime <= 0) return
+                const start = performance.now()
+                const value = structuredPatch(file, file, before, after, "", "", {
+                  context: Number.MAX_SAFE_INTEGER,
+                  timeout: remainingDiffTime,
+                })
+                const result = value ? formatPatch(value) : undefined
+                remainingDiffTime -= performance.now() - start
+                return result
+              }
+              const lineTokens = (value: string) => {
+                if (!value) return 0
+                let count = value.endsWith("\n") ? 0 : 1
+                for (let i = 0; i < value.length; i++) if (value.charCodeAt(i) === 10) count++
+                return count
+              }
+              let remainingPatchBytes = StructuredFileDiff.MAX_PATCH_BYTES
+              let remainingLineTokens = diffLineLimit
+              let overflow = false
 
               for (let i = 0; i < rows.length; i += step) {
                 const run = rows.slice(i, i + step)
+                if (overflow) {
+                  result.push(...run.map(metadata))
+                  continue
+                }
                 const text = yield* load(run)
 
                 for (const row of run) {
+                  if (overflow) {
+                    result.push(metadata(row))
+                    continue
+                  }
                   const hit = text?.get(row.file) ?? { before: "", after: "" }
-                  const [before, after] = row.binary ? ["", ""] : text ? [hit.before, hit.after] : yield* show(row)
+                  const [before, after] = needsContent(row)
+                    ? text
+                      ? [hit.before, hit.after]
+                      : yield* show(row)
+                    : ["", ""]
+                  const tokens = lineTokens(before) + lineTokens(after)
+                  if (tokens > remainingLineTokens) {
+                    overflow = true
+                    result.push(metadata(row))
+                    continue
+                  }
+                  remainingLineTokens -= tokens
+                  const value = row.binary ? "" : patch(row.file, before, after)
+                  if (value === undefined) {
+                    overflow = true
+                    result.push(metadata(row))
+                    continue
+                  }
+                  const bytes = JsonString.bytesUpTo(value, remainingPatchBytes)
+                  if (bytes > remainingPatchBytes) {
+                    overflow = true
+                    result.push(metadata(row))
+                    continue
+                  }
+                  remainingPatchBytes -= bytes
                   result.push({
                     file: row.file,
-                    patch: row.binary ? "" : patch(row.file, before, after),
+                    patch: value,
                     additions: row.additions,
                     deletions: row.deletions,
                     status: row.status,
@@ -807,7 +921,7 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
                 }
               }
 
-              return result
+              return overflow ? rows.map(metadata) : result
             }),
           )
         })

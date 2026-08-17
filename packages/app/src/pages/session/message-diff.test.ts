@@ -7,6 +7,7 @@ import {
   hydrateMessageDiffs,
   loadMessageDiff,
   messageDiffNeedsLoad,
+  messageDiffPendingFiles,
   messageDiffQueryKey,
   messageDiffSessionQueryKey,
   resolveMessageDiff,
@@ -42,6 +43,24 @@ describe("message diff hydration", () => {
     expect(resolveMessageDiff(current, [detail])).toEqual({ ...current, patch: detail.patch })
   })
 
+  test("treats a matching patchless loaded row as terminal while keeping current metadata", () => {
+    const current = { ...metadata, additions: 4, deletions: 3 }
+    const loaded = { ...metadata, additions: 8, deletions: 7 }
+
+    expect(resolveMessageDiff(current, [loaded])).toEqual(current)
+    expect(messageDiffPendingFiles([current], [loaded])).toEqual(new Set())
+    expect(messageDiffNeedsLoad([current], [current.file], [loaded])).toBe(false)
+  })
+
+  test("prefers a matching patch over a patchless duplicate in either order", () => {
+    const current = { ...metadata, additions: 4, deletions: 3 }
+    const loaded = { ...metadata, additions: 8, deletions: 7 }
+    const expected = { ...current, patch: detail.patch }
+
+    expect(resolveMessageDiff(current, [loaded, detail])).toEqual(expected)
+    expect(resolveMessageDiff(current, [detail, loaded])).toEqual(expected)
+  })
+
   test("indexes loaded files once and preserves the first matching patch", () => {
     const other = { ...detail, file: "src/other.ts" }
     const duplicate = { ...detail, patch: "duplicate" }
@@ -66,6 +85,36 @@ describe("message diff hydration", () => {
     expect(messageDiffNeedsLoad([metadata], [metadata.file])).toBe(true)
     expect(messageDiffNeedsLoad([{ ...metadata, additions: 0, deletions: 0 }], [metadata.file])).toBe(true)
     expect(messageDiffNeedsLoad([detail], [detail.file])).toBe(false)
+  })
+
+  test("keeps missing requested paths pending and ignores loaded rows without a file", () => {
+    const pending = { ...metadata, file: "src/pending.ts" }
+    const inline = { ...detail, file: "src/inline.ts" }
+    const anonymous = { additions: 0, deletions: 0, status: "modified" as const }
+    const loaded = [{ ...metadata, file: "src/other.ts" }, anonymous]
+
+    expect(resolveMessageDiff(metadata, loaded)).toBeUndefined()
+    expect(messageDiffPendingFiles([metadata, inline, pending], loaded)).toEqual(new Set([metadata.file, pending.file]))
+    expect(messageDiffNeedsLoad([metadata, inline, pending], [inline.file], loaded)).toBe(false)
+    expect(messageDiffNeedsLoad([metadata, inline, pending], [metadata.file], loaded)).toBe(true)
+    expect(messageDiffNeedsLoad([metadata, inline, pending], [pending.file], loaded)).toBe(true)
+  })
+
+  test("checks large summary, loaded, and requested sets in linear passes", () => {
+    const size = 4_096
+    const reads = { value: 0 }
+    const observe = <T>(values: T[]) =>
+      new Proxy(values, {
+        get(target, property, receiver) {
+          if (typeof property === "string" && /^\d+$/.test(property)) reads.value++
+          return Reflect.get(target, property, receiver)
+        },
+      })
+    const diffs = Array.from({ length: size }, (_, index) => ({ ...metadata, file: `src/${index}.ts` }))
+    const files = diffs.map((diff) => diff.file)
+
+    expect(messageDiffNeedsLoad(observe(diffs), observe(files), observe(diffs.toReversed()))).toBe(false)
+    expect(reads.value).toBeLessThanOrEqual(size * 3)
   })
 
   test("identifies patch text without treating metadata as detail", () => {
