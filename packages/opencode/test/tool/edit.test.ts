@@ -1001,7 +1001,7 @@ describe("tool.edit", () => {
         const filepath = path.join(test.directory, "newfile.txt")
         const result = yield* run({ filePath: filepath, oldString: "", newString: "new content" })
 
-        expect(result.metadata.diff).toContain("new content")
+        expect(result.metadata.filediff.patch).toContain("new content")
         expect(yield* load(filepath)).toBe("new content")
       }),
     )
@@ -1085,9 +1085,9 @@ describe("tool.edit", () => {
 
         const result = yield* run({ filePath: filepath, oldString: "using System;", newString: "using Up;" })
 
-        expect(result.metadata.diff).toContain("-using System;")
-        expect(result.metadata.diff).toContain("+using Up;")
-        expect(result.metadata.diff).not.toContain(bom)
+        expect(result.metadata.filediff.patch).toContain("-using System;")
+        expect(result.metadata.filediff.patch).toContain("+using Up;")
+        expect(result.metadata.filediff.patch).not.toContain(bom)
 
         const content = yield* loadRaw(filepath)
         expect(content.charCodeAt(0)).toBe(0xfeff)
@@ -1272,6 +1272,104 @@ describe("tool.edit", () => {
         expect(result.metadata.filediff).toBeDefined()
         expect(result.metadata.filediff.file).toBe(filepath)
         expect(result.metadata.filediff.additions).toBeGreaterThan(0)
+      }),
+    )
+
+    it.instance("keeps permission metadata separate from canonical edit metadata", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "metadata.txt")
+        const permissions: Parameters<Tool.Context["ask"]>[0][] = []
+        const updates: Parameters<Tool.Context["metadata"]>[0][] = []
+        yield* put(filepath, "old\n")
+
+        const result = yield* run(
+          { filePath: filepath, oldString: "old", newString: "new" },
+          {
+            ...ctx,
+            ask: (input) =>
+              Effect.sync(() => {
+                permissions.push(input)
+              }),
+            metadata: (input) =>
+              Effect.sync(() => {
+                updates.push(input)
+              }),
+          },
+        )
+
+        expect(permissions).toHaveLength(1)
+        expect(Object.keys(permissions[0].metadata).sort()).toEqual(["diff", "filepath"])
+        expect(permissions[0].metadata).toEqual({
+          filepath,
+          diff: expect.stringContaining("+new"),
+        })
+        expect(updates).toEqual([
+          {
+            metadata: {
+              filediff: result.metadata.filediff,
+              diagnostics: {},
+            },
+          },
+        ])
+        expect(result.metadata).not.toHaveProperty("diff")
+        expect(result.metadata).toMatchObject({ diagnostics: {}, filediff: result.metadata.filediff })
+      }),
+    )
+
+    it.instance(
+      "reports formatter changes in the canonical edit patch after permission",
+      () =>
+        Effect.gen(function* () {
+          const test = yield* TestInstance
+          const filepath = path.join(test.directory, "formatted.payload")
+          const permissions: Parameters<Tool.Context["ask"]>[0][] = []
+          yield* put(filepath, "old\n")
+
+          const result = yield* run(
+            { filePath: filepath, oldString: "old", newString: "new" },
+            {
+              ...ctx,
+              ask: (input) =>
+                Effect.sync(() => {
+                  permissions.push(input)
+                }),
+            },
+          )
+
+          expect(permissions[0].metadata.diff).not.toContain("formatter-only")
+          expect(result.metadata.filediff.patch).toContain("formatter-only")
+          expect(yield* load(filepath)).toBe("new\nformatter-only\n")
+        }),
+      {
+        config: {
+          formatter: {
+            append: {
+              extensions: [".payload"],
+              command: [
+                "node",
+                "-e",
+                "const fs = require('fs'); const file = process.argv[1]; fs.appendFileSync(file, 'formatter-only\\n')",
+                "$FILE",
+              ],
+            },
+          },
+        },
+      },
+    )
+
+    it.instance("serializes one copy of a large canonical edit patch", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "large.txt")
+        const marker = `PATCH_PAYLOAD_${"x".repeat(128 * 1024)}`
+        yield* put(filepath, "old\n")
+
+        const result = yield* run({ filePath: filepath, oldString: "old", newString: marker })
+        const serialized = JSON.stringify(result.metadata)
+
+        expect(result.metadata).not.toHaveProperty("diff")
+        expect(serialized.split(marker)).toHaveLength(2)
       }),
     )
   })

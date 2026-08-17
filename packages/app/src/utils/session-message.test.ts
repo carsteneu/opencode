@@ -211,4 +211,62 @@ describe("normalizeSessionMessages", () => {
       }),
     ])
   })
+
+  test("preserves a legacy aggregate edit diff when normalized files omit their patch", () => {
+    const diff = "@@ -1 +1 @@\n-old\n+legacy"
+    const source = [
+      { id: "msg_user", type: "user", text: "edit it", time: { created: 1 } },
+      {
+        id: "msg_assistant",
+        type: "assistant",
+        agent: "build",
+        model: { id: "model", providerID: "provider" },
+        content: [
+          {
+            type: "tool",
+            id: "call_edit",
+            name: "edit",
+            state: {
+              status: "completed",
+              input: { path: "/repo/README.md", oldString: "old", newString: "new" },
+              content: [{ type: "text", text: "Edited file successfully" }],
+              metadata: {
+                diff,
+                files: [
+                  {
+                    file: "README.md",
+                    additions: 1,
+                    deletions: 1,
+                    status: "modified",
+                  },
+                ],
+              },
+            },
+            time: { created: 2, ran: 3, completed: 4 },
+          },
+        ],
+        time: { created: 2, completed: 4 },
+      },
+    ] satisfies SessionMessageInfo[]
+
+    const result = normalizeSessionMessages("ses_1", source)
+
+    expect(result.parts.get("msg_assistant")).toEqual([
+      expect.objectContaining({
+        type: "tool",
+        tool: "edit",
+        state: expect.objectContaining({
+          metadata: expect.objectContaining({
+            diff,
+            filediff: {
+              file: "README.md",
+              patch: undefined,
+              additions: 1,
+              deletions: 1,
+            },
+          }),
+        }),
+      }),
+    ])
+  })
 })

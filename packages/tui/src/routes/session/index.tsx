@@ -2911,14 +2911,17 @@ function Edit(props: ToolProps) {
     return ctx.width > 120 ? "split" : "unified"
   })
 
-  const diffContent = createMemo(() => stringValue(props.metadata.diff) ?? "")
+  const diffContent = createMemo(() => {
+    const filediff = recordValue(props.metadata.filediff)
+    return stringValue(filediff?.patch) ?? stringValue(props.metadata.diff)
+  })
 
   return (
     <Switch>
-      <Match when={stringValue(props.metadata.diff) !== undefined}>
+      <Match when={diffContent() !== undefined}>
         <SessionEditOutput
           title={"← Edit " + pathFormatter.format(stringValue(props.input.filePath))}
-          diff={diffContent()}
+          diff={diffContent() ?? ""}
           filePath={stringValue(props.input.filePath) ?? ""}
           diagnostics={props.metadata.diagnostics}
           part={props.part}

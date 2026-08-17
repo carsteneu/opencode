@@ -132,11 +132,14 @@ describe("tool.apply_patch freeform", () => {
         if (process.platform === "win32") {
           expect(result.output).not.toContain("\\")
         }
-        expect(result.metadata.diff).toContain("Index:")
+        expect(result.metadata).not.toHaveProperty("diff")
+        expect(result.metadata.files.every((file) => file.patch.includes("Index:"))).toBe(true)
         expect(calls.length).toBe(1)
 
         // Verify permission metadata includes files array for UI rendering
         const permissionCall = calls[0]
+        expect(Object.keys(permissionCall.metadata).sort()).toEqual(["diff", "filepath", "files"])
+        expect(permissionCall.metadata.diff).toContain("Index:")
         expect(permissionCall.metadata.files).toHaveLength(3)
         expect(permissionCall.metadata.files.map((f) => f.type).sort()).toEqual(["add", "delete", "update"])
 
@@ -153,6 +156,65 @@ describe("tool.apply_patch freeform", () => {
         yield* expectReadFailure(deletePath)
       }),
     { git: true },
+  )
+
+  it.instance(
+    "keeps apply-patch metadata pre-format while preserving the permission payload",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { ctx, calls } = makeCtx()
+        const target = path.join(test.directory, "formatted.payload")
+        yield* writeText(target, "old\n")
+
+        const result = yield* execute(
+          {
+            patchText: "*** Begin Patch\n*** Update File: formatted.payload\n@@\n-old\n+new\n*** End Patch",
+          },
+          ctx,
+        )
+
+        expect(calls).toHaveLength(1)
+        expect(calls[0].metadata.files[0].patch).not.toContain("formatter-only")
+        expect(result.metadata.files).toEqual(
+          calls[0].metadata.files.map((file) => ({ ...file, movePath: file.movePath })),
+        )
+        expect(result.metadata.files[0].patch).not.toContain("formatter-only")
+        expect(result.metadata).not.toHaveProperty("diff")
+        expect(yield* readText(target)).toBe("new\nformatter-only\n")
+      }),
+    {
+      config: {
+        formatter: {
+          append: {
+            extensions: [".payload"],
+            command: [
+              "node",
+              "-e",
+              "const fs = require('fs'); const file = process.argv[1]; fs.appendFileSync(file, 'formatter-only\\n')",
+              "$FILE",
+            ],
+          },
+        },
+      },
+    },
+  )
+
+  it.instance("serializes one copy of a large final apply-patch payload", () =>
+    Effect.gen(function* () {
+      const { ctx, calls } = makeCtx()
+      const marker = `PATCH_PAYLOAD_${"x".repeat(128 * 1024)}`
+      const result = yield* execute(
+        {
+          patchText: `*** Begin Patch\n*** Add File: large.txt\n+${marker}\n*** End Patch`,
+        },
+        ctx,
+      )
+
+      expect(result.metadata).not.toHaveProperty("diff")
+      expect(JSON.stringify(result.metadata).split(marker)).toHaveLength(2)
+      expect(JSON.stringify(calls[0].metadata).split(marker)).toHaveLength(3)
+    }),
   )
 
   it.instance(

@@ -2164,12 +2164,18 @@ ToolRegistry.register({
     const diffSource = createMemo(
       () => {
         const filediff = props.metadata?.filediff
-        if (!filediff) return
+        const patch =
+          typeof filediff?.patch === "string"
+            ? filediff.patch
+            : typeof props.metadata?.diff === "string"
+              ? props.metadata.diff
+              : undefined
+        if (!filediff && patch === undefined) return
         return {
-          file: filediff.file || props.input.filePath || "",
-          patch: typeof filediff.patch === "string" ? filediff.patch : undefined,
-          before: typeof filediff.before === "string" ? filediff.before : undefined,
-          after: typeof filediff.after === "string" ? filediff.after : undefined,
+          file: filediff?.file || props.input.filePath || "",
+          patch,
+          before: typeof filediff?.before === "string" ? filediff.before : undefined,
+          after: typeof filediff?.after === "string" ? filediff.after : undefined,
         }
       },
       undefined,

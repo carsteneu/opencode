@@ -285,7 +285,6 @@ export const ApplyPatchTool = Tool.define(
       return {
         title: output,
         metadata: {
-          diff: totalDiff,
           files,
           diagnostics,
         },

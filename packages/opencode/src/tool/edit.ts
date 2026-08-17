@@ -192,7 +192,6 @@ export const EditTool = Tool.define(
 
           yield* ctx.metadata({
             metadata: {
-              diff,
               filediff,
               diagnostics: {},
             },
@@ -208,7 +207,6 @@ export const EditTool = Tool.define(
           return {
             metadata: {
               diagnostics,
-              diff,
               filediff,
             },
             title: `${path.relative(instance.worktree, filePath)}`,

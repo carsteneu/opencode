@@ -156,6 +156,13 @@ function text(v: unknown): string {
   return typeof v === "string" ? v : ""
 }
 
+function editPatch(metadata: unknown) {
+  const value = dict(metadata)
+  const filediff = dict(value.filediff)
+  if (typeof filediff.patch === "string") return filediff.patch
+  if (typeof value.diff === "string") return value.diff
+}
+
 function num(v: unknown): number | undefined {
   if (typeof v !== "number" || !Number.isFinite(v)) {
     return undefined
@@ -351,7 +358,7 @@ function runEdit(p: ToolProps<typeof EditTool>): ToolInline {
     icon: "←",
     title: `Edit ${toolPath(p.input.filePath)}`,
     mode: "block",
-    body: p.metadata.diff,
+    body: editPatch(p.metadata),
   }
 }
 
@@ -514,7 +521,7 @@ function snapWrite(p: ToolProps<typeof WriteTool>): ToolSnapshot | undefined {
 
 function snapEdit(p: ToolProps<typeof EditTool>): ToolSnapshot | undefined {
   const file = p.input.filePath || ""
-  const diff = p.metadata.diff || ""
+  const diff = editPatch(p.metadata) ?? ""
   if (!file || !diff.trim()) {
     return undefined
   }
@@ -924,7 +931,7 @@ function permEdit(p: ToolPermissionProps<typeof EditTool>): ToolPermissionInfo {
     icon: "→",
     title: `Edit ${toolPath(file, { home: true })}`,
     lines: [],
-    diff: p.metadata.diff ?? input.diff,
+    diff: editPatch(p.metadata) ?? input.diff,
     file,
   }
 }

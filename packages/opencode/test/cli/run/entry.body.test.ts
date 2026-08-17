@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import type { ToolPart } from "@opencode-ai/sdk/v2"
 import { entryBody, entryCanStream, entryDone } from "@/cli/cmd/run/entry.body"
+import { toolInlineInfo, toolPermissionInfo } from "@/cli/cmd/run/tool"
 import type { StreamCommit, ToolSnapshot } from "@/cli/cmd/run/types"
 
 function commit(input: Partial<StreamCommit> & Pick<StreamCommit, "kind" | "text" | "phase" | "source">): StreamCommit {
@@ -132,7 +133,7 @@ describe("run entry body", () => {
       },
     },
     {
-      name: "keeps completed edit tool finals structured",
+      name: "keeps completed legacy edit tool finals structured",
       commit: toolCommit({
         tool: "edit",
         state: {
@@ -198,6 +199,51 @@ describe("run entry body", () => {
       expect(structured(item.commit)).toEqual(item.snapshot)
     })
   }
+
+  test("prefers canonical edit patches in structured and inline output", () => {
+    const canonical = "@@ -1 +1 @@\n-old\n+canonical\n"
+    const legacy = "@@ -1 +1 @@\n-old\n+legacy\n"
+    const state: ToolPart["state"] = {
+      status: "completed",
+      input: { filePath: "src/a.ts" },
+      output: "",
+      title: "",
+      metadata: {
+        filediff: {
+          file: "src/a.ts",
+          patch: canonical,
+          additions: 1,
+          deletions: 1,
+        },
+        diff: legacy,
+      },
+      time: { start: 1, end: 2 },
+    }
+
+    expect(structured(toolCommit({ tool: "edit", state }))).toEqual({
+      kind: "diff",
+      items: [{ title: "# Edited src/a.ts", diff: canonical, file: "src/a.ts" }],
+    })
+    expect(toolInlineInfo(toolPart("edit", state))).toMatchObject({ body: canonical })
+  })
+
+  test("keeps legacy edit patches working in inline and permission output", () => {
+    const legacy = "@@ -1 +1 @@\n-old\n+legacy\n"
+    const state: ToolPart["state"] = {
+      status: "completed",
+      input: { filePath: "src/a.ts" },
+      output: "",
+      title: "",
+      metadata: { diff: legacy },
+      time: { start: 1, end: 2 },
+    }
+
+    expect(toolInlineInfo(toolPart("edit", state))).toMatchObject({ body: legacy })
+    expect(toolPermissionInfo("edit", { filePath: "src/a.ts" }, { diff: legacy }, [])).toMatchObject({
+      diff: legacy,
+      file: "src/a.ts",
+    })
+  })
 
   test("keeps running task tool state out of scrollback", () => {
     expect(

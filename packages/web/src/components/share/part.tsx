@@ -580,6 +580,13 @@ export function WriteTool(props: ToolProps) {
 export function EditTool(props: ToolProps) {
   const messages = useShareMessages()
   const filePath = createMemo(() => stripWorkingDirectory(props.state.input.filePath, props.message.path.cwd))
+  const diff = createMemo(() => {
+    const filediff = props.state.metadata?.filediff
+    if (filediff && typeof filediff === "object" && "patch" in filediff && typeof filediff.patch === "string") {
+      return filediff.patch
+    }
+    return typeof props.state.metadata?.diff === "string" ? props.state.metadata.diff : undefined
+  })
   const diagnostics = createMemo(() =>
     getDiagnostics(props.state.metadata?.diagnostics, props.state.input.filePath, messages.error),
   )
@@ -597,9 +604,9 @@ export function EditTool(props: ToolProps) {
           <Match when={props.state.metadata?.error}>
             <ContentError>{formatErrorString(props.state.metadata?.message || "", messages.error)}</ContentError>
           </Match>
-          <Match when={props.state.metadata?.diff}>
+          <Match when={diff()}>
             <div data-component="diff">
-              <ContentDiff diff={props.state.metadata?.diff} lang={getShikiLang(filePath() || "")} />
+              <ContentDiff diff={diff()!} lang={getShikiLang(filePath() || "")} />
             </div>
           </Match>
         </Switch>
