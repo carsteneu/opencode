@@ -11,6 +11,7 @@ import { Patch } from "../patch"
 import { PermissionV2 } from "../permission"
 import { TextDiff } from "../text-diff"
 import { ToolRegistry } from "./registry"
+import { StructuredFileDiff } from "./structured-file-diff"
 import { Tool } from "./tool"
 import { Tools } from "./tools"
 
@@ -72,6 +73,11 @@ const layer = Layer.effectDiscard(
               "Apply one patch containing add, update, and delete file operations. All targets are resolved and approved before target contents are read. Operations apply sequentially; if a later operation fails, earlier operations remain applied and the failure reports them explicitly. Moves and atomic rollback are not supported yet.",
             input: Input,
             output: Output,
+            structured: Output,
+            toStructuredOutput: ({ output }) => ({
+              ...output,
+              files: StructuredFileDiff.bound(output.files),
+            }),
             toModelOutput: ({ output }) => [{ type: "text", text: toModelOutput(output) }],
             execute: (input, context) => {
               const applied: Array<typeof Applied.Type> = []

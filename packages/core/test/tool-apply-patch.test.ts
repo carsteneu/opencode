@@ -1,7 +1,7 @@
 import fs from "fs/promises"
 import path from "path"
 import { describe, expect } from "bun:test"
-import { Deferred, Effect, Exit, Fiber, Layer } from "effect"
+import { Deferred, Effect, Exit, Fiber, Layer, Schema } from "effect"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { FileMutation } from "@opencode-ai/core/file-mutation"
@@ -11,9 +11,12 @@ import { LocationMutation } from "@opencode-ai/core/location-mutation"
 import { PermissionV2 } from "@opencode-ai/core/permission"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionV2 } from "@opencode-ai/core/session"
+import { SessionEvent } from "@opencode-ai/core/session/event"
+import { TextDiff } from "@opencode-ai/core/text-diff"
 import { ToolRegistry } from "@opencode-ai/core/tool/registry"
 import { ToolOutputStore } from "@opencode-ai/core/tool-output-store"
 import { ApplyPatchTool } from "@opencode-ai/core/tool/apply-patch"
+import { StructuredFileDiff } from "@opencode-ai/core/tool/structured-file-diff"
 import { location } from "./fixture/location"
 import { tmpdir } from "./fixture/tmpdir"
 import { testEffect } from "./lib/effect"
@@ -429,6 +432,94 @@ describe("ApplyPatchTool", () => {
             }),
           )
         })
+      },
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
+  it.live("omits every structured patch when a real multi-file patch exceeds the shared budget", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => {
+        reset()
+        const marker = "APPLY-PATCH-STRUCTURED-MARKER"
+        const small = "small"
+        const large = `${marker}${"😀".repeat(Math.ceil(StructuredFileDiff.MAX_PATCH_BYTES / 4))}`
+        const patchText = `*** Begin Patch\n*** Add File: small.txt\n+${small}\n*** Add File: large.txt\n+${large}\n*** End Patch`
+        const smallDiff = TextDiff.create("small.txt", "small.txt", "", `${small}\n`)
+        const largeDiff = TextDiff.create("large.txt", "large.txt", "", `${large}\n`)
+
+        expect(Buffer.byteLength(JSON.stringify(smallDiff.patch))).toBeLessThan(StructuredFileDiff.MAX_PATCH_BYTES)
+        expect(Buffer.byteLength(JSON.stringify(largeDiff.patch))).toBeGreaterThan(StructuredFileDiff.MAX_PATCH_BYTES)
+
+        return withTool(tmp.path, (registry) =>
+          Effect.gen(function* () {
+            const settled = yield* settleTool(registry, call(patchText, "call-apply-patch-over-budget"))
+            const output = settled.output
+            if (!output || output.content[0]?.type !== "text") return yield* Effect.die("missing apply_patch output")
+            const root = yield* Effect.promise(() => fs.realpath(tmp.path))
+            const structured = {
+              applied: [
+                { type: "add" as const, resource: "small.txt", target: path.join(root, "small.txt") },
+                { type: "add" as const, resource: "large.txt", target: path.join(root, "large.txt") },
+              ],
+              files: [
+                {
+                  file: "small.txt",
+                  status: "added" as const,
+                  additions: smallDiff.additions,
+                  deletions: smallDiff.deletions,
+                },
+                {
+                  file: "large.txt",
+                  status: "added" as const,
+                  additions: largeDiff.additions,
+                  deletions: largeDiff.deletions,
+                },
+              ],
+            }
+            const full = {
+              ...structured,
+              files: [
+                { ...structured.files[0], patch: smallDiff.patch },
+                { ...structured.files[1], patch: largeDiff.patch },
+              ],
+            }
+
+            expect(output).toEqual({
+              structured,
+              content: [{ type: "text", text: ApplyPatchTool.toModelOutput(full) }],
+            })
+            expect(settled.result).toEqual({ type: "text", value: output.content[0].text })
+            expect(settled.outputPaths).toBeUndefined()
+            expect(assertions).toMatchObject([
+              { sessionID, action: "edit", resources: ["small.txt", "large.txt"], save: ["*"] },
+            ])
+            expect(yield* Effect.promise(() => fs.readFile(path.join(tmp.path, "small.txt"), "utf8"))).toBe(
+              `${small}\n`,
+            )
+            expect(yield* Effect.promise(() => fs.readFile(path.join(tmp.path, "large.txt"), "utf8"))).toBe(
+              `${large}\n`,
+            )
+
+            const event = Schema.encodeSync(SessionEvent.Tool.Success.data)(
+              Schema.decodeUnknownSync(SessionEvent.Tool.Success.data)({
+                sessionID,
+                timestamp: Date.now(),
+                assistantMessageID: toolIdentity.assistantMessageID,
+                callID: "call-apply-patch-over-budget",
+                structured: output.structured,
+                content: output.content,
+                provider: { executed: false },
+              }),
+            )
+            const serialized = JSON.stringify(event)
+            const legacy = JSON.stringify({ ...event, structured: full })
+            expect(serialized).not.toContain(marker)
+            expect(legacy.split(marker)).toHaveLength(2)
+            expect(Buffer.byteLength(serialized)).toBeLessThan(Buffer.byteLength(legacy) / 50)
+          }),
+        )
       },
       (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
     ),

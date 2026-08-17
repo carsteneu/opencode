@@ -2,7 +2,7 @@ import fs from "fs/promises"
 import path from "path"
 import { fileURLToPath } from "url"
 import { describe, expect, test } from "bun:test"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Schema } from "effect"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { FileMutation } from "@opencode-ai/core/file-mutation"
@@ -12,9 +12,12 @@ import { LocationMutation } from "@opencode-ai/core/location-mutation"
 import { PermissionV2 } from "@opencode-ai/core/permission"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionV2 } from "@opencode-ai/core/session"
+import { SessionEvent } from "@opencode-ai/core/session/event"
+import { TextDiff } from "@opencode-ai/core/text-diff"
 import { ToolRegistry } from "@opencode-ai/core/tool/registry"
 import { ToolOutputStore } from "@opencode-ai/core/tool-output-store"
 import { EditTool } from "@opencode-ai/core/tool/edit"
+import { StructuredFileDiff } from "@opencode-ai/core/tool/structured-file-diff"
 import { location } from "./fixture/location"
 import { tmpdir } from "./fixture/tmpdir"
 import { testEffect } from "./lib/effect"
@@ -403,6 +406,127 @@ describe("EditTool", () => {
               expect(yield* Effect.promise(() => fs.readFile(target, "utf8"))).toBe("newer\n")
               expect(writes).toEqual([])
             }),
+          ),
+        )
+      },
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
+  )
+
+  it.live("omits an over-budget structured patch without changing edit behavior", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => {
+        reset()
+        const target = path.join(tmp.path, "boundary.txt")
+        const before = "before\n"
+        const marker = "EDIT-STRUCTURED-PATCH-MARKER"
+        const prefix = `${marker}"\\\b\t\u0000é€😀\ud800h\udc00l`
+        const seed = TextDiff.create("boundary.txt", "boundary.txt", before, `${prefix}\n`)
+        const fill = StructuredFileDiff.MAX_PATCH_BYTES - Buffer.byteLength(JSON.stringify(seed.patch))
+        const exactAfter = `${prefix}${"x".repeat(fill)}\n`
+        const overAfter = `${prefix}${"x".repeat(fill + 1)}\n`
+        const exactDiff = TextDiff.create("boundary.txt", "boundary.txt", before, exactAfter)
+        const overDiff = TextDiff.create("boundary.txt", "boundary.txt", before, overAfter)
+
+        expect(fill).toBeGreaterThan(0)
+        expect(Buffer.byteLength(JSON.stringify(exactDiff.patch))).toBe(StructuredFileDiff.MAX_PATCH_BYTES)
+        expect(Buffer.byteLength(JSON.stringify(overDiff.patch))).toBe(StructuredFileDiff.MAX_PATCH_BYTES + 1)
+
+        return Effect.promise(() => fs.writeFile(target, before)).pipe(
+          Effect.andThen(
+            withTool(tmp.path, (registry) =>
+              Effect.gen(function* () {
+                const exactOutput: EditTool.Output = {
+                  replacements: 1,
+                  files: [
+                    {
+                      file: "boundary.txt",
+                      patch: exactDiff.patch,
+                      status: "modified",
+                      additions: exactDiff.additions,
+                      deletions: exactDiff.deletions,
+                    },
+                  ],
+                }
+                const exact = yield* settleTool(
+                  registry,
+                  call({ path: "boundary.txt", oldString: before, newString: exactAfter }, "call-edit-exact-budget"),
+                )
+                expect(exact).toEqual({
+                  result: { type: "text", value: EditTool.toModelOutput(exactOutput, before, exactAfter) },
+                  output: {
+                    structured: exactOutput,
+                    content: [{ type: "text", text: EditTool.toModelOutput(exactOutput, before, exactAfter) }],
+                  },
+                })
+                expect(yield* Effect.promise(() => fs.readFile(target, "utf8"))).toBe(
+                  Buffer.from(exactAfter).toString(),
+                )
+
+                yield* Effect.promise(() => fs.writeFile(target, before))
+                const fullOverOutput: EditTool.Output = {
+                  replacements: 1,
+                  files: [
+                    {
+                      file: "boundary.txt",
+                      patch: overDiff.patch,
+                      status: "modified",
+                      additions: overDiff.additions,
+                      deletions: overDiff.deletions,
+                    },
+                  ],
+                }
+                const over = yield* settleTool(
+                  registry,
+                  call({ path: "boundary.txt", oldString: before, newString: overAfter }, "call-edit-over-budget"),
+                )
+                const output = over.output
+                if (!output || output.content[0]?.type !== "text") return yield* Effect.die("missing edit output")
+                expect(output).toEqual({
+                  structured: {
+                    replacements: 1,
+                    files: [
+                      {
+                        file: "boundary.txt",
+                        status: "modified",
+                        additions: overDiff.additions,
+                        deletions: overDiff.deletions,
+                      },
+                    ],
+                  },
+                  content: [{ type: "text", text: EditTool.toModelOutput(fullOverOutput, before, overAfter) }],
+                })
+                expect(over.result).toEqual({ type: "text", value: output.content[0].text })
+                expect(over.outputPaths).toBeUndefined()
+                expect(yield* Effect.promise(() => fs.readFile(target, "utf8"))).toBe(Buffer.from(overAfter).toString())
+                expect(assertions).toMatchObject([
+                  { sessionID, action: "edit", resources: ["boundary.txt"], save: ["*"] },
+                  { sessionID, action: "edit", resources: ["boundary.txt"], save: ["*"] },
+                ])
+                expect(writes).toEqual([
+                  yield* Effect.promise(() => fs.realpath(target)),
+                  yield* Effect.promise(() => fs.realpath(target)),
+                ])
+
+                const event = Schema.encodeSync(SessionEvent.Tool.Success.data)(
+                  Schema.decodeUnknownSync(SessionEvent.Tool.Success.data)({
+                    sessionID,
+                    timestamp: Date.now(),
+                    assistantMessageID: toolIdentity.assistantMessageID,
+                    callID: "call-edit-over-budget",
+                    structured: output.structured,
+                    content: output.content,
+                    provider: { executed: false },
+                  }),
+                )
+                const serialized = JSON.stringify(event)
+                const legacy = JSON.stringify({ ...event, structured: fullOverOutput })
+                expect(serialized.split(marker)).toHaveLength(2)
+                expect(legacy.split(marker)).toHaveLength(3)
+                expect(Buffer.byteLength(serialized)).toBeLessThan(Buffer.byteLength(legacy) / 50)
+              }),
+            ),
           ),
         )
       },

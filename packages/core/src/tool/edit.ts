@@ -16,6 +16,7 @@ import { LocationMutation } from "../location-mutation"
 import { PermissionV2 } from "../permission"
 import { TextDiff } from "../text-diff"
 import { ToolRegistry } from "./registry"
+import { StructuredFileDiff } from "./structured-file-diff"
 import { Tool } from "./tool"
 import { Tools } from "./tools"
 
@@ -103,6 +104,11 @@ const layer = Layer.effectDiscard(
               "Replace exact text in one file. Relative paths resolve within the active Location. Absolute paths inside the Location are accepted. Explicit external absolute paths require external_directory approval before edit approval.",
             input: Input,
             output: Output,
+            structured: Output,
+            toStructuredOutput: ({ output }) => ({
+              ...output,
+              files: StructuredFileDiff.bound(output.files),
+            }),
             toModelOutput: ({ input, output }) => [
               { type: "text", text: toModelOutput(output, input.oldString, input.newString) },
             ],
