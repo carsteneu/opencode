@@ -1,6 +1,7 @@
 import * as Tool from "./tool"
 import DESCRIPTION from "./task.txt"
 import { ToolJsonSchema } from "./json-schema"
+import { Truncate } from "./truncate"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { BackgroundJob } from "@/background/job"
 import { Session } from "@/session/session"
@@ -88,6 +89,7 @@ export const TaskTool = Tool.define(
     const scope = yield* Scope.Scope
     const flags = yield* RuntimeFlags.Service
     const database = yield* Database.Service
+    const truncate = yield* Truncate.Service
 
     const run = Effect.fn("TaskTool.execute")(function* (
       params: Schema.Schema.Type<typeof Parameters>,
@@ -228,6 +230,8 @@ export const TaskTool = Tool.define(
         text: string,
       ) {
         const currentParent = yield* sessions.get(ctx.sessionID)
+        const parentAgent = yield* agent.get(currentParent.agent ?? ctx.agent)
+        const bounded = yield* truncate.output(text, {}, parentAgent)
         yield* ops
           .prompt({
             sessionID: ctx.sessionID,
@@ -244,7 +248,7 @@ export const TaskTool = Tool.define(
                     state === "completed"
                       ? `Background task completed: ${params.description}`
                       : `Background task failed: ${params.description}`,
-                  text,
+                  text: bounded.content,
                 }),
               },
             ],

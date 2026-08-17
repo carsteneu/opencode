@@ -74,6 +74,30 @@ function waitForRemoval(jobs: BackgroundJob.Interface, id: string) {
   )
 }
 
+function promptText(input: SessionPrompt.PromptInput) {
+  const part = input.parts[0]
+  if (part?.type !== "text") throw new Error("expected injected text part")
+  return part.text
+}
+
+function largeTaskOutput(label: string) {
+  return Array.from(
+    { length: Truncate.MAX_LINES + 200 },
+    (_, index) => `${label}-${index.toString().padStart(4, "0")}-${"x".repeat(40)}`,
+  ).join("\n")
+}
+
+function savedOutputPath(text: string) {
+  const prefix = "Full output saved to: "
+  const start = text.indexOf(prefix)
+  if (start === -1) throw new Error("truncation path missing from injected output")
+  return text.slice(start + prefix.length).split("\n")[0]
+}
+
+function cleanupSavedOutput(path: string) {
+  return Effect.addFinalizer(() => Effect.tryPromise(() => Bun.file(path).delete()).pipe(Effect.ignore))
+}
+
 const seed = Effect.fn("TaskToolTest.seed")(function* (title = "Pinned") {
   const session = yield* Session.Service
   const chat = yield* session.create({ title })
@@ -826,15 +850,17 @@ describe("tool.task", () => {
     }),
   )
 
-  it.instance("promotes a running foreground task without restarting it", () =>
+  it.instance("promotes a running foreground task and bounds its large notification", () =>
     Effect.gen(function* () {
       const jobs = yield* BackgroundJob.Service
       const { chat, assistant } = yield* seed()
       const tool = yield* TaskTool
       const def = yield* tool.init()
+      const output = largeTaskOutput("promoted-output")
       const ready = yield* Deferred.make<void>()
       const done = yield* Deferred.make<void>()
       const injected = yield* Deferred.make<SessionPrompt.PromptInput>()
+      const childReply = yield* Deferred.make<SessionV1.WithParts>()
       let runs = 0
       const promptOps: TaskPromptOps = {
         cancel: () => Effect.void,
@@ -847,7 +873,9 @@ describe("tool.task", () => {
             runs += 1
             yield* Deferred.succeed(ready, undefined)
             yield* Deferred.await(done)
-            return reply(input, "background done")
+            const result = reply(input, output)
+            yield* Deferred.succeed(childReply, result)
+            return result
           })
         },
       }
@@ -888,10 +916,25 @@ describe("tool.task", () => {
       const waiting = yield* jobs.wait({ id: result.metadata.sessionId }).pipe(Effect.forkChild)
       yield* Effect.yieldNow
       yield* Deferred.succeed(done, undefined)
-      expect((yield* Fiber.join(waiting)).info).toMatchObject({ status: "completed", output: "background done" })
+      expect((yield* Fiber.join(waiting)).info).toMatchObject({ status: "completed", output })
+      const canonical = yield* Deferred.await(childReply)
+      expect(canonical.parts.findLast((part) => part.type === "text")?.text).toBe(output)
       const notification = yield* Deferred.await(injected)
-      expect(notification.parts[0]?.type).toBe("text")
-      if (notification.parts[0]?.type === "text") expect(notification.parts[0].text).toContain("background done")
+      const text = promptText(notification)
+      const path = savedOutputPath(text)
+      yield* cleanupSavedOutput(path)
+      expect(notification.parts[0]).toMatchObject({ type: "text", synthetic: true })
+      expect(text.startsWith(`<task id="${result.metadata.sessionId}" state="completed">\n`)).toBe(true)
+      expect(text).toContain("<summary>Background task completed: inspect bug</summary>")
+      expect(text).toContain("<task_result>\npromoted-output-0000-")
+      expect(text.endsWith("</task_result>\n</task>")).toBe(true)
+      expect(text).not.toContain(output.slice(output.lastIndexOf("\n") + 1))
+      expect(text).toContain("bytes truncated")
+      expect(Buffer.byteLength(text, "utf-8")).toBeLessThan(Buffer.byteLength(output, "utf-8"))
+      expect(Buffer.byteLength(text, "utf-8")).toBeLessThanOrEqual(Truncate.MAX_BYTES + 1024)
+      expect(path.startsWith(Truncate.DIR)).toBe(true)
+      expect(yield* Effect.promise(() => Bun.file(path).exists())).toBe(true)
+      expect(yield* Effect.promise(() => Bun.file(path).text())).toBe(output)
       expect(yield* jobs.get(result.metadata.sessionId)).toBeUndefined()
       expect(runs).toBe(1)
     }),
@@ -1119,7 +1162,91 @@ describe("tool.task", () => {
         type: "text",
         synthetic: true,
       })
-      if (notification.parts[0]?.type === "text") expect(notification.parts[0].text).toContain("background done")
+      expect(promptText(notification)).toBe(
+        [
+          `<task id="${result.metadata.sessionId}" state="completed">`,
+          "<summary>Background task completed: inspect bug</summary>",
+          "<task_result>",
+          "background done",
+          "</task_result>",
+          "</task>",
+        ].join("\n"),
+      )
+      expect(yield* jobs.get(result.metadata.sessionId)).toBeUndefined()
+    }),
+  )
+
+  background.instance("large background completion keeps canonical output and bounds the parent injection", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      const output = largeTaskOutput("completed-output")
+      const release = yield* Deferred.make<void>()
+      const injected = yield* Deferred.make<SessionPrompt.PromptInput>()
+      const childReply = yield* Deferred.make<SessionV1.WithParts>()
+      const promptOps: TaskPromptOps = {
+        ...stubOps(),
+        prompt: (input) => {
+          if (input.sessionID === chat.id) {
+            return Deferred.succeed(injected, input).pipe(Effect.as(reply(input, "injected")))
+          }
+          return Effect.gen(function* () {
+            yield* Deferred.await(release)
+            const result = reply(input, output)
+            yield* Deferred.succeed(childReply, result)
+            return result
+          })
+        },
+      }
+
+      expect(Buffer.byteLength(output, "utf-8")).toBeGreaterThan(Truncate.MAX_BYTES)
+      const result = yield* def.execute(
+        {
+          description: "inspect large result",
+          prompt: "produce a large result",
+          subagent_type: "general",
+          background: true,
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      const waiting = yield* jobs.wait({ id: result.metadata.sessionId }).pipe(Effect.forkChild)
+      yield* Effect.yieldNow
+      yield* Deferred.succeed(release, undefined)
+      const waited = yield* Fiber.join(waiting)
+      expect(waited.info).toMatchObject({ status: "completed", output })
+      const canonical = yield* Deferred.await(childReply)
+      expect(canonical.parts.findLast((part) => part.type === "text")?.text).toBe(output)
+
+      const notification = yield* Deferred.await(injected)
+      const text = promptText(notification)
+      const path = savedOutputPath(text)
+      yield* cleanupSavedOutput(path)
+      expect(notification.parts[0]).toMatchObject({ type: "text", synthetic: true })
+      expect(text.startsWith(`<task id="${result.metadata.sessionId}" state="completed">\n`)).toBe(true)
+      expect(text).toContain("<summary>Background task completed: inspect large result</summary>")
+      expect(text).toContain("<task_result>\ncompleted-output-0000-")
+      expect(text.endsWith("</task_result>\n</task>")).toBe(true)
+      expect(text).not.toContain(output.slice(output.lastIndexOf("\n") + 1))
+      expect(text).toContain("bytes truncated")
+      expect(text).toContain("Task tool")
+      expect(text).toContain("explore agent")
+      expect(Buffer.byteLength(text, "utf-8")).toBeLessThan(Buffer.byteLength(output, "utf-8"))
+      expect(Buffer.byteLength(text, "utf-8")).toBeLessThanOrEqual(Truncate.MAX_BYTES + 1024)
+      expect(path.startsWith(Truncate.DIR)).toBe(true)
+      expect(yield* Effect.promise(() => Bun.file(path).exists())).toBe(true)
+      expect(yield* Effect.promise(() => Bun.file(path).text())).toBe(output)
       expect(yield* jobs.get(result.metadata.sessionId)).toBeUndefined()
     }),
   )
@@ -1170,12 +1297,96 @@ describe("tool.task", () => {
         type: "text",
         synthetic: true,
       })
-      if (notification.parts[0]?.type === "text") {
-        expect(notification.parts[0].text).toContain("background exploded")
-        expect(notification.parts[0].text).toContain(`state="error"`)
-      }
+      expect(promptText(notification)).toBe(
+        [
+          `<task id="${result.metadata.sessionId}" state="error">`,
+          "<summary>Background task failed: inspect bug</summary>",
+          "<task_error>",
+          "background exploded",
+          "</task_error>",
+          "</task>",
+        ].join("\n"),
+      )
       expect(yield* jobs.get(result.metadata.sessionId)).toBeUndefined()
     }),
+  )
+
+  background.instance(
+    "large background errors stay canonical and clean up when parent injection fails",
+    () =>
+      Effect.gen(function* () {
+        const jobs = yield* BackgroundJob.Service
+        const { chat, assistant } = yield* seed()
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+        const error = largeTaskOutput("background-error")
+        const release = yield* Deferred.make<void>()
+        const injected = yield* Deferred.make<SessionPrompt.PromptInput>()
+        const promptOps: TaskPromptOps = {
+          ...stubOps(),
+          prompt: (input) => {
+            if (input.sessionID === chat.id) {
+              return Deferred.succeed(injected, input).pipe(
+                Effect.andThen(Effect.die(new Error("parent injection failed"))),
+              )
+            }
+            return Deferred.await(release).pipe(Effect.andThen(Effect.die(new Error(error))))
+          },
+        }
+
+        expect(Buffer.byteLength(error, "utf-8")).toBeGreaterThan(Truncate.MAX_BYTES)
+        const result = yield* def.execute(
+          {
+            description: "inspect large failure",
+            prompt: "produce a large error",
+            subagent_type: "general",
+            background: true,
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+
+        const waiting = yield* jobs.wait({ id: result.metadata.sessionId }).pipe(Effect.forkChild)
+        yield* Effect.yieldNow
+        yield* Deferred.succeed(release, undefined)
+        const waited = yield* Fiber.join(waiting)
+        expect(waited.info).toMatchObject({ status: "error", error })
+
+        const notification = yield* Deferred.await(injected)
+        const text = promptText(notification)
+        const path = savedOutputPath(text)
+        yield* cleanupSavedOutput(path)
+        expect(notification.parts[0]).toMatchObject({ type: "text", synthetic: true })
+        expect(text.startsWith(`<task id="${result.metadata.sessionId}" state="error">\n`)).toBe(true)
+        expect(text).toContain("<summary>Background task failed: inspect large failure</summary>")
+        expect(text).toContain("<task_error>\nbackground-error-0000-")
+        expect(text.endsWith("</task_error>\n</task>")).toBe(true)
+        expect(text).not.toContain(error.slice(error.lastIndexOf("\n") + 1))
+        expect(text).toContain("bytes truncated")
+        expect(text).toContain("Use Grep")
+        expect(text).not.toContain("Task tool")
+        expect(Buffer.byteLength(text, "utf-8")).toBeLessThan(Buffer.byteLength(error, "utf-8"))
+        expect(Buffer.byteLength(text, "utf-8")).toBeLessThanOrEqual(Truncate.MAX_BYTES + 1024)
+        expect(path.startsWith(Truncate.DIR)).toBe(true)
+        expect(yield* Effect.promise(() => Bun.file(path).exists())).toBe(true)
+        expect(yield* Effect.promise(() => Bun.file(path).text())).toBe(error)
+        expect(yield* jobs.get(result.metadata.sessionId)).toBeUndefined()
+      }),
+    {
+      config: {
+        permission: {
+          task: "deny",
+        },
+      },
+    },
   )
 
   background.instance("background task completion does not wait for the parent async prompt", () =>
