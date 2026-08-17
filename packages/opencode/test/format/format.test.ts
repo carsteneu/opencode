@@ -232,4 +232,37 @@ describe("Format", () => {
       },
     },
   )
+
+  it.instance(
+    "a hanging formatter is bounded by its configured timeout and cannot block formatting",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const file = `${test.directory}/test.hang`
+        yield* Effect.promise(() => Bun.write(file, "x"))
+
+        yield* Format.Service.use((fmt) =>
+          Effect.gen(function* () {
+            yield* fmt.init()
+            const start = performance.now()
+            const formatted = yield* fmt.file(file)
+            const elapsed = performance.now() - start
+            expect(formatted).toBe(true)
+            // The formatter runs `sleep 10`, so a missing timeout would hold for ~10s.
+            expect(elapsed).toBeLessThan(4000)
+          }),
+        )
+      }),
+    {
+      config: {
+        formatter: {
+          hang: {
+            command: ["sleep", "10"],
+            extensions: [".hang"],
+            timeout: 400,
+          },
+        },
+      },
+    },
+  )
 })

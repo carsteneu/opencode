@@ -1,7 +1,7 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { filesystem, httpClient } from "@opencode-ai/core/effect/app-node-platform"
-import { Clock, Effect, FileSystem, Layer, Schema, Context, Stream } from "effect"
+import { Clock, Duration, Effect, FileSystem, Layer, Schema, Context, Stream } from "effect"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import { withTransientReadRetry } from "@/util/effect-http-client"
@@ -149,6 +149,14 @@ const layer: Layer.Layer<Service, never, HttpClient.HttpClient | AppProcess.Serv
     const fs = yield* FileSystem.FileSystem
     const prereleaseCache = path.join(Global.Path.cache, "update-prereleases.json")
 
+    // Self-update runs execute installers / version checks, which can legitimately
+    // take a while on slow networks or hung package managers. Bound them anyway so
+    // an indefinite hang cannot wedge the upgrade path, and cap output to avoid
+    // unbounded buffering of installer noise.
+    const installTimeout = Duration.minutes(10)
+    const installMaxOutputBytes = 1024 * 1024
+    const installMaxErrorBytes = 1024 * 1024
+
     const text = Effect.fnUntraced(
       function* (cmd: string[], opts?: { cwd?: string; env?: Record<string, string> }) {
         const result = yield* appProcess.run(
@@ -157,6 +165,11 @@ const layer: Layer.Layer<Service, never, HttpClient.HttpClient | AppProcess.Serv
             env: opts?.env,
             extendEnv: true,
           }),
+          {
+            timeout: installTimeout,
+            maxOutputBytes: installMaxOutputBytes,
+            maxErrorBytes: installMaxErrorBytes,
+          },
         )
         return result.stdout.toString("utf8")
       },
@@ -171,6 +184,11 @@ const layer: Layer.Layer<Service, never, HttpClient.HttpClient | AppProcess.Serv
             env: opts?.env,
             extendEnv: true,
           }),
+          {
+            timeout: installTimeout,
+            maxOutputBytes: installMaxOutputBytes,
+            maxErrorBytes: installMaxErrorBytes,
+          },
         )
         return {
           code: result.exitCode,
@@ -213,6 +231,11 @@ const layer: Layer.Layer<Service, never, HttpClient.HttpClient | AppProcess.Serv
             env: { VERSION: target },
             extendEnv: true,
           }),
+          {
+            timeout: installTimeout,
+            maxOutputBytes: installMaxOutputBytes,
+            maxErrorBytes: installMaxErrorBytes,
+          },
         )
         return {
           code: result.exitCode,

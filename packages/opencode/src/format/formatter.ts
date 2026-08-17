@@ -3,6 +3,7 @@ import type { InstanceContext } from "../project/instance-context"
 import { Filesystem } from "@/util/filesystem"
 import { Process } from "@/util/process"
 import { which } from "@opencode-ai/core/util/which"
+import type { Duration } from "effect"
 
 export interface Context extends Pick<InstanceContext, "directory" | "worktree"> {
   experimentalOxfmt: boolean
@@ -12,6 +13,7 @@ export interface Info {
   name: string
   environment?: Record<string, string>
   extensions: string[]
+  timeout?: Duration.Input
   enabled(context: Context): Promise<string[] | false>
 }
 

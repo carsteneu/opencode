@@ -7,6 +7,7 @@ export class Entry extends Schema.Class<Entry>("ConfigV2.Formatter.Entry")({
   command: Schema.String.pipe(Schema.Array, Schema.optional),
   environment: Schema.Record(Schema.String, Schema.String).pipe(Schema.optional),
   extensions: Schema.String.pipe(Schema.Array, Schema.optional),
+  timeout: Schema.DurationFromMillis.pipe(Schema.optional),
 }) {}
 
 export const Info = Schema.Union([Schema.Boolean, Schema.Record(Schema.String, Entry)])

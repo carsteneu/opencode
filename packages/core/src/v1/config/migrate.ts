@@ -1,6 +1,7 @@
 export * as ConfigMigrateV1 from "./migrate"
 
 import { ConfigV1 } from "./config"
+import { ConfigFormatterV1 } from "./formatter"
 import { ConfigAgentV1 } from "./agent"
 import { ConfigMCPV1 } from "./mcp"
 import { ConfigPermissionV1 } from "./permission"
@@ -46,8 +47,8 @@ export function migrate(info: typeof ConfigV1.Info.Type) {
     agents: agents(info),
     snapshots: info.snapshot,
     watcher: info.watcher,
-    formatter: info.formatter,
-    lsp: info.lsp,
+      formatter: formatter(info.formatter),
+      lsp: info.lsp,
     attachments: info.attachment,
     tool_output: info.tool_output,
     mcp: mcp(info),
@@ -69,6 +70,23 @@ export function migrate(info: typeof ConfigV1.Info.Type) {
     experimental: info.experimental?.policies && { policies: info.experimental.policies },
     providers: providers(info.provider),
   }
+}
+
+// v1 stores the formatter timeout as a raw ms number; v2 decodes it to a
+// Duration, so pass it through unchanged. Invalid (negative/infinite) values
+// migrate as unset.
+function formatter(info: ConfigFormatterV1.Info | undefined): unknown {
+  if (typeof info !== "object" || info === null) return info
+  const out: Record<string, unknown> = {}
+  for (const [name, entry] of Object.entries(info)) {
+    if (entry.timeout === undefined) {
+      out[name] = entry
+      continue
+    }
+    const { timeout, ...rest } = entry
+    out[name] = Number.isFinite(timeout) && timeout >= 0 ? { ...rest, timeout } : rest
+  }
+  return out
 }
 
 function permissions(info?: ConfigPermissionV1.Info, tools?: Readonly<Record<string, boolean>>) {
