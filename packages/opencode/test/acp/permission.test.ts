@@ -46,6 +46,7 @@ function makeSessionService() {
 function createHarness(
   requestPermission: (params: RequestPermissionRequest) => Promise<RequestPermissionResponse> = () =>
     Promise.resolve({ outcome: { outcome: "selected", optionId: "once" } }),
+  writeTextFile?: AgentSideConnection["writeTextFile"],
 ) {
   const replies: PermissionReplyParams[] = []
   const requests: RequestPermissionRequest[] = []
@@ -71,7 +72,9 @@ function createHarness(
       updates.push(params)
       return Promise.resolve()
     },
-  } satisfies Pick<AgentSideConnection, "requestPermission" | "sessionUpdate">
+    ...(writeTextFile ? { writeTextFile } : {}),
+  } satisfies Pick<AgentSideConnection, "requestPermission" | "sessionUpdate"> &
+    Partial<Pick<AgentSideConnection, "writeTextFile">>
   const subscription = new ACPEvent.Subscription({ sdk, connection, session })
 
   return { connection, replies, requests, sdk, session, subscription, updates }
@@ -291,6 +294,56 @@ describe("acp permissions", () => {
         },
       ],
     })
+  })
+
+  it("keeps patchless apply-patch locations and skips proposed writes", async () => {
+    const first = await tempFile("first.ts", "one\n")
+    const second = await tempFile("second.ts", "alpha\n")
+    const writes: Parameters<AgentSideConnection["writeTextFile"]>[0][] = []
+    const harness = createHarness(undefined, (input) => {
+      writes.push(input)
+      return Promise.resolve({})
+    })
+    const metadata = {
+      filepath: "first.ts, second.ts",
+      files: [
+        {
+          filePath: first,
+          relativePath: "first.ts",
+          type: "update",
+          additions: 1,
+          deletions: 1,
+        },
+        {
+          filePath: second,
+          relativePath: "second.ts",
+          type: "update",
+          additions: 2,
+          deletions: 3,
+        },
+      ],
+    }
+    await createSession(harness.session, "ses_a")
+
+    harness.subscription.handle(
+      permissionAsked("ses_a", "perm_patchless", {
+        permission: "edit",
+        metadata,
+        tool: { messageID: "msg_1", callID: "call_1" },
+      }),
+    )
+
+    await pollUntil(() => harness.replies.length === 1, "patchless permission was never replied")
+
+    expect(harness.requests[0]?.toolCall).toMatchObject({
+      toolCallId: "call_1",
+      title: "2 files",
+      rawInput: metadata,
+      locations: [{ path: first }, { path: second }],
+    })
+    expect(harness.requests[0]?.toolCall).not.toHaveProperty("content")
+    expect(writes).toEqual([])
+    expect(harness.replies[0]).toMatchObject({ requestID: "perm_patchless", reply: "once" })
   })
 
   it("forwards external_directory metadata and locations to requestPermission", async () => {

@@ -13,6 +13,8 @@ import { Truncate } from "@/tool/truncate"
 import { TestInstance } from "../fixture/fixture"
 import { SessionID, MessageID } from "../../src/session/schema"
 import { testEffect } from "../lib/effect"
+import { TextDiff } from "@opencode-ai/core/text-diff"
+import { MAX_DIFF_BYTES, trimDiff } from "../../src/tool/edit"
 
 const it = testEffect(
   LayerNode.compile(
@@ -35,13 +37,13 @@ type AskInput = {
   patterns: string[]
   always: string[]
   metadata: {
-    diff: string
+    diff?: string
     filepath: string
     files: Array<{
       filePath: string
       relativePath: string
       type: "add" | "update" | "delete" | "move"
-      patch: string
+      patch?: string
       additions: number
       deletions: number
       movePath?: string
@@ -75,6 +77,13 @@ const makeCtx = () => {
 const readText = (filepath: string) => Effect.promise(() => fs.readFile(filepath, "utf-8"))
 const writeText = (filepath: string, content: string) => Effect.promise(() => fs.writeFile(filepath, content, "utf-8"))
 const makeDir = (dir: string) => Effect.promise(() => fs.mkdir(dir, { recursive: true }))
+
+const payloadForSerializedPatch = (filepath: string, serializedBytes: number) => {
+  const baseline = trimDiff(TextDiff.create(filepath, filepath, "", "x\n").patch)
+  const length = serializedBytes - Buffer.byteLength(JSON.stringify(baseline)) + 1
+  if (length < 1) throw new Error("serialized patch target is too small")
+  return "x".repeat(length)
+}
 
 const expectFailure = <A, E, R>(effect: Effect.Effect<A, E, R>, message?: string) =>
   Effect.gen(function* () {
@@ -133,15 +142,29 @@ describe("tool.apply_patch freeform", () => {
           expect(result.output).not.toContain("\\")
         }
         expect(result.metadata).not.toHaveProperty("diff")
-        expect(result.metadata.files.every((file) => file.patch.includes("Index:"))).toBe(true)
+        expect(result.metadata.files.every((file) => file.patch?.includes("Index:") === true)).toBe(true)
         expect(calls.length).toBe(1)
 
         // Verify permission metadata includes files array for UI rendering
         const permissionCall = calls[0]
         expect(Object.keys(permissionCall.metadata).sort()).toEqual(["diff", "filepath", "files"])
-        expect(permissionCall.metadata.diff).toContain("Index:")
+        const expected = [
+          trimDiff(
+            TextDiff.create(
+              path.join(test.directory, "nested", "new.txt"),
+              path.join(test.directory, "nested", "new.txt"),
+              "",
+              "created\n",
+            ).patch,
+          ),
+          trimDiff(TextDiff.create(deletePath, deletePath, "obsolete\n", "").patch),
+          trimDiff(TextDiff.create(modifyPath, modifyPath, "line1\nline2\n", "line1\nchanged\n").patch),
+        ]
+        expect(permissionCall.metadata.diff).toBe(expected.map((diff) => `${diff}\n`).join(""))
         expect(permissionCall.metadata.files).toHaveLength(3)
         expect(permissionCall.metadata.files.map((f) => f.type).sort()).toEqual(["add", "delete", "update"])
+        expect(permissionCall.metadata.files.map((file) => file.patch)).toEqual(expected)
+        expect(result.metadata.files.map((file) => file.patch)).toEqual(expected)
 
         const addFile = permissionCall.metadata.files.find((f) => f.type === "add")
         expect(addFile?.relativePath).toBe("nested/new.txt")
@@ -214,6 +237,111 @@ describe("tool.apply_patch freeform", () => {
       expect(result.metadata).not.toHaveProperty("diff")
       expect(JSON.stringify(result.metadata).split(marker)).toHaveLength(2)
       expect(JSON.stringify(calls[0].metadata).split(marker)).toHaveLength(3)
+    }),
+  )
+
+  it.instance("keeps the exact combined permission boundary and omits one byte over", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const exactPath = path.join(test.directory, "exact.txt")
+      const exactPayload = payloadForSerializedPatch(exactPath, MAX_DIFF_BYTES - 2)
+      const exactPatch = trimDiff(TextDiff.create(exactPath, exactPath, "", `${exactPayload}\n`).patch)
+      const exact = makeCtx()
+
+      expect(Buffer.byteLength(JSON.stringify(exactPatch))).toBe(MAX_DIFF_BYTES - 2)
+      const exactResult = yield* execute(
+        {
+          patchText: `*** Begin Patch\n*** Add File: exact.txt\n+${exactPayload}\n*** End Patch`,
+        },
+        exact.ctx,
+      )
+
+      const exactDiff = exact.calls[0].metadata.diff
+      expect(exactDiff).toBeDefined()
+      if (exactDiff === undefined) throw new Error("expected exact permission diff")
+      expect(Buffer.byteLength(JSON.stringify(exactDiff))).toBe(MAX_DIFF_BYTES)
+      expect(exact.calls[0].metadata.files[0].patch).toBe(exactPatch)
+      expect(exactResult.metadata.files[0].patch).toBe(exactPatch)
+      expect(yield* readText(exactPath)).toBe(`${exactPayload}\n`)
+
+      const overflowPath = path.join(test.directory, "overflow.txt")
+      const overflowPayload = payloadForSerializedPatch(overflowPath, MAX_DIFF_BYTES - 1)
+      const overflowPatch = trimDiff(TextDiff.create(overflowPath, overflowPath, "", `${overflowPayload}\n`).patch)
+      const overflow = makeCtx()
+
+      expect(Buffer.byteLength(JSON.stringify(overflowPatch))).toBe(MAX_DIFF_BYTES - 1)
+      const overflowResult = yield* execute(
+        {
+          patchText: `*** Begin Patch\n*** Add File: overflow.txt\n+${overflowPayload}\n*** End Patch`,
+        },
+        overflow.ctx,
+      )
+
+      expect(overflow.calls[0].metadata).not.toHaveProperty("diff")
+      expect(overflow.calls[0].metadata.files[0]).not.toHaveProperty("patch")
+      expect(overflowResult.metadata.files[0]).not.toHaveProperty("patch")
+      expect(overflowResult.metadata.files[0]).toMatchObject({ additions: 1, deletions: 0 })
+      expect(yield* readText(overflowPath)).toBe(`${overflowPayload}\n`)
+    }),
+  )
+
+  it.instance("omits every patch after cumulative overflow while retaining files and statistics", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx, calls } = makeCtx()
+      const first = `FIRST_PAYLOAD_${"a".repeat(140 * 1024)}`
+      const second = `SECOND_PAYLOAD_${"b".repeat(140 * 1024)}`
+      const result = yield* execute(
+        {
+          patchText:
+            `*** Begin Patch\n*** Add File: first.txt\n+${first}\n` +
+            `*** Add File: second.txt\n+${second}\n` +
+            "*** Add File: after-overflow.txt\n+tail\n*** End Patch",
+        },
+        ctx,
+      )
+
+      expect(calls[0].metadata).not.toHaveProperty("diff")
+      expect(calls[0].metadata.files).toHaveLength(3)
+      expect(calls[0].metadata.files.every((file) => !("patch" in file))).toBe(true)
+      expect(result.metadata.files.every((file) => !("patch" in file))).toBe(true)
+      expect(
+        result.metadata.files.map((file) => [path.basename(file.relativePath), file.additions, file.deletions]),
+      ).toEqual([
+        ["first.txt", 1, 0],
+        ["second.txt", 1, 0],
+        ["after-overflow.txt", 1, 0],
+      ])
+      expect(Buffer.byteLength(JSON.stringify(calls[0].metadata))).toBeLessThan(4 * 1024)
+      expect(Buffer.byteLength(JSON.stringify(result.metadata))).toBeLessThan(4 * 1024)
+      expect(yield* readText(path.join(test.directory, "first.txt"))).toBe(`${first}\n`)
+      expect(yield* readText(path.join(test.directory, "second.txt"))).toBe(`${second}\n`)
+      expect(yield* readText(path.join(test.directory, "after-overflow.txt"))).toBe("tail\n")
+    }),
+  )
+
+  it.instance("does not mutate after an overflowed patch is denied", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const target = path.join(test.directory, "denied.txt")
+      const payload = `DENIED_PAYLOAD_${"x".repeat(300 * 1024)}`
+      let asked: AskInput | undefined
+      const denied: ToolCtx = {
+        ...baseCtx,
+        ask: (input) =>
+          Effect.sync(() => {
+            asked = input
+          }).pipe(Effect.andThen(Effect.die(new Error("permission denied")))),
+      }
+
+      yield* expectFailure(
+        execute({ patchText: `*** Begin Patch\n*** Add File: denied.txt\n+${payload}\n*** End Patch` }, denied),
+        "permission denied",
+      )
+
+      expect(asked?.metadata).not.toHaveProperty("diff")
+      expect(asked?.metadata.files[0]).not.toHaveProperty("patch")
+      yield* expectReadFailure(target)
     }),
   )
 

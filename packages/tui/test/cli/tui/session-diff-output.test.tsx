@@ -65,7 +65,41 @@ describe("session diff output", () => {
     ))
 
     try {
-      expect(findDiffs(app.renderer.root).map((item) => item.diff)).toEqual(files.map((file) => file.patch))
+      expect(findDiffs(app.renderer.root).map((item) => item.diff)).toEqual(
+        files.map((file) => file.patch).filter((patch): patch is string => patch !== undefined),
+      )
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+
+  test("renders patchless apply-patch files as a non-expandable statistics summary", async () => {
+    const files = parseApplyPatchFiles([
+      {
+        type: "update",
+        relativePath: "first.ts",
+        filePath: "/repo/first.ts",
+        additions: 2,
+        deletions: 1,
+      },
+      {
+        type: "add",
+        relativePath: "second.ts",
+        filePath: "/repo/second.ts",
+        additions: 3,
+        deletions: 0,
+      },
+    ])
+    const app = await render(() => (
+      <SessionApplyPatchOutput files={files} view="unified" wrapMode="word" formatPath={(value) => value} />
+    ))
+
+    try {
+      expect(findDiffs(app.renderer.root)).toHaveLength(0)
+      expect(text(app.renderer.root)).toContain("# Patched 2 files · +5 -1")
+      expect(text(app.renderer.root)).toContain("first.ts +2 -1")
+      expect(text(app.renderer.root)).toContain("second.ts +3 -0")
+      expect(text(app.renderer.root)).not.toContain("Click to show full patch")
     } finally {
       app.renderer.destroy()
     }

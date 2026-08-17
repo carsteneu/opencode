@@ -17,6 +17,8 @@ import { Snapshot } from "@/snapshot"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { TextDiff } from "@opencode-ai/core/text-diff"
+import { StructuredFileDiff } from "@opencode-ai/core/tool/structured-file-diff"
+import { JsonString } from "@opencode-ai/core/util/json-string"
 import * as Bom from "@/util/bom"
 
 function normalizeLineEndings(text: string): string {
@@ -82,7 +84,7 @@ export const EditTool = Tool.define(
             : path.join(instance.directory, params.filePath)
           yield* assertExternalDirectoryEffect(ctx, filePath)
 
-          let diff = ""
+          let diff: string | undefined
           let contentOld = ""
           let contentNew = ""
           let additions = 0
@@ -100,8 +102,8 @@ export const EditTool = Tool.define(
                 const desiredBom = next.bom
                 contentOld = ""
                 contentNew = next.text
-                const initialDiff = TextDiff.create(filePath, filePath, contentOld, contentNew)
-                diff = trimDiff(initialDiff.patch)
+                const initialDiff = boundedDiff(filePath, filePath, contentOld, contentNew)
+                diff = initialDiff.patch
                 additions = initialDiff.additions
                 deletions = initialDiff.deletions
                 yield* ctx.ask({
@@ -110,14 +112,14 @@ export const EditTool = Tool.define(
                   always: ["*"],
                   metadata: {
                     filepath: filePath,
-                    diff,
+                    ...(diff === undefined ? {} : { diff }),
                   },
                 })
                 yield* afs.writeWithDirs(filePath, Bom.join(contentNew, desiredBom))
                 if (yield* format.file(filePath)) {
                   contentNew = yield* Bom.syncFile(afs, filePath, desiredBom)
-                  const formattedDiff = TextDiff.create(filePath, filePath, contentOld, contentNew)
-                  diff = trimDiff(formattedDiff.patch)
+                  const formattedDiff = boundedDiff(filePath, filePath, contentOld, contentNew)
+                  diff = formattedDiff.patch
                   additions = formattedDiff.additions
                   deletions = formattedDiff.deletions
                 }
@@ -143,13 +145,13 @@ export const EditTool = Tool.define(
               const desiredBom = source.bom || next.bom
               contentNew = next.text
 
-              const initialDiff = TextDiff.create(
+              const initialDiff = boundedDiff(
                 filePath,
                 filePath,
                 normalizeLineEndings(contentOld),
                 normalizeLineEndings(contentNew),
               )
-              diff = trimDiff(initialDiff.patch)
+              diff = initialDiff.patch
               additions = initialDiff.additions
               deletions = initialDiff.deletions
               yield* ctx.ask({
@@ -158,20 +160,20 @@ export const EditTool = Tool.define(
                 always: ["*"],
                 metadata: {
                   filepath: filePath,
-                  diff,
+                  ...(diff === undefined ? {} : { diff }),
                 },
               })
 
               yield* afs.writeWithDirs(filePath, Bom.join(contentNew, desiredBom))
               if (yield* format.file(filePath)) {
                 contentNew = yield* Bom.syncFile(afs, filePath, desiredBom)
-                const formattedDiff = TextDiff.create(
+                const formattedDiff = boundedDiff(
                   filePath,
                   filePath,
                   normalizeLineEndings(contentOld),
                   normalizeLineEndings(contentNew),
                 )
-                diff = trimDiff(formattedDiff.patch)
+                diff = formattedDiff.patch
                 additions = formattedDiff.additions
                 deletions = formattedDiff.deletions
               }
@@ -185,7 +187,7 @@ export const EditTool = Tool.define(
 
           const filediff: Snapshot.FileDiff = {
             file: filePath,
-            patch: diff,
+            ...(diff === undefined ? {} : { patch: diff }),
             additions,
             deletions,
           }
@@ -945,6 +947,21 @@ export const ContextAwareReplacer: Replacer = function* (content, find) {
   const matches = contextAwareMatches(content, find)
   if (!matches) return
   for (const span of matches.spans) yield content.substring(span.start, span.end)
+}
+
+export const MAX_DIFF_BYTES = StructuredFileDiff.MAX_PATCH_BYTES
+
+export function boundedDiff(
+  oldFile: string,
+  newFile: string,
+  before: string,
+  after: string,
+  maxSerializedPatchBytes = MAX_DIFF_BYTES,
+) {
+  const info = TextDiff.createBounded(oldFile, newFile, before, after, { maxSerializedPatchBytes })
+  if (info.patch === undefined) return info
+  const patch = trimDiff(info.patch)
+  return { ...info, patch, serializedBytes: JsonString.bytesUpTo(patch, maxSerializedPatchBytes) }
 }
 
 export function trimDiff(diff: string): string {

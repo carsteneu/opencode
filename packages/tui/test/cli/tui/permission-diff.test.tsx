@@ -64,6 +64,25 @@ test("renders every small apply-patch file instead of only the first", async () 
   }
 })
 
+test("shows the existing no-diff fallback for patchless apply-patch permission metadata", async () => {
+  await using tmp = await tmpdir()
+  const request = permission({
+    filepath: "first.ts, second.ts",
+    files: [
+      { filePath: "/repo/first.ts", relativePath: "first.ts", additions: 2, deletions: 1 },
+      { filePath: "/repo/second.ts", relativePath: "second.ts", additions: 3, deletions: 4 },
+    ],
+  })
+
+  const app = await render(() => <PermissionDiff request={request} expanded={() => false} />, tmp.path)
+  try {
+    expect(findDiffs(app.renderer.root)).toEqual([])
+    expect(text(app.renderer.root)).toContain("No diff provided")
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
 test("bounds a many-file permission diff without mutating its exact patches", async () => {
   await using tmp = await tmpdir()
   const files = Array.from({ length: 21 }, (_, index) => {

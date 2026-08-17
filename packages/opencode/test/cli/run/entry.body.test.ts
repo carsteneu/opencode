@@ -227,6 +227,31 @@ describe("run entry body", () => {
     expect(toolInlineInfo(toolPart("edit", state))).toMatchObject({ body: canonical })
   })
 
+  test("falls back to a legacy preview when the canonical edit patch is omitted", () => {
+    const preview = "@@ -1 +1 @@\n-old\n+preview\n"
+    const state: ToolPart["state"] = {
+      status: "completed",
+      input: { filePath: "src/a.ts" },
+      output: "",
+      title: "",
+      metadata: {
+        filediff: {
+          file: "src/a.ts",
+          additions: 1,
+          deletions: 1,
+        },
+        diff: preview,
+      },
+      time: { start: 1, end: 2 },
+    }
+
+    expect(structured(toolCommit({ tool: "edit", state }))).toEqual({
+      kind: "diff",
+      items: [{ title: "# Edited src/a.ts", diff: preview, file: "src/a.ts" }],
+    })
+    expect(toolInlineInfo(toolPart("edit", state))).toMatchObject({ body: preview })
+  })
+
   test("keeps legacy edit patches working in inline and permission output", () => {
     const legacy = "@@ -1 +1 @@\n-old\n+legacy\n"
     const state: ToolPart["state"] = {

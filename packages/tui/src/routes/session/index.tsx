@@ -3037,7 +3037,16 @@ export function SessionApplyPatchOutput(props: {
 }) {
   const theme = useTheme().theme
   const terminalEnvironment = useTuiTerminalEnvironment()
-  const summaries = createMemo(() => props.files.map((file) => ({ file, measured: measureDiff(file.patch) })))
+  const summaries = createMemo(() =>
+    props.files.map((file) => ({
+      file,
+      measured:
+        file.patch === undefined
+          ? { bytes: 0, additions: file.additions ?? 0, deletions: file.deletions, limited: false }
+          : measureDiff(file.patch),
+    })),
+  )
+  const omitted = createMemo(() => props.files.some((file) => file.patch === undefined))
   const [expanded, setExpanded] = createSignal(false)
   const totals = createMemo(() =>
     summaries().reduce(
@@ -3059,7 +3068,7 @@ export function SessionApplyPatchOutput(props: {
     createDiffPreview(
       props.files
         .slice(0, DIFF_PREVIEW_LIMITS.maxSetFiles)
-        .map((file) => createDiffPreview(file.patch).preview)
+        .map((file) => createDiffPreview(file.patch ?? "").preview)
         .join("\n"),
     ),
   )
@@ -3072,9 +3081,31 @@ export function SessionApplyPatchOutput(props: {
   )
 
   return (
-    <Show
-      when={limited()}
-      fallback={
+    <Switch>
+      <Match when={omitted()}>
+        <BlockTool
+          title={`# Patched ${props.files.length} file${props.files.length === 1 ? "" : "s"} · +${totals().additions} -${totals().deletions}`}
+          part={props.part}
+        >
+          <box>
+            <For each={summaries().slice(0, DIFF_PREVIEW_LIMITS.maxSetFiles)}>
+              {(item) => (
+                <text fg={theme.textMuted}>
+                  {applyPatchSummaryPath(item.file, props.formatPath)} +{item.measured.additions} -
+                  {item.measured.deletions}
+                </text>
+              )}
+            </For>
+            <Show when={props.files.length > DIFF_PREVIEW_LIMITS.maxSetFiles}>
+              <text fg={theme.textMuted}>+{props.files.length - DIFF_PREVIEW_LIMITS.maxSetFiles} more files</text>
+            </Show>
+          </box>
+          <For each={diagnosticFiles()}>
+            {(file) => <Diagnostics diagnostics={props.diagnostics} filePath={file.movePath ?? file.filePath} />}
+          </For>
+        </BlockTool>
+      </Match>
+      <Match when={!limited()}>
         <For each={props.files}>
           {(file) => (
             <BlockTool title={applyPatchTitle(file, props.formatPath)} part={props.part}>
@@ -3086,15 +3117,19 @@ export function SessionApplyPatchOutput(props: {
                   </text>
                 }
               >
-                <SessionDiff diff={file.patch} filePath={file.filePath} view={props.view} wrapMode={props.wrapMode} />
+                <SessionDiff
+                  diff={file.patch ?? ""}
+                  filePath={file.filePath}
+                  view={props.view}
+                  wrapMode={props.wrapMode}
+                />
                 <Diagnostics diagnostics={props.diagnostics} filePath={file.movePath ?? file.filePath} />
               </Show>
             </BlockTool>
           )}
         </For>
-      }
-    >
-      {(_) => (
+      </Match>
+      <Match when={true}>
         <BlockTool
           title={`# Patched ${props.files.length} file${props.files.length === 1 ? "" : "s"} · +${totals().additions} -${totals().deletions} · ${formatDiffBytes(totals().bytes)}`}
           part={props.part}
@@ -3124,7 +3159,7 @@ export function SessionApplyPatchOutput(props: {
           >
             {(_) => (
               <box gap={1}>
-                <text fg={theme.text}>{props.files.map((file) => file.patch).join("\n")}</text>
+                <text fg={theme.text}>{props.files.map((file) => file.patch ?? "").join("\n")}</text>
                 <text fg={theme.textMuted}>Click to collapse · /diff opens the full review</text>
               </box>
             )}
@@ -3133,8 +3168,8 @@ export function SessionApplyPatchOutput(props: {
             {(file) => <Diagnostics diagnostics={props.diagnostics} filePath={file.movePath ?? file.filePath} />}
           </For>
         </BlockTool>
-      )}
-    </Show>
+      </Match>
+    </Switch>
   )
 }
 
@@ -3332,9 +3367,21 @@ export function parseApplyPatchFiles(value: unknown) {
     const relativePath = stringValue(file.relativePath)
     const filePath = stringValue(file.filePath)
     const patch = stringValue(file.patch)
+    const additions = numberValue(file.additions)
     const deletions = numberValue(file.deletions)
-    if (!type || !relativePath || !filePath || patch === undefined || deletions === undefined) return []
-    return [{ type, relativePath, filePath, patch, deletions, movePath: stringValue(file.movePath) }]
+    if (!type || !relativePath || !filePath || deletions === undefined) return []
+    if (patch === undefined && additions === undefined) return []
+    return [
+      {
+        type,
+        relativePath,
+        filePath,
+        patch,
+        ...(additions === undefined ? {} : { additions }),
+        deletions,
+        movePath: stringValue(file.movePath),
+      },
+    ]
   })
 }
 

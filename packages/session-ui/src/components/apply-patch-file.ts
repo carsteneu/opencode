@@ -45,28 +45,33 @@ export function patchFile(raw: unknown): ApplyPatchFile | undefined {
   const patch = typeof value.patch === "string" ? value.patch : typeof value.diff === "string" ? value.diff : undefined
   const before = typeof value.before === "string" ? value.before : undefined
   const after = typeof value.after === "string" ? value.after : undefined
+  const additions =
+    typeof value.additions === "number" && Number.isFinite(value.additions) ? value.additions : undefined
+  const deletions =
+    typeof value.deletions === "number" && Number.isFinite(value.deletions) ? value.deletions : undefined
 
   if (!type || !filePath || !relativePath) return
-  if (!patch && before === undefined && after === undefined) return
+  if (!patch && before === undefined && after === undefined && (additions === undefined || deletions === undefined))
+    return
 
-  const additions = typeof value.additions === "number" ? value.additions : 0
-  const deletions = typeof value.deletions === "number" ? value.deletions : 0
+  const resolvedAdditions = additions ?? 0
+  const resolvedDeletions = deletions ?? 0
   const movePath = typeof value.movePath === "string" ? value.movePath : undefined
 
   return {
     filePath,
     relativePath,
     type,
-    additions,
-    deletions,
+    additions: resolvedAdditions,
+    deletions: resolvedDeletions,
     movePath,
     view: normalize({
       file: relativePath,
       patch,
       before,
       after,
-      additions,
-      deletions,
+      additions: resolvedAdditions,
+      deletions: resolvedDeletions,
       status: status(type),
     }),
   }

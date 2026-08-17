@@ -5,6 +5,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
 import {
   BlockAnchorReplacer,
+  boundedDiff,
   ContextAwareReplacer,
   EditTool,
   EscapeNormalizedReplacer,
@@ -72,6 +73,13 @@ const fail = Effect.fn("EditToolTest.fail")(function* (args: Tool.InferParameter
 const put = Effect.fn("EditToolTest.put")(function* (p: string, content: string) {
   const fs = yield* FSUtil.Service
   yield* fs.writeWithDirs(p, content)
+})
+
+test("boundedDiff reports the exact serialized bytes of its trimmed patch", () => {
+  const result = boundedDiff("indented.txt", "indented.txt", "    old\n", "    new\n")
+
+  expect(result.patch).toContain("-old\n+new\n")
+  expect(result.serializedBytes).toBe(Buffer.byteLength(JSON.stringify(result.patch)))
 })
 
 // Frozen pre-optimization behavior for small differential cases only.
@@ -1298,12 +1306,21 @@ describe("tool.edit", () => {
           },
         )
 
+        const expected =
+          `Index: ${filepath}\n` +
+          "===================================================================\n" +
+          `--- ${filepath}\n` +
+          `+++ ${filepath}\n` +
+          "@@ -1,1 +1,1 @@\n" +
+          "-old\n" +
+          "+new\n"
         expect(permissions).toHaveLength(1)
         expect(Object.keys(permissions[0].metadata).sort()).toEqual(["diff", "filepath"])
         expect(permissions[0].metadata).toEqual({
           filepath,
-          diff: expect.stringContaining("+new"),
+          diff: expected,
         })
+        expect(result.metadata.filediff).toEqual({ file: filepath, patch: expected, additions: 1, deletions: 1 })
         expect(updates).toEqual([
           {
             metadata: {
@@ -1371,6 +1388,102 @@ describe("tool.edit", () => {
         expect(result.metadata).not.toHaveProperty("diff")
         expect(serialized.split(marker)).toHaveLength(2)
       }),
+    )
+
+    it.instance("omits a huge single-line patch while preserving permission, statistics, and mutation", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "huge-single.txt")
+        const payload = `EDIT_PAYLOAD_${"x".repeat(300 * 1024)}`
+        const permissions: Parameters<Tool.Context["ask"]>[0][] = []
+        yield* put(filepath, "old\n")
+
+        const result = yield* run(
+          { filePath: filepath, oldString: "old", newString: payload },
+          {
+            ...ctx,
+            ask: (input) =>
+              Effect.sync(() => {
+                permissions.push(input)
+              }),
+          },
+        )
+
+        expect(permissions).toHaveLength(1)
+        expect(permissions[0].metadata).toEqual({ filepath })
+        expect(result.metadata.filediff).toEqual({ file: filepath, additions: 1, deletions: 1 })
+        expect(Buffer.byteLength(JSON.stringify(result.metadata))).toBeLessThan(2 * 1024)
+        expect(JSON.stringify(result.metadata)).not.toContain("EDIT_PAYLOAD_")
+        expect(yield* load(filepath)).toBe(`${payload}\n`)
+      }),
+    )
+
+    it.instance("does not mutate when permission rejects an omitted edit diff", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "denied-huge.txt")
+        const permissions: Parameters<Tool.Context["ask"]>[0][] = []
+        yield* put(filepath, "old\n")
+
+        const exit = yield* run(
+          { filePath: filepath, oldString: "old", newString: "x".repeat(300 * 1024) },
+          {
+            ...ctx,
+            ask: (input) =>
+              Effect.sync(() => {
+                permissions.push(input)
+              }).pipe(Effect.andThen(Effect.die(new Error("permission denied")))),
+          },
+        ).pipe(Effect.exit)
+
+        expect(Exit.isFailure(exit)).toBe(true)
+        expect(permissions[0].metadata).toEqual({ filepath })
+        expect(yield* load(filepath)).toBe("old\n")
+      }),
+    )
+
+    it.instance(
+      "omits a huge formatter-generated canonical patch after a small permission diff",
+      () =>
+        Effect.gen(function* () {
+          const test = yield* TestInstance
+          const filepath = path.join(test.directory, "bounded-format.payload")
+          const permissions: Parameters<Tool.Context["ask"]>[0][] = []
+          const formatted = `FORMATTER_PAYLOAD_${"x".repeat(300 * 1024)}`
+          yield* put(filepath, "old\n")
+
+          const result = yield* run(
+            { filePath: filepath, oldString: "old", newString: "new" },
+            {
+              ...ctx,
+              ask: (input) =>
+                Effect.sync(() => {
+                  permissions.push(input)
+                }),
+            },
+          )
+
+          expect(permissions[0].metadata.diff).toContain("+new")
+          expect(permissions[0].metadata.diff).not.toContain("FORMATTER_PAYLOAD_")
+          expect(result.metadata.filediff).toEqual({ file: filepath, additions: 2, deletions: 1 })
+          expect(JSON.stringify(result.metadata)).not.toContain("FORMATTER_PAYLOAD_")
+          expect(yield* load(filepath)).toBe(`new\n${formatted}\n`)
+        }),
+      {
+        config: {
+          formatter: {
+            append: {
+              extensions: [".payload"],
+              command: [
+                "node",
+                "-e",
+                "const fs = require('fs'); const file = process.argv[1]; fs.appendFileSync(file, 'FORMATTER_PAYLOAD_' + 'x'.repeat(300 * 1024) + '\\n')",
+                "$FILE",
+              ],
+            },
+          },
+        },
+      },
     )
   })
 

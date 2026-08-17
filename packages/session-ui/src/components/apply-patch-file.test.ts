@@ -40,4 +40,38 @@ describe("apply patch file", () => {
     expect(text(file!.view, "deletions")).toBe("one\n")
     expect(text(file!.view, "additions")).toBe("two\n")
   })
+
+  test("keeps patchless files with finite statistics as empty diff summaries", () => {
+    const file = patchFiles([
+      {
+        filePath: "/tmp/large.ts",
+        relativePath: "large.ts",
+        type: "update",
+        additions: 12,
+        deletions: 7,
+      },
+    ])[0]
+
+    expect(file).toMatchObject({
+      filePath: "/tmp/large.ts",
+      relativePath: "large.ts",
+      type: "update",
+      additions: 12,
+      deletions: 7,
+    })
+    expect(file?.view.fileDiff.name).toBe("large.ts")
+    expect(text(file!.view, "deletions")).toBe("")
+    expect(text(file!.view, "additions")).toBe("")
+    expect(
+      patchFiles([
+        {
+          filePath: "/tmp/malformed.ts",
+          relativePath: "malformed.ts",
+          type: "update",
+          additions: 1,
+          deletions: Number.NaN,
+        },
+      ]),
+    ).toEqual([])
+  })
 })

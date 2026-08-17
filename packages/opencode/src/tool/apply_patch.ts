@@ -6,18 +6,20 @@ import { Watcher } from "@opencode-ai/core/filesystem/watcher"
 import { InstanceState } from "@/effect/instance-state"
 import { Patch } from "../patch"
 import { assertExternalDirectoryEffect } from "./external-directory"
-import { trimDiff } from "./edit"
+import { boundedDiff, MAX_DIFF_BYTES } from "./edit"
 import { LSP } from "@/lsp/lsp"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import DESCRIPTION from "./apply_patch.txt"
 import { FileSystem } from "@opencode-ai/core/filesystem"
 import { Format } from "../format"
-import { TextDiff } from "@opencode-ai/core/text-diff"
 import * as Bom from "@/util/bom"
 
 export const Parameters = Schema.Struct({
   patchText: Schema.String.annotate({ description: "The full patch text that describes all changes to be made" }),
 })
+
+// Joining JSON-string-bounded patches with one escaped newline each replaces their quotes and adds one final quote pair.
+const TOTAL_DIFF_JSON_OVERHEAD = 2
 
 export const ApplyPatchTool = Tool.define(
   "apply_patch",
@@ -61,13 +63,22 @@ export const ApplyPatchTool = Tool.define(
         newContent: string
         type: "add" | "update" | "delete" | "move"
         movePath?: string
-        diff: string
+        diff?: string
         additions: number
         deletions: number
         bom: boolean
       }> = []
 
-      let totalDiff = ""
+      let remainingPatchBytes = MAX_DIFF_BYTES - TOTAL_DIFF_JSON_OVERHEAD
+      let patchOverflow = false
+
+      const createDiff = (filePath: string, before: string, after: string) => {
+        const info = boundedDiff(filePath, filePath, before, after, remainingPatchBytes)
+        const diff = info.patch
+        patchOverflow ||= diff === undefined
+        remainingPatchBytes = patchOverflow ? 0 : remainingPatchBytes - info.serializedBytes
+        return { diff, additions: info.additions, deletions: info.deletions }
+      }
 
       for (const hunk of hunks) {
         const filePath = path.resolve(instance.directory, hunk.path)
@@ -79,21 +90,18 @@ export const ApplyPatchTool = Tool.define(
             const newContent =
               hunk.contents.length === 0 || hunk.contents.endsWith("\n") ? hunk.contents : `${hunk.contents}\n`
             const next = Bom.split(newContent)
-            const info = TextDiff.create(filePath, filePath, oldContent, next.text)
-            const diff = trimDiff(info.patch)
+            const info = createDiff(filePath, oldContent, next.text)
 
             fileChanges.push({
               filePath,
               oldContent,
               newContent: next.text,
               type: "add",
-              diff,
+              diff: info.diff,
               additions: info.additions,
               deletions: info.deletions,
               bom: next.bom,
             })
-
-            totalDiff += diff + "\n"
             break
           }
 
@@ -124,8 +132,7 @@ export const ApplyPatchTool = Tool.define(
               return yield* Effect.fail(new Error(`apply_patch verification failed: ${error}`))
             }
 
-            const info = TextDiff.create(filePath, filePath, oldContent, newContent)
-            const diff = trimDiff(info.patch)
+            const info = createDiff(filePath, oldContent, newContent)
 
             const movePath = hunk.move_path ? path.resolve(instance.directory, hunk.move_path) : undefined
             yield* assertExternalDirectoryEffect(ctx, movePath)
@@ -136,13 +143,11 @@ export const ApplyPatchTool = Tool.define(
               newContent,
               type: hunk.move_path ? "move" : "update",
               movePath,
-              diff,
+              diff: info.diff,
               additions: info.additions,
               deletions: info.deletions,
               bom,
             })
-
-            totalDiff += diff + "\n"
             break
           }
 
@@ -157,21 +162,18 @@ export const ApplyPatchTool = Tool.define(
               ),
             )
             const contentToDelete = source.text
-            const info = TextDiff.create(filePath, filePath, contentToDelete, "")
-            const deleteDiff = trimDiff(info.patch)
+            const info = createDiff(filePath, contentToDelete, "")
 
             fileChanges.push({
               filePath,
               oldContent: contentToDelete,
               newContent: "",
               type: "delete",
-              diff: deleteDiff,
+              diff: info.diff,
               additions: info.additions,
               deletions: info.deletions,
               bom: source.bom,
             })
-
-            totalDiff += deleteDiff + "\n"
             break
           }
         }
@@ -182,7 +184,7 @@ export const ApplyPatchTool = Tool.define(
         filePath: change.filePath,
         relativePath: path.relative(instance.worktree, change.movePath ?? change.filePath).replaceAll("\\", "/"),
         type: change.type,
-        patch: change.diff,
+        ...(patchOverflow || change.diff === undefined ? {} : { patch: change.diff }),
         additions: change.additions,
         deletions: change.deletions,
         movePath: change.movePath,
@@ -196,7 +198,11 @@ export const ApplyPatchTool = Tool.define(
         always: ["*"],
         metadata: {
           filepath: relativePaths.join(", "),
-          diff: totalDiff,
+          ...(patchOverflow
+            ? {}
+            : {
+                diff: fileChanges.flatMap((change) => (change.diff === undefined ? [] : [`${change.diff}\n`])).join(""),
+              }),
           files,
         },
       })

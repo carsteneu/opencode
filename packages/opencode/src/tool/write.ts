@@ -9,9 +9,8 @@ import { FileSystem } from "@opencode-ai/core/filesystem"
 import { Watcher } from "@opencode-ai/core/filesystem/watcher"
 import { Format } from "../format"
 import { FSUtil } from "@opencode-ai/core/fs-util"
-import { TextDiff } from "@opencode-ai/core/text-diff"
 import { InstanceState } from "@/effect/instance-state"
-import { trimDiff } from "./edit"
+import { boundedDiff } from "./edit"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import * as Bom from "@/util/bom"
 
@@ -50,14 +49,14 @@ export const WriteTool = Tool.define(
           const contentOld = source.text
           const contentNew = next.text
 
-          const diff = trimDiff(TextDiff.create(filepath, filepath, contentOld, contentNew).patch)
+          const diff = boundedDiff(filepath, filepath, contentOld, contentNew).patch
           yield* ctx.ask({
             permission: "edit",
             patterns: [path.relative(instance.worktree, filepath)],
             always: ["*"],
             metadata: {
               filepath,
-              diff,
+              ...(diff === undefined ? {} : { diff }),
             },
           })
 

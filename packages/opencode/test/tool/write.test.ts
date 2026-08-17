@@ -159,15 +159,86 @@ describe("tool.write", () => {
       },
     )
 
-    it.instance("returns diff in metadata for existing files", () =>
+    it.instance("keeps the small permission patch byte-identical without adding it to final metadata", () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
         const filepath = path.join(test.directory, "file.txt")
-        yield* Effect.promise(() => fs.writeFile(filepath, "old", "utf-8"))
-        const result = yield* run({ filePath: filepath, content: "new" })
+        const permissions: Parameters<Tool.Context["ask"]>[0][] = []
+        yield* Effect.promise(() => fs.writeFile(filepath, "old\n", "utf-8"))
+        const result = yield* run(
+          { filePath: filepath, content: "new\n" },
+          {
+            ...ctx,
+            ask: (input) =>
+              Effect.sync(() => {
+                permissions.push(input)
+              }),
+          },
+        )
 
+        const expected =
+          `Index: ${filepath}\n` +
+          "===================================================================\n" +
+          `--- ${filepath}\n` +
+          `+++ ${filepath}\n` +
+          "@@ -1,1 +1,1 @@\n" +
+          "-old\n" +
+          "+new\n"
+
+        expect(permissions).toHaveLength(1)
+        expect(permissions[0].metadata).toEqual({ filepath, diff: expected })
         expect(result.metadata).toHaveProperty("filepath", filepath)
         expect(result.metadata).toHaveProperty("exists", true)
+        expect(result.metadata).not.toHaveProperty("diff")
+      }),
+    )
+
+    it.instance("omits a huge multiline permission diff and preserves allow and reject mutation semantics", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const allowed = path.join(test.directory, "allowed-large.txt")
+        const denied = path.join(test.directory, "denied-large.txt")
+        const content = `WRITE_PAYLOAD_\n${"line\n".repeat(140_000)}`
+        const allowedPermissions: Parameters<Tool.Context["ask"]>[0][] = []
+
+        const result = yield* run(
+          { filePath: allowed, content },
+          {
+            ...ctx,
+            ask: (input) =>
+              Effect.sync(() => {
+                allowedPermissions.push(input)
+              }),
+          },
+        )
+
+        expect(allowedPermissions[0].metadata).toEqual({ filepath: allowed })
+        expect(result.metadata).toMatchObject({ filepath: allowed, exists: false })
+        expect(result.metadata).not.toHaveProperty("diff")
+        expect(yield* Effect.promise(() => fs.readFile(allowed, "utf-8"))).toBe(content)
+
+        const deniedPermissions: Parameters<Tool.Context["ask"]>[0][] = []
+        const exit = yield* run(
+          { filePath: denied, content },
+          {
+            ...ctx,
+            ask: (input) =>
+              Effect.sync(() => {
+                deniedPermissions.push(input)
+              }).pipe(Effect.andThen(Effect.die(new Error("permission denied")))),
+          },
+        ).pipe(Effect.exit)
+
+        expect(exit._tag).toBe("Failure")
+        expect(deniedPermissions[0].metadata).toEqual({ filepath: denied })
+        expect(
+          yield* Effect.promise(() =>
+            fs.stat(denied).then(
+              () => true,
+              () => false,
+            ),
+          ),
+        ).toBe(false)
       }),
     )
   })
