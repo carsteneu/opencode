@@ -298,6 +298,94 @@ describe("EventV2", () => {
     }),
   )
 
+  it.effect("delivers sync listeners inline and exactly-once", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const received = new Array<number>()
+      yield* events.listen((event) =>
+        Effect.sync(() => {
+          received.push(event.durable!.seq)
+        }),
+      )
+      for (let index = 0; index < 5; index++) {
+        yield* events.publish(SyncMessage, { id: "agg-inline", text: String(index) })
+      }
+      expect(received).toEqual([0, 1, 2, 3, 4])
+    }),
+  )
+
+  it.effect("delivers observer listeners asynchronously and in order", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const received = new Array<number>()
+      yield* events.listen(
+        (event) =>
+          Effect.sync(() => {
+            received.push(event.durable!.seq)
+          }),
+        { sync: false },
+      )
+      for (let index = 0; index < 5; index++) {
+        yield* events.publish(SyncMessage, { id: "agg-obs", text: String(index) })
+      }
+      const drained = yield* Effect.gen(function* () {
+        let i = 0
+        while (received.length < 5 && i < 2000) {
+          i++
+          yield* Effect.yieldNow
+        }
+        return received
+      })
+      expect(drained).toEqual([0, 1, 2, 3, 4])
+    }),
+  )
+
+  it.effect("drops observer events under mailbox overflow but never drops sync listeners", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const started = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      const syncReceived = new Array<string>()
+      const observerReceived = new Array<string>()
+      const expected = ["seed", ...Array.from({ length: 1100 }, (_, index) => String(index))]
+
+      yield* events.listen(
+        () =>
+          Deferred.succeed(started, undefined).pipe(
+            Effect.asVoid,
+            Effect.andThen(Deferred.await(release)),
+          ),
+        { sync: false },
+      )
+      yield* events.listen((event) =>
+        Effect.sync(() => {
+          syncReceived.push((event.data as { text: string }).text)
+        }),
+      )
+      yield* events.listen(
+        (event) =>
+          Effect.sync(() => {
+            observerReceived.push((event.data as { text: string }).text)
+          }),
+        { sync: false },
+      )
+
+      yield* events.publish(Message, { text: "seed" })
+      yield* Deferred.await(started)
+      for (let index = 0; index < 1100; index++) {
+        yield* events.publish(Message, { text: String(index) })
+      }
+      yield* Deferred.succeed(release, undefined)
+      for (let i = 0; i < 2000; i++) {
+        yield* Effect.yieldNow
+      }
+
+      expect(syncReceived).toHaveLength(expected.length)
+      expect(observerReceived.length).toBeLessThan(syncReceived.length)
+      expect(observerReceived).toEqual(expected.slice(0, observerReceived.length))
+    }),
+  )
+
   it.effect("notifies global listeners only after a durable event is committed", () =>
     Effect.gen(function* () {
       const events = yield* EventV2.Service
@@ -426,6 +514,46 @@ describe("EventV2", () => {
         .pipe(Effect.orDie)
 
       expect(rows.map((row) => row.seq)).toEqual([0, 1])
+    }),
+  )
+
+  it.effect("rejects a durable publish reusing an already-stored event id", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const aggregateID = EventV2.ID.create()
+      const eventID = EventV2.ID.create()
+
+      yield* events.publish(SyncMessage, { id: aggregateID, text: "first" }, { id: eventID })
+
+      const exit = yield* events
+        .publish(SyncMessage, { id: aggregateID, text: "second" }, { id: eventID })
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(String(exit)).toContain("already exists")
+    }),
+  )
+
+  it.effect("paginates durable aggregate reads in bounded pages", () =>
+    Effect.gen(function* () {
+      const reads: number[] = []
+      const eventLayer = EventV2.layerWith({
+        beforeAggregateRead: () =>
+          Effect.sync(() => {
+            reads.push(reads.length + 1)
+          }),
+      }).pipe(Layer.provide(LayerNode.compile(Database.node)))
+      yield* Effect.gen(function* () {
+        const events = yield* EventV2.Service
+        const aggregateID = Session.ID.create()
+        const count = 250
+        for (let index = 0; index < count; index++) {
+          yield* events.publish(DurableMessage, durableData(aggregateID, String(index)))
+        }
+        const collected = yield* events.durable({ aggregateID }).pipe(Stream.take(count), Stream.runCollect)
+        expect(collected).toHaveLength(count)
+        expect(reads.length).toBeGreaterThan(1)
+      }).pipe(Effect.provide(Layer.merge(LayerNode.compile(Database.node), eventLayer)))
     }),
   )
 
