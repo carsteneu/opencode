@@ -254,7 +254,13 @@ export const SimpleReplacer: Replacer = function* (_content, find) {
   yield find
 }
 
-export const LineTrimmedReplacer: Replacer = function* (content, find) {
+type LineTrimmedSpan = {
+  startLine: number
+  start: number
+  end: number
+}
+
+function lineTrimmedMatches(content: string, find: string) {
   const originalLines = content.split("\n")
   const searchLines = find.split("\n")
 
@@ -262,36 +268,160 @@ export const LineTrimmedReplacer: Replacer = function* (content, find) {
     searchLines.pop()
   }
 
-  for (let i = 0; i <= originalLines.length - searchLines.length; i++) {
-    let matches = true
+  let offset = 0
+  const lineStarts = originalLines.map((line) => {
+    const start = offset
+    offset += line.length + 1
+    return start
+  })
+  const searchTrimmed = searchLines.map((line) => line.trim())
 
-    for (let j = 0; j < searchLines.length; j++) {
-      const originalTrimmed = originalLines[i + j].trim()
-      const searchTrimmed = searchLines[j].trim()
-
-      if (originalTrimmed !== searchTrimmed) {
-        matches = false
-        break
+  function* spans(): Generator<LineTrimmedSpan> {
+    if (searchTrimmed.length === 0) {
+      // Preserve the exported replacer's historical empty-pattern boundary yields.
+      for (let i = 0; i < lineStarts.length; i++) {
+        yield { startLine: i, start: lineStarts[i], end: lineStarts[i] }
       }
+      yield { startLine: originalLines.length, start: offset, end: offset }
+      return
     }
 
-    if (matches) {
-      let matchStartIndex = 0
-      for (let k = 0; k < i; k++) {
-        matchStartIndex += originalLines[k].length + 1
-      }
+    const originalTrimmed = originalLines.map((line) => line.trim())
+    const prefix = new Uint32Array(searchTrimmed.length)
+    let matched = 0
 
-      let matchEndIndex = matchStartIndex
-      for (let k = 0; k < searchLines.length; k++) {
-        matchEndIndex += originalLines[i + k].length
-        if (k < searchLines.length - 1) {
-          matchEndIndex += 1 // Add newline character except for the last line
-        }
+    for (let i = 1; i < searchTrimmed.length; ) {
+      if (searchTrimmed[i] === searchTrimmed[matched]) {
+        matched++
+        prefix[i] = matched
+        i++
+        continue
       }
+      if (matched > 0) {
+        matched = prefix[matched - 1]
+        continue
+      }
+      i++
+    }
 
-      yield content.substring(matchStartIndex, matchEndIndex)
+    matched = 0
+    for (let i = 0; i < originalTrimmed.length; i++) {
+      while (matched > 0 && originalTrimmed[i] !== searchTrimmed[matched]) matched = prefix[matched - 1]
+      if (originalTrimmed[i] !== searchTrimmed[matched]) continue
+      matched++
+      if (matched < searchTrimmed.length) continue
+
+      const startLine = i - searchTrimmed.length + 1
+      yield { startLine, start: lineStarts[startLine], end: lineStarts[i] + originalLines[i].length }
+      matched = prefix[matched - 1]
     }
   }
+
+  return {
+    originalLines,
+    lineStarts,
+    searchTrimmed,
+    firstNonEmptyLine: searchTrimmed.findIndex((line) => line.length > 0),
+    lastNonEmptyLine: searchTrimmed.findLastIndex((line) => line.length > 0),
+    spans: spans(),
+  }
+}
+
+export const LineTrimmedReplacer: Replacer = function* (content, find) {
+  const matches = lineTrimmedMatches(content, find)
+  for (const span of matches.spans) yield content.substring(span.start, span.end)
+}
+
+type LineTrimmedGroup = {
+  span: LineTrimmedSpan
+  count: number
+}
+
+function groupLineTrimmedSpans(
+  lines: string[],
+  lineCount: number,
+  first: LineTrimmedSpan,
+  spans: Iterable<LineTrimmedSpan>,
+) {
+  const ranking = lineWindowRanks(lines, lineCount)
+  const byRank = new Map<bigint, LineTrimmedGroup>()
+  const groups: LineTrimmedGroup[] = []
+
+  function add(span: LineTrimmedSpan) {
+    const prefix = ranking.ranks[span.startLine]
+    const suffix = ranking.ranks[span.startLine + lineCount - ranking.blockSize]
+    // These exact ranks cover the full window because blockSize <= lineCount < 2 * blockSize.
+    const key = lineRankPair(prefix, suffix)
+    const hit = byRank.get(key)
+    if (hit) {
+      hit.count++
+      return hit
+    }
+
+    const group = { span, count: 1 }
+    byRank.set(key, group)
+    groups.push(group)
+    return group
+  }
+
+  const current = add(first)
+  for (const span of spans) add(span)
+  return { current, groups }
+}
+
+function lineWindowRanks(lines: string[], windowSize: number) {
+  const lineIDs = new Map<string, number>()
+  let ranks = new Uint32Array(lines.length)
+  for (let i = 0; i < lines.length; i++) {
+    const hit = lineIDs.get(lines[i])
+    if (hit !== undefined) {
+      ranks[i] = hit
+      continue
+    }
+    const id = lineIDs.size
+    lineIDs.set(lines[i], id)
+    ranks[i] = id
+  }
+
+  let blockSize = 1
+  while (blockSize * 2 <= windowSize) {
+    const pairs = new Map<bigint, number>()
+    const next = new Uint32Array(lines.length - blockSize * 2 + 1)
+    let nextRank = 0
+    for (let i = 0; i < next.length; i++) {
+      const prefix = ranks[i]
+      const suffix = ranks[i + blockSize]
+      const key = lineRankPair(prefix, suffix)
+      const hit = pairs.get(key)
+      if (hit !== undefined) {
+        next[i] = hit
+        continue
+      }
+
+      pairs.set(key, nextRank)
+      next[i] = nextRank
+      nextRank++
+    }
+    ranks = next
+    blockSize *= 2
+  }
+
+  return { ranks, blockSize }
+}
+
+function lineRankPair(prefix: number, suffix: number) {
+  return (BigInt(prefix) << 32n) | BigInt(suffix)
+}
+
+function lineTrimmedSpanLength(matches: ReturnType<typeof lineTrimmedMatches>, span: LineTrimmedSpan) {
+  if (matches.firstNonEmptyLine === -1) return 0
+  const firstLineIndex = span.startLine + matches.firstNonEmptyLine
+  const lastLineIndex = span.startLine + matches.lastNonEmptyLine
+  const firstLine = matches.originalLines[firstLineIndex]
+  const lastLine = matches.originalLines[lastLineIndex]
+  const start = matches.lineStarts[firstLineIndex] + firstLine.length - firstLine.trimStart().length
+  const end = matches.lineStarts[lastLineIndex] + lastLine.trimEnd().length
+  return end - start
 }
 
 export const BlockAnchorReplacer: Replacer = function* (content, find) {
@@ -679,6 +809,12 @@ export function trimDiff(diff: string): string {
   return trimmedLines.join("\n")
 }
 
+const CANDIDATE_CACHE_MAX_KEY_BYTES = 64 * 1024
+const CANDIDATE_CACHE_MAX_BYTES = 4 * 1024 * 1024
+const CANDIDATE_CACHE_MAX_KEYS = 16_384
+const MULTIPLE_MATCH_ERROR =
+  "Found multiple matches for oldString. Provide more surrounding context to make the match unique."
+
 export function replace(content: string, oldString: string, newString: string, replaceAll = false): string {
   if (oldString === newString) {
     throw new Error("No changes to apply: oldString and newString are identical.")
@@ -689,7 +825,63 @@ export function replace(content: string, oldString: string, newString: string, r
     )
   }
 
+  const oldLineCount = oldString.split("\n").length
+  const oldTrimmedLength = oldString.trim().length
   let notFound = true
+  const seen = new Map<string, "missing" | "multiple">()
+  let seenBytes = 0
+  let cacheCandidates = true
+
+  function disableCandidateCache() {
+    seen.clear()
+    seenBytes = 0
+    cacheCandidates = false
+  }
+
+  function getCachedCandidate(search: string) {
+    if (!cacheCandidates) return
+    if (search.length * 2 <= CANDIDATE_CACHE_MAX_KEY_BYTES) return seen.get(search)
+    disableCandidateCache()
+  }
+
+  function cacheCandidate(search: string, status: "missing" | "multiple") {
+    if (!cacheCandidates) return
+    const bytes = search.length * 2
+    if (seenBytes + bytes > CANDIDATE_CACHE_MAX_BYTES || seen.size >= CANDIDATE_CACHE_MAX_KEYS) {
+      disableCandidateCache()
+      return
+    }
+    seen.set(search, status)
+    seenBytes += bytes
+  }
+
+  function assertProportionate(lineCount: number, trimmedLength: number) {
+    if (!isDisproportionateMatch(lineCount, trimmedLength, oldLineCount, oldTrimmedLength)) return
+    throw new Error(
+      "Refusing replacement because the matched span is much larger than oldString. Re-read the file and provide the full exact oldString for the intended replacement.",
+    )
+  }
+
+  function checkCandidate(search: string, knownMultiple = false) {
+    const cached = getCachedCandidate(search)
+    if (cached) return { type: cached }
+    const index = knownMultiple ? 0 : content.indexOf(search)
+    if (index === -1) {
+      cacheCandidate(search, "missing")
+      return { type: "missing" as const }
+    }
+    notFound = false
+    assertProportionate(search.split("\n").length, search.trim().length)
+    if (replaceAll) return { type: "replacement" as const, content: content.replaceAll(search, newString) }
+    if (knownMultiple || index !== content.lastIndexOf(search)) {
+      cacheCandidate(search, "multiple")
+      return { type: "multiple" as const }
+    }
+    return {
+      type: "replacement" as const,
+      content: content.substring(0, index) + newString + content.substring(index + search.length),
+    }
+  }
 
   for (const replacer of [
     SimpleReplacer,
@@ -702,21 +894,59 @@ export function replace(content: string, oldString: string, newString: string, r
     ContextAwareReplacer,
     MultiOccurrenceReplacer,
   ]) {
+    if (replacer === LineTrimmedReplacer) {
+      const matches = lineTrimmedMatches(content, oldString)
+      for (const span of matches.spans) {
+        const search = content.substring(span.start, span.end)
+        const result = checkCandidate(search)
+        if (result.type === "replacement") return result.content
+        if (result.type !== "multiple") continue
+
+        if (search.includes("\n")) {
+          const grouped = groupLineTrimmedSpans(
+            matches.originalLines,
+            matches.searchTrimmed.length,
+            span,
+            matches.spans,
+          )
+          for (const group of grouped.groups) {
+            if (group === grouped.current) continue
+            if (group.count > 1) {
+              notFound = false
+              assertProportionate(matches.searchTrimmed.length, lineTrimmedSpanLength(matches, group.span))
+              continue
+            }
+            const candidate = content.substring(group.span.start, group.span.end)
+            const next = checkCandidate(candidate)
+            if (next.type === "replacement") return next.content
+          }
+          throw new Error(MULTIPLE_MATCH_ERROR)
+        }
+
+        const counts = new Map([[search, 1]])
+        for (const candidateSpan of matches.spans) {
+          const candidate = content.substring(candidateSpan.start, candidateSpan.end)
+          const count = counts.get(candidate)
+          if (count !== undefined) {
+            counts.set(candidate, count + 1)
+            continue
+          }
+          if (!getCachedCandidate(candidate)) counts.set(candidate, 1)
+        }
+        counts.delete(search)
+        for (const [candidate, count] of counts) {
+          const next = checkCandidate(candidate, count > 1)
+          if (next.type === "replacement") return next.content
+        }
+        throw new Error(MULTIPLE_MATCH_ERROR)
+      }
+      continue
+    }
+
     for (const search of replacer(content, oldString)) {
-      const index = content.indexOf(search)
-      if (index === -1) continue
-      notFound = false
-      if (isDisproportionateMatch(search, oldString)) {
-        throw new Error(
-          "Refusing replacement because the matched span is much larger than oldString. Re-read the file and provide the full exact oldString for the intended replacement.",
-        )
-      }
-      if (replaceAll) {
-        return content.replaceAll(search, newString)
-      }
-      const lastIndex = content.lastIndexOf(search)
-      if (index !== lastIndex) continue
-      return content.substring(0, index) + newString + content.substring(index + search.length)
+      const result = checkCandidate(search)
+      if (result.type === "replacement") return result.content
+      if (replacer === SimpleReplacer && result.type === "multiple") throw new Error(MULTIPLE_MATCH_ERROR)
     }
   }
 
@@ -725,13 +955,16 @@ export function replace(content: string, oldString: string, newString: string, r
       "Could not find oldString in the file. It must match exactly, including whitespace, indentation, and line endings.",
     )
   }
-  throw new Error("Found multiple matches for oldString. Provide more surrounding context to make the match unique.")
+  throw new Error(MULTIPLE_MATCH_ERROR)
 }
 
-function isDisproportionateMatch(search: string, oldString: string) {
-  const oldLines = oldString.split("\n").length
-  const searchLines = search.split("\n").length
-  if (searchLines >= Math.max(oldLines + 3, oldLines * 2)) return true
-  if (oldLines === 1) return false
-  return search.trim().length > Math.max(oldString.trim().length + 500, oldString.trim().length * 4)
+function isDisproportionateMatch(
+  lineCount: number,
+  trimmedLength: number,
+  oldLineCount: number,
+  oldTrimmedLength: number,
+) {
+  if (lineCount >= Math.max(oldLineCount + 3, oldLineCount * 2)) return true
+  if (oldLineCount === 1) return false
+  return trimmedLength > Math.max(oldTrimmedLength + 500, oldTrimmedLength * 4)
 }
