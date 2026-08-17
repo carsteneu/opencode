@@ -1981,6 +1981,7 @@ it.instance(
       yield* user(chat.id, "hello")
 
       const fiber = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+      yield* awaitWithTimeout(llm.wait(1), "timed out waiting for task provider request", "5 seconds")
 
       const tool = yield* pollWithTimeout(
         Effect.gen(function* () {
@@ -2002,7 +2003,7 @@ it.instance(
       yield* prompt.cancel(chat.id)
       yield* Fiber.await(fiber)
     }),
-  10_000,
+  15_000,
 )
 
 it.instance(
