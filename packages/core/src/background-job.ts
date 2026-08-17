@@ -78,11 +78,17 @@ export type ExtendInput = {
 export type WaitInput = {
   id: string
   timeout?: number
+  consume?: boolean | ((info: Info) => boolean)
 }
 
 export type WaitResult = {
   info?: Info
   timedOut: boolean
+}
+
+export type CancelOptions = {
+  consume?: boolean
+  expected?: Info
 }
 
 export interface Interface {
@@ -93,17 +99,10 @@ export interface Interface {
   readonly wait: (input: WaitInput) => Effect.Effect<WaitResult>
   readonly waitForPromotion: (id: string) => Effect.Effect<Info>
   readonly promote: (id: string) => Effect.Effect<Info | undefined>
-  readonly cancel: (id: string) => Effect.Effect<Info | undefined>
+  readonly cancel: (id: string, options?: CancelOptions) => Effect.Effect<Info | undefined>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/BackgroundJob") {}
-
-function snapshot(job: Active): Info {
-  return {
-    ...job.info,
-    ...(job.info.metadata ? { metadata: { ...job.info.metadata } } : {}),
-  }
-}
 
 function errorText(error: unknown) {
   if (error instanceof Error) return error.message
@@ -118,9 +117,19 @@ function errorText(error: unknown) {
  * those semantics.
  */
 export const make = Effect.gen(function* () {
+  const generations = new WeakMap<Info, object>()
   const state: State = {
     jobs: yield* SynchronizedRef.make(new Map()),
     scope: yield* Scope.Scope,
+  }
+
+  function snapshot(job: Active): Info {
+    const info = {
+      ...job.info,
+      ...(job.info.metadata ? { metadata: { ...job.info.metadata } } : {}),
+    }
+    generations.set(info, job.token)
+    return info
   }
 
   const settle = Effect.fn("BackgroundJob.settle")(function* (
@@ -289,14 +298,41 @@ export const make = Effect.gen(function* () {
     )
   })
 
+  const consumeTerminal = Effect.fn("BackgroundJob.consumeTerminal")(function* (
+    job: Active,
+    info: Info,
+    consume: WaitInput["consume"],
+  ) {
+    if (consume !== true && (typeof consume !== "function" || !consume(info))) return info
+    yield* SynchronizedRef.update(state.jobs, (jobs) => {
+      const current = jobs.get(job.info.id)
+      if (!current || current.token !== job.token || current.info.status === "running") return jobs
+      const next = new Map(jobs)
+      next.delete(job.info.id)
+      return next
+    })
+    return info
+  })
+
   const wait: Interface["wait"] = Effect.fn("BackgroundJob.wait")(function* (input) {
     const job = (yield* SynchronizedRef.get(state.jobs)).get(input.id)
     if (!job) return { timedOut: false }
-    if (job.info.status !== "running") return { info: snapshot(job), timedOut: false }
-    if (input.timeout === undefined) return { info: yield* Deferred.await(job.done), timedOut: false }
+    if (job.info.status !== "running") {
+      const info = snapshot(job)
+      return { info: yield* consumeTerminal(job, info, input.consume), timedOut: false }
+    }
+    if (input.timeout === undefined) {
+      const info = yield* Deferred.await(job.done)
+      return { info: yield* consumeTerminal(job, info, input.consume), timedOut: false }
+    }
     if (input.timeout <= 0) return { info: snapshot(job), timedOut: true }
     const info = yield* Deferred.await(job.done).pipe(Effect.timeoutOption(input.timeout))
-    if (info._tag === "Some") return { info: info.value, timedOut: false }
+    if (info._tag === "Some") {
+      return {
+        info: yield* consumeTerminal(job, info.value, input.consume),
+        timedOut: false,
+      }
+    }
     return { info: snapshot(job), timedOut: true }
   })
 
@@ -334,12 +370,18 @@ export const make = Effect.gen(function* () {
     return result.info
   })
 
-  const cancel: Interface["cancel"] = Effect.fn("BackgroundJob.cancel")(function* (id) {
+  const cancel: Interface["cancel"] = Effect.fn("BackgroundJob.cancel")(function* (id, options) {
     const completed_at = yield* Clock.currentTimeMillis
     const result = yield* SynchronizedRef.modify(state.jobs, (jobs): readonly [FinishResult, Map<string, Active>] => {
       const job = jobs.get(id)
       if (!job) return [{}, jobs]
-      if (job.info.status !== "running") return [{ info: snapshot(job) }, jobs]
+      if (options?.expected && generations.get(options.expected) !== job.token) return [{}, jobs]
+      if (job.info.status !== "running") {
+        if (!options?.consume) return [{ info: snapshot(job) }, jobs]
+        const next = new Map(jobs)
+        next.delete(id)
+        return [{ info: snapshot(job) }, next]
+      }
       const next = {
         ...job,
         onPromote: undefined,
@@ -350,7 +392,12 @@ export const make = Effect.gen(function* () {
           completed_at,
         },
       }
-      return [{ info: snapshot(next), done: job.done, scope: job.scope }, new Map(jobs).set(id, next)]
+      if (!options?.consume) {
+        return [{ info: snapshot(next), done: job.done, scope: job.scope }, new Map(jobs).set(id, next)]
+      }
+      const remaining = new Map(jobs)
+      remaining.delete(id)
+      return [{ info: snapshot(next), done: job.done, scope: job.scope }, remaining]
     })
     if (result.info && result.done) yield* Deferred.succeed(result.done, result.info).pipe(Effect.ignore)
     if (result.scope) yield* Scope.close(result.scope, Exit.void)

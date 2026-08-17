@@ -10,7 +10,7 @@ import { Agent } from "../agent/agent"
 import { deriveSubagentSessionPermission } from "../agent/subagent-permissions"
 import type { SessionPrompt } from "../session/prompt"
 import { Config } from "@/config/config"
-import { Effect, Exit, Schema, Scope } from "effect"
+import { Deferred, Effect, Exit, Schema, Scope } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Database } from "@opencode-ai/core/database/database"
@@ -196,21 +196,31 @@ export const TaskTool = Tool.define(
 
       const ops = ctx.extra?.promptOps as TaskPromptOps
       if (!ops) return yield* Effect.fail(new Error("TaskTool requires promptOps in ctx.extra"))
+      const cancelRequested = yield* Deferred.make<void>()
 
       const runTask = Effect.fn("TaskTool.runTask")(function* () {
-        const parts = yield* ops.resolvePromptParts(params.prompt)
-        const result = yield* ops.prompt({
-          messageID: MessageID.ascending(),
-          sessionID: nextSession.id,
-          model: {
-            modelID: model.modelID,
-            providerID: model.providerID,
-          },
-          variant: next.model ? undefined : variant,
-          agent: next.name,
-          parts,
-        })
-        return result.parts.findLast((item) => item.type === "text")?.text ?? ""
+        return yield* Effect.scoped(
+          Effect.gen(function* () {
+            // Close this ID-based cancel watcher before publishing a terminal result that permits same-ID reuse.
+            yield* Deferred.await(cancelRequested).pipe(
+              Effect.andThen(ops.cancel(nextSession.id)),
+              Effect.forkScoped({ startImmediately: true }),
+            )
+            const parts = yield* ops.resolvePromptParts(params.prompt)
+            const result = yield* ops.prompt({
+              messageID: MessageID.ascending(),
+              sessionID: nextSession.id,
+              model: {
+                modelID: model.modelID,
+                providerID: model.providerID,
+              },
+              variant: next.model ? undefined : variant,
+              agent: next.name,
+              parts,
+            })
+            return result.parts.findLast((item) => item.type === "text")?.text ?? ""
+          }),
+        )
       })
 
       const inject = Effect.fn("TaskTool.injectBackgroundResult")(function* (
@@ -243,7 +253,7 @@ export const TaskTool = Tool.define(
       })
 
       const notify = Effect.fn("TaskTool.notifyBackgroundResult")(function* (jobID: string) {
-        yield* background.wait({ id: jobID }).pipe(
+        yield* background.wait({ id: jobID, consume: true }).pipe(
           Effect.flatMap((result) => {
             if (result.info?.status === "completed") return inject("completed", result.info.output ?? "")
             if (result.info?.status === "error") return inject("error", result.info.error ?? "")
@@ -308,10 +318,10 @@ export const TaskTool = Tool.define(
       }
 
       const runCancel = yield* EffectBridge.make()
-      const cancel = ops.cancel(nextSession.id)
+      const cancel = background.cancel(nextSession.id, { consume: true, expected: info }).pipe(Effect.asVoid)
 
       function onAbort() {
-        runCancel.fork(cancel)
+        runCancel.fork(Deferred.succeed(cancelRequested, undefined))
       }
 
       return yield* Effect.acquireUseRelease(
@@ -320,8 +330,14 @@ export const TaskTool = Tool.define(
         }),
         () =>
           Effect.gen(function* () {
+            // Promotion owns terminal delivery once it wins, including when settlement races its notifier setup.
             const result = yield* Effect.raceFirst(
-              background.wait({ id: nextSession.id }).pipe(Effect.map((waited) => waited.info)),
+              background
+                .wait({
+                  id: nextSession.id,
+                  consume: (info) => info.metadata?.background !== true,
+                })
+                .pipe(Effect.map((waited) => waited.info)),
               background.waitForPromotion(nextSession.id),
             )
             if (result?.metadata?.background === true) return backgroundResult()
@@ -335,8 +351,7 @@ export const TaskTool = Tool.define(
           }),
         (_, exit) =>
           Effect.gen(function* () {
-            if (Exit.hasInterrupts(exit))
-              yield* Effect.all([cancel, background.cancel(nextSession.id)], { discard: true })
+            if (Exit.hasInterrupts(exit)) yield* cancel
           }).pipe(
             Effect.ensuring(
               Effect.sync(() => {

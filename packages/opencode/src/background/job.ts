@@ -4,6 +4,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { Effect, Layer } from "effect"
 
 export {
+  type CancelOptions,
   Service,
   type ExtendInput,
   type Info,
@@ -27,7 +28,7 @@ const layer = Layer.effect(
       wait: (input) => InstanceState.useEffect(state, (jobs) => jobs.wait(input)),
       waitForPromotion: (id) => InstanceState.useEffect(state, (jobs) => jobs.waitForPromotion(id)),
       promote: (id) => InstanceState.useEffect(state, (jobs) => jobs.promote(id)),
-      cancel: (id) => InstanceState.useEffect(state, (jobs) => jobs.cancel(id)),
+      cancel: (id, options) => InstanceState.useEffect(state, (jobs) => jobs.cancel(id, options)),
     })
   }),
 )
