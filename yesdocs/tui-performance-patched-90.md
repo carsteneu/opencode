@@ -1,5 +1,9 @@
 # OpenCode TUI `1.18.1-patched.90`: Punkte 1 bis 5
 
+> [!NOTE]
+> Status: **ABGEARBEITET** (Bestätigung 2026-08-17) — inkl. einiger Zusatzarbeiten. Die Punkte 1-4
+> sind umgesetzt; Punkt 5 (SQLite-mmap/Page-Cache) war bewusst ohne Patch.
+
 - Stand: 2026-07-19
 - Ausgangsbuild: `1.18.1-patched.89`, OpenCode `d2e431a`, OpenTUI `77e2e1e`
 - Endstand OpenCode-Laufzeitcode: `ba53a9e`
@@ -235,3 +239,147 @@ die Commitliste und der Binary-Hash sichern daher den exakten Quell- und Produkt
 
 Die Installation von `.90` ersetzt nur `~/.opencode/bin/opencode`. Bereits laufende Sessions behalten ihren
 gestarteten Prozess und werden nicht beendet; neu gestartete Sessions verwenden `.90`.
+
+## Nachtrag: Performance- und Safety-Härtung ab `1.18.18-patched.112` (2026-08-17)
+
+> [!IMPORTANT]
+> Dieser Nachtrag ändert nicht den historischen Inhalt von `1.18.1-patched.90`. Tag, Binary-Hash und A/B-Werte
+> der vorstehenden Abschnitte gelten ausschließlich für `.90`. Die folgenden Arbeiten entstanden später auf
+> Basis von `1.18.18-patched.112` und bilden das Abschlussprotokoll der zusätzlichen Arbeitsrunde.
+
+- Basis: `1.18.18-patched.112` (`267a7aa6dfad`)
+- Code-/Test-Endstand vor diesem Dokumentationscommit: `d712c8b65c7c`
+- Commitbereich: `1.18.18-patched.112..d712c8b65c7c`
+- Umfang: 47 Commits; 43 `fix`-, ein `feat`-, ein `chore`- und zwei `test`-Commits
+- Diffumfang einschließlich Tests, Migrationen und generierter Artefakte: 217 Dateien
+- Zielbranch: `working`, per Fast-forward aus dem separat geprüften Branch `perf-integration`
+- Status: **integriert und abgearbeitet**
+
+Für diese Gesamtstrecke existiert kein einzelner Produkt-A/B. Die unten genannten Messungen belegen jeweils
+einen isolierten Hotspot und dürfen weder addiert noch als pauschaler Sessionsgewinn ausgegeben werden.
+
+### Abgearbeitete zusätzliche Arbeiten
+
+- [x] **TUI-Transparenz und Rendergrenzen:** Tokenrate im während der Generierung sichtbaren Session-Footer
+      platziert und große Diff-Darstellungen begrenzt (`812aecb6b1`, `06467835e9`).
+- [x] **Dauerhafte Diff- und Datenbankkosten:** große Session-Diffs aus häufig replizierten
+      Message-Payloads in eine lazy geladene Ablage verschoben, SQLite-Lock-Retries auf echte
+      `BUSY`-/`LOCKED`-Fälle begrenzt, eine rein lesende Eventlog-Analyse ergänzt, Session-Listen indiziert und
+      Event-Replay atomar gebündelt (`2a69b51920`, `65f156b1e0`, `48d1313612`, `d5613f567a`, `3e7cc41ddb`).
+- [x] **Start- und Lifecycle-Kosten:** Dateisystemsuche erst bei Bedarf initialisiert und den lokalen
+      MCP-stdio-Lifecycle einschließlich Cleanup und Abbruchpfaden gehärtet (`a108cc900c`, `75b6e82efc`).
+- [x] **Streaming, Kontext und Dateioperationen:** Textakkumulation linearisiert, Provider-Cachepräfixe auch
+      durch Compaction erhalten, Anthropic-Caching korrigiert, Summary-Snapshots vermieden und Read-/Search-/
+      Shell-/Patch-Dateipfade gebündelt beziehungsweise begrenzt (`e5938f612f`, `5614d673e9`, `a7b57e9278`,
+      `6bc1f5b0e9`, `8d5107b64a`).
+- [x] **AI-Worker- und Provider-Sicherheit:** Worker-Streaming gehärtet, isolierte Worker wiederverwendet,
+      automatische Retries nach bereits sichtbaren semantischen oder Tool-Nebenwirkungen unterbunden,
+      Header- und Body-/Chunk-Leerlauf mit konfigurierbaren Timeouts abgesichert und frühe Tool-Metadaten
+      race-sicher erhalten (`82dbf2eec7`, `9da878429d`, `42e34bcc7c`, `c85b331e80`, `8383ea8f72`,
+      `2ccde7915a`).
+- [x] **Snapshot- und Diff-Budgets:** Workspace-Snapshots nur für tatsächlich mutierende Tools erzeugt;
+      Eingabe, Generierung und strukturierte Patch-Ausgabe begrenzt; Tool-, Snapshot- und Revert-Vorschauen
+      vor teurer Vollberechnung budgetiert. Zu große Unified-Diffs werden vollständig weggelassen statt syntaktisch
+      beschädigt abgeschnitten (`41f0db98e5`, `c9ea685d97`, `f750775d4b`, `7d55dc06bf`, `7248b1516d`,
+      `3522724ed6`, `8a22be894c`).
+- [x] **Toolausgaben und externe Inhalte:** Suffixarbeit auf den benötigten Tail beschränkt, doppelte Bild- und
+      Patchdaten entfernt, Edit-Matching mit harten Arbeitsbudgets versehen, Webfetch bereits beim Lesen begrenzt
+      und große strukturierte Webfetch-, LSP-, Skill-, Websearch- und Patch-Payloads kompaktiert. Gültige leere
+      begrenzte Antworten bleiben erlaubt; Mediengrenzen werden während des Lesens durchgesetzt
+      (`5796aeed38`, `ddb0b99419`, `e33b898930`, `24a50491e3`, `6c75f226dc`, `7558fbb62a`,
+      `19d9007a55`, `b49a80930c`, `babed9be07`, `eb73e0a830`, `f1c2bf42be`, `6319618190`).
+- [x] **Sync und Hintergrundarbeit:** History-Abfragen auf den relevanten Workspace begrenzt, Transfers
+      paginiert und mit stabilen Grenzen versehen, Warp-Replay gebündelt, abgeschlossene Background-Jobs
+      konsumiert und Benachrichtigungen begrenzt (`e6239d4153`, `74bf4fa1de`, `4c34d61f29`, `47fc4d8fc4`,
+      `23a580e816`).
+- [x] **Reproduzierbarkeit der Integration:** asynchrone Shell-Fixture stabilisiert, die öffentliche
+      `chunkTimeout: false`-Form in den Legacy-SDK regeneriert und der Task-Metadata-Test an echte
+      Provider-Bereitschaft statt an Timing gekoppelt (`9af5129453`, `c4a4d47ae9`, `d712c8b65c`).
+
+### Isolierte Messbelege
+
+| Hotspot                                    |                                                    Isolierter Befund |
+| ------------------------------------------ | -------------------------------------------------------------------: |
+| 10-MiB-Tooloutput-Suffix                   |                                                     1.163,5 → 6,1 ms |
+| `read` bei tiefem Offset in 100.000 Zeilen |                                                 ungefähr 117 → 12 ms |
+| 64-MiB-Webfetch mit Leselimit              |              gelesen 67,1 → 5,31 MiB; Peak-RSS 158.056 → 106.204 KiB |
+| 5-MiB-Webfetch-Event                       |                                             5.294.310 → 51.418 Bytes |
+| 5-MiB-Patch-Event                          |             Edit 10.486.753 → 782 Bytes; Apply 5.243.348 → 320 Bytes |
+| 1-MiB-Skill-Ausgabe                        |                                             1.099.909 → 51.321 Bytes |
+| 256 atomar replizierte Events              |                              190,46 → 126,16 ms; 256 → 1 Transaktion |
+| Diff-Eingabe mit 1 Mio. Zeilen             |                        bis 706 ms/469 MiB → 23–28 ms/ungefähr 60 MiB |
+| Snapshot-Diff-Preflight mit 1 Mio. Zeilen  |                               1,58 s/521.884 KiB → 0,03 s/48.600 KiB |
+| 8-MiB-Revert-Vorschau                      |                               0,18 s/126.304 KiB → 0,11 s/60.024 KiB |
+| 16-MiB-Patchgenerierung                    |                                       ungefähr 173 → 81 MiB Peak-RSS |
+| Snapshot-Charakterisierung                 | 80 Captures, davon 78 identisch; ungefähr 66,9 ms pro warmem Capture |
+
+Der Worker-Pool besitzt einen reproduzierbaren Benchmark-Harness. Da dafür noch kein belastbarer kompletter
+Vorher-/Nachher-Produktlauf vorliegt, wird daraus keine Prozentverbesserung abgeleitet.
+
+### Kompatibilität und bewusste Grenzen
+
+- Die Message-Diff-Ablage und Session-Listen-Indizes sind additive Migrationen. Export, Import, Sync, Share,
+  App, TUI und generierter SDK wurden auf den neuen lazy Diffpfad abgestimmt.
+- `chunkTimeout` akzeptiert zusätzlich `false`; Provider-Header- und Stream-Timeouts können damit gezielt
+  deaktiviert werden. Der Legacy-JavaScript-SDK wurde aus der Quelle regeneriert.
+- Die Leerlaufuhren laufen nur während eines ausstehenden rohen Transport-Reads. Downstream-Backpressure und
+  lokale Toolausführung lösen deshalb keinen Provider-Timeout aus. HTTP-/WebSocket-Clones teilen Abbruch und
+  Fehlerzustand, ohne einen ungelesenen Geschwisterzweig vorzeitig zu zerstören.
+- Der Retry-Stopp nach sichtbaren Modell- oder Tool-Nebenwirkungen ist eine beabsichtigte Safety-Änderung:
+  lieber ein klarer Fehler als ein unbemerkter doppelter Toolaufruf.
+- Große Vorschauen dürfen fehlen, wenn ihr Budget überschritten wird. Der zugrunde liegende Zustand wird nicht
+  durch einen abgeschnittenen und damit ungültigen Unified-Diff ersetzt. Patchlose Verbraucher zeigen
+  Pfad-/Statistik-Summaries und behandeln geladene patchlose Details als terminal.
+- Große Tool-Volltexte liegen nach der strukturierten Deduplizierung nur im lokalen Managed-Spill mit seiner
+  bestehenden siebentägigen Aufbewahrung. Warp und dauerhafte Events transportieren den begrenzten Preview.
+- Snapshot-Diff-Vorschauen besitzen ein gemeinsames 250-ms-Rechenbudget. Die Revert-Vorschau begrenzt stdout
+  und stderr, endet nach fünf Sekunden und eskaliert einen nicht reagierenden Prozess nach einer weiteren
+  Sekunde auf SIGKILL; Mutation, Undo und Restore hängen nicht vom optionalen Preview ab.
+- Die Eventlog-Funktion ist absichtlich read-only; sie führt weder Reparatur noch `VACUUM` aus.
+- Der unbeschränkte Legacy-Helfer `TextDiff.create` bleibt für nicht migrierte Fremdverbraucher bestehen; die
+  hier gehärteten Core-/Toolpfade verwenden die begrenzte Variante. Das vorgelagerte Snapshot-Staging ist ein
+  eigener möglicher Folgescope und wird nicht als durch die Revert-Vorschau begrenzt ausgegeben.
+- Dieser Nachtrag enthält keinen neuen OpenTUI-Quellpatch. Reproduzierbare Builds benötigen weiterhin den in
+  den Branch-Anweisungen festgelegten und verifizierten OpenTUI-Overlay.
+
+### Sichere Integration
+
+Die Integration erfolgte auf einem sauberen separaten Worktree. Der bereits auf `working` vorhandene
+Worker-Patch `82dbf2eec7` war tree-identisch zum älteren Stack-Commit `221f0f2f1c` und wurde deshalb nicht
+doppelt eingespielt. Die 30 nachfolgenden Performance-/Safety-Commits wurden konfliktfrei übernommen. Der
+integrierte Baum unterschied sich vom geprüften Quellstack zunächst ausschließlich durch den bereits auf
+`working` vorhandenen, patch-ID-identischen Shell-Fixture-Fix `9af5129453`.
+
+Der große Changed-Test-Lauf deckte anschließend eine ältere, bereits auf `working` vorhandene Race auf:
+Streaming-Coalescing konnte Tool-Metadaten vor der Registrierung des zugehörigen `callID` liefern. Der
+Processor puffert diese Updater nun pro Call und serialisiert Registrierung und Read/Modify/Write. Der
+Regressionstest wartet zusätzlich auf den ersten echten Provider-Request, ohne seinen Metadata-Assert zu
+schwächen.
+
+### Finale Prüfungen
+
+- Typechecks grün: Core, LLM, Schema, Client, OpenCode, TUI, App, Session-UI und Legacy-JavaScript-SDK.
+- Core: 289 grün, 0 fehlgeschlagen, 1.595 Assertions über die geänderten Testbereiche.
+- LLM: 33 grün, 0 fehlgeschlagen, 127 Assertions.
+- Schema: 5 grün, 0 fehlgeschlagen, 31 Assertions.
+- TUI: 66 grün, 0 fehlgeschlagen, 8 Snapshots und 189 Assertions.
+- App-Verbraucher: 103 grün, 0 fehlgeschlagen, 221 Assertions.
+- Session-UI-Verbraucher: 3 grün, 0 fehlgeschlagen, 13 Assertions.
+- Der große OpenCode-Changed-Test-Lauf erreichte 957 grüne, 4 übersprungene Tests und 6.103 Assertions. Ein
+  Dateirechte-Test lief auf dem Host mit `umask` 0002 statt 0022 und ist mit `umask 022` isoliert grün. Der
+  zweite Fund war die oben beschriebene Tool-Metadata-Race.
+- Nach der Race-Korrektur: Regression 3/3, Processor 41/41, Task 28/28 sowie der Race-Test unter Last 5/5
+  grün; OpenCode-Typecheck und `git diff --check` grün.
+- `bun run migration --check` in Core ist grün; es besteht kein nicht generierter Schema-Drift.
+- Der Legacy-SDK-Generator wurde nach dem Regenerationscommit ein zweites Mal ausgeführt und erzeugte keinen
+  Restdiff; der SDK-Typecheck ist grün.
+- Der gepinnte OpenTUI-Overlay wurde angewendet und anhand seiner erwarteten Hashes verifiziert.
+- Der Web-/Astro-Produktionsbuild ist erfolgreich; die ausgegebenen Starlight-/Vite-Warnungen sind bestehende
+  Konfigurations- und Chunkgrößenhinweise, keine Buildfehler.
+- Dreizehn wiederverwendbare Engineering-Learnings wurden in Yesmem als `#85393` bis `#85405` gespeichert
+  und anschließend jeweils per exakter ID und Versionshistorie validiert.
+- Prettier der geänderten Dateien und `git diff --check` sind grün.
+
+Damit sind die zusätzlichen Punkte technisch, durch Tests und in diesem Plan dokumentiert abgeschlossen. Ein
+neuer gepatchter Release oder GitHub-Prerelease ist davon getrennte Release-Arbeit und wurde in dieser Runde
+nicht ungefragt ausgeführt.
