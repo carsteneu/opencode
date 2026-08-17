@@ -627,6 +627,69 @@ describe("ShareNext", () => {
         },
         { config: { enterprise: { url: "https://legacy-share.example.com" } } },
       ),
+     20_000,
+  )
+
+  it.live("stops retrying a failing sync after MAX_ATTEMPTS and gives up (no infinite requeue)", () =>
+    provideTmpdirInstance(
+      () => {
+        const original = {
+          attempts: process.env.OPENCODE_SHARE_MAX_ATTEMPTS,
+        }
+        const seen: string[] = []
+        const client = HttpClient.make((req) => {
+          if (req.url.endsWith("/sync") && req.body._tag === "Uint8Array") {
+            seen.push(new TextDecoder().decode(req.body.body))
+            return Effect.succeed(json(req, { ok: true }, 500))
+          }
+          return Effect.succeed(json(req, { ok: true }))
+        })
+        return Effect.gen(function* () {
+          process.env.OPENCODE_SHARE_MAX_ATTEMPTS = "2"
+
+          const events = yield* EventV2Bridge.Service
+          const share = yield* ShareNext.Service
+          const session = yield* Session.Service
+          const info = yield* session.create({ title: "bounds" })
+          yield* share.init()
+          yield* Effect.sleep(50)
+          const { db } = yield* Database.Service
+          yield* db
+            .insert(SessionShareTable)
+            .values({
+              session_id: info.id,
+              id: "shr_b",
+              url: "https://legacy-share.example.com/share/b",
+              secret: "sec_b",
+            })
+            .run()
+            .pipe(Effect.orDie)
+
+          yield* events.publish(Session.Event.Diff, {
+            sessionID: info.id,
+            diff: [{ file: "a.ts", patch: "patch-a", additions: 1, deletions: 0, status: "modified" }],
+          })
+
+          yield* pollWithTimeout(
+            Effect.sync(() => (seen.length >= 2 ? true : undefined)),
+            "timed out waiting for bounded sync attempts",
+            "5 seconds",
+          )
+          // After the attempt cap the session gives up — it must not keep requeueing forever.
+          yield* Effect.sleep(1_500)
+          expect(seen.length).toBe(2)
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              if (original.attempts === undefined) delete process.env.OPENCODE_SHARE_MAX_ATTEMPTS
+              else process.env.OPENCODE_SHARE_MAX_ATTEMPTS = original.attempts
+            }),
+          ),
+          Effect.provide(integrationLayer(client)),
+        )
+      },
+      { config: { enterprise: { url: "https://legacy-share.example.com" } } },
+    ),
     20_000,
   )
 })

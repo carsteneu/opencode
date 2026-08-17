@@ -26,6 +26,19 @@ import { EventV2 } from "@opencode-ai/core/event"
 
 const disabled = process.env["OPENCODE_DISABLE_SHARE"] === "true" || process.env["OPENCODE_DISABLE_SHARE"] === "1"
 
+// Bounds keep a session's incremental share queue and its sync HTTP retries from
+// growing/looping without limit. Read lazily (not at module load) so they are
+// testable and overrideable at runtime.
+const boundNumber = (key: string, fallback: number) => {
+  const raw = process.env[key]
+  const value = raw === undefined ? NaN : Number(raw)
+  return Number.isFinite(value) && value > 0 ? value : fallback
+}
+const maxQueueItems = () => boundNumber("OPENCODE_SHARE_MAX_QUEUE_ITEMS", 100_000)
+const maxQueueBytes = () => boundNumber("OPENCODE_SHARE_MAX_QUEUE_BYTES", 64 * 1024 * 1024)
+const syncTimeoutMs = () => boundNumber("OPENCODE_SHARE_SYNC_TIMEOUT_MS", 30_000)
+const maxSyncAttempts = () => boundNumber("OPENCODE_SHARE_MAX_ATTEMPTS", 5)
+
 export type Api = {
   create: string
   sync: (shareID: string) => string
@@ -53,6 +66,12 @@ type State = {
   shared: Map<SessionID, Share | null>
   directory: string
   reconciled: boolean
+  // Sessions pending a canonical full resync (queue overflow / exhausted retries).
+  dirty: Set<SessionID>
+  // In-progress full resyncs, guards against dirty->full recusion.
+  full: Set<SessionID>
+  // Consecutive flush failures per session, for bounded retry.
+  attempts: Map<SessionID, number>
 }
 
 type Data =
@@ -130,60 +149,90 @@ const layer = Layer.effect(
     const summary = yield* SessionSummary.Service
     const messageDiffs = yield* MessageDiff.Service
 
-    function scheduleFlush(sessionID: SessionID, retry = false): Effect.Effect<void> {
-      return Effect.gen(function* () {
-        const s = yield* InstanceState.get(state)
-        yield* flush(sessionID).pipe(
-          Effect.delay(retry ? "5 seconds" : "1 second"),
-          Effect.catchCause((cause) => Effect.logError("share flush failed", { sessionID: sessionID, cause: cause })),
-          Effect.forkIn(s.scope),
-        )
-      })
-    }
+      function scheduleFlush(sessionID: SessionID, retry = false): Effect.Effect<void> {
+        return Effect.gen(function* () {
+          const s = yield* InstanceState.get(state)
+          const attempt = s.attempts.get(sessionID) ?? 0
+          const baseDelay = retry ? Math.min(1_000 * 2 ** attempt, 30_000) : 1_000
+          // Jittered exponential backoff so a burst of failing sessions does not stampede.
+          const delay = retry ? baseDelay * (0.5 + Math.random() * 0.5) : 1_000
+          yield* flush(sessionID).pipe(
+            Effect.delay({ milliseconds: delay }),
+            Effect.catchCause((cause) => Effect.logError("share flush failed", { sessionID: sessionID, cause: cause })),
+            Effect.forkIn(s.scope),
+          )
+        })
+      }
 
-    function sync(sessionID: SessionID, data: Data[]) {
-      return Effect.gen(function* () {
-        if (disabled) return
-        const share = yield* getCached(sessionID)
-        if (!share) return
-
-        const s = yield* InstanceState.get(state)
-        const existing = s.queue.get(sessionID)
-        if (existing) {
-          for (const item of data) {
-            existing.set(key(item), item)
+      const queueBytes = (queue: Map<string, Data>) => {
+        let bytes = 0
+        for (const item of queue.values()) {
+          try {
+            bytes += JSON.stringify(item.data).length
+          } catch {
+            bytes += 1024
           }
-          return
         }
+        return bytes
+      }
 
-        const next = new Map(data.map((item) => [key(item), item]))
-        s.queue.set(sessionID, next)
-        yield* scheduleFlush(sessionID)
-      })
-    }
+      function sync(sessionID: SessionID, data: Data[]) {
+        return Effect.gen(function* () {
+          if (disabled) return
+          const share = yield* getCached(sessionID)
+          if (!share) return
+
+          const s = yield* InstanceState.get(state)
+          const existing = s.queue.get(sessionID)
+          if (existing) {
+            for (const item of data) {
+              existing.set(key(item), item)
+            }
+            // Overflow bounds the incremental backlog: drop it and mark the session for a
+            // canonical full resync instead of growing without limit.
+            if (!s.full.has(sessionID) && (existing.size > maxQueueItems() || queueBytes(existing) > maxQueueBytes())) {
+              s.queue.delete(sessionID)
+              s.attempts.delete(sessionID)
+              s.dirty.add(sessionID)
+              yield* scheduleFlush(sessionID)
+            }
+            return
+          }
+
+          const next = new Map(data.map((item) => [key(item), item]))
+          s.queue.set(sessionID, next)
+          yield* scheduleFlush(sessionID)
+        })
+      }
 
     const state: InstanceState.InstanceState<State> = yield* InstanceState.make<State>(
       Effect.fn("ShareNext.state")(function* (_ctx) {
-        const cache: State = {
-          queue: new Map(),
-          flushing: new Set(),
-          scope: yield* Scope.make(),
-          shared: new Map(),
-          directory: _ctx.directory,
-          reconciled: false,
-        }
+          const cache: State = {
+            queue: new Map(),
+            flushing: new Set(),
+            scope: yield* Scope.make(),
+            shared: new Map(),
+            directory: _ctx.directory,
+            reconciled: false,
+            dirty: new Set(),
+            full: new Set(),
+            attempts: new Map(),
+          }
 
-        yield* Effect.addFinalizer(() =>
-          Scope.close(cache.scope, Exit.void).pipe(
-            Effect.andThen(
-              Effect.sync(() => {
-                cache.queue.clear()
-                cache.flushing.clear()
-                cache.shared.clear()
-              }),
+          yield* Effect.addFinalizer(() =>
+            Scope.close(cache.scope, Exit.void).pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  cache.queue.clear()
+                  cache.flushing.clear()
+                  cache.shared.clear()
+                  cache.dirty.clear()
+                  cache.full.clear()
+                  cache.attempts.clear()
+                }),
+              ),
             ),
-          ),
-        )
+          )
 
         if (disabled) return cache
 
@@ -286,60 +335,94 @@ const layer = Layer.effect(
       return share
     })
 
-    const flush: (sessionID: SessionID) => Effect.Effect<void> = Effect.fn("ShareNext.flush")(function* (
-      sessionID: SessionID,
-    ) {
-      if (disabled) return
-      const s = yield* InstanceState.get(state)
-      if (s.flushing.has(sessionID)) return
-      const queued = s.queue.get(sessionID)
-      if (!queued) return
+      const flush: (sessionID: SessionID) => Effect.Effect<void> = Effect.fn("ShareNext.flush")(function* (
+        sessionID: SessionID,
+      ) {
+        if (disabled) return
+        const s = yield* InstanceState.get(state)
+        if (s.flushing.has(sessionID)) return
 
-      s.queue.delete(sessionID)
-      s.flushing.add(sessionID)
-      const requeue = () => {
-        const pending = s.queue.get(sessionID)
-        // Values queued while this request was in flight are newer and must win on duplicate keys.
-        s.queue.set(sessionID, new Map([...queued, ...(pending ?? [])]))
-      }
-
-      const retry = yield* Effect.gen(function* () {
-        const result = yield* Effect.exit(
-          Effect.gen(function* () {
-            const share = yield* getCached(sessionID)
-            if (!share) return { sent: false as const }
-            const req = yield* request()
-            const res = yield* HttpClientRequest.post(`${req.baseUrl}${req.api.sync(share.id)}`).pipe(
-              HttpClientRequest.setHeaders(req.headers),
-              HttpClientRequest.bodyJson({ secret: share.secret, data: Array.from(queued.values()) }),
-              Effect.flatMap((r) => http.execute(r)),
-            )
-            return { sent: true as const, share, res }
-          }),
-        )
-
-        if (Exit.isFailure(result)) {
-          requeue()
-          yield* Effect.logError("share sync failed", { sessionID: sessionID, cause: result.cause })
-          return true
+        // A dirty session resyncs its canonical state instead of churning an unbounded
+        // incremental backlog. full() re-enqueues everything; the recursion guard keeps a
+        // too-large canonical payload from dirty-looping against the queue bound.
+        if (s.dirty.has(sessionID)) {
+          if (s.full.has(sessionID)) return
+          s.full.add(sessionID)
+          s.dirty.delete(sessionID)
+          s.queue.delete(sessionID)
+          s.attempts.delete(sessionID)
+          yield* full(sessionID).pipe(
+            Effect.catchCause((cause) => Effect.logWarning("dirty share full resync failed", { sessionID: sessionID, cause: cause })),
+            Effect.ensuring(Effect.sync(() => s.full.delete(sessionID))),
+          )
+          return
         }
-        if (!result.value.sent) return false
-        if (result.value.res.status >= 200 && result.value.res.status < 300) return false
 
-        requeue()
-        yield* Effect.logWarning("failed to sync share", {
-          sessionID: sessionID,
-          shareID: result.value.share.id,
-          status: result.value.res.status,
-        })
-        return true
-      }).pipe(Effect.ensuring(Effect.sync(() => s.flushing.delete(sessionID))))
+        const queued = s.queue.get(sessionID)
+        if (!queued) return
 
-      if (!s.queue.has(sessionID)) return
-      yield* scheduleFlush(sessionID, retry)
-    })
+        s.queue.delete(sessionID)
+        s.flushing.add(sessionID)
+        const requeue = () => {
+          const pending = s.queue.get(sessionID)
+          // Values queued while this request was in flight are newer and must win on duplicate keys.
+          s.queue.set(sessionID, new Map([...queued, ...(pending ?? [])]))
+        }
+        const giveUp = () => {
+          s.queue.delete(sessionID)
+          s.dirty.add(sessionID)
+        }
+        const fail = (cause: unknown): Effect.Effect<boolean> =>
+          Effect.gen(function* () {
+            const attempt = (s.attempts.get(sessionID) ?? 0) + 1
+            s.attempts.set(sessionID, attempt)
+            if (attempt >= maxSyncAttempts()) {
+              giveUp()
+              yield* Effect.logWarning("share sync gave up after repeated failures, marking dirty", {
+                sessionID: sessionID,
+                attempts: attempt,
+                cause: cause,
+              })
+              return true
+            }
+            requeue()
+            yield* Effect.logError("share sync failed", { sessionID: sessionID, attempts: attempt, cause: cause })
+            return true
+          })
 
-    const full = Effect.fn("ShareNext.full")(function* (sessionID: SessionID) {
+        yield* Effect.gen(function* () {
+          const result = yield* Effect.exit(
+            Effect.gen(function* () {
+              const share = yield* getCached(sessionID)
+              if (!share) return { sent: false as const }
+              const req = yield* request()
+              const res = yield* HttpClientRequest.post(`${req.baseUrl}${req.api.sync(share.id)}`).pipe(
+                HttpClientRequest.setHeaders(req.headers),
+                HttpClientRequest.bodyJson({ secret: share.secret, data: Array.from(queued.values()) }),
+                Effect.flatMap((r) => http.execute(r)),
+                // A hung remote must not block a session's flush forever; timing out
+                // interrupts the request and surfaces as a failure -> bounded retry.
+                Effect.timeout(syncTimeoutMs()),
+              )
+              return { sent: true as const, share, res }
+            }),
+          )
+
+          if (Exit.isFailure(result)) return yield* fail(result.cause)
+          if (!result.value.sent) return false
+          if (result.value.res.status >= 200 && result.value.res.status < 300) {
+            s.attempts.delete(sessionID)
+            return false
+          }
+
+          return yield* fail({ status: result.value.res.status, shareID: result.value.share.id })
+        }).pipe(Effect.ensuring(Effect.sync(() => s.flushing.delete(sessionID))))
+
+        if (!s.queue.has(sessionID)) return
+        yield* scheduleFlush(sessionID, true)
+      })
+
+      const full = Effect.fn("ShareNext.full")(function* (sessionID: SessionID) {
       yield* Effect.logInfo("full sync", { sessionID: sessionID })
       const info = yield* session.get(sessionID)
       const diffs = yield* session.diff(sessionID)
