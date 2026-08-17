@@ -7,38 +7,38 @@ import { createStore } from "solid-js/store"
 import { useRoute } from "../../context/route"
 import { useEvent } from "../../context/event"
 import { TokenRateMeter } from "../../util/token-rate"
-import { Locale } from "../../util/locale"
-
-// Hide the live rate shortly after streaming stops (no part deltas).
-const ACTIVITY_TIMEOUT = 2500
 
 function TokenRate() {
   const { theme } = useTheme()
   const event = useEvent()
-  const meter = new TokenRateMeter()
+  const outMeter = new TokenRateMeter()
+  const inMeter = new TokenRateMeter()
   let currentId: string | undefined
-  let currentTokens = 0
-  let lastActivityAt = 0
+  let currentOut = 0
+  let currentIn = 0
   const [tick, setTick] = createSignal(0)
 
   const unsubs = [
     event.on("message.updated", (evt) => {
       const info = evt.properties.info
       if (info.role !== "assistant") return
-      const tokens = (info.tokens?.output ?? 0) + (info.tokens?.reasoning ?? 0)
-      lastActivityAt = Date.now()
+      const out = (info.tokens?.output ?? 0) + (info.tokens?.reasoning ?? 0)
+      const input = info.tokens?.input ?? 0
       if (info.id !== currentId) {
         currentId = info.id
-        currentTokens = 0
-        meter.reset()
+        currentOut = 0
+        currentIn = 0
+        outMeter.reset()
+        inMeter.reset()
       }
-      if (tokens >= currentTokens) {
-        currentTokens = tokens
-        meter.add(currentTokens, lastActivityAt)
+      if (out >= currentOut) {
+        currentOut = out
+        outMeter.add(currentOut, Date.now())
       }
-    }),
-    event.on("message.part.delta", () => {
-      lastActivityAt = Date.now()
+      if (input >= currentIn) {
+        currentIn = input
+        inMeter.add(currentIn, Date.now())
+      }
     }),
   ]
   const timer = setInterval(() => setTick((t) => (t + 1) % 1_000_000_000), 1000)
@@ -50,22 +50,16 @@ function TokenRate() {
   const view = createMemo(() => {
     tick()
     const now = Date.now()
-    if (now - lastActivityAt > ACTIVITY_TIMEOUT) return
-    if (currentTokens <= 0) return
     return {
-      rate: meter.rate(now),
-      total: currentTokens,
+      out: outMeter.rate(now),
+      input: inMeter.rate(now),
     }
   })
 
   return (
-    <Show when={view()} fallback={<></>}>
-      {(v) => (
-        <text fg={theme.textMuted} flexShrink={0}>
-          {Math.round(v().rate)} tok/s · {Locale.number(v().total)} tok
-        </text>
-      )}
-    </Show>
+    <text fg={theme.textMuted} flexShrink={0}>
+      out {Math.round(view().out)} tk/s · in {Math.round(view().input)} tk/s
+    </text>
   )
 }
 

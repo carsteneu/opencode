@@ -56,6 +56,7 @@ import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut, useLeaderActive, u
 import { useTuiConfig } from "../../config"
 import { usePromptWorkspace } from "./workspace"
 import { usePromptMove } from "./move"
+import { nextModelWait, type ModelWaitState } from "./model-wait"
 import { readLocalAttachment } from "./local-attachment"
 import { useLocation } from "../../context/location"
 
@@ -177,6 +178,26 @@ export function Prompt(props: PromptProps) {
   const [dismissedEditorSelectionKey, setDismissedEditorSelectionKey] = createSignal<string>()
   const [promptSpinnerEl, setPromptSpinnerEl] = createSignal<Renderable | undefined>(undefined)
   usePartialRender(promptSpinnerEl)
+  const [waitTimerEl, setWaitTimerEl] = createSignal<Renderable | undefined>(undefined)
+  usePartialRender(waitTimerEl)
+  const [modelWait, setModelWait] = createSignal<ModelWaitState>({ phase: "idle" })
+  createEffect(() => {
+    const s = status()
+    if (s.type !== "busy" && s.type !== "retry" && s.type !== "idle") return
+    setModelWait((prev) => nextModelWait(prev, { type: "status", status: s.type, at: Date.now() }))
+  })
+  const [waitTick, setWaitTick] = createSignal(0)
+  createEffect(() => {
+    if (modelWait().phase !== "waiting") return
+    const timer = setInterval(() => setWaitTick((t) => t + 1), 1000)
+    onCleanup(() => clearInterval(timer))
+  })
+  const waitElapsed = () => {
+    waitTick()
+    const state = modelWait()
+    if (state.phase !== "waiting") return ""
+    return formatDuration(Math.max(1, Math.round((Date.now() - state.since) / 1000)))
+  }
   const editorContext = createMemo(() => {
     const selection = fileContextEnabled() ? editor.selection() : undefined
     if (!selection) return
@@ -234,6 +255,22 @@ export function Prompt(props: PromptProps) {
   const pasteStyleId = syntax().getStyleId("extmark.paste")!
   let promptPartTypeId = 0
   const event = useEvent()
+
+  onCleanup(
+    event.on("message.part.delta", (evt) => {
+      if (evt.properties.sessionID !== props.sessionID) return
+      setModelWait((prev) => nextModelWait(prev, { type: "activity", at: Date.now() }))
+    }),
+  )
+  onCleanup(
+    event.on("message.updated", (evt) => {
+      const info = evt.properties.info
+      if (info.sessionID !== props.sessionID || info.role !== "assistant") return
+      const tokens = (info.tokens?.output ?? 0) + (info.tokens?.reasoning ?? 0)
+      if (tokens <= 0) return
+      setModelWait((prev) => nextModelWait(prev, { type: "activity", at: Date.now() }))
+    }),
+  )
 
   onCleanup(
     event.on("tui.prompt.append", (evt, { workspace }) => {
@@ -1522,10 +1559,16 @@ export function Prompt(props: PromptProps) {
                 flexGrow={1}
                 justifyContent={status().type === "retry" ? "space-between" : "flex-start"}
               >
-                <box flexShrink={0} flexDirection="row" gap={1}>
-                  <box marginLeft={1}>
-                    <Show when={kv.get("animations_enabled", true)} fallback={<text fg={theme.textMuted}>[⋯]</text>}>
-                      <spinner ref={setPromptSpinnerEl} color={spinnerDef().color} frames={spinnerDef().frames} interval={40} />
+                  <box flexShrink={0} flexDirection="row" gap={1}>
+                    <box marginLeft={1}>
+                      <Show when={kv.get("animations_enabled", true)} fallback={<text fg={theme.textMuted}>[⋯]</text>}>
+                        <spinner ref={setPromptSpinnerEl} color={spinnerDef().color} frames={spinnerDef().frames} interval={40} />
+                      </Show>
+                    </box>
+                    <Show when={modelWait().phase === "waiting" && status().type === "busy"}>
+                      <text fg={theme.textMuted} wrapMode="none" ref={setWaitTimerEl}>
+                        ◷ Waiting on model · {waitElapsed()}
+                      </text>
                     </Show>
                   </box>
                   <box flexDirection="row" gap={1} flexShrink={0}>
@@ -1586,7 +1629,6 @@ export function Prompt(props: PromptProps) {
                       )
                     })()}
                   </box>
-                </box>
                 <text fg={store.interrupt > 0 ? theme.primary : theme.text}>
                   esc{" "}
                   <span style={{ fg: store.interrupt > 0 ? theme.primary : theme.textMuted }}>

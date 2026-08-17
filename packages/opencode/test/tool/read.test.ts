@@ -1,6 +1,6 @@
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { afterEach, describe, expect } from "bun:test"
-import { open } from "node:fs/promises"
+import { open, writeFile } from "node:fs/promises"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Cause, Deferred, Effect, Exit, Fiber, FileSystem, Layer, Stream } from "effect"
 import path from "path"
@@ -312,6 +312,71 @@ describe("tool.read env file permissions", () => {
       }
     })
   }
+})
+
+describe("tool.read media ingestion", () => {
+  const pngMagic = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
+  const pngOf = (size: number) => {
+    const buf = Buffer.alloc(size, 65)
+    pngMagic.copy(buf, 0)
+    return buf
+  }
+  const putBytes = (filepath: string, bytes: Buffer) => Effect.promise(() => writeFile(filepath, bytes))
+  const LIMIT = 20 * 1024 * 1024
+
+  it.instance("accepts an image at exactly the byte limit", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "at-limit.png")
+      yield* putBytes(filepath, pngOf(LIMIT))
+
+      const result = yield* run({ filePath: filepath })
+      expect(result.output).toBe("Image read successfully")
+      expect(result.attachments?.length).toBe(1)
+      expect(result.attachments?.[0].mime).toBe("image/png")
+    }),
+  )
+
+  it.instance("rejects an image one byte over the limit", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "over-limit.png")
+      yield* putBytes(filepath, pngOf(LIMIT + 1))
+
+      const exit = yield* run({ filePath: filepath }).pipe(Effect.exit)
+      expect(exit._tag).toBe("Failure")
+      if (exit._tag === "Failure") {
+        expect(String(Cause.squash(exit.cause))).toContain("exceeds")
+      }
+    }),
+  )
+
+  it.instance("never performs an unbounded readFile on the media path", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const filepath = path.join(test.directory, "small.png")
+      yield* putBytes(filepath, pngOf(4096))
+
+      const fs = yield* FSUtil.Service
+      const counter = { calls: 0 }
+      const result = yield* run({ filePath: filepath }).pipe(
+        Effect.provideService(
+          FSUtil.Service,
+          FSUtil.Service.of({
+            ...fs,
+            readFile: (file) =>
+              Effect.suspend(() => {
+                counter.calls++
+                return fs.readFile(file)
+              }),
+          }),
+        ),
+      )
+
+      expect(result.output).toBe("Image read successfully")
+      expect(counter.calls).toBe(0)
+    }),
+  )
 })
 
 describe("tool.read truncation", () => {

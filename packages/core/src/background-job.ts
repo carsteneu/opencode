@@ -97,7 +97,7 @@ export interface Interface {
   readonly start: (input: StartInput) => Effect.Effect<Info>
   readonly extend: (input: ExtendInput) => Effect.Effect<boolean>
   readonly wait: (input: WaitInput) => Effect.Effect<WaitResult>
-  readonly waitForPromotion: (id: string) => Effect.Effect<Info>
+    readonly waitForPromotion: (id: string) => Effect.Effect<Info, Error>
   readonly promote: (id: string) => Effect.Effect<Info | undefined>
   readonly cancel: (id: string, options?: CancelOptions) => Effect.Effect<Info | undefined>
 }
@@ -336,12 +336,13 @@ export const make = Effect.gen(function* () {
     return { info: snapshot(job), timedOut: true }
   })
 
-  const waitForPromotion: Interface["waitForPromotion"] = Effect.fn("BackgroundJob.waitForPromotion")(function* (id) {
-    const job = (yield* SynchronizedRef.get(state.jobs)).get(id)
-    if (!job || job.info.status !== "running") return yield* Effect.never
-    if (job.info.metadata?.background === true) return snapshot(job)
-    return yield* Deferred.await(job.promoted)
-  })
+    const waitForPromotion: Interface["waitForPromotion"] = Effect.fn("BackgroundJob.waitForPromotion")(function* (id) {
+      const job = (yield* SynchronizedRef.get(state.jobs)).get(id)
+      if (!job) return yield* Effect.fail(new Error(`Background job not found: ${id}`))
+      if (job.info.status !== "running") return snapshot(job)
+      if (job.info.metadata?.background === true) return snapshot(job)
+      return yield* Deferred.await(job.promoted)
+    })
 
   const promote: Interface["promote"] = Effect.fn("BackgroundJob.promote")(function* (id) {
     const result = yield* SynchronizedRef.modifyEffect(
