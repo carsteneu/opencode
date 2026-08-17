@@ -444,16 +444,19 @@ const layer = Layer.effect(
                 },
               ],
             })
-            .pipe(
-              Effect.exit,
-              Effect.tap((exit) =>
-                Exit.isFailure(exit)
-                  ? Effect.logWarning("background dependency install failed", { dir, error: String(exit.cause) })
-                  : Effect.void,
-              ),
-              Effect.asVoid,
-              Effect.forkDetach,
-            )
+              .pipe(
+                Effect.exit,
+                Effect.tap((exit) =>
+                  Exit.isFailure(exit)
+                    ? Effect.logWarning("background dependency install failed", {
+                        dir,
+                        error: String(exit.cause),
+                      })
+                    : Effect.logInfo("background dependency install complete", { dir }),
+                ),
+                Effect.asVoid,
+                Effect.forkDetach,
+              )
           deps.push(dep)
 
           result.command = mergeDeep(result.command ?? {}, yield* Effect.promise(() => ConfigCommand.load(dir)))
@@ -615,11 +618,22 @@ const layer = Layer.effect(
       return yield* InstanceState.use(state, (s) => s.consoleState)
     })
 
-    const waitForDependencies = Effect.fn("Config.waitForDependencies")(function* () {
-      yield* InstanceState.useEffect(state, (s) =>
-        Effect.forEach(s.deps, Fiber.join, { concurrency: "unbounded" }).pipe(Effect.asVoid),
-      )
-    })
+      const waitForDependencies = Effect.fn("Config.waitForDependencies")(function* () {
+        const capMs = (() => {
+          const raw = process.env["OPENCODE_DEP_WAIT_TIMEOUT_MS"]
+          const ms = raw === undefined ? NaN : Number(raw)
+          return Number.isFinite(ms) && ms > 0 ? ms : 10_000
+        })()
+        yield* InstanceState.useEffect(state, (s) =>
+          Effect.forEach(s.deps, Fiber.join, { concurrency: "unbounded" }).pipe(
+            Effect.asVoid,
+            // Never block built-in tool/plugin discovery on optional local deps: wait only
+            // a bounded time for in-flight installs, then fall back to what is present.
+            Effect.timeout(capMs),
+            Effect.catchTag("TimeoutError", () => Effect.void),
+          ),
+        )
+      })
 
     const update = Effect.fn("Config.update")(function* (config: Info) {
       const dir = yield* InstanceState.directory
