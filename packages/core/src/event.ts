@@ -472,11 +472,12 @@ export const layerWith = (options?: LayerOptions) =>
             { discard: true },
           )
           // Observer listeners are enqueued and drained off the publisher fiber; a full mailbox drops.
-          yield* Queue.offer(observerQueue, event).pipe(
-            Effect.flatMap((accepted) =>
-              accepted ? Effect.void : Effect.logWarning("Event observer mailbox overflow; event dropped"),
-            ),
-          )
+          if (observers.length > 0)
+            yield* Queue.offer(observerQueue, event).pipe(
+              Effect.flatMap((accepted) =>
+                accepted ? Effect.void : Effect.logWarning("Event observer mailbox overflow; event dropped"),
+              ),
+            )
           const typed = pubsub.typed.get(event.type)
           if (typed) yield* PubSub.publish(typed, event)
           yield* PubSub.publish(pubsub.all, event)
@@ -486,7 +487,16 @@ export const layerWith = (options?: LayerOptions) =>
       yield* Queue.take(observerQueue)
         .pipe(
           Effect.flatMap((event) =>
-            Effect.forEach(observers, (observer) => observe(event, observer), { discard: true }),
+            Effect.forEach(
+              observers,
+              (observer) =>
+                observe(event, observer).pipe(
+                  Effect.catchCause((cause) =>
+                    Cause.hasInterruptsOnly(cause) ? Effect.void : Effect.failCause(cause),
+                  ),
+                ),
+              { discard: true },
+            ),
           ),
           Effect.forever,
         )
@@ -739,10 +749,13 @@ export const layerWith = (options?: LayerOptions) =>
                       sequence = events.at(-1)?.durable?.seq ?? sequence
                     }),
                   ),
-                  Effect.map(({ events }) =>
+                  Effect.map(({ events, hasMore }) =>
                     events.length === 0
                       ? ([events, Option.none<number>()] as const)
-                      : ([events, Option.some(events.at(-1)!.durable!.seq)] as const),
+                      : ([
+                          events,
+                          hasMore ? Option.some(events.at(-1)!.durable!.seq) : Option.none<number>(),
+                        ] as const),
                   ),
                 ),
               )

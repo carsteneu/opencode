@@ -340,6 +340,34 @@ describe("EventV2", () => {
     }),
   )
 
+  it.effect("keeps delivering observer events after an observer interrupts itself", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const received = new Array<number>()
+      yield* events.listen(
+        (event) =>
+          event.durable!.seq === 0
+            ? Effect.interrupt
+            : Effect.sync(() => {
+                received.push(event.durable!.seq)
+              }),
+        { sync: false },
+      )
+      for (let index = 0; index < 5; index++) {
+        yield* events.publish(SyncMessage, { id: "agg-int", text: String(index) })
+      }
+      const drained = yield* Effect.gen(function* () {
+        let i = 0
+        while (received.length < 4 && i < 2000) {
+          i++
+          yield* Effect.yieldNow
+        }
+        return received
+      })
+      expect(drained).toEqual([1, 2, 3, 4])
+    }),
+  )
+
   it.effect("drops observer events under mailbox overflow but never drops sync listeners", () =>
     Effect.gen(function* () {
       const events = yield* EventV2.Service
