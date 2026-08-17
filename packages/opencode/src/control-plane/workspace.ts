@@ -1,6 +1,6 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { httpClient } from "@opencode-ai/core/effect/app-node-platform"
-import { Context, Duration, Effect, FiberMap, Iterable, Layer, Schema, Stream } from "effect"
+import { Context, Duration, Effect, FiberMap, Layer, Schema, Stream } from "effect"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import {
   FetchHttpClient,
@@ -139,6 +139,158 @@ export class SyncAbortedError extends Schema.TaggedErrorClass<SyncAbortedError>(
   cause: Schema.optional(Schema.Defect()),
 }) {}
 
+export const WARP_REPLAY_EVENTS = 256
+export const WARP_REPLAY_BYTES = 1024 * 1024
+export const WARP_RESPONSE_BYTES = 64 * 1024
+
+type WarpReplayInput = {
+  readonly directory: string
+  readonly events: ReadonlyArray<EventV2.SerializedEvent>
+  readonly messageDiffs?: {
+    readonly sessionID: string
+    readonly rows: ReadonlyArray<MessageDiff.Entry>
+  }
+}
+
+/**
+ * Lazily serializes replay requests so a large history never gains a second retained
+ * full-history representation. Diff-only requests replay the smallest accepted event;
+ * exact durable replays are idempotent even when that anchor is below the current head.
+ */
+export function* replayBatches(input: WarpReplayInput): Generator<string> {
+  if (!input.events.length) return
+  const prefix = `{"directory":${JSON.stringify(input.directory)},"events":[`
+  const prefixBytes = Buffer.byteLength(prefix)
+  const batch = { events: [] as string[], bytes: 0 }
+  let anchor: { event: string; bytes: number } | undefined
+
+  for (const event of input.events) {
+    if (batch.events.length === WARP_REPLAY_EVENTS) {
+      const body = replayBody(prefix, batch.events)
+      batch.events.length = 0
+      batch.bytes = 0
+      yield body
+    }
+    const encoded = JSON.stringify(event)
+    const bytes = Buffer.byteLength(encoded)
+    if (!anchor || bytes < anchor.bytes) anchor = { event: encoded, bytes }
+    if (
+      batch.events.length &&
+      replayBodyBytes(prefixBytes, batch.events.length + 1, batch.bytes + bytes) > WARP_REPLAY_BYTES
+    ) {
+      const body = replayBody(prefix, batch.events)
+      batch.events.length = 0
+      batch.bytes = 0
+      yield body
+    }
+    batch.events.push(encoded)
+    batch.bytes += bytes
+  }
+
+  if (!input.messageDiffs) {
+    yield replayBody(prefix, batch.events)
+    return
+  }
+  if (!anchor) return
+
+  const sessionID = JSON.stringify(input.messageDiffs.sessionID)
+  const fullPrefix = `{"sessionID":${sessionID},"rows":[`
+  const fullPrefixBytes = Buffer.byteLength(fullPrefix)
+  const full = { rows: [] as string[], bytes: 0 }
+  const finalPlainBytes = replayBodyBytes(prefixBytes, batch.events.length, batch.bytes)
+  const fullEmptyBytes = replayBodyBytes(prefixBytes, batch.events.length, batch.bytes, fullPrefixBytes + 2)
+  const attached = finalPlainBytes > WARP_REPLAY_BYTES || fullEmptyBytes <= WARP_REPLAY_BYTES
+  const diffEvents = attached ? [...batch.events] : [anchor.event]
+  const diffEventBytes = attached ? batch.bytes : anchor.bytes
+  if (!attached) yield replayBody(prefix, batch.events)
+  batch.events.length = 0
+  batch.bytes = 0
+
+  let rowIndex = 0
+  let pending:
+    | { readonly id: string; readonly row: string; readonly idBytes: number; readonly rowBytes: number }
+    | undefined
+  while (rowIndex < input.messageDiffs.rows.length) {
+    const row = input.messageDiffs.rows[rowIndex]
+    const encoded = JSON.stringify(row)
+    const bytes = Buffer.byteLength(encoded)
+    const candidate = replayBodyBytes(
+      prefixBytes,
+      diffEvents.length,
+      diffEventBytes,
+      fullPrefixBytes + bytesWithCommas(full.rows.length + 1, full.bytes + bytes) + 2,
+    )
+    if (candidate > WARP_REPLAY_BYTES && (full.rows.length || attached)) {
+      const id = JSON.stringify(row.messageID)
+      pending = { id, row: encoded, idBytes: Buffer.byteLength(id), rowBytes: bytes }
+      break
+    }
+    full.rows.push(encoded)
+    full.bytes += bytes
+    rowIndex++
+  }
+
+  yield replayBody(prefix, diffEvents, `${fullPrefix}${full.rows.join(",")}]}`)
+  if (rowIndex === input.messageDiffs.rows.length) return
+
+  const targetedPrefix = `{"sessionID":${sessionID},"messageIDs":[`
+  const targetedMiddle = `],"rows":[`
+  const targetedPrefixBytes = Buffer.byteLength(targetedPrefix)
+  const targetedMiddleBytes = Buffer.byteLength(targetedMiddle)
+  const targeted = { ids: [] as string[], rows: [] as string[], idBytes: 0, rowBytes: 0 }
+
+  while (rowIndex < input.messageDiffs.rows.length) {
+    const row = input.messageDiffs.rows[rowIndex]
+    const id = pending?.id ?? JSON.stringify(row.messageID)
+    const encoded = pending?.row ?? JSON.stringify(row)
+    const idBytes = pending?.idBytes ?? Buffer.byteLength(id)
+    const bytes = pending?.rowBytes ?? Buffer.byteLength(encoded)
+    pending = undefined
+    const count = targeted.rows.length + 1
+    const snapshotBytes =
+      targetedPrefixBytes +
+      bytesWithCommas(count, targeted.idBytes + idBytes) +
+      targetedMiddleBytes +
+      bytesWithCommas(count, targeted.rowBytes + bytes) +
+      2
+    if (targeted.rows.length && replayBodyBytes(prefixBytes, 1, anchor.bytes, snapshotBytes) > WARP_REPLAY_BYTES) {
+      const body = replayBody(
+        prefix,
+        [anchor.event],
+        `${targetedPrefix}${targeted.ids.join(",")}${targetedMiddle}${targeted.rows.join(",")}]}`,
+      )
+      targeted.ids.length = 0
+      targeted.rows.length = 0
+      targeted.idBytes = 0
+      targeted.rowBytes = 0
+      yield body
+    }
+    targeted.ids.push(id)
+    targeted.rows.push(encoded)
+    targeted.idBytes += idBytes
+    targeted.rowBytes += bytes
+    rowIndex++
+  }
+
+  yield replayBody(
+    prefix,
+    [anchor.event],
+    `${targetedPrefix}${targeted.ids.join(",")}${targetedMiddle}${targeted.rows.join(",")}]}`,
+  )
+}
+
+function replayBody(prefix: string, events: ReadonlyArray<string>, messageDiffs?: string) {
+  return `${prefix}${events.join(",")}]${messageDiffs ? `,"messageDiffs":${messageDiffs}` : ""}}`
+}
+
+function replayBodyBytes(prefix: number, events: number, eventBytes: number, messageDiffBytes?: number) {
+  return prefix + bytesWithCommas(events, eventBytes) + 2 + (messageDiffBytes === undefined ? 0 : 16 + messageDiffBytes)
+}
+
+function bytesWithCommas(items: number, bytes: number) {
+  return bytes + Math.max(0, items - 1)
+}
+
 type CreateError = Auth.AuthError
 type SessionWarpError =
   | WorkspaceNotFoundError
@@ -258,6 +410,35 @@ const layer = Layer.effect(
                 Effect.catch(() => Effect.succeed(Buffer.from("[response body unavailable]", "utf8"))),
               )
           return { status: response.status, body: body.toString("utf8") }
+        }),
+      )
+    })
+
+    const warpResponse = Effect.fn("Workspace.warpResponse")(function* (input: {
+      readonly url: URL | string
+      readonly path: string
+      readonly headers: HeadersInit | undefined
+      readonly body: string
+    }) {
+      return yield* Effect.scoped(
+        Effect.gen(function* () {
+          const response = yield* HttpClient.withScope(http).execute(
+            HttpClientRequest.post(route(input.url, input.path), {
+              headers: new Headers(input.headers),
+              body: HttpBody.text(input.body, "application/json"),
+            }),
+          )
+          const body = yield* collectBoundedResponseBody(
+            response,
+            WARP_RESPONSE_BYTES,
+            () => new Error("response too large"),
+          ).pipe(
+            Effect.map((value) => value.toString("utf8")),
+            Effect.catch(() =>
+              Effect.succeed(`[response body exceeded ${WARP_RESPONSE_BYTES} bytes or could not be read]`),
+            ),
+          )
+          return { status: response.status, body }
         }),
       )
     })
@@ -1017,6 +1198,7 @@ const layer = Layer.effect(
             })
           const destinationTarget = yield* WorkspaceAdapterRuntime.target(destination)
           if (destinationTarget.type === "remote" && portableMessageDiffRows.length) {
+            // Targeted follow-up chunks are only safe after the destination proves it supports manifests.
             const supported = yield* fetchMessageDiffManifest(destinationTarget.url, destinationTarget.headers, [
               input.sessionID,
             ])
@@ -1113,52 +1295,40 @@ const layer = Layer.effect(
           rows: portableMessageDiffRows,
         }
 
-        const batches = Iterable.chunksOf(rows, 10)
-        const total = Iterable.size(batches)
+        for (const body of replayBatches({
+          directory: space.directory ?? "",
+          events: rows,
+          messageDiffs: messageDiffSnapshot,
+        })) {
+          const response = yield* warpResponse({
+            url: target.url,
+            path: "/sync/replay",
+            headers: target.headers,
+            body,
+          })
+          if (response.status < 200 || response.status >= 300)
+            return yield* new SessionWarpHttpError({
+              message: `Failed to warp session ${input.sessionID} into workspace ${workspaceID}: HTTP ${response.status} ${response.body}`,
+              workspaceID,
+              sessionID: input.sessionID,
+              status: response.status,
+              body: response.body,
+            })
+        }
 
-        yield* Effect.forEach(
-          batches,
-          (events, i) =>
-            Effect.gen(function* () {
-              const response = yield* http.execute(
-                HttpClientRequest.post(route(target.url, "/sync/replay"), {
-                  headers: new Headers(target.headers),
-                  body: HttpBody.jsonUnsafe({
-                    directory: space.directory ?? "",
-                    events,
-                    messageDiffs: i === total - 1 ? messageDiffSnapshot : undefined,
-                  }),
-                }),
-              )
-
-              if (response.status < 200 || response.status >= 300) {
-                const body = yield* response.text
-                return yield* new SessionWarpHttpError({
-                  message: `Failed to warp session ${input.sessionID} into workspace ${workspaceID}: HTTP ${response.status} ${body}`,
-                  workspaceID,
-                  sessionID: input.sessionID,
-                  status: response.status,
-                  body,
-                })
-              }
-            }),
-          { discard: true },
-        )
-
-        const response = yield* http.execute(
-          HttpClientRequest.post(route(target.url, "/sync/steal"), {
-            headers: new Headers(target.headers),
-            body: HttpBody.jsonUnsafe({ sessionID: input.sessionID }),
-          }),
-        )
+        const response = yield* warpResponse({
+          url: target.url,
+          path: "/sync/steal",
+          headers: target.headers,
+          body: JSON.stringify({ sessionID: input.sessionID }),
+        })
         if (response.status < 200 || response.status >= 300) {
-          const body = yield* response.text
           return yield* new SessionWarpHttpError({
-            message: `Failed to steal session ${input.sessionID} into workspace ${workspaceID}: HTTP ${response.status} ${body}`,
+            message: `Failed to steal session ${input.sessionID} into workspace ${workspaceID}: HTTP ${response.status} ${response.body}`,
             workspaceID,
             sessionID: input.sessionID,
             status: response.status,
-            body,
+            body: response.body,
           })
         }
 

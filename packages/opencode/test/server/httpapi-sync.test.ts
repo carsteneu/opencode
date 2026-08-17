@@ -9,6 +9,7 @@ import { EventSequenceTable, EventTable } from "@opencode-ai/core/event/sql"
 import { SyncPaths } from "../../src/server/routes/instance/httpapi/groups/sync"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import { WorkspaceSyncProtocol } from "../../src/control-plane/sync-protocol"
+import { replayBatches } from "../../src/control-plane/workspace"
 import { Session } from "@/session/session"
 import { MessageDiff } from "@opencode-ai/core/session/message-diff"
 import { MessageID, SessionV1 } from "@opencode-ai/core/v1/session"
@@ -156,6 +157,107 @@ describe("sync HttpApi", () => {
         expect(yield* messageDiff.get(messageID, session.id)).toMatchObject({
           diffs: [{ file: "sync.ts", patch: "portable patch" }],
         })
+      }),
+    { git: true, config: { formatter: false, lsp: false } },
+  )
+
+  it.instance(
+    "accepts targeted message diff chunks anchored below the complete replay head",
+    () =>
+      Effect.gen(function* () {
+        Flag.OPENCODE_EXPERIMENTAL_WORKSPACES = true
+        const tmp = yield* TestInstance
+        const session = yield* Session.use.create({ title: "chunked portable diffs" })
+        const messageIDs = Array.from({ length: 4 }, (_, index) => MessageID.ascending(`msg_warp_http_${index}`))
+        yield* Effect.forEach(
+          messageIDs,
+          (messageID, index) =>
+            Session.use.updateMessage({
+              id: messageID,
+              sessionID: session.id,
+              role: "user",
+              time: { created: Date.now() + index },
+              agent: "build",
+              model: { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("model") },
+            } satisfies SessionV1.User),
+          { discard: true },
+        )
+        const messageDiff = yield* MessageDiff.Service
+        yield* messageDiff.put({ messageID: messageIDs[0]!, diffs: [] })
+        yield* Effect.forEach(messageIDs.slice(1), (messageID) => messageDiff.put({ messageID, diffs: [] }), {
+          discard: true,
+        })
+        const rows: MessageDiff.Entry[] = messageIDs.slice(1).map((messageID, index) => ({
+          messageID,
+          revision: `authoritative-${index}`,
+          diffs: [
+            {
+              file: `authoritative-${index}.ts`,
+              patch: "x".repeat(Math.floor(1024 * 1024 * 0.55)),
+              additions: index + 1,
+              deletions: 0,
+              status: "modified",
+            },
+          ],
+        }))
+        const { db } = yield* Database.Service
+        const stored = yield* db
+          .select({
+            id: EventTable.id,
+            aggregateID: EventTable.aggregate_id,
+            seq: EventTable.seq,
+            type: EventTable.type,
+            data: EventTable.data,
+          })
+          .from(EventTable)
+          .where(eq(EventTable.aggregate_id, session.id))
+          .orderBy(EventTable.seq)
+          .all()
+          .pipe(Effect.orDie)
+        const head = stored.at(-1)!.seq
+        const bodies = [
+          ...replayBatches({
+            directory: tmp.directory,
+            events: stored,
+            messageDiffs: { sessionID: session.id, rows },
+          }),
+        ]
+        const payloads = bodies.map(
+          (body) =>
+            JSON.parse(body) as {
+              events: EventV2.SerializedEvent[]
+              messageDiffs?: MessageDiff.Snapshot
+            },
+        )
+
+        expect(payloads).toHaveLength(3)
+        expect(payloads[0]?.events).toEqual(stored)
+        expect(payloads[0]?.messageDiffs).toEqual({ sessionID: session.id, rows: [rows[0]] })
+        const anchor = stored.reduce((smallest, event) =>
+          Buffer.byteLength(JSON.stringify(event)) < Buffer.byteLength(JSON.stringify(smallest)) ? event : smallest,
+        )
+        expect(payloads.slice(1).map((payload) => payload.events)).toEqual([[anchor], [anchor]])
+        expect(payloads.slice(1).map((payload) => payload.messageDiffs?.messageIDs)).toEqual([
+          [rows[1]!.messageID],
+          [rows[2]!.messageID],
+        ])
+
+        const headers = { "content-type": "application/json" }
+        const responses = yield* Effect.forEach(
+          bodies,
+          (body) => requestInDirectory(SyncPaths.replay, tmp.directory, { method: "POST", headers, body }),
+          { concurrency: 1 },
+        )
+        expect(responses.map((response) => response.status)).toEqual([200, 200, 200])
+        expect(
+          (yield* db
+            .select({ seq: EventSequenceTable.seq })
+            .from(EventSequenceTable)
+            .where(eq(EventSequenceTable.aggregate_id, session.id))
+            .get()
+            .pipe(Effect.orDie))?.seq,
+        ).toBe(head)
+        expect(yield* messageDiff.list({ sessionID: session.id })).toEqual(rows)
       }),
     { git: true, config: { formatter: false, lsp: false } },
   )

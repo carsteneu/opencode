@@ -17,7 +17,7 @@ import { Session as SessionNs } from "@/session/session"
 import { SessionID } from "@/session/schema"
 import { SessionTable } from "@opencode-ai/core/session/sql"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
-import { EventSequenceTable } from "@opencode-ai/core/event/sql"
+import { EventSequenceTable, EventTable } from "@opencode-ai/core/event/sql"
 import { resetDatabase } from "../fixture/db"
 import { disposeAllInstances, provideTmpdirInstance, requireInstance, TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
@@ -36,6 +36,7 @@ import { MessageDiff } from "@opencode-ai/core/session/message-diff"
 import { MessageID, SessionV1 } from "@opencode-ai/core/v1/session"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
+import { EventV2 } from "@opencode-ai/core/event"
 
 const originalEnv = {
   OPENCODE_AUTH_CONTENT: process.env.OPENCODE_AUTH_CONTENT,
@@ -364,6 +365,46 @@ function sessionSequenceOwner(sessionID: SessionID) {
         Effect.orDie,
         Effect.map((row) => row?.ownerID),
       ),
+  )
+}
+
+function appendSessionEvents(sessionID: SessionID, total: number) {
+  return Database.Service.use(({ db }) =>
+    db
+      .transaction((tx) =>
+        Effect.gen(function* () {
+          const sequence = yield* tx
+            .select({ seq: EventSequenceTable.seq })
+            .from(EventSequenceTable)
+            .where(eq(EventSequenceTable.aggregate_id, sessionID))
+            .get()
+          if (!sequence) return yield* Effect.die(`Missing event sequence for ${sessionID}`)
+          const count = total - sequence.seq - 1
+          if (count < 0) return yield* Effect.die(`Session ${sessionID} already has more than ${total} events`)
+          if (count === 0) return
+          yield* tx
+            .insert(EventTable)
+            .values(
+              Array.from({ length: count }, (_, index) => {
+                const seq = sequence.seq + index + 1
+                return {
+                  id: EventV2.ID.make(`evt_warp_batch_${sessionID}_${seq}`),
+                  aggregate_id: sessionID,
+                  seq,
+                  type: "test.warp.1",
+                  data: { sessionID, seq },
+                }
+              }),
+            )
+            .run()
+          yield* tx
+            .update(EventSequenceTable)
+            .set({ seq: total - 1 })
+            .where(eq(EventSequenceTable.aggregate_id, sessionID))
+            .run()
+        }),
+      )
+      .pipe(Effect.orDie),
   )
 }
 
@@ -1151,6 +1192,144 @@ describe("workspace CRUD", () => {
             expect(calls[11].json).toEqual({ sessionID: session.id })
             expect((yield* sessionSvc.get(session.id)).title).toBe("from source history")
             expect(yield* sessionSequenceOwner(session.id)).toBe(target.id)
+          }),
+        { git: true },
+      )
+    })
+  })
+
+  it.live("sessionWarp batches a large history through a legacy remote replay target", () => {
+    const calls: FetchCall[] = []
+    let replayCalls = 0
+    return Effect.gen(function* () {
+      yield* HttpServer.serveEffect()(
+        Effect.gen(function* () {
+          const req = yield* HttpServerRequest.HttpServerRequest
+          const bodyText = yield* req.text
+          const call = {
+            url: new URL(req.url, "http://localhost"),
+            method: req.method,
+            headers: new Headers(req.headers),
+            bodyText,
+            json: bodyText ? JSON.parse(bodyText) : undefined,
+          }
+          calls.push(call)
+          if (call.url.pathname === "/legacy-batch/sync/replay") {
+            replayCalls += 1
+            if (replayCalls === 1) return HttpServerResponse.text("x".repeat(Workspace.WARP_RESPONSE_BYTES + 1024))
+            return HttpServerResponse.empty({ status: 204 })
+          }
+          if (call.url.pathname === "/legacy-batch/sync/steal") return HttpServerResponse.empty({ status: 204 })
+          return HttpServerResponse.text("unexpected", { status: 500 })
+        }),
+      )
+      const url = yield* serverUrl()
+      yield* provideTmpdirInstance(
+        () =>
+          Effect.gen(function* () {
+            const workspace = yield* Workspace.Service
+            const sessionSvc = yield* SessionNs.Service
+            const instance = yield* requireInstance
+            const sourceType = unique("legacy-batch-source")
+            const targetType = unique("legacy-batch-target")
+            const source = workspaceInfo(instance.project.id, sourceType)
+            const target = workspaceInfo(instance.project.id, targetType, { directory: "legacy-remote-dir" })
+            yield* insertWorkspace(source)
+            yield* insertWorkspace(target)
+            registerAdapter(instance.project.id, sourceType, localAdapter(instance.directory).adapter)
+            registerAdapter(instance.project.id, targetType, remoteAdapter(`${url}/legacy-batch`).adapter)
+            const session = yield* sessionSvc.create({})
+            yield* attachSessionToWorkspace(session.id, source.id)
+            yield* appendSessionEvents(session.id, Workspace.WARP_REPLAY_EVENTS + 1)
+
+            yield* workspace.sessionWarp({ workspaceID: target.id, sessionID: session.id })
+
+            expect(calls.map((call) => `${call.method} ${call.url.pathname}`)).toEqual([
+              "POST /legacy-batch/sync/replay",
+              "POST /legacy-batch/sync/replay",
+              "POST /legacy-batch/sync/steal",
+            ])
+            const replay = calls.slice(0, 2).map(
+              (call) =>
+                call.json as {
+                  directory: string
+                  events: EventV2.SerializedEvent[]
+                  messageDiffs?: MessageDiff.Snapshot
+                },
+            )
+            expect(replay.map((payload) => payload.events.length)).toEqual([Workspace.WARP_REPLAY_EVENTS, 1])
+            expect(replay.flatMap((payload) => payload.events.map((event) => event.seq))).toEqual(
+              Array.from({ length: Workspace.WARP_REPLAY_EVENTS + 1 }, (_, seq) => seq),
+            )
+            expect(replay[0]?.messageDiffs).toBeUndefined()
+            expect(replay[1]?.messageDiffs).toEqual({ sessionID: session.id, rows: [] })
+            expect(replay.every((payload) => payload.directory === "legacy-remote-dir")).toBe(true)
+            expect((yield* sessionSvc.get(session.id)).workspaceID).toBe(target.id)
+          }),
+        { git: true },
+      )
+    })
+  })
+
+  it.live("sessionWarp stops after a middle replay failure and never steals", () => {
+    const calls: FetchCall[] = []
+    let replayCalls = 0
+    return Effect.gen(function* () {
+      yield* HttpServer.serveEffect()(
+        Effect.gen(function* () {
+          const req = yield* HttpServerRequest.HttpServerRequest
+          const bodyText = yield* req.text
+          const call = {
+            url: new URL(req.url, "http://localhost"),
+            method: req.method,
+            headers: new Headers(req.headers),
+            bodyText,
+            json: bodyText ? JSON.parse(bodyText) : undefined,
+          }
+          calls.push(call)
+          if (call.url.pathname === "/failed-batch/sync/replay") {
+            replayCalls += 1
+            if (replayCalls === 1) return HttpServerResponse.text("first batch accepted")
+            return HttpServerResponse.text(`middle batch failed${"x".repeat(Workspace.WARP_RESPONSE_BYTES + 1024)}`, {
+              status: 503,
+            })
+          }
+          if (call.url.pathname === "/failed-batch/sync/steal") return HttpServerResponse.empty({ status: 204 })
+          return HttpServerResponse.text("unexpected", { status: 500 })
+        }),
+      )
+      const url = yield* serverUrl()
+      yield* provideTmpdirInstance(
+        () =>
+          Effect.gen(function* () {
+            const workspace = yield* Workspace.Service
+            const sessionSvc = yield* SessionNs.Service
+            const instance = yield* requireInstance
+            const sourceType = unique("failed-batch-source")
+            const targetType = unique("failed-batch-target")
+            const source = workspaceInfo(instance.project.id, sourceType)
+            const target = workspaceInfo(instance.project.id, targetType)
+            yield* insertWorkspace(source)
+            yield* insertWorkspace(target)
+            registerAdapter(instance.project.id, sourceType, localAdapter(instance.directory).adapter)
+            registerAdapter(instance.project.id, targetType, remoteAdapter(`${url}/failed-batch`).adapter)
+            const session = yield* sessionSvc.create({})
+            yield* attachSessionToWorkspace(session.id, source.id)
+            yield* appendSessionEvents(session.id, Workspace.WARP_REPLAY_EVENTS * 2 + 1)
+
+            const exit = yield* workspace
+              .sessionWarp({ workspaceID: target.id, sessionID: session.id })
+              .pipe(Effect.exit)
+
+            expectExitContains(exit, "HTTP 503", `[response body exceeded ${Workspace.WARP_RESPONSE_BYTES} bytes`)
+            expect(calls.map((call) => `${call.method} ${call.url.pathname}`)).toEqual([
+              "POST /failed-batch/sync/replay",
+              "POST /failed-batch/sync/replay",
+            ])
+            expect(
+              calls.map((call) => call.json as { events: EventV2.SerializedEvent[] }).map((body) => body.events.length),
+            ).toEqual([Workspace.WARP_REPLAY_EVENTS, Workspace.WARP_REPLAY_EVENTS])
+            expect((yield* sessionSvc.get(session.id)).workspaceID).toBe(source.id)
           }),
         { git: true },
       )
