@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test"
-import { groupByServer, type CatalogEntry } from "../../src/tool/code-mode"
+import { groupByServer } from "../../src/tool/code-mode"
 import type { McpTool } from "../../src/mcp"
+
+type CatalogEntry = {
+  path: string
+  key: string
+  server: string
+  local: string
+  tool: McpTool
+}
 
 function fakeTool(id: string): { tool: McpTool; entry: CatalogEntry } {
   // groupByServer only stores the tool object keyed by entry; def/client are
