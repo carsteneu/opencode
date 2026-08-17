@@ -4,11 +4,14 @@ import { HttpClient, HttpClientResponse } from "effect/unstable/http"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { LayerNodePlatform } from "@opencode-ai/core/effect/app-node-platform"
+import { Global } from "@opencode-ai/core/global"
 import { PermissionV2 } from "@opencode-ai/core/permission"
 import { SessionV2 } from "@opencode-ai/core/session"
+import { SessionEvent } from "@opencode-ai/core/session/event"
 import { ToolRegistry } from "@opencode-ai/core/tool/registry"
 import { WebSearchTool } from "@opencode-ai/core/tool/websearch"
 import { ToolOutputStore } from "@opencode-ai/core/tool-output-store"
+import { tmpdir } from "./fixture/tmpdir"
 import { testEffect } from "./lib/effect"
 import { toolIdentity, executeTool, settleTool, toolDefinitions } from "./lib/tool"
 
@@ -123,7 +126,7 @@ const websearchConfig = Layer.succeed(
     },
   }),
 )
-const it = testEffect(
+const websearchLayer = (replacements: LayerNode.Replacements = []) =>
   AppNodeBuilder.build(
     LayerNode.group([ToolRegistry.node, ToolRegistry.toolsNode, WebSearchTool.configNode, WebSearchTool.node]),
     [
@@ -131,9 +134,10 @@ const it = testEffect(
       [LayerNodePlatform.httpClient, http],
       [WebSearchTool.configNode, websearchConfig],
       [ToolOutputStore.node, ToolOutputStore.nodeWithoutConfig],
+      ...replacements,
     ],
-  ),
-)
+  )
+const it = testEffect(websearchLayer())
 
 describe("WebSearchTool registration", () => {
   it.effect("registers websearch, asserts query permission, and calls Exa", () =>
@@ -144,7 +148,10 @@ describe("WebSearchTool registration", () => {
       config = { provider: "exa", enableExa: false, enableParallel: false }
       const registry = yield* ToolRegistry.Service
 
-      expect((yield* toolDefinitions(registry)).map((tool) => tool.name)).toEqual(["websearch"])
+      const definitions = yield* toolDefinitions(registry)
+      expect(definitions.map((tool) => tool.name)).toEqual(["websearch"])
+      expect(definitions[0]?.outputSchema).toHaveProperty("properties.provider")
+      expect(definitions[0]?.outputSchema).not.toHaveProperty("properties.text")
       expect(
         yield* executeTool(registry, {
           sessionID,
@@ -234,7 +241,7 @@ describe("WebSearchTool registration", () => {
       expect(settled).toEqual({
         result: { type: "text", value: "parallel results" },
         output: {
-          structured: { provider: "parallel", text: "parallel results" },
+          structured: { provider: "parallel" },
           content: [{ type: "text", text: "parallel results" }],
         },
       })
@@ -312,5 +319,69 @@ describe("WebSearchTool registration", () => {
       expect(chunksRead).toBeLessThan(10)
       expect(cancelled).toBe(true)
     }),
+  )
+
+  it.live("spills one large result without duplicating it in structured event data", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) =>
+        Effect.gen(function* () {
+          requests.length = 0
+          assertions.length = 0
+          const marker = "WEBSEARCH-LARGE-PAYLOAD"
+          const tail = "WEBSEARCH-LARGE-TAIL"
+          const full = `${marker}${"x".repeat(240 * 1024 - marker.length - tail.length)}${tail}`
+          responseBody = payload(full)
+          config = { provider: "exa", enableExa: false, enableParallel: false }
+          const registry = yield* ToolRegistry.Service
+          const settled = yield* settleTool(registry, {
+            sessionID,
+            ...toolIdentity,
+            call: { type: "tool-call", id: "call-websearch-large", name: "websearch", input: { query: "large" } },
+          })
+
+          const output = settled.output
+          const outputPath = settled.outputPaths?.[0]
+          if (!output || output.content[0]?.type !== "text" || !outputPath)
+            return yield* Effect.die("missing bounded websearch output")
+          const content = output.content[0]
+
+          expect(Buffer.byteLength(responseBody)).toBeLessThan(WebSearchTool.MAX_RESPONSE_BYTES)
+          expect(output.structured).toEqual({ provider: "exa" })
+          expect(output.structured).not.toHaveProperty("text")
+          expect(settled.outputPaths).toHaveLength(1)
+          expect(settled.result).toEqual({ type: "text", value: content.text })
+          expect(content.text).toContain(marker)
+          expect(content.text).toContain(tail)
+          expect(content.text).toContain("output truncated; full content saved to")
+          expect(Buffer.byteLength(content.text)).toBeLessThanOrEqual(ToolOutputStore.MAX_BYTES)
+          expect(yield* Effect.promise(() => Bun.file(outputPath).text())).toBe(full)
+
+          const event = Schema.encodeSync(SessionEvent.Tool.Success.data)(
+            Schema.decodeUnknownSync(SessionEvent.Tool.Success.data)({
+              sessionID,
+              timestamp: Date.now(),
+              assistantMessageID: toolIdentity.assistantMessageID,
+              callID: "call-websearch-large",
+              structured: output.structured,
+              content: output.content,
+              outputPaths: settled.outputPaths,
+              provider: { executed: false },
+            }),
+          )
+          const serialized = JSON.stringify(event)
+          const legacy = JSON.stringify({ ...event, structured: { provider: "exa", text: full } })
+          expect(serialized.split(marker)).toHaveLength(2)
+          expect(Buffer.byteLength(serialized)).toBeLessThan(Buffer.byteLength(legacy) / 4)
+        }).pipe(
+          Effect.provide(
+            websearchLayer([
+              [Global.node, Global.layerWith({ data: tmp.path })],
+              [LayerNodePlatform.httpClient, http],
+            ]),
+          ),
+        ),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
   )
 })

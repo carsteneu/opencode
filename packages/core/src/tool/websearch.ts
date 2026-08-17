@@ -189,6 +189,10 @@ const Output = Schema.Struct({
   text: Schema.String,
 })
 
+const StructuredOutput = Schema.Struct({
+  provider: Provider,
+})
+
 const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const tools = yield* Tools.Service
@@ -202,6 +206,8 @@ const layer = Layer.effectDiscard(
           description,
           input: Input,
           output: Output,
+          structured: StructuredOutput,
+          toStructuredOutput: ({ output }) => ({ provider: output.provider }),
           toModelOutput: ({ output }) => [{ type: "text", text: output.text }],
           execute: (input, context) => {
             const provider = selectProvider(context.sessionID, config, config.provider)
