@@ -131,13 +131,37 @@ export const SessionMessageTable = sqliteTable(
     ...Timestamps,
     data: text({ mode: "json" }).notNull().$type<SessionMessageData>(),
   },
-  (table) => [
-    uniqueIndex("session_message_session_seq_idx").on(table.session_id, table.seq),
-    index("session_message_session_type_seq_idx").on(table.session_id, table.type, table.seq),
-    index("session_message_session_time_created_id_idx").on(table.session_id, table.time_created, table.id),
-    index("session_message_time_created_idx").on(table.time_created),
-  ],
-)
+    (table) => [
+      uniqueIndex("session_message_session_seq_idx").on(table.session_id, table.seq),
+      index("session_message_session_type_seq_idx").on(table.session_id, table.type, table.seq),
+      index("session_message_session_time_created_id_idx").on(table.session_id, table.time_created, table.id),
+      index("session_message_time_created_idx").on(table.time_created),
+    ],
+  )
+
+  type SessionMessageContentData = (typeof SessionMessage.AssistantContent)["Encoded"]
+
+  export const SessionMessageContentTable = sqliteTable(
+    "session_message_content",
+    {
+      message_id: text()
+        .$type<SessionMessage.ID>()
+        .notNull()
+        .references(() => SessionMessageTable.id, { onDelete: "cascade" }),
+      item_id: text().notNull(),
+      session_id: text()
+        .$type<SessionSchema.ID>()
+        .notNull()
+        .references(() => SessionTable.id, { onDelete: "cascade" }),
+      seq: integer().notNull(),
+      data: text({ mode: "json" }).notNull().$type<SessionMessageContentData>(),
+    },
+    (table) => [
+      index("session_message_content_message_seq_idx").on(table.message_id, table.seq),
+      index("session_message_content_session_seq_idx").on(table.session_id, table.seq),
+      primaryKey({ columns: [table.message_id, table.item_id] }),
+    ],
+  )
 
 export const SessionInputTable = sqliteTable(
   "session_input",

@@ -17,6 +17,7 @@ import { SessionMessage } from "@opencode-ai/core/session/message"
 import { Prompt } from "@opencode-ai/core/session/prompt"
 import { SessionMessageUpdater } from "@opencode-ai/core/session/message-updater"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
+import { SessionHydrate } from "@opencode-ai/core/session/hydrate"
 import { SessionExecution } from "@opencode-ai/core/session/execution"
 import { SessionInput } from "@opencode-ai/core/session/input"
 import { SessionInputTable, SessionMessageTable, SessionTable } from "@opencode-ai/core/session/sql"
@@ -341,8 +342,13 @@ describe("SessionProjector", () => {
         .orderBy(asc(SessionMessageTable.seq))
         .all()
         .pipe(Effect.orDie)
-      const messages = rows.map((row) =>
-        Schema.decodeUnknownSync(SessionMessage.Message)({ ...row.data, id: row.id, type: row.type }),
+      const messages = yield* SessionHydrate.hydrateRows(
+        db,
+        rows,
+        (row) =>
+          Effect.sync(() =>
+            Schema.decodeUnknownSync(SessionMessage.Message)({ ...row.data, id: row.id, type: row.type }),
+          ),
       )
 
       expect(messages.map((message) => message.type)).toEqual([
@@ -482,8 +488,13 @@ describe("SessionProjector", () => {
         .orderBy(asc(SessionMessageTable.id))
         .all()
         .pipe(Effect.orDie)
-      const messages = rows.map((row) =>
-        Schema.decodeUnknownSync(SessionMessage.Message)({ ...row.data, id: row.id, type: row.type }),
+      const messages = yield* SessionHydrate.hydrateRows(
+        db,
+        rows,
+        (row) =>
+          Effect.sync(() =>
+            Schema.decodeUnknownSync(SessionMessage.Message)({ ...row.data, id: row.id, type: row.type }),
+          ),
       )
       expect(messages[0]).not.toHaveProperty("time.completed")
       expect(messages[1]).toMatchObject({
@@ -541,8 +552,13 @@ describe("SessionProjector", () => {
         .orderBy(asc(SessionMessageTable.id))
         .all()
         .pipe(Effect.orDie)
-      const messages = rows.map((row) =>
-        Schema.decodeUnknownSync(SessionMessage.Message)({ ...row.data, id: row.id, type: row.type }),
+      const messages = yield* SessionHydrate.hydrateRows(
+        db,
+        rows,
+        (row) =>
+          Effect.sync(() =>
+            Schema.decodeUnknownSync(SessionMessage.Message)({ ...row.data, id: row.id, type: row.type }),
+          ),
       )
       expect(messages).toEqual([
         SessionMessage.Assistant.make({

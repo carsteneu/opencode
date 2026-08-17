@@ -25,6 +25,7 @@ import { SessionSchema } from "@opencode-ai/core/session/schema"
 import { SessionTable } from "@opencode-ai/core/session/sql"
 import sessionMetadataMigration from "@opencode-ai/core/database/migration/20260511173437_session-metadata"
 import sessionListIndexesMigration from "@opencode-ai/core/database/migration/20260817000652_session_list_indexes"
+import normalizeAssistantContentMigration from "@opencode-ai/core/database/migration/20260817153515_normalize_assistant_content"
 import type { SqlClient as SqlClientService } from "effect/unstable/sql/SqlClient"
 import { Database } from "@opencode-ai/core/database/database"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
@@ -671,6 +672,53 @@ describe("DatabaseMigration", () => {
         yield* DatabaseMigration.applyOnly(db, [])
 
         expect(yield* db.all(sql`SELECT id FROM migration ORDER BY id`)).toEqual([{ id: "existing" }])
+      }),
+    )
+  })
+
+  test("backfills inline assistant content into per-item segments and clears the header blob", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* db.run(sql`CREATE TABLE session (id text PRIMARY KEY, project_id text, slug text)`)
+        yield* db.run(sql`
+          CREATE TABLE session_message (
+            id text PRIMARY KEY,
+            session_id text NOT NULL,
+            type text NOT NULL,
+            seq integer NOT NULL,
+            data text NOT NULL,
+            FOREIGN KEY(session_id) REFERENCES session(id) ON DELETE CASCADE
+          )
+        `)
+        yield* db.run(sql`INSERT INTO session (id, project_id, slug) VALUES ('ses1', 'p', 's')`)
+        const inline = JSON.stringify({
+          agent: "build",
+          model: { id: "m", providerID: "p" },
+          content: [
+            { type: "text", id: "text-a", text: "hi" },
+            { type: "tool", id: "call-1", name: "bash", state: { status: "completed" }, time: { created: 1 } },
+          ],
+          time: { created: 1 },
+        })
+        yield* db.run(sql`INSERT INTO session_message VALUES ('msg1', 'ses1', 'assistant', 100, ${inline})`)
+        yield* db.run(sql`INSERT INTO session_message VALUES ('msg2', 'ses1', 'shell', 200, ${JSON.stringify({ output: "x" })})`)
+
+        yield* DatabaseMigration.applyOnly(db, [normalizeAssistantContentMigration])
+
+        const items = yield* db.all(
+          sql`SELECT item_id, data FROM session_message_content WHERE message_id = 'msg1' ORDER BY seq`,
+        )
+        expect(items.map((row) => (row as { item_id: string }).item_id)).toEqual(["text-a", "call-1"])
+        expect(
+          (yield* db.get(sql`SELECT data FROM session_message WHERE id = 'msg1'`)) as { data: string },
+        ).toMatchObject({
+          data: expect.stringContaining("\"content\":[]"),
+        })
+        // Non-assistant rows are left untouched.
+        expect(yield* db.get(sql`SELECT data FROM session_message WHERE id = 'msg2'`)).toMatchObject({
+          data: expect.stringContaining("output"),
+        })
       }),
     )
   })

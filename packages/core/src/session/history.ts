@@ -5,6 +5,7 @@ import { MessageDecodeError } from "./error"
 import { SessionMessage } from "./message"
 import { SessionSchema } from "./schema"
 import { SessionContextEpochTable, SessionMessageTable } from "./sql"
+import { SessionHydrate } from "./hydrate"
 
 type DatabaseService = Database.Interface["db"]
 
@@ -76,8 +77,8 @@ export const load = Effect.fn("SessionHistory.load")(function* (db: DatabaseServ
     ],
     { concurrency: "unbounded" },
   )
-  return yield* Effect.forEach(yield* messageRows(db, sessionID, compaction, epoch?.baselineSeq), decodeMessageRow)
-})
+    return yield* SessionHydrate.hydrateRows(db, yield* messageRows(db, sessionID, compaction, epoch?.baselineSeq), decodeMessageRow)
+  })
 
 export const loadForRunner = Effect.fn("SessionHistory.loadForRunner")(function* (
   db: DatabaseService,
@@ -93,9 +94,8 @@ export const entriesForRunner = Effect.fn("SessionHistory.entriesForRunner")(fun
   baselineSeq: number,
 ) {
   const rows = yield* messageRows(db, sessionID, yield* latestCompaction(db, sessionID), baselineSeq)
-  return yield* Effect.forEach(rows, (row) =>
-    decodeMessageRow(row).pipe(Effect.map((message) => ({ seq: row.seq, message }))),
-  )
+  const messages = yield* SessionHydrate.hydrateRows(db, rows, decodeMessageRow)
+  return messages.map((message, index) => ({ seq: rows[index]!.seq, message }))
 })
 
 export * as SessionHistory from "./history"
