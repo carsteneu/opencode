@@ -20,6 +20,16 @@ export class ResponseStreamError extends Error {
   }
 }
 
+export function findTimeout(error: unknown): HeaderTimeoutError | ResponseStreamError | undefined {
+  let current = error
+  for (let depth = 0; depth < 8; depth++) {
+    if (current instanceof HeaderTimeoutError || current instanceof ResponseStreamError) return current
+    if (!(current instanceof Error) || current.cause === current) return undefined
+    current = current.cause
+  }
+  return undefined
+}
+
 function isOpenAiErrorRetryable(e: APICallError) {
   const status = e.statusCode
   if (!status) return e.isRetryable

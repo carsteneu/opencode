@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import path from "node:path"
-import { jsonSchema, tool, type ModelMessage, type Tool } from "ai"
+import { APICallError, jsonSchema, tool, type ModelMessage, type Tool } from "ai"
 import { Effect, Stream } from "effect"
 import { LLMAIProcess, type AIProcessInput, type PoolOptions } from "@/session/llm/ai-process-client"
 import type { AISDKEvent } from "@/session/llm/ai-sdk"
@@ -9,6 +9,7 @@ import { tmpdir } from "../fixture/fixture"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderError } from "@/provider/error"
+import { MessageV2 } from "@/session/message-v2"
 
 const pools = new Set<ReturnType<typeof LLMAIProcess.createPool>>()
 const processes = new Set<number>()
@@ -81,6 +82,7 @@ type Directive = {
     | "end-no-ready"
     | "end-eof"
     | "wrong-run"
+    | "error-frame"
     | "late-event"
     | "late-tool-a"
     | "late-tool-b"
@@ -89,6 +91,7 @@ type Directive = {
   release?: string
   stderr?: string
   written?: string
+  frame?: Record<string, unknown>
 }
 
 function fixtureInput(
@@ -306,6 +309,72 @@ describe("LLM AI process pool", () => {
     expect(pool.stats()).toMatchObject({ spawned: 1, reused: 1, pooled: 1, idle: 1, busy: 0 })
   })
 
+  test("reconstructs API timeout frames while preserving HTTP retry classification", async () => {
+    await using tmp = await tmpdir()
+    const cases = [
+      { statusCode: 400, isRetryable: false, expected: "APIError", expectedRetryable: false },
+      { statusCode: 401, isRetryable: false, expected: "APIError", expectedRetryable: false },
+      { statusCode: 500, isRetryable: true, expected: "APIError", expectedRetryable: true },
+      { statusCode: 200, isRetryable: false, expected: "APIError", expectedRetryable: true },
+      { statusCode: 413, isRetryable: false, expected: "ContextOverflowError", expectedRetryable: false },
+    ] as const
+
+    await Promise.all(
+      cases.map(async ({ statusCode, isRetryable, expected, expectedRetryable }) => {
+        const spawned: number[] = []
+        const pool = createPool(tmp.path, { max: 1, onSpawn: (info) => spawned.push(info.pid) })
+        const request = fixtureInput({
+          action: "error-frame",
+          frame: {
+            error: "Provider response stream timed out",
+            kind: "response-stream",
+            api: { statusCode, isRetryable },
+          },
+        })
+        const error = await collect(pool, request).catch((cause) => cause)
+
+        expect(APICallError.isInstance(error)).toBe(true)
+        if (!APICallError.isInstance(error)) throw error
+        expect(error.statusCode).toBe(statusCode)
+        expect(error.isRetryable).toBe(isRetryable)
+        expect(error.cause).toBeInstanceOf(ProviderError.ResponseStreamError)
+        expect((error.cause as Error).message).toBe("Provider response stream timed out")
+        const result = MessageV2.fromError(error, { providerID: request.modelInfo.providerID })
+        expect(result.name).toBe(expected)
+        if (result.name === "APIError") expect(result.data.isRetryable).toBe(expectedRetryable)
+        expect(spawned).toHaveLength(1)
+        await waitStopped(spawned[0])
+      }),
+    )
+  })
+
+  test("rejects malformed API timeout frames and retires their workers", async () => {
+    await using tmp = await tmpdir()
+    const frames = [
+      { error: "bad api without kind", api: { isRetryable: true } },
+      { error: "bad api extra", kind: "response-stream", api: { isRetryable: true, extra: true } },
+      { error: "bad api missing retryable", kind: "response-stream", api: { statusCode: 500 } },
+      { error: "bad api retryable", kind: "response-stream", api: { isRetryable: "yes" } },
+      { error: "bad api low status", kind: "response-stream", api: { statusCode: 99, isRetryable: true } },
+      { error: "bad api high status", kind: "response-stream", api: { statusCode: 600, isRetryable: true } },
+      { error: "bad api fractional status", kind: "response-stream", api: { statusCode: 500.5, isRetryable: true } },
+    ]
+
+    await Promise.all(
+      frames.map(async (frame) => {
+        const spawned: number[] = []
+        const pool = createPool(tmp.path, { max: 1, onSpawn: (info) => spawned.push(info.pid) })
+        const error = await collect(pool, fixtureInput({ action: "error-frame", frame })).catch((cause) => cause)
+
+        expect(error).toBeInstanceOf(Error)
+        expect(APICallError.isInstance(error)).toBe(false)
+        expect((error as Error).message).toContain("Invalid or stale LLM process event")
+        expect(spawned).toHaveLength(1)
+        await waitStopped(spawned[0])
+      }),
+    )
+  })
+
   test("reconstructs a response stream timeout and replaces the unhealthy real runtime worker", async () => {
     let stalled = true
     let requests = 0
@@ -370,6 +439,93 @@ describe("LLM AI process pool", () => {
     expect(spawned[1]).not.toBe(spawned[0])
     expect(pool.stats()).toMatchObject({ spawned: 2, pooled: 1, idle: 1, busy: 0 })
     expect(pool.stats().retired).toBeGreaterThanOrEqual(1)
+  }, 15_000)
+
+  test("reconstructs JSON error-body timeouts with HTTP status before replacing the worker", async () => {
+    const cases = [
+      { statusCode: 500, isRetryable: true, expected: "APIError" },
+      { statusCode: 413, isRetryable: false, expected: "ContextOverflowError" },
+    ] as const
+    await Promise.all(
+      cases.map(async ({ statusCode, isRetryable, expected }) => {
+        let stalled = true
+        let requests = 0
+        let canceled = 0
+        const server = Bun.serve({
+          port: 0,
+          async fetch(request) {
+            await request.text()
+            requests++
+            if (stalled)
+              return new Response(
+                new ReadableStream<Uint8Array>({
+                  start(controller) {
+                    controller.enqueue(new TextEncoder().encode('{"error":{"message":"partial'))
+                  },
+                  pull: () => new Promise<void>(() => {}),
+                  cancel() {
+                    canceled++
+                  },
+                }),
+                { status: statusCode, headers: { "content-type": "application/json" } },
+              )
+            return new Response(
+              [chunk({ role: "assistant" }), chunk({ content: "recovered" }), chunk({}, "stop"), "[DONE]"]
+                .map((value) => `data: ${value === "[DONE]" ? value : JSON.stringify(value)}\n\n`)
+                .join(""),
+              { headers: { "content-type": "text/event-stream" } },
+            )
+          },
+        })
+        servers.push(server)
+        const spawned: number[] = []
+        const pool = LLMAIProcess.createPool({
+          max: 1,
+          idleMs: 60_000,
+          killGraceMs: 25,
+          onSpawn(info) {
+            spawned.push(info.pid)
+            processes.add(info.pid)
+          },
+        })
+        pools.add(pool)
+        const request = fixtureInput(
+          { label: `json-error-timeout-${statusCode}` },
+          {
+            baseURL: `${server.url}v1`,
+            apiKey: "timeout-key",
+            headers: { "x-timeout": "stable" },
+            extraOptions: { chunkTimeout: 30 },
+          },
+        )
+
+        const error = await collect(pool, request).catch((cause) => cause)
+
+        expect(APICallError.isInstance(error)).toBe(true)
+        if (!APICallError.isInstance(error)) throw error
+        expect(error.statusCode).toBe(statusCode)
+        expect(error.isRetryable).toBe(isRetryable)
+        expect(error.cause).toBeInstanceOf(ProviderError.ResponseStreamError)
+        expect((error.cause as Error).message).toBe("Provider response stream timed out")
+        expect(MessageV2.fromError(error, { providerID: request.modelInfo.providerID }).name).toBe(expected)
+        expect(requests).toBe(1)
+        expect(spawned).toHaveLength(1)
+        await waitStopped(spawned[0])
+        await waitFor(() => canceled === 1, `JSON ${statusCode} response producer was not canceled`)
+
+        stalled = false
+        const recovered = await collect(pool, request)
+
+        expect(recovered.filter((event) => event.type === "text-delta").map((event) => event.text)).toEqual([
+          "recovered",
+        ])
+        expect(requests).toBe(2)
+        expect(spawned).toHaveLength(2)
+        expect(spawned[1]).not.toBe(spawned[0])
+        expect(pool.stats()).toMatchObject({ spawned: 2, pooled: 1, idle: 1, busy: 0 })
+        expect(pool.stats().retired).toBeGreaterThanOrEqual(1)
+      }),
+    )
   }, 15_000)
 
   test("reconstructs a header timeout with its duration and replaces the unhealthy worker", async () => {

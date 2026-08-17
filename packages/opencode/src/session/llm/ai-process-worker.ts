@@ -1,4 +1,4 @@
-import { jsonSchema, streamText, tool, type Tool, wrapLanguageModel } from "ai"
+import { APICallError, jsonSchema, streamText, tool, type Tool, wrapLanguageModel } from "ai"
 import { LLMWorkerIPC } from "./ipc"
 import type { AIProcessInput } from "./ai-process-client"
 import type { SharedV3ProviderOptions } from "@ai-sdk/provider"
@@ -57,6 +57,10 @@ const fail = async (error: unknown, run = active?.run ?? -1) => {
       error: detail?.error ?? (error instanceof Error ? error.message : String(error)),
       kind: detail?.kind,
       timeoutMs: detail?.timeoutMs,
+      api:
+        detail && APICallError.isInstance(error)
+          ? { statusCode: error.statusCode, isRetryable: error.isRetryable }
+          : undefined,
     })
     .catch(() => undefined)
   await output.end().catch(() => undefined)
@@ -65,16 +69,12 @@ const fail = async (error: unknown, run = active?.run ?? -1) => {
 }
 
 const providerFailure = (error: unknown) => {
-  let current = error
-  for (let depth = 0; depth < 8; depth++) {
-    if (current instanceof ProviderError.HeaderTimeoutError) {
-      return { kind: "header-timeout" as const, error: current.message, timeoutMs: current.ms }
-    }
-    if (current instanceof ProviderError.ResponseStreamError) {
-      return { kind: "response-stream" as const, error: current.message }
-    }
-    if (!(current instanceof Error) || current.cause === current) return undefined
-    current = current.cause
+  const timeout = ProviderError.findTimeout(error)
+  if (timeout instanceof ProviderError.HeaderTimeoutError) {
+    return { kind: "header-timeout" as const, error: timeout.message, timeoutMs: timeout.ms }
+  }
+  if (timeout instanceof ProviderError.ResponseStreamError) {
+    return { kind: "response-stream" as const, error: timeout.message }
   }
   return undefined
 }

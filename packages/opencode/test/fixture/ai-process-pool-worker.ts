@@ -29,6 +29,7 @@ type Directive = {
     | "end-no-ready"
     | "end-eof"
     | "wrong-run"
+    | "error-frame"
     | "late-event"
     | "late-tool-a"
     | "late-tool-b"
@@ -37,6 +38,7 @@ type Directive = {
   release?: string
   stderr?: string
   written?: string
+  frame?: Record<string, unknown>
 }
 
 type ClientFrame =
@@ -203,6 +205,11 @@ while (true) {
       id: eventID++,
       events: [{ type: "text-delta", id: "stale", text: "MUST_NOT_LEAK" }],
     })
+    await new Promise(() => {})
+  }
+
+  if (directive.action === "error-frame") {
+    await output.write({ ...directive.frame, type: "error", run: frame.run })
     await new Promise(() => {})
   }
 

@@ -24,24 +24,57 @@ export interface LanguageEvent {
   language?: LanguageModelV3
 }
 
-function wrapSSE(res: Response, ms: number, ctl: AbortController) {
+function wrapBody(
+  res: Response,
+  ms: number,
+  ctl: AbortController,
+  metadata: ResponseMetadata = { url: res.url, redirected: res.redirected, type: res.type },
+  state: BodyTimeoutState = { active: 0, cancelers: new Set(), finished: false },
+): Response {
   if (typeof ms !== "number" || ms <= 0) return res
-  if (!res.body) return res
-  if (!res.headers.get("content-type")?.toLowerCase().includes("text/event-stream")) return res
+  if (res.bodyUsed) return res
 
-  const reader = res.body.getReader()
+  const source = res.body
+  if (!source || source.locked) return res
+  let raw: ReadableStream<Uint8Array<ArrayBuffer>> = source
+  let reader: BodyReader | undefined
+  let active = true
+  const release = () => {
+    if (!active) return state.active
+    active = false
+    state.cancelers.delete(cancelRaw)
+    state.active -= 1
+    return state.active
+  }
+  const cancelRaw = async (reason: unknown) => {
+    release()
+    await (reader ? reader.cancel(reason) : raw.cancel(reason))
+  }
+  state.active += 1
+  state.cancelers.add(cancelRaw)
+
+  const timeoutMessage = res.headers.get("content-type")?.toLowerCase().includes("text/event-stream")
+    ? "SSE read timed out"
+    : "Provider response stream timed out"
   const body = new ReadableStream<Uint8Array>(
     {
       async pull(ctrl) {
-        const part = await new Promise<Awaited<ReturnType<typeof reader.read>>>((resolve, reject) => {
+        if (state.error) {
+          release()
+          throw state.error
+        }
+        const current = (reader ??= raw.getReader())
+        const part = await new Promise<Awaited<ReturnType<typeof current.read>>>((resolve, reject) => {
           const id = setTimeout(() => {
-            const err = new Error("SSE read timed out")
+            const err = state.error ?? new Error(timeoutMessage)
+            state.error = err
+            const cancelers = [...state.cancelers]
             ctl.abort(err)
-            void reader.cancel(err).catch(() => undefined)
+            void Promise.allSettled(cancelers.map((cancel) => cancel(err)))
             reject(err)
           }, ms)
 
-          reader.read().then(
+          current.read().then(
             (part) => {
               clearTimeout(id)
               resolve(part)
@@ -51,9 +84,19 @@ function wrapSSE(res: Response, ms: number, ctl: AbortController) {
               reject(err)
             },
           )
+        }).catch((err) => {
+          if (state.error) throw state.error
+          release()
+          throw err
         })
 
+        if (state.error) {
+          release()
+          throw state.error
+        }
         if (part.done) {
+          if (active) state.finished = true
+          release()
           ctrl.close()
           return
         }
@@ -61,18 +104,61 @@ function wrapSSE(res: Response, ms: number, ctl: AbortController) {
         ctrl.enqueue(part.value)
       },
       async cancel(reason) {
-        ctl.abort(reason)
-        await reader.cancel(reason)
+        const remaining = release()
+        if (remaining === 0 && !state.finished) ctl.abort(reason)
+        await (reader ? reader.cancel(reason) : raw.cancel(reason))
       },
     },
     { highWaterMark: 0 },
   )
 
-  return new Response(body, {
+  const response = new Response(body, {
     headers: new Headers(res.headers),
     status: res.status,
     statusText: res.statusText,
   })
+  return responseMetadata(response, metadata, () => {
+    if (response.bodyUsed || response.body?.locked) throw new TypeError("Response.clone: Body has already been used")
+    const [left, right] = raw.tee()
+    raw = left
+    return wrapBody(
+      new Response(right, {
+        headers: new Headers(response.headers),
+        status: response.status,
+        statusText: response.statusText,
+      }),
+      ms,
+      ctl,
+      metadata,
+      state,
+    )
+  })
+}
+
+type ResponseMetadata = Pick<Response, "url" | "redirected" | "type">
+type BodyReader = {
+  cancel(reason?: unknown): Promise<void>
+  read(): Promise<{ done: false; value: Uint8Array } | { done: true; value?: Uint8Array }>
+}
+type BodyTimeoutState = {
+  active: number
+  cancelers: Set<(reason: unknown) => Promise<void>>
+  error?: Error
+  finished: boolean
+}
+
+function responseMetadata(response: Response, metadata: ResponseMetadata, clone: () => Response): Response {
+  Object.defineProperties(response, {
+    url: { configurable: true, value: metadata.url },
+    redirected: { configurable: true, value: metadata.redirected },
+    type: { configurable: true, value: metadata.type },
+    clone: {
+      configurable: true,
+      writable: true,
+      value: clone,
+    },
+  })
+  return response
 }
 
 function prepareOptions(model: ModelV2.Info, pkg: string) {
@@ -128,7 +214,7 @@ function prepareOptions(model: ModelV2.Info, pkg: string) {
       }
     })()
     if (!chunkAbortCtl || chunkTimeout === false) return res
-    return wrapSSE(res, chunkTimeout, chunkAbortCtl)
+    return wrapBody(res, chunkTimeout, chunkAbortCtl)
   }
 
   return options

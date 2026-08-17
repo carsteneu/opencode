@@ -660,6 +660,7 @@ export function fromError(
   e: unknown,
   ctx: { providerID: ProviderV2.ID; aborted?: boolean },
 ): NonNullable<Assistant["error"]> {
+  const providerTimeout = ProviderError.findTimeout(e)
   switch (true) {
     case e instanceof DOMException && e.name === "AbortError":
       return new AbortedError(
@@ -720,28 +721,9 @@ export function fromError(
         { cause: e },
       ).toObject()
     case e instanceof ProviderError.HeaderTimeoutError:
-      return new APIError(
-        {
-          message: e.message,
-          isRetryable: true,
-          metadata: {
-            code: e.name,
-            timeoutMs: String(e.ms),
-          },
-        },
-        { cause: e },
-      ).toObject()
+      return fromProviderTimeout(e, e)
     case e instanceof ProviderError.ResponseStreamError:
-      return new APIError(
-        {
-          message: e.message,
-          isRetryable: true,
-          metadata: {
-            code: e.name,
-          },
-        },
-        { cause: e },
-      ).toObject()
+      return fromProviderTimeout(e, e)
     case APICallError.isInstance(e):
       const parsed = ProviderError.parseAPICallError({
         providerID: ctx.providerID,
@@ -756,6 +738,17 @@ export function fromError(
           { cause: e },
         ).toObject()
       }
+      if (
+        providerTimeout &&
+        (parsed.statusCode === undefined ||
+          parsed.statusCode < 400 ||
+          parsed.statusCode >= 500 ||
+          parsed.statusCode === 408 ||
+          parsed.statusCode === 429 ||
+          parsed.isRetryable)
+      ) {
+        return fromProviderTimeout(providerTimeout, e)
+      }
 
       return new APIError(
         {
@@ -768,6 +761,10 @@ export function fromError(
         },
         { cause: e },
       ).toObject()
+    case providerTimeout instanceof ProviderError.HeaderTimeoutError:
+      return fromProviderTimeout(providerTimeout, e)
+    case providerTimeout instanceof ProviderError.ResponseStreamError:
+      return fromProviderTimeout(providerTimeout, e)
     case e instanceof Error:
       return new NamedError.Unknown({ message: errorMessage(e) }, { cause: e }).toObject()
     default:
@@ -797,6 +794,23 @@ export function fromError(
       } catch {}
       return new NamedError.Unknown({ message: JSON.stringify(e) }, { cause: e }).toObject()
   }
+}
+
+function fromProviderTimeout(
+  timeout: ProviderError.HeaderTimeoutError | ProviderError.ResponseStreamError,
+  cause: unknown,
+): NonNullable<Assistant["error"]> {
+  return new APIError(
+    {
+      message: timeout.message,
+      isRetryable: true,
+      metadata:
+        timeout instanceof ProviderError.HeaderTimeoutError
+          ? { code: timeout.name, timeoutMs: String(timeout.ms) }
+          : { code: timeout.name },
+    },
+    { cause },
+  ).toObject()
 }
 
 export * as MessageV2 from "./message-v2"

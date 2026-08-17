@@ -1,7 +1,7 @@
 import { Cause, Effect, Queue, Stream } from "effect"
 import type { ModelMessage, Tool } from "ai"
 import type { Provider } from "@/provider/provider"
-import { asSchema } from "ai"
+import { APICallError, asSchema } from "ai"
 import { LLMWorkerIPC } from "./ipc"
 import type { AISDKEvent } from "./ai-sdk"
 import { ProviderError } from "@/provider/error"
@@ -72,6 +72,7 @@ type ProcessEvent =
       readonly error: string
       readonly kind?: "header-timeout" | "response-stream"
       readonly timeoutMs?: number
+      readonly api?: { readonly statusCode?: number; readonly isRetryable: boolean }
     }
 
 export type ProcessOptions = {
@@ -490,8 +491,23 @@ export function stream(
               Queue.endUnsafe(queue)
               return false
             }
-            if (message.kind === "header-timeout") throw new ProviderError.HeaderTimeoutError(message.timeoutMs!)
-            if (message.kind === "response-stream") throw new ProviderError.ResponseStreamError(message.error)
+            const timeout =
+              message.kind === "header-timeout"
+                ? new ProviderError.HeaderTimeoutError(message.timeoutMs!)
+                : message.kind === "response-stream"
+                  ? new ProviderError.ResponseStreamError(message.error)
+                  : undefined
+            if (timeout && message.api) {
+              throw new APICallError({
+                message: message.error,
+                url: "",
+                requestBodyValues: {},
+                statusCode: message.api.statusCode,
+                isRetryable: message.api.isRetryable,
+                cause: timeout,
+              })
+            }
+            if (timeout) throw timeout
             throw new Error(message.error)
           })
             .then(async () => {
@@ -550,7 +566,8 @@ function validEvent(value: ProcessEvent, run: number): value is ProcessEvent {
   if (value.type === "ready") return Number.isSafeInteger(value.rss) && value.rss >= 0
   if (value.type === "error") {
     if (typeof value.error !== "string") return false
-    if (value.kind === undefined) return value.timeoutMs === undefined
+    if (value.api !== undefined && !validAPIError(value.api)) return false
+    if (value.kind === undefined) return value.timeoutMs === undefined && value.api === undefined
     if (value.kind === "response-stream") return value.timeoutMs === undefined
     return value.kind === "header-timeout" && Number.isSafeInteger(value.timeoutMs) && value.timeoutMs! > 0
   }
@@ -559,6 +576,15 @@ function validEvent(value: ProcessEvent, run: number): value is ProcessEvent {
   if (value.type !== "tool") return false
   if (!["execute", "model-output"].includes(value.action)) return false
   return typeof value.name === "string" && typeof value.callID === "string"
+}
+
+function validAPIError(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const api = value as Record<string, unknown>
+  if (Object.keys(api).some((key) => key !== "statusCode" && key !== "isRetryable")) return false
+  if (typeof api.isRetryable !== "boolean") return false
+  if (api.statusCode === undefined) return true
+  return Number.isSafeInteger(api.statusCode) && (api.statusCode as number) >= 100 && (api.statusCode as number) <= 599
 }
 
 function spawnWorker(command: string[], grace: number, key: string, pooled: boolean) {

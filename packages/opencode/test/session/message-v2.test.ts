@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { APICallError } from "ai"
 import { MessageV2 } from "../../src/session/message-v2"
+import { ProviderError } from "@/provider/error"
 import { ProviderTransform } from "@/provider/transform"
 import type { Provider } from "@/provider/provider"
 
@@ -1414,6 +1415,121 @@ describe("session.message-v2.fromError", () => {
         },
       })
     })
+  })
+
+  test("serializes provider timeouts wrapped as APICallError causes", () => {
+    const cases: Array<{
+      cause: ProviderError.HeaderTimeoutError | ProviderError.ResponseStreamError
+      expected: { message: string; metadata: Record<string, string> }
+    }> = [
+      {
+        cause: new ProviderError.HeaderTimeoutError(321),
+        expected: {
+          message: "Provider response headers timed out after 321ms",
+          metadata: { code: "ProviderHeaderTimeoutError", timeoutMs: "321" },
+        },
+      },
+      {
+        cause: new ProviderError.ResponseStreamError("Provider response stream timed out"),
+        expected: {
+          message: "Provider response stream timed out",
+          metadata: { code: "ProviderResponseStreamError" },
+        },
+      },
+    ]
+    cases.forEach(({ cause, expected }) => {
+      const input = new APICallError({
+        message: "Failed to process provider response",
+        url: "https://example.com/v1/chat/completions",
+        requestBodyValues: {},
+        statusCode: 500,
+        isRetryable: true,
+        cause,
+      })
+
+      expect(MessageV2.fromError(input, { providerID })).toStrictEqual({
+        name: "APIError",
+        data: {
+          message: expected.message,
+          isRetryable: true,
+          metadata: expected.metadata,
+        },
+      })
+    })
+  })
+
+  test("preserves HTTP classification priority around nested stream timeouts", () => {
+    const timeout = new ProviderError.ResponseStreamError("Provider response stream timed out")
+    const createError = (statusCode: number | undefined, isRetryable: boolean) =>
+      new APICallError({
+        message: statusCode ? `Provider rejected request with ${statusCode}` : "Provider response failed",
+        url: "https://example.com/v1/chat/completions",
+        requestBodyValues: {},
+        statusCode,
+        isRetryable,
+        cause: timeout,
+      })
+
+    expect(MessageV2.fromError(createError(413, false), { providerID })).toStrictEqual({
+      name: "ContextOverflowError",
+      data: { message: "Provider rejected request with 413", responseBody: undefined },
+    })
+
+    Array.of(400, 401, 403).forEach((statusCode) => {
+      expect(MessageV2.fromError(createError(statusCode, false), { providerID })).toStrictEqual({
+        name: "APIError",
+        data: {
+          message: `Provider rejected request with ${statusCode}`,
+          statusCode,
+          isRetryable: false,
+          responseHeaders: undefined,
+          responseBody: undefined,
+          metadata: { url: "https://example.com/v1/chat/completions" },
+        },
+      })
+    })
+
+    Array.of(200, undefined).forEach((statusCode) => {
+      expect(MessageV2.fromError(createError(statusCode, false), { providerID })).toStrictEqual({
+        name: "APIError",
+        data: {
+          message: "Provider response stream timed out",
+          isRetryable: true,
+          metadata: { code: "ProviderResponseStreamError" },
+        },
+      })
+    })
+
+    Array.of(429, 500).forEach((statusCode) => {
+      const result = MessageV2.fromError(createError(statusCode, true), { providerID })
+      if (result.name !== "APIError") throw new Error("expected APIError")
+      expect(result.data.isRetryable).toBe(true)
+    })
+
+    expect(MessageV2.fromError(timeout, { providerID })).toStrictEqual({
+      name: "APIError",
+      data: {
+        message: "Provider response stream timed out",
+        isRetryable: true,
+        metadata: { code: "ProviderResponseStreamError" },
+      },
+    })
+  })
+
+  test("keeps unrelated APICallError causes on the normal classification path", () => {
+    const input = {
+      message: "ordinary provider failure",
+      url: "https://example.com/v1/chat/completions",
+      requestBodyValues: {},
+      statusCode: 418,
+      responseHeaders: { "x-request-id": "request-1" },
+      responseBody: '{"error":"ordinary"}',
+      isRetryable: false,
+    }
+
+    expect(
+      MessageV2.fromError(new APICallError({ ...input, cause: new Error("unrelated cause") }), { providerID }),
+    ).toStrictEqual(MessageV2.fromError(new APICallError(input), { providerID }))
   })
 
   test("serializes context_length_exceeded as ContextOverflowError", () => {
