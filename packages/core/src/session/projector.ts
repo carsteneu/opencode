@@ -160,6 +160,8 @@ function run(db: DatabaseService, event: SessionEvent.Event) {
           })
           .onConflictDoUpdate({
             target: [SessionMessageContentTable.message_id, SessionMessageContentTable.item_id],
+            // Replacing only `data` (not `seq`) keeps seq = the item's creation
+            // seq, so within-message ordering equals append order on reassembly.
             set: { data: encoded },
           })
           .run()

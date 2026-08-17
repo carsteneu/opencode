@@ -38,7 +38,8 @@ export default {
         FROM \`session_message\` m
         JOIN json_each(json_extract(m.data, '$.content')) AS item
         WHERE m.type = 'assistant'
-          AND json_extract(m.data, '$.content') IS NOT NULL;
+          AND json_extract(m.data, '$.content') IS NOT NULL
+          AND json_extract(item.value, '$.id') IS NOT NULL;
       `)
       yield* tx.run(`
         UPDATE \`session_message\`

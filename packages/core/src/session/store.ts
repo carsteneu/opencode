@@ -43,21 +43,21 @@ const layer = Layer.effect(
       runnerContext: Effect.fn("SessionStore.runnerContext")(function* (sessionID, baselineSeq) {
         return yield* SessionHistory.loadForRunner(db, sessionID, baselineSeq)
       }),
-        message: Effect.fn("SessionStore.message")(function* (messageID) {
-          const row = yield* db
-            .select()
-            .from(SessionMessageTable)
-            .where(eq(SessionMessageTable.id, messageID))
-            .get()
-            .pipe(Effect.orDie)
-          if (!row) return undefined
-          const message = yield* decodeMessage({ ...row.data, id: row.id, type: row.type }).pipe(Effect.orDie)
-          const content = yield* SessionHydrate.contentByMessage(db, [row.id])
-          return {
-            sessionID: SessionSchema.ID.make(row.session_id),
-            message: SessionHydrate.withContent(message, content.get(row.id)),
-          }
-        }),
+      message: Effect.fn("SessionStore.message")(function* (messageID) {
+        const row = yield* db
+          .select()
+          .from(SessionMessageTable)
+          .where(eq(SessionMessageTable.id, messageID))
+          .get()
+          .pipe(Effect.orDie)
+        if (!row) return undefined
+        const message = yield* decodeMessage({ ...row.data, id: row.id, type: row.type }).pipe(Effect.orDie)
+        const content = row.type === "assistant" ? yield* SessionHydrate.contentByMessage(db, [row.id]) : undefined
+        return {
+          sessionID: SessionSchema.ID.make(row.session_id),
+          message: SessionHydrate.withContent(message, content?.get(row.id)),
+        }
+      }),
     })
   }),
 )
