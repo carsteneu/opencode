@@ -46,11 +46,12 @@ export namespace EffectFlock {
   const MAX_DELAY_MS = 2_000
   const HEARTBEAT_MS = Math.max(100, Math.floor(STALE_MS / 3))
 
-  const retrySchedule = Schedule.exponential(BASE_DELAY_MS, 1.7).pipe(
-    Schedule.either(Schedule.spaced(MAX_DELAY_MS)),
-    Schedule.jittered,
-    Schedule.while((meta) => meta.elapsed < TIMEOUT_MS),
-  )
+    const retrySchedule = (timeoutMs: number) =>
+      Schedule.exponential(BASE_DELAY_MS, 1.7).pipe(
+        Schedule.either(Schedule.spaced(MAX_DELAY_MS)),
+        Schedule.jittered,
+        Schedule.while((meta) => meta.elapsed < timeoutMs),
+      )
 
   // ---------------------------------------------------------------------------
   // Lock metadata schema
@@ -72,11 +73,26 @@ export namespace EffectFlock {
   // Service
   // ---------------------------------------------------------------------------
 
+  export interface AcquireOptions {
+    readonly dir?: string
+    /** Override the lock-acquire timeout (ms). Defaults to TIMEOUT_MS (5 min). */
+    readonly timeoutMs?: number
+  }
+
   export interface Interface {
-    readonly acquire: (key: string, dir?: string) => Effect.Effect<void, LockError, Scope.Scope>
+    readonly acquire: (
+      key: string,
+      dirOrOptions?: string | AcquireOptions,
+    ) => Effect.Effect<void, LockError, Scope.Scope>
     readonly withLock: {
-      (key: string, dir?: string): <A, E, R>(body: Effect.Effect<A, E, R>) => Effect.Effect<A, E | LockError, R>
-      <A, E, R>(body: Effect.Effect<A, E, R>, key: string, dir?: string): Effect.Effect<A, E | LockError, R>
+      (key: string, dirOrOptions?: string | AcquireOptions): <A, E, R>(
+        body: Effect.Effect<A, E, R>,
+      ) => Effect.Effect<A, E | LockError, R>
+      <A, E, R>(
+        body: Effect.Effect<A, E, R>,
+        key: string,
+        dirOrOptions?: string | AcquireOptions,
+      ): Effect.Effect<A, E | LockError, R>
     }
   }
 
@@ -218,11 +234,11 @@ export namespace EffectFlock {
 
       // -- retry wrapper (preserves Handle type) --
 
-      const acquireHandle = (lockfile: string, key: string): Effect.Effect<Handle, LockError> =>
+      const acquireHandle = (lockfile: string, key: string, timeoutMs?: number): Effect.Effect<Handle, LockError> =>
         tryAcquireLockDir(lockfile, key).pipe(
           Effect.retry({
             while: (err) => err._tag === "NotAcquired",
-            schedule: retrySchedule,
+            schedule: retrySchedule(timeoutMs ?? TIMEOUT_MS),
           }),
           Effect.catchTag("NotAcquired", () => Effect.fail(new LockTimeoutError({ key }))),
         )
@@ -250,14 +266,19 @@ export namespace EffectFlock {
 
       // -- build service --
 
-      const acquire = Effect.fn("EffectFlock.acquire")(function* (key: string, dir?: string) {
+      const acquire = Effect.fn("EffectFlock.acquire")(function* (
+        key: string,
+        dirOrOptions?: string | AcquireOptions,
+      ) {
+        const dir = typeof dirOrOptions === "string" ? dirOrOptions : dirOrOptions?.dir
+        const timeoutMs = typeof dirOrOptions === "string" ? undefined : dirOrOptions?.timeoutMs
         const lockDir = dir ?? lockRoot
         yield* ensureDir(lockDir)
 
         const lockfile = path.join(lockDir, Hash.fast(key) + ".lock")
 
         // acquireRelease: acquire is uninterruptible, release is guaranteed
-        const handle = yield* Effect.acquireRelease(acquireHandle(lockfile, key), (handle) => release(handle))
+        const handle = yield* Effect.acquireRelease(acquireHandle(lockfile, key, timeoutMs), (handle) => release(handle))
 
         // Heartbeat fiber — scoped, so it's interrupted before release runs
         yield* fs
@@ -267,10 +288,14 @@ export namespace EffectFlock {
 
       const withLock: Interface["withLock"] = Function.dual(
         (args) => Effect.isEffect(args[0]),
-        <A, E, R>(body: Effect.Effect<A, E, R>, key: string, dir?: string): Effect.Effect<A, E | LockError, R> =>
+        <A, E, R>(
+          body: Effect.Effect<A, E, R>,
+          key: string,
+          dirOrOptions?: string | AcquireOptions,
+        ): Effect.Effect<A, E | LockError, R> =>
           Effect.scoped(
             Effect.gen(function* () {
-              yield* acquire(key, dir)
+              yield* acquire(key, dirOrOptions)
               return yield* body
             }),
           ),

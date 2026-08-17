@@ -19,6 +19,15 @@ import { eq, inArray } from "drizzle-orm"
 const decodeMessageInfo = Schema.decodeUnknownSync(SessionV1.Info)
 const decodePart = Schema.decodeUnknownSync(SessionV1.Part)
 
+// Bound import size so a single import never monopolizes the DB write lock.
+const MAX_IMPORT_MESSAGES = 10_000
+const MAX_IMPORT_PARTS = 50_000
+
+/** True when a payload is within import size bounds (checked before the DB transaction). */
+export function withinImportLimits(messageCount: number, partCount: number): boolean {
+  return messageCount <= MAX_IMPORT_MESSAGES && partCount <= MAX_IMPORT_PARTS
+}
+
 /** Discriminated union returned by the ShareNext API (GET /api/shares/:id/data) */
 export type ShareData =
   | { type: "session"; data: SDKSession }
@@ -173,13 +182,23 @@ const runImport = Effect.fn("Cli.import.body")(function* (file: string, ctx: Ins
       .pipe(Effect.mapError((error) => new CliError({ message: formatImportFileError(file, error) })))) as ExportData
   }
 
-  if (!exportData) {
-    process.stdout.write(`Failed to read session data`)
-    process.stdout.write(EOL)
-    return
-  }
+    if (!exportData) {
+      process.stdout.write(`Failed to read session data`)
+      process.stdout.write(EOL)
+      return
+    }
 
-  const info = Schema.decodeUnknownSync(Session.Info)({
+    const totalParts = exportData.messages.reduce((n, msg) => n + msg.parts.length, 0)
+    if (!withinImportLimits(exportData.messages.length, totalParts)) {
+      process.stdout.write(
+        `Import aborted: payload too large (${exportData.messages.length} messages, ${totalParts} parts; ` +
+          `limit ${MAX_IMPORT_MESSAGES} messages / ${MAX_IMPORT_PARTS} parts)`,
+      )
+      process.stdout.write(EOL)
+      return
+    }
+
+    const info = Schema.decodeUnknownSync(Session.Info)({
     ...exportData.info,
     projectID: ctx.project.id,
     directory: ctx.directory,

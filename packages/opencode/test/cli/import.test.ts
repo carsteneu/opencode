@@ -5,6 +5,7 @@ import {
   shouldAttachShareAuthHeaders,
   transformShareData,
   type ShareData,
+  withinImportLimits,
 } from "../../src/cli/cmd/import"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { PlatformError } from "effect"
@@ -87,4 +88,11 @@ test("returns null for invalid share data", () => {
   expect(transformShareData([])).toBeNull()
   expect(transformShareData([{ type: "message", data: {} as any }])).toBeNull()
   expect(transformShareData([{ type: "session", data: { id: "s" } as any }])).toBeNull() // no messages
+})
+
+test("rejects payloads beyond import message/part limits", () => {
+  expect(withinImportLimits(10_000, 50_000)).toBe(true)
+  expect(withinImportLimits(0, 0)).toBe(true)
+  expect(withinImportLimits(10_001, 0)).toBe(false) // too many messages
+  expect(withinImportLimits(0, 50_001)).toBe(false) // too many parts
 })

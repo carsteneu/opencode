@@ -1,4 +1,4 @@
-import { Effect, Layer, LayerMap } from "effect"
+import { Duration, Effect, Layer, LayerMap } from "effect"
 import { AgentV2 } from "./agent"
 import { AISDK } from "./aisdk"
 import { Catalog } from "./catalog"
@@ -81,6 +81,19 @@ export const locationServices = LayerNode.group([
 export type LocationServices = LayerNode.Output<typeof locationServices>
 export type LocationError = LayerNode.Error<typeof locationServices>
 
+/**
+ * Retention TTL for an idle location-service graph. Defaults to 60 minutes; override with
+ * `OPENCODE_LOCATION_TTL_MS` (milliseconds). Read lazily so it is configurable and testable at
+ * runtime. Instrumentation logs observed lifetimes (see buildLocationServiceMap) before any TTL
+ * default is shortened, so the decision is data-driven rather than arbitrary.
+ */
+export function locationTtl(): Duration.Input {
+  const raw = process.env["OPENCODE_LOCATION_TTL_MS"]
+  if (raw === undefined) return "60 minutes"
+  const ms = Number(raw)
+  return Number.isFinite(ms) && ms > 0 ? ms : "60 minutes"
+}
+
 export function buildLocationServiceMap(
   replacements: LayerNode.Replacements = [],
 ): Layer.Layer<LocationServiceMap.Service> {
@@ -98,15 +111,27 @@ export function buildLocationServiceMap(
         return LayerNode.compile(location.node).pipe(
           Layer.fresh,
           Layer.tap(() =>
-            Effect.logInfo("booting location services", {
-              directory: ref.directory,
-              workspaceID: ref.workspaceID,
+            Effect.gen(function* () {
+              const startedAt = Date.now()
+              yield* Effect.logInfo("booting location services", {
+                directory: ref.directory,
+                workspaceID: ref.workspaceID,
+              })
+              // Instrument graph retention: record the observed lifetime on disposal (idle-TTL
+              // eviction or shutdown). These numbers feed whether a shorter TTL is justified.
+              yield* Effect.addFinalizer(() =>
+                Effect.logInfo("disposing location services", {
+                  directory: ref.directory,
+                  workspaceID: ref.workspaceID,
+                  lifetimeMs: Date.now() - startedAt,
+                }),
+              )
             }),
           ),
           Layer.provide(LayerNode.compile(location.hoisted)),
         )
       },
-      { idleTimeToLive: "60 minutes" },
+      { idleTimeToLive: locationTtl() },
     ),
   )
 }
