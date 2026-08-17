@@ -58,7 +58,7 @@ function TokenRate() {
 
   return (
     <text fg={theme.textMuted} flexShrink={0}>
-      out {Math.round(view().out)}/s · in {Math.round(view().input)}/s
+      out {Math.round(view().out)} tk/s · in {Math.round(view().input)} tk/s
     </text>
   )
 }
