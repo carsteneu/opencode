@@ -7,8 +7,11 @@ import {
   BlockAnchorReplacer,
   ContextAwareReplacer,
   EditTool,
+  EscapeNormalizedReplacer,
+  IndentationFlexibleReplacer,
   LineTrimmedReplacer,
   replace,
+  TrimmedBoundaryReplacer,
   WhitespaceNormalizedReplacer,
 } from "../../src/tool/edit"
 import { disposeAllInstances, TestInstance } from "../fixture/fixture"
@@ -87,6 +90,107 @@ function legacyLineTrimmedCandidates(content: string, find: string) {
     })
 }
 
+function legacyLineWindows(content: string, lineCount: number) {
+  const lines = content.split("\n")
+  return Array.from({ length: Math.max(0, lines.length - lineCount + 1) }, (_, index) =>
+    lines.slice(index, index + lineCount).join("\n"),
+  )
+}
+
+// Frozen pre-span behavior for small differential cases only.
+function legacyWhitespaceNormalizedCandidates(content: string, find: string) {
+  const normalize = (value: string) => value.replace(/\s+/g, " ").trim()
+  const normalizedFind = normalize(find)
+  const singles = content.split("\n").flatMap((line) => {
+    const normalizedLine = normalize(line)
+    if (normalizedLine === normalizedFind) return [line]
+    if (!normalizedLine.includes(normalizedFind)) return []
+    const pattern = find
+      .trim()
+      .split(/\s+/)
+      .map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+      .join("\\s+")
+    const match = line.match(new RegExp(pattern))
+    return match ? [match[0]] : []
+  })
+  const lineCount = find.split("\n").length
+  const windows =
+    lineCount > 1
+      ? legacyLineWindows(content, lineCount).filter((candidate) => normalize(candidate) === normalizedFind)
+      : []
+  return [...singles, ...windows]
+}
+
+function legacyRemoveIndentation(value: string) {
+  const lines = value.split("\n")
+  const nonEmpty = lines.filter((line) => line.trim().length > 0)
+  if (nonEmpty.length === 0) return value
+  const indentation = Math.min(...nonEmpty.map((line) => line.match(/^(\s*)/)?.[1].length ?? 0))
+  return lines.map((line) => (line.trim().length === 0 ? line : line.slice(indentation))).join("\n")
+}
+
+function legacyIndentationFlexibleCandidates(content: string, find: string) {
+  const normalizedFind = legacyRemoveIndentation(find)
+  return legacyLineWindows(content, find.split("\n").length).filter(
+    (candidate) => legacyRemoveIndentation(candidate) === normalizedFind,
+  )
+}
+
+function legacyUnescapeEditString(value: string) {
+  return value.replace(/\\(n|t|r|'|"|`|\\|\n|\$)/g, (match, captured) => {
+    if (captured === "n") return "\n"
+    if (captured === "t") return "\t"
+    if (captured === "r") return "\r"
+    if (captured === "'" || captured === '"' || captured === "`" || captured === "$" || captured === "\n") {
+      return captured
+    }
+    if (captured === "\\") return "\\"
+    return match
+  })
+}
+
+function legacyEscapeNormalizedCandidates(content: string, find: string) {
+  const normalizedFind = legacyUnescapeEditString(find)
+  const direct = content.includes(normalizedFind) ? [normalizedFind] : []
+  const windows = legacyLineWindows(content, normalizedFind.split("\n").length).filter(
+    (candidate) => legacyUnescapeEditString(candidate) === normalizedFind,
+  )
+  return [...direct, ...windows]
+}
+
+function legacyTrimmedBoundaryCandidates(content: string, find: string) {
+  const trimmedFind = find.trim()
+  if (trimmedFind === find) return []
+  const direct = content.includes(trimmedFind) ? [trimmedFind] : []
+  const windows = legacyLineWindows(content, find.split("\n").length).filter(
+    (candidate) => candidate.trim() === trimmedFind,
+  )
+  return [...direct, ...windows]
+}
+
+function legacyContextAwareCandidates(content: string, find: string) {
+  const splitFind = find.split("\n")
+  if (splitFind.length < 3) return []
+  const findLines = splitFind.at(-1) === "" ? splitFind.slice(0, -1) : splitFind
+  const contentLines = content.split("\n")
+  const first = findLines[0].trim()
+  const last = findLines.at(-1)?.trim()
+
+  return contentLines.flatMap((line, start) => {
+    if (line.trim() !== first) return []
+    const end = contentLines.findIndex((candidate, index) => index >= start + 2 && candidate.trim() === last)
+    if (end === -1 || end - start + 1 !== findLines.length) return []
+    const block = contentLines.slice(start, end + 1)
+    const comparable = block.slice(1, -1).flatMap((candidate, index) => {
+      const actual = candidate.trim()
+      const expected = findLines[index + 1].trim()
+      return actual.length > 0 || expected.length > 0 ? [{ actual, expected }] : []
+    })
+    const matching = comparable.filter((candidate) => candidate.actual === candidate.expected).length
+    return comparable.length === 0 || matching / comparable.length >= 0.5 ? [block.join("\n")] : []
+  })
+}
+
 function elapsedLineTrimmed(content: string, find: string) {
   const started = performance.now()
   let matches = 0
@@ -110,6 +214,8 @@ function distinctRepeatedTrimmedLines(count: number) {
 
 const multipleMatchError =
   "Found multiple matches for oldString. Provide more surrounding context to make the match unique."
+const fuzzySearchError =
+  "Refusing fuzzy replacement because the candidate search is too large. Re-read the file and provide a more exact oldString with distinctive context."
 
 describe("line-trimmed replacer compatibility", () => {
   const golden = [
@@ -248,6 +354,376 @@ describe("line-trimmed replacer compatibility", () => {
   })
 })
 
+describe("whitespace-normalized replacer compatibility", () => {
+  test("preserves single-line substrings, CRLF, Unicode whitespace, and regex punctuation", () => {
+    expect([
+      ...WhitespaceNormalizedReplacer(
+        "head\n\u2003alpha\t beta\u00a0\r\nprefix alpha   beta suffix\nfoot",
+        "alpha beta",
+      ),
+    ]).toEqual(["\u2003alpha\t beta\u00a0\r", "alpha   beta"])
+    expect([...WhitespaceNormalizedReplacer("head a+b    (c) tail", "a+b (c)")]).toEqual(["a+b    (c)"])
+  })
+
+  test("preserves blank multiline windows and raw candidate order", () => {
+    const content = "alpha\n\u2003\nbeta gamma\nstop\nalpha beta\n \ngamma"
+    expect([...WhitespaceNormalizedReplacer(content, "alpha beta\n\t\ngamma")]).toEqual([
+      "alpha\n\u2003\nbeta gamma",
+      "alpha beta\n \ngamma",
+    ])
+
+    const repeated = "alpha\nbeta   gamma"
+    const unique = "alpha\tbeta\n gamma "
+    const find = "alpha beta\ngamma"
+    const grouped = [repeated, "STOP", unique, "STOP", repeated].join("\n")
+    expect([...LineTrimmedReplacer(grouped, find)]).toEqual([])
+    expect([...WhitespaceNormalizedReplacer(grouped, find)]).toEqual([repeated, unique, repeated])
+    expect(replace(grouped, find, "changed")).toBe([repeated, "STOP", "changed", "STOP", repeated].join("\n"))
+  })
+
+  test("matches the legacy implementation across fixed-seed randomized inputs", () => {
+    let state = 0xf0221e
+    const random = () => {
+      state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0
+      return state / 0x1_0000_0000
+    }
+    const pick = <T>(values: readonly T[]) => values[Math.floor(random() * values.length)]
+    const atoms = ["", "alpha", " beta ", "alpha  beta", "\t\u03b3\u00a0", "a+b (c)", "\u732b", "same"] as const
+
+    for (let iteration = 0; iteration < 300; iteration++) {
+      const lines = Array.from({ length: 1 + Math.floor(random() * 9) }, () => pick(atoms))
+      const contentSeparator = random() < 0.5 ? "\n" : "\r\n"
+      const content = lines.join(contentSeparator) + (random() < 0.25 ? contentSeparator : "")
+      const start = Math.floor(random() * lines.length)
+      const selected =
+        random() < 0.7
+          ? lines.slice(start, start + 1 + Math.floor(random() * (lines.length - start)))
+          : Array.from({ length: 1 + Math.floor(random() * 4) }, () => pick(atoms))
+      const find =
+        selected
+          .map((line) => (random() < 0.5 ? line.trim().replace(/\s+/g, random() < 0.5 ? " " : "\t") : line))
+          .join(random() < 0.5 ? "\n" : "\r\n") + (random() < 0.2 ? "\n" : "")
+      expect({ iteration, candidates: [...WhitespaceNormalizedReplacer(content, find)] }).toEqual({
+        iteration,
+        candidates: legacyWhitespaceNormalizedCandidates(content, find),
+      })
+    }
+  })
+
+  test("scales near-linearly for long normalized windows that do not match", () => {
+    const measure = (lines: number) => {
+      const find = `${repeatedLines(lines / 32 - 1, "alpha beta")}\nmissing`
+      const started = performance.now()
+      const candidates = [...WhitespaceNormalizedReplacer(repeatedLines(lines, "alpha   beta"), find)]
+      return { elapsed: performance.now() - started, candidates }
+    }
+    measure(2_048)
+    const small = measure(16_000)
+    const large = measure(32_000)
+
+    expect(small.candidates).toEqual([])
+    expect(large.candidates).toEqual([])
+    expect(large.elapsed).toBeLessThan(small.elapsed * 3 + 75)
+  })
+
+  test("scales near-linearly for dense normalized occurrences used by multiline lookup", () => {
+    const measure = (lines: number) => {
+      const started = performance.now()
+      let candidates = 0
+      for (const _ of WhitespaceNormalizedReplacer(repeatedLines(lines, "a"), "a\n ")) candidates++
+      return { elapsed: performance.now() - started, candidates }
+    }
+    measure(200_000)
+    const small = measure(1_000_000)
+    const large = measure(2_000_000)
+
+    expect(small.candidates).toBe(1_000_000)
+    expect(large.candidates).toBe(2_000_000)
+    expect(large.elapsed).toBeLessThan(small.elapsed * 2.75 + 75)
+  })
+
+  test("scales near-linearly for duplicated windows with long blank edges", () => {
+    const measure = (window: number) => {
+      const blank = "\u2003"
+      const region = [
+        ...Array.from({ length: window - 1 }, () => blank),
+        `${" ".repeat(128)}x`,
+        `y${"\u00a0".repeat(128)}`,
+        ...Array.from({ length: window - 1 }, () => blank),
+      ].join("\n")
+      const content = `${region}\nSTOP\n${region}`
+      const find = ["x y", ...Array.from({ length: window - 1 }, () => "")].join("\n")
+      const started = performance.now()
+      expect(() => replace(content, find, "changed")).toThrow(multipleMatchError)
+      return performance.now() - started
+    }
+    measure(2_000)
+    const small = Math.min(measure(8_000), measure(8_000))
+    const large = Math.min(measure(16_000), measure(16_000))
+
+    expect(large).toBeLessThan(small * 3 + 100)
+  })
+
+  test("scales near-linearly for distinct duplicated single-line candidates", () => {
+    const measure = (count: number) => {
+      const variants = Array.from({ length: count }, (_, index) => {
+        const whitespace = index.toString(2).padStart(16, "0").replaceAll("0", " ").replaceAll("1", "\t")
+        return `a${whitespace}b`
+      })
+      const content = [...variants, ...variants].join("\n")
+      expect([...LineTrimmedReplacer(content, "a b")]).toEqual([])
+      const started = performance.now()
+      expect(() => replace(content, "a b", "changed")).toThrow(multipleMatchError)
+      return performance.now() - started
+    }
+    measure(1_000)
+    const small = measure(8_000)
+    const large = measure(16_000)
+
+    expect(large).toBeLessThan(small * 3 + 100)
+  })
+
+  test("preserves A-B-A order when duplicated singles surround a later unique candidate", () => {
+    const variants = Array.from({ length: 128 }, (_, index) => {
+      const whitespace = index.toString(2).padStart(16, "0").replaceAll("0", " ").replaceAll("1", "\t")
+      return `a${whitespace}b`
+    })
+    const unique = "a\u2003b"
+    const content = [...variants, unique, ...variants].join("\n")
+
+    expect([...LineTrimmedReplacer(content, "a b")]).toEqual([])
+    expect([...WhitespaceNormalizedReplacer(content, "a b")]).toEqual([...variants, unique, ...variants])
+    expect(replace(content, "a b", "changed")).toBe([...variants, "changed", ...variants].join("\n"))
+  })
+
+  test("checks an apparently singleton candidate for an unaligned literal duplicate", () => {
+    const variants = Array.from({ length: 128 }, (_, index) => {
+      const whitespace = index.toString(2).padStart(16, "0").replaceAll("0", " ").replaceAll("1", "\t")
+      return `a${whitespace}b`
+    })
+    const unique = "a\u2003b"
+    const hidden = `${variants[0]} prefix ${unique} suffix`
+    const content = [...variants, unique, ...variants, hidden].join("\n")
+    const candidates = [...WhitespaceNormalizedReplacer(content, "a b")]
+
+    expect(candidates.filter((candidate) => candidate === unique)).toHaveLength(1)
+    expect(content.indexOf(unique)).not.toBe(content.lastIndexOf(unique))
+    expect(() => replace(content, "a b", "changed")).toThrow(multipleMatchError)
+  })
+
+  test("returns an early single-line match without materializing later multiline spans", () => {
+    const measure = (lines: number) => {
+      const generator = WhitespaceNormalizedReplacer(
+        `prefix alpha   beta suffix\n${repeatedLines(lines, "\u2003 tail\tvalue ")}`,
+        "alpha\nbeta",
+      )
+      const started = performance.now()
+      const first = generator.next()
+      generator.return()
+      return { elapsed: performance.now() - started, first }
+    }
+    measure(100_000)
+    const small = measure(500_000)
+    const large = measure(1_000_000)
+
+    expect(small.first).toEqual({ value: "alpha   beta", done: false })
+    expect(large.first).toEqual({ value: "alpha   beta", done: false })
+    expect(large.elapsed).toBeLessThan(small.elapsed * 3 + 75)
+
+    expect(replace("prefix alpha   beta suffix\ntail", "alpha\nbeta", "changed")).toBe("prefix changed suffix\ntail")
+  })
+})
+
+describe("remaining fuzzy replacer compatibility", () => {
+  test("preserves indentation candidates across CRLF and blank lines", () => {
+    expect([...IndentationFlexibleReplacer("head\r\n\talpha\r\n\t  beta", "  alpha\r\n    beta")]).toEqual([
+      "\talpha\r\n\t  beta",
+    ])
+    expect([...IndentationFlexibleReplacer("head\n\talpha\n   \n\t  beta\nfoot", "  alpha\n   \n    beta")]).toEqual([
+      "\talpha\n   \n\t  beta",
+    ])
+  })
+
+  test("keeps indentation matches subsumed by line-trimmed matching", () => {
+    let state = 0x1ade4710
+    const random = () => {
+      state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0
+      return state / 0x1_0000_0000
+    }
+    const pick = <T>(values: readonly T[]) => values[Math.floor(random() * values.length)]
+    const atoms = ["", "alpha", " beta ", "\t\u03b3", " ", "\u2003x", "same"] as const
+
+    for (let iteration = 0; iteration < 1_000; iteration++) {
+      const lines = Array.from({ length: 1 + Math.floor(random() * 8) }, () => pick(atoms))
+      const content = lines.join(random() < 0.5 ? "\n" : "\r\n") + (random() < 0.25 ? "\n" : "")
+      const find =
+        Array.from({ length: 1 + Math.floor(random() * 5) }, () => pick(atoms)).join(random() < 0.5 ? "\n" : "\r\n") +
+        (random() < 0.25 ? "\n" : "")
+      const indentation = [...IndentationFlexibleReplacer(content, find)]
+      expect({ iteration, candidates: indentation }).toEqual({
+        iteration,
+        candidates: legacyIndentationFlexibleCandidates(content, find),
+      })
+      if (indentation.length > 0) expect([...LineTrimmedReplacer(content, find)].length).toBeGreaterThan(0)
+    }
+  })
+
+  test("preserves escaped candidates, duplicates, and physical-newline slash runs", () => {
+    const actual = "actual\tvalue"
+    const escaped = String.raw`actual\tvalue`
+    expect([...EscapeNormalizedReplacer([actual, escaped, actual].join("\n"), escaped)]).toEqual([
+      actual,
+      actual,
+      escaped,
+      actual,
+    ])
+
+    const odd = `A${"\\".repeat(3)}\nB`
+    const even = `A${"\\".repeat(2)}\nB`
+    expect([...EscapeNormalizedReplacer(odd, even)]).toEqual([odd])
+    expect([...EscapeNormalizedReplacer(even, even)]).toEqual([even])
+  })
+
+  test("replaces a literal escaped candidate only after earlier tiers miss", () => {
+    const content = `head\n${String.raw`value\twith\t tabs`}\nfoot`
+    const find = "value\twith\t tabs"
+    expect([...LineTrimmedReplacer(content, find)]).toEqual([])
+    expect([...WhitespaceNormalizedReplacer(content, find)]).toEqual([])
+    expect([...EscapeNormalizedReplacer(content, find)]).toEqual([String.raw`value\twith\t tabs`])
+    expect(replace(content, find, "changed")).toBe("head\nchanged\nfoot")
+  })
+
+  test("preserves trimmed-boundary candidates and its reachable direct fallback", () => {
+    expect([...TrimmedBoundaryReplacer(" x \n\tx\t\nend", " x ")]).toEqual(["x", " x ", "\tx\t"])
+
+    const content = "a\na  b"
+    const find = "a\na \n"
+    expect([...LineTrimmedReplacer(content, find)]).toEqual([])
+    expect([...WhitespaceNormalizedReplacer(content, find)]).toEqual([])
+    expect([...TrimmedBoundaryReplacer(content, find)]).toEqual(["a\na"])
+    expect(replace(content, find, "changed")).toBe("changed  b")
+  })
+
+  test("preserves context threshold, CRLF output, empty middles, and greedy anchors", () => {
+    expect([
+      ...ContextAwareReplacer("A\r\nmatch\r\nwrong\r\nZ\r\nA\r\nno\r\nwrong\r\nZ\r", "A\nmatch\nexpected\nZ\n"),
+    ]).toEqual(["A\r\nmatch\r\nwrong\r\nZ\r"])
+    expect([...ContextAwareReplacer("A\n  \n\t\nZ", "A\n\n\nZ")]).toEqual(["A\n  \n\t\nZ"])
+    expect([...ContextAwareReplacer("A\nx\nZ\nZ", "A\nx\ny\nZ")]).toEqual([])
+    expect([...ContextAwareReplacer("A\nZ\nA\nZ", "A\nZ\n")]).toEqual([])
+  })
+
+  test("replaces the first context candidate at the historical half-match threshold", () => {
+    const actual = `start\nok\n${"z".repeat(500)}\nend`
+    const find = `start\nok\n${"a".repeat(500)}\nend`
+    expect([...LineTrimmedReplacer(actual, find)]).toEqual([])
+    expect([...ContextAwareReplacer(actual, find)]).toEqual([actual])
+    expect(replace(actual, find, "changed")).toBe("changed")
+  })
+
+  test("matches all exported legacy implementations across fixed-seed randomized inputs", () => {
+    let state = 0xf022beef
+    const random = () => {
+      state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0
+      return state / 0x1_0000_0000
+    }
+    const pick = <T>(values: readonly T[]) => values[Math.floor(random() * values.length)]
+    const atoms = [
+      "",
+      "alpha",
+      " beta ",
+      "\t\u03b3\u00a0",
+      "start",
+      "end",
+      String.raw`a\tb`,
+      String.raw`quote\"`,
+      "\\",
+      "\\\\",
+    ] as const
+
+    for (let iteration = 0; iteration < 300; iteration++) {
+      const content =
+        Array.from({ length: 1 + Math.floor(random() * 9) }, () => pick(atoms)).join(random() < 0.5 ? "\n" : "\r\n") +
+        (random() < 0.25 ? "\n" : "")
+      const find =
+        Array.from({ length: 1 + Math.floor(random() * 5) }, () => pick(atoms)).join(random() < 0.5 ? "\n" : "\r\n") +
+        (random() < 0.25 ? "\n" : "")
+      const actual = {
+        indentation: [...IndentationFlexibleReplacer(content, find)],
+        escaped: [...EscapeNormalizedReplacer(content, find)],
+        trimmed: [...TrimmedBoundaryReplacer(content, find)],
+        context: [...ContextAwareReplacer(content, find)],
+      }
+      expect({ iteration, candidates: actual }).toEqual({
+        iteration,
+        candidates: {
+          indentation: legacyIndentationFlexibleCandidates(content, find),
+          escaped: legacyEscapeNormalizedCandidates(content, find),
+          trimmed: legacyTrimmedBoundaryCandidates(content, find),
+          context: legacyContextAwareCandidates(content, find),
+        },
+      })
+    }
+  })
+
+  test("scales near-linearly for long escaped windows that do not match", () => {
+    const measure = (lines: number) => {
+      const find = `${repeatedLines(lines / 32 - 1, "alpha\tbeta")}\nmissing`
+      const started = performance.now()
+      const candidates = [...EscapeNormalizedReplacer(repeatedLines(lines, String.raw`alpha\tbeta`), find)]
+      return { elapsed: performance.now() - started, candidates }
+    }
+    measure(2_048)
+    const small = measure(16_000)
+    const large = measure(32_000)
+
+    expect(small.candidates).toEqual([])
+    expect(large.candidates).toEqual([])
+    expect(large.elapsed).toBeLessThan(small.elapsed * 3 + 75)
+  })
+
+  test("scales near-linearly across odd and even physical-newline slash runs", () => {
+    const measure = (lines: number, slashes: number) => {
+      const line = "value" + "\\".repeat(slashes)
+      const find = repeatedLines(lines / 16 - 1, line) + "\nmissing"
+      const started = performance.now()
+      const candidates = [...EscapeNormalizedReplacer(repeatedLines(lines, line), find)]
+      return { elapsed: performance.now() - started, candidates }
+    }
+    measure(1_024, 1)
+    measure(1_024, 2)
+    const oddSmall = measure(8_000, 1)
+    const oddLarge = measure(16_000, 1)
+    const evenSmall = measure(8_000, 2)
+    const evenLarge = measure(16_000, 2)
+
+    expect(oddSmall.candidates).toEqual([])
+    expect(oddLarge.candidates).toEqual([])
+    expect(evenSmall.candidates).toEqual([])
+    expect(evenLarge.candidates).toEqual([])
+    expect(oddLarge.elapsed).toBeLessThan(oddSmall.elapsed * 3 + 75)
+    expect(evenLarge.elapsed).toBeLessThan(evenSmall.elapsed * 3 + 75)
+  })
+
+  test("returns an escaped direct match without splitting a dense multiline tail", () => {
+    const find = "direct\\tvalue"
+    const target = "direct\tvalue"
+    const measure = (content: string) => {
+      const generator = EscapeNormalizedReplacer(content, find)
+      const started = performance.now()
+      const first = generator.next()
+      generator.return()
+      return { elapsed: performance.now() - started, first }
+    }
+    const flat = measure(target + "x".repeat(4_000_000))
+    const dense = measure(target + "\nx".repeat(2_000_000))
+
+    expect(flat.first).toEqual({ value: target, done: false })
+    expect(dense.first).toEqual({ value: target, done: false })
+    expect(dense.elapsed).toBeLessThan(flat.elapsed * 3 + 75)
+  })
+})
+
 describe("edit replacement candidate deduplication", () => {
   test("terminates exact ambiguity before fuzzy candidates", () => {
     expect(() => replace("  x  \n  x  ", "x", "changed")).toThrow(multipleMatchError)
@@ -274,6 +750,31 @@ describe("edit replacement candidate deduplication", () => {
 
     expect([...LineTrimmedReplacer(content, find)]).toEqual([repeated, repeated])
     expect([...WhitespaceNormalizedReplacer(content, find)]).toEqual([repeated, repeated, fuzzy])
+    expect(() => replace(content, find, "changed")).toThrow(multipleMatchError)
+  })
+
+  test("terminates whitespace ambiguity before a later escape singleton", () => {
+    const repeated = String.raw`foo   \t    bar`
+    const escapedSingleton = "foo \t bar"
+    const find = String.raw`foo \t bar`
+    const content = [repeated, repeated, escapedSingleton].join("\n")
+
+    expect([...LineTrimmedReplacer(content, find)]).toEqual([])
+    expect([...WhitespaceNormalizedReplacer(content, find)]).toEqual([repeated, repeated])
+    expect([...EscapeNormalizedReplacer(content, find)]).toEqual([escapedSingleton, escapedSingleton])
+    expect(() => replace(content, find, "changed")).toThrow(multipleMatchError)
+  })
+
+  test("terminates escape ambiguity before a later trimmed-boundary singleton", () => {
+    const find = " A\\t\nB \n"
+    const repeated = " A\t\nB \n"
+    const trimmedSingleton = "A\\t\nB"
+    const content = [" A\t", "B ", "", "STOP", " A\t", "B ", "", "STOP", "A\\t", "B suffix"].join("\n")
+
+    expect([...LineTrimmedReplacer(content, find)]).toEqual([])
+    expect([...WhitespaceNormalizedReplacer(content, find)]).toEqual([])
+    expect([...EscapeNormalizedReplacer(content, find)]).toEqual([repeated, repeated, repeated])
+    expect([...TrimmedBoundaryReplacer(content, find)]).toEqual([trimmedSingleton])
     expect(() => replace(content, find, "changed")).toThrow(multipleMatchError)
   })
 
@@ -428,13 +929,43 @@ describe("edit replacer bounds", () => {
     }),
   )
 
-  it.live("compares long candidate lines without a quadratic allocation", () =>
-    Effect.sync(() => {
-      const content = `start\n${"a".repeat(4_000)}\nend`
-      const search = `start\n${"b".repeat(4_000)}\nend`
-      expect([...BlockAnchorReplacer(content, search)]).toEqual([])
-    }),
-  )
+  test("allows exactly the fuzzy line-comparison budget and rejects one more", () => {
+    const scenario = (middleLines: number) => ({
+      content: `start\n${repeatedLines(middleLines, "a")}\nend`,
+      find: `start\n${repeatedLines(middleLines, "b")}\nend`,
+    })
+    const allowed = scenario(250_000)
+    const rejected = scenario(250_001)
+
+    expect([...BlockAnchorReplacer(allowed.content, allowed.find)]).toEqual([])
+    expect(() => [...BlockAnchorReplacer(rejected.content, rejected.find)]).toThrow(fuzzySearchError)
+  })
+
+  test("applies the exact fuzzy line-comparison boundary to context matching", () => {
+    const scenario = (middleLines: number) => ({
+      content: `start\n${repeatedLines(middleLines, "a")}\nend`,
+      find: `start\n${repeatedLines(middleLines, "b")}\nend`,
+    })
+    const allowed = scenario(250_000)
+    const rejected = scenario(250_001)
+
+    expect([...ContextAwareReplacer(allowed.content, allowed.find)]).toEqual([])
+    expect(() => [...ContextAwareReplacer(rejected.content, rejected.find)]).toThrow(fuzzySearchError)
+  })
+
+  test("allows exactly the Levenshtein-cell budget and rejects one more", () => {
+    const contentLine = "a".repeat(2_000)
+    const searchLine = `${"a".repeat(1_999)}b`
+    const allowed = `start\n${contentLine}\nend`
+
+    expect([...BlockAnchorReplacer(allowed, `start\n${searchLine}\nend`)]).toEqual([allowed])
+    expect(() =>
+      Array.from(BlockAnchorReplacer(`start\n${contentLine}\nx\nend`, `start\n${searchLine}\ny\nend`)),
+    ).toThrow(fuzzySearchError)
+
+    const equal = `start\n${"same".repeat(4_000)}\nend`
+    expect([...BlockAnchorReplacer(equal, equal)]).toEqual([equal])
+  })
 })
 
 const load = Effect.fn("EditToolTest.load")(function* (p: string) {
@@ -638,6 +1169,25 @@ describe("tool.edit", () => {
           })).message,
         ).toContain("Could not find oldString")
         expect(yield* load(filepath)).toBe(original)
+      }),
+    )
+
+    it.instance("leaves the file unchanged when fuzzy matching exceeds its safety budget", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "fuzzy-budget.txt")
+        const contentLine = "a".repeat(2_000)
+        const original = `start\n${contentLine}\nx\nend`
+        yield* put(filepath, original)
+
+        const error = yield* fail({
+          filePath: filepath,
+          oldString: `start\n${"a".repeat(1_999)}b\ny\nend`,
+          newString: "changed",
+        })
+
+        expect(error.message).toBe(fuzzySearchError)
+        expect(yield* loadRaw(filepath)).toBe(original)
       }),
     )
 
