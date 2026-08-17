@@ -1,6 +1,6 @@
 import { describe, expect } from "bun:test"
 import { DateTime, Effect, Schema } from "effect"
-import { asc, eq, count } from "drizzle-orm"
+import { asc, eq, count, inArray } from "drizzle-orm"
 import { Database } from "@opencode-ai/core/database/database"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
@@ -13,13 +13,14 @@ import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { SessionEvent } from "@opencode-ai/core/session/event"
 import { SessionMessage } from "@opencode-ai/core/session/message"
+import { SessionHydrate } from "@opencode-ai/core/session/hydrate"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
-import { SessionExecution } from "@opencode-ai/core/session/execution"
 import { SessionMessageContentTable, SessionMessageTable, SessionTable } from "@opencode-ai/core/session/sql"
 import { testEffect } from "./lib/effect"
 
-const it = testEffect(AppNodeBuilder.build(LayerNode.group([Database.node, EventV2.node, SessionProjector.node])))
-const sessionsLayer = AppNodeBuilder.build(SessionV2.node, [[SessionExecution.node, SessionExecution.noopLayer]])
+const it = testEffect(
+  AppNodeBuilder.build(LayerNode.group([Database.node, EventV2.node, SessionProjector.node])),
+)
 const model = { id: ModelV2.ID.make("model"), providerID: ProviderV2.ID.make("provider") }
 
 const seedSession = (sessionID: SessionV2.ID) =>
@@ -47,7 +48,7 @@ const seedSession = (sessionID: SessionV2.ID) =>
 
 // Publishes a full durable tool-call lifecycle against one assistant message.
 const runTool = Effect.fn("test.runTool")(function* (
-  service: EventV2.Service,
+  service: EventV2.Interface,
   sessionID: SessionV2.ID,
   assistantMessageID: SessionMessage.ID,
   callID: string,
@@ -119,7 +120,7 @@ describe("SessionProjector segments", () => {
         .get()
         .pipe(Effect.orDie)
       // The header projection must not grow with the conversation: content stays empty.
-      expect((header?.data as { content: unknown }).content).toEqual([])
+      expect((header!.data as unknown as { content: unknown }).content).toEqual([])
 
       const items = yield* db
         .select({ item_id: SessionMessageContentTable.item_id, data: SessionMessageContentTable.data })
@@ -149,9 +150,11 @@ describe("SessionProjector segments", () => {
         model,
       })
       const tools = 100
-      for (let i = 0; i < tools; i++) {
-        yield* runTool(service, sessionID, assistantMessageID, `call-${i}`, DateTime.makeUnsafe(i + 2))
-      }
+      yield* Effect.all(
+        Array.from({ length: tools }, (_, i) =>
+          runTool(service, sessionID, assistantMessageID, `call-${i}`, DateTime.makeUnsafe(i + 2)),
+        ),
+      )
       yield* service.publish(SessionEvent.Step.Ended, {
         sessionID,
         assistantMessageID,
@@ -167,7 +170,7 @@ describe("SessionProjector segments", () => {
         .where(eq(SessionMessageTable.id, assistantMessageID))
         .get()
         .pipe(Effect.orDie)
-      expect((header?.data as { content: unknown }).content).toEqual([])
+      expect((header!.data as unknown as { content: unknown }).content).toEqual([])
       // Body is header metadata only; with 100 tool results the inline blob must
       // stay small instead of accumulating the conversation.
       expect(JSON.stringify(header?.data).length).toBeLessThan(2000)
@@ -210,17 +213,26 @@ describe("SessionProjector segments", () => {
       })
       yield* runTool(service, sessionID, assistantMessageID, "call-c", DateTime.makeUnsafe(4))
 
-      const content = yield* Effect.gen(function* () {
-        const sessions = yield* SessionV2.Service
-        const messages = yield* sessions.messages({ sessionID, order: "asc" })
-        return messages.find((message) => message.type === "assistant")
-      }).pipe(Effect.provide(sessionsLayer))
-      expect(content).toBeTruthy()
-      expect(content?.type === "assistant" && content.content.map((item) => [item.type, item.id])).toEqual([
+      const { db } = yield* Database.Service
+      const row = yield* db
+        .select()
+        .from(SessionMessageTable)
+        .where(eq(SessionMessageTable.id, assistantMessageID))
+        .get()
+        .pipe(Effect.orDie)
+      expect(row).toBeTruthy()
+      const content = yield* SessionHydrate.contentByMessage(db, [assistantMessageID])
+      const assistant = Schema.decodeUnknownSync(SessionMessage.Assistant)({
+        ...row!.data,
+        id: row!.id,
+        type: row!.type,
+      })
+      const hydrated = { ...assistant, content: content.get(assistantMessageID) ?? [] }
+      expect(hydrated.type === "assistant" && hydrated.content.map((item) => [item.type, item.id])).toEqual([
         ["text", "text-x"],
         ["tool", "call-c"],
       ])
-      const first = content?.type === "assistant" ? content.content[0] : undefined
+      const first = hydrated.content[0]
       expect(first && first.type === "text" ? first.text : undefined).toBe("line")
     }),
   )
@@ -251,18 +263,31 @@ describe("SessionProjector segments", () => {
       yield* runTool(service, a, assistantA, "call-aa", DateTime.makeUnsafe(2))
       yield* runTool(service, b, assistantB, "call-bb", DateTime.makeUnsafe(2))
 
-      const contents = yield* Effect.gen(function* () {
-        const sessions = yield* SessionV2.Service
-        const [mA, mB] = yield* Effect.all(
-          [sessions.messages({ sessionID: a, order: "asc" }), sessions.messages({ sessionID: b, order: "asc" })],
-          { concurrency: "unbounded" },
-        )
-        const contentOf = (messages: typeof mA) =>
-          messages.find((message): message is SessionMessage.Assistant => message.type === "assistant")?.content
-        return { a: contentOf(mA)?.map((item) => item.id), b: contentOf(mB)?.map((item) => item.id) }
-      }).pipe(Effect.provide(sessionsLayer))
-      expect(contents.a).toEqual(["call-aa"])
-      expect(contents.b).toEqual(["call-bb"])
+      const { db } = yield* Database.Service
+      const rows = yield* db
+        .select()
+        .from(SessionMessageTable)
+        .where(inArray(SessionMessageTable.session_id, [a, b]))
+        .orderBy(asc(SessionMessageTable.seq))
+        .all()
+        .pipe(Effect.orDie)
+      const content = yield* SessionHydrate.contentByMessage(
+        db,
+        rows.filter((row) => row.type === "assistant").map((row) => row.id as SessionMessage.ID),
+      )
+      const hydrated = rows.map((row) => {
+        const assistant = Schema.decodeUnknownSync(SessionMessage.Assistant)({
+          ...row.data,
+          id: row.id,
+          type: row.type,
+        })
+        return { ...assistant, content: content.get(row.id) ?? [] }
+      })
+      const contents = Object.fromEntries(
+        hydrated.map((message) => [message.id, message.content.map((item) => item.id)]),
+      )
+      expect(contents[assistantA]).toEqual(["call-aa"])
+      expect(contents[assistantB]).toEqual(["call-bb"])
     }),
   )
 })
