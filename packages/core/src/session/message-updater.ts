@@ -14,6 +14,15 @@ export interface Adapter {
   readonly updateAssistant: (assistant: SessionMessage.Assistant) => Effect.Effect<void>
   readonly updateShell: (shell: SessionMessage.Shell) => Effect.Effect<void>
   readonly appendMessage: (message: SessionMessage.Message) => Effect.Effect<void>
+  readonly getContentItem: (
+    messageID: SessionMessage.ID,
+    itemID: string,
+  ) => Effect.Effect<SessionMessage.AssistantContent | undefined>
+  readonly putContentItem: (
+    messageID: SessionMessage.ID,
+    item: SessionMessage.AssistantContent,
+    seq: number,
+  ) => Effect.Effect<void>
 }
 
 export function memory(state: MemoryState): Adapter {
@@ -49,6 +58,28 @@ export function memory(state: MemoryState): Adapter {
         return shell?.type === "shell" ? shell : undefined
       })
     },
+    getContentItem(messageID, itemID) {
+      return Effect.sync(() => {
+        const index = assistantIndex(messageID)
+        if (index < 0) return
+        const assistant = state.messages[index]
+        if (assistant?.type !== "assistant") return
+        return assistant.content.find((item) => item.id === itemID)
+      })
+    },
+    putContentItem(messageID, item, _seq) {
+      return Effect.sync(() => {
+        const index = assistantIndex(messageID)
+        if (index < 0) return
+        const assistant = state.messages[index]
+        if (assistant?.type !== "assistant") return
+        const content = [...assistant.content]
+        const itemIndex = content.findIndex((entry) => entry.id === item.id)
+        if (itemIndex < 0) content.push(item)
+        else content[itemIndex] = item
+        state.messages[index] = { ...assistant, content }
+      })
+    },
     updateAssistant(assistant) {
       return Effect.sync(() => {
         const index = assistantIndex(assistant.id)
@@ -77,25 +108,30 @@ export function memory(state: MemoryState): Adapter {
 
 export function update(adapter: Adapter, event: SessionEvent.Event) {
   type DraftAssistant = WritableDraft<SessionMessage.Assistant>
-  type DraftTool = WritableDraft<SessionMessage.AssistantTool>
-  type DraftText = WritableDraft<SessionMessage.AssistantText>
-  type DraftReasoning = WritableDraft<SessionMessage.AssistantReasoning>
 
-  const latestTool = (assistant: DraftAssistant | undefined, callID?: string) =>
-    assistant?.content.findLast(
-      (item): item is DraftTool => item.type === "tool" && (callID === undefined || item.id === callID),
-    )
-
-  const latestText = (assistant: DraftAssistant | undefined, textID: string) =>
-    assistant?.content.findLast((item): item is DraftText => item.type === "text" && item.id === textID)
-
-  const latestReasoning = (assistant: DraftAssistant | undefined, reasoningID: string) =>
-    assistant?.content.findLast((item): item is DraftReasoning => item.type === "reasoning" && item.id === reasoningID)
+  const requireSeq = (): number => {
+    const seq = event.durable?.seq
+    if (seq === undefined) throw new Error("Durable Session event is missing aggregate sequence")
+    return seq
+  }
 
   const updateOwnedAssistant = (messageID: SessionMessage.ID, recipe: (draft: DraftAssistant) => void) =>
     Effect.gen(function* () {
       const assistant = yield* adapter.getAssistant(messageID)
       if (assistant) yield* adapter.updateAssistant(produce(assistant, recipe))
+    })
+
+  const appendContentItem = (messageID: SessionMessage.ID, item: SessionMessage.AssistantContent) =>
+    adapter.putContentItem(messageID, item, requireSeq())
+
+  const mutateContentItem = (
+    messageID: SessionMessage.ID,
+    itemID: string,
+    recipe: (item: SessionMessage.AssistantContent) => SessionMessage.AssistantContent,
+  ) =>
+    Effect.gen(function* () {
+      const item = yield* adapter.getContentItem(messageID, itemID)
+      if (item) yield* adapter.putContentItem(messageID, recipe(item), requireSeq())
     })
 
   return Effect.gen(function* () {
@@ -227,150 +263,130 @@ export function update(adapter: Adapter, event: SessionEvent.Event) {
           draft.error = event.data.error
         })
       },
-      "session.next.text.started": (event) => {
-        return updateOwnedAssistant(event.data.assistantMessageID, (draft) => {
-          draft.content.push(
-            castDraft(SessionMessage.AssistantText.make({ type: "text", id: event.data.textID, text: "" })),
-          )
-        })
-      },
-      "session.next.text.delta": (event) => {
-        return updateOwnedAssistant(event.data.assistantMessageID, (draft) => {
-          const match = latestText(draft, event.data.textID)
-          if (match) match.text += event.data.delta
-        })
-      },
-      "session.next.text.ended": (event) => {
-        return updateOwnedAssistant(event.data.assistantMessageID, (draft) => {
-          const match = latestText(draft, event.data.textID)
-          if (match) match.text = event.data.text
-        })
-      },
-      "session.next.tool.input.started": (event) => {
-        return updateOwnedAssistant(event.data.assistantMessageID, (draft) => {
-          draft.content.push(
-            castDraft(
-              SessionMessage.AssistantTool.make({
-                type: "tool",
-                id: event.data.callID,
-                name: event.data.name,
-                time: { created: event.data.timestamp },
-                state: SessionMessage.ToolStatePending.make({ status: "pending", input: "" }),
-              }),
-            ),
-          )
-        })
-      },
+      "session.next.text.started": (event) =>
+        appendContentItem(
+          event.data.assistantMessageID,
+          SessionMessage.AssistantText.make({ type: "text", id: event.data.textID, text: "" }),
+        ),
+      "session.next.text.delta": (event) =>
+        mutateContentItem(event.data.assistantMessageID, event.data.textID, (item) =>
+          item.type === "text" ? { ...item, text: item.text + event.data.delta } : item,
+        ),
+      "session.next.text.ended": (event) =>
+        mutateContentItem(event.data.assistantMessageID, event.data.textID, (item) =>
+          item.type === "text" ? { ...item, text: event.data.text } : item,
+        ),
+      "session.next.tool.input.started": (event) =>
+        appendContentItem(
+          event.data.assistantMessageID,
+          SessionMessage.AssistantTool.make({
+            type: "tool",
+            id: event.data.callID,
+            name: event.data.name,
+            time: { created: event.data.timestamp },
+            state: SessionMessage.ToolStatePending.make({ status: "pending", input: "" }),
+          }),
+        ),
       "session.next.tool.input.delta": () => Effect.void,
-      "session.next.tool.input.ended": (event) => {
-        return updateOwnedAssistant(event.data.assistantMessageID, (draft) => {
-          const match = latestTool(draft, event.data.callID)
-          if (match && match.state.status === "pending") match.state.input = event.data.text
-        })
-      },
-      "session.next.tool.called": (event) => {
-        return updateOwnedAssistant(event.data.assistantMessageID, (draft) => {
-          const match = latestTool(draft, event.data.callID)
-          if (match) {
-            match.provider = event.data.provider
-            match.time.ran = event.data.timestamp
-            match.state = castDraft(
-              SessionMessage.ToolStateRunning.make({
-                status: "running",
-                input: event.data.input,
-                structured: {},
-                content: [],
-              }),
-            )
-          }
-        })
-      },
-      "session.next.tool.progress": (event) => {
-        return updateOwnedAssistant(event.data.assistantMessageID, (draft) => {
-          const match = latestTool(draft, event.data.callID)
-          if (match && match.state.status === "running") {
-            match.state.structured = event.data.structured
-            match.state.content = [...event.data.content]
-          }
-        })
-      },
-      "session.next.tool.success": (event) => {
-        return updateOwnedAssistant(event.data.assistantMessageID, (draft) => {
-          const match = latestTool(draft, event.data.callID)
-          if (match && match.state.status === "running") {
-            match.provider = {
-              executed: event.data.provider.executed || match.provider?.executed === true,
-              metadata: match.provider?.metadata,
-              resultMetadata: event.data.provider.metadata,
-            }
-            match.time.completed = event.data.timestamp
-            match.state = castDraft(
-              SessionMessage.ToolStateCompleted.make({
-                status: "completed",
-                input: match.state.input,
-                structured: event.data.structured,
-                content: [...event.data.content],
-                outputPaths: event.data.outputPaths ? [...event.data.outputPaths] : [],
-                result: event.data.result,
-              }),
-            )
-          }
-        })
-      },
-      "session.next.tool.failed": (event) => {
-        return updateOwnedAssistant(event.data.assistantMessageID, (draft) => {
-          const match = latestTool(draft, event.data.callID)
-          if (match && (match.state.status === "pending" || match.state.status === "running")) {
-            match.provider = {
-              executed: event.data.provider.executed || match.provider?.executed === true,
-              metadata: match.provider?.metadata,
-              resultMetadata: event.data.provider.metadata,
-            }
-            match.time.completed = event.data.timestamp
-            match.state = castDraft(
-              SessionMessage.ToolStateError.make({
-                status: "error",
-                error: event.data.error,
-                input: typeof match.state.input === "string" ? {} : match.state.input,
-                structured: match.state.status === "running" ? match.state.structured : {},
-                content: match.state.status === "running" ? match.state.content : [],
-                result: event.data.result,
-              }),
-            )
-          }
-        })
-      },
-      "session.next.reasoning.started": (event) => {
-        return updateOwnedAssistant(event.data.assistantMessageID, (draft) => {
-          draft.content.push(
-            castDraft(
-              SessionMessage.AssistantReasoning.make({
-                type: "reasoning",
-                id: event.data.reasoningID,
-                text: "",
-                providerMetadata: event.data.providerMetadata,
-                time: { created: event.data.timestamp },
-              }),
-            ),
-          )
-        })
-      },
-      "session.next.reasoning.delta": (event) => {
-        return updateOwnedAssistant(event.data.assistantMessageID, (draft) => {
-          const match = latestReasoning(draft, event.data.reasoningID)
-          if (match) match.text += event.data.delta
-        })
-      },
-      "session.next.reasoning.ended": (event) => {
-        return updateOwnedAssistant(event.data.assistantMessageID, (draft) => {
-          const match = latestReasoning(draft, event.data.reasoningID)
-          if (match) {
-            match.text = event.data.text
-            match.time = { created: match.time?.created ?? event.data.timestamp, completed: event.data.timestamp }
-            if (event.data.providerMetadata !== undefined) match.providerMetadata = event.data.providerMetadata
-          }
-        })
-      },
+      "session.next.tool.input.ended": (event) =>
+        mutateContentItem(event.data.assistantMessageID, event.data.callID, (item) =>
+          item.type === "tool" && item.state.status === "pending"
+            ? { ...item, state: { ...item.state, input: event.data.text } }
+            : item,
+        ),
+      "session.next.tool.called": (event) =>
+        mutateContentItem(event.data.assistantMessageID, event.data.callID, (item) =>
+          item.type === "tool"
+            ? {
+                ...item,
+                provider: event.data.provider,
+                time: { ...item.time, ran: event.data.timestamp },
+                state: SessionMessage.ToolStateRunning.make({
+                  status: "running",
+                  input: event.data.input,
+                  structured: {},
+                  content: [],
+                }),
+              }
+            : item,
+        ),
+      "session.next.tool.progress": (event) =>
+        mutateContentItem(event.data.assistantMessageID, event.data.callID, (item) =>
+          item.type === "tool" && item.state.status === "running"
+            ? { ...item, state: { ...item.state, structured: event.data.structured, content: [...event.data.content] } }
+            : item,
+        ),
+      "session.next.tool.success": (event) =>
+        mutateContentItem(event.data.assistantMessageID, event.data.callID, (item) =>
+          item.type === "tool" && item.state.status === "running"
+            ? {
+                ...item,
+                provider: {
+                  executed: event.data.provider.executed || item.provider?.executed === true,
+                  metadata: item.provider?.metadata,
+                  resultMetadata: event.data.provider.metadata,
+                },
+                time: { ...item.time, completed: event.data.timestamp },
+                state: SessionMessage.ToolStateCompleted.make({
+                  status: "completed",
+                  input: item.state.input,
+                  structured: event.data.structured,
+                  content: [...event.data.content],
+                  outputPaths: event.data.outputPaths ? [...event.data.outputPaths] : [],
+                  result: event.data.result,
+                }),
+              }
+            : item,
+        ),
+      "session.next.tool.failed": (event) =>
+        mutateContentItem(event.data.assistantMessageID, event.data.callID, (item) =>
+          item.type === "tool" && (item.state.status === "pending" || item.state.status === "running")
+            ? {
+                ...item,
+                provider: {
+                  executed: event.data.provider.executed || item.provider?.executed === true,
+                  metadata: item.provider?.metadata,
+                  resultMetadata: event.data.provider.metadata,
+                },
+                time: { ...item.time, completed: event.data.timestamp },
+                state: SessionMessage.ToolStateError.make({
+                  status: "error",
+                  error: event.data.error,
+                  input: typeof item.state.input === "string" ? {} : item.state.input,
+                  structured: item.state.status === "running" ? item.state.structured : {},
+                  content: item.state.status === "running" ? item.state.content : [],
+                  result: event.data.result,
+                }),
+              }
+            : item,
+        ),
+      "session.next.reasoning.started": (event) =>
+        appendContentItem(
+          event.data.assistantMessageID,
+          SessionMessage.AssistantReasoning.make({
+            type: "reasoning",
+            id: event.data.reasoningID,
+            text: "",
+            providerMetadata: event.data.providerMetadata,
+            time: { created: event.data.timestamp },
+          }),
+        ),
+      "session.next.reasoning.delta": (event) =>
+        mutateContentItem(event.data.assistantMessageID, event.data.reasoningID, (item) =>
+          item.type === "reasoning" ? { ...item, text: item.text + event.data.delta } : item,
+        ),
+      "session.next.reasoning.ended": (event) =>
+        mutateContentItem(event.data.assistantMessageID, event.data.reasoningID, (item) =>
+          item.type === "reasoning"
+            ? {
+                ...item,
+                text: event.data.text,
+                time: { created: item.time?.created ?? event.data.timestamp, completed: event.data.timestamp },
+                providerMetadata:
+                  event.data.providerMetadata !== undefined ? event.data.providerMetadata : item.providerMetadata,
+              }
+            : item,
+        ),
       "session.next.retried": () => Effect.void,
       "session.next.compaction.started": () => Effect.void,
       "session.next.compaction.delta": () => Effect.void,

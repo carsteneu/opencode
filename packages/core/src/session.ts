@@ -26,6 +26,7 @@ import path from "path"
 import { fromRow } from "./session/info"
 import { SessionRunner } from "./session/runner/index"
 import { SessionStore } from "./session/store"
+import { SessionHydrate } from "./session/hydrate"
 import { SessionExecution } from "./session/execution"
 import { makeGlobalNode } from "./effect/app-node"
 import { LocationServiceMap } from "./location-service-map"
@@ -333,7 +334,7 @@ const layer = Layer.effect(
         const rows = yield* (input.limit === undefined ? query.all() : query.limit(input.limit).all()).pipe(
           Effect.orDie,
         )
-        return yield* Effect.forEach(direction === "previous" ? rows.toReversed() : rows, decode)
+          return yield* SessionHydrate.hydrateRows(db, direction === "previous" ? rows.toReversed() : rows, decode)
       }),
       message: Effect.fn("V2Session.message")(function* (input) {
         const stored = yield* store.message(input.messageID)

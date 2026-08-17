@@ -12,13 +12,15 @@ import { SessionMessage } from "./message"
 import { SessionMessageUpdater } from "./message-updater"
 import { SessionInput } from "./input"
 import { WorkspaceV2 } from "../workspace"
-import { MessageTable, PartTable, SessionInputTable, SessionMessageTable, SessionTable } from "./sql"
+import { MessageTable, PartTable, SessionInputTable, SessionMessageContentTable, SessionMessageTable, SessionTable } from "./sql"
 import type { DeepMutable } from "../schema"
 
 type DatabaseService = Database.Interface["db"]
 
 const decodeMessage = Schema.decodeUnknownSync(SessionMessage.Message)
 const encodeMessage = Schema.encodeSync(SessionMessage.Message)
+const decodeContent = Schema.decodeUnknownSync(SessionMessage.AssistantContent)
+const encodeContent = Schema.encodeSync(SessionMessage.AssistantContent)
 
 export class SessionAlreadyProjected extends Error {}
 
@@ -128,8 +130,42 @@ function run(db: DatabaseService, event: SessionEvent.Event) {
         .run()
         .pipe(Effect.orDie)
     }
-    const appendMessage = (message: SessionMessage.Message) => insertMessage(db, event, message)
-    const adapter: SessionMessageUpdater.Adapter = {
+      const appendMessage = (message: SessionMessage.Message) => insertMessage(db, event, message)
+      const getContentItem = (messageID: SessionMessage.ID, itemID: string) =>
+        Effect.gen(function* () {
+          const row = yield* db
+            .select()
+            .from(SessionMessageContentTable)
+            .where(
+              and(
+                eq(SessionMessageContentTable.message_id, messageID),
+                eq(SessionMessageContentTable.item_id, itemID),
+              ),
+            )
+            .get()
+            .pipe(Effect.orDie)
+          return row ? decodeContent(row.data) : undefined
+        })
+      const putContentItem = (messageID: SessionMessage.ID, item: SessionMessage.AssistantContent, seq: number) => {
+        if (event.durable === undefined) return Effect.die("Durable Session event is missing aggregate sequence")
+        const encoded = encodeContent(item)
+        return db
+          .insert(SessionMessageContentTable)
+          .values({
+            message_id: messageID,
+            item_id: item.id,
+            session_id: event.data.sessionID,
+            seq,
+            data: encoded,
+          })
+          .onConflictDoUpdate({
+            target: [SessionMessageContentTable.message_id, SessionMessageContentTable.item_id],
+            set: { data: encoded },
+          })
+          .run()
+          .pipe(Effect.orDie)
+      }
+      const adapter: SessionMessageUpdater.Adapter = {
       getCurrentAssistant() {
         return Effect.gen(function* () {
           // A newer turn supersedes stale incomplete rows; never resume an older assistant projection.
@@ -181,10 +217,12 @@ function run(db: DatabaseService, event: SessionEvent.Event) {
             .find((message): message is SessionMessage.Shell => message.type === "shell" && message.callID === callID)
         })
       },
-      updateAssistant: updateMessage,
-      updateShell: updateMessage,
-      appendMessage,
-    }
+        updateAssistant: updateMessage,
+        updateShell: updateMessage,
+        appendMessage,
+        getContentItem,
+        putContentItem,
+      }
     yield* SessionMessageUpdater.update(adapter, event)
   })
 }
