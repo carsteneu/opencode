@@ -15,10 +15,6 @@ import { LspTool } from "../../src/tool/lsp"
 import { disposeAllInstances, TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
-afterEach(async () => {
-  await disposeAllInstances()
-})
-
 const ctx = {
   sessionID: SessionID.make("ses_test"),
   messageID: MessageID.make("msg_test"),
@@ -31,6 +27,38 @@ const ctx = {
 }
 
 const workspaceSymbolQueries: string[] = []
+const responses = { result: [] as LSP.Symbol[] }
+
+afterEach(async () => {
+  responses.result = []
+  workspaceSymbolQueries.length = 0
+  await disposeAllInstances()
+})
+
+const operations = [
+  "goToDefinition",
+  "findReferences",
+  "hover",
+  "documentSymbol",
+  "workspaceSymbol",
+  "goToImplementation",
+  "prepareCallHierarchy",
+  "incomingCalls",
+  "outgoingCalls",
+] as const
+
+const symbol = (name: string) =>
+  ({
+    name,
+    kind: 12,
+    location: {
+      uri: "file:///test.ts",
+      range: {
+        start: { line: 0, character: 0 },
+        end: { line: 0, character: 1 },
+      },
+    },
+  }) satisfies LSP.Symbol
 
 const lsp = Layer.succeed(
   LSP.Service,
@@ -40,19 +68,19 @@ const lsp = Layer.succeed(
     hasClients: () => Effect.succeed(true),
     touchFile: () => Effect.void,
     diagnostics: () => Effect.succeed({}),
-    hover: () => Effect.succeed([]),
-    definition: () => Effect.succeed([]),
-    references: () => Effect.succeed([]),
-    implementation: () => Effect.succeed([]),
-    documentSymbol: () => Effect.succeed([]),
+    hover: () => Effect.sync(() => responses.result),
+    definition: () => Effect.sync(() => responses.result),
+    references: () => Effect.sync(() => responses.result),
+    implementation: () => Effect.sync(() => responses.result),
+    documentSymbol: () => Effect.sync(() => responses.result),
     workspaceSymbol: (query) =>
       Effect.sync(() => {
         workspaceSymbolQueries.push(query)
-        return []
+        return responses.result
       }),
-    prepareCallHierarchy: () => Effect.succeed([]),
-    incomingCalls: () => Effect.succeed([]),
-    outgoingCalls: () => Effect.succeed([]),
+    prepareCallHierarchy: () => Effect.sync(() => responses.result),
+    incomingCalls: () => Effect.sync(() => responses.result),
+    outgoingCalls: () => Effect.sync(() => responses.result),
   }),
 )
 
@@ -105,17 +133,18 @@ describe("tool.lsp", () => {
           yield* put(file)
 
           const { items, next } = asks()
-          const result = yield* run({ operation: "goToDefinition", filePath: file, line: 3, character: 7 }, next)
-          const req = items.find((item) => item.permission === "lsp")
+          const positioned = operations.filter(
+            (operation) => operation !== "documentSymbol" && operation !== "workspaceSymbol",
+          )
+          for (const operation of positioned) {
+            const result = yield* run({ operation, filePath: file, line: 3, character: 7 }, next)
+            expect(result.title).toBe(`${operation} test.ts:3:7`)
+          }
 
-          expect(req).toBeDefined()
-          expect(req!.metadata).toEqual({
-            operation: "goToDefinition",
-            filePath: file,
-            line: 3,
-            character: 7,
-          })
-          expect(result.title).toBe("goToDefinition test.ts:3:7")
+          expect(items).toHaveLength(positioned.length)
+          expect(items.map((item) => item.metadata)).toEqual(
+            positioned.map((operation) => ({ operation, filePath: file, line: 3, character: 7 })),
+          )
         }),
       { git: true },
     )
@@ -181,4 +210,57 @@ describe("tool.lsp", () => {
       { git: true },
     )
   })
+
+  it.instance(
+    "keeps empty and pretty JSON output for every operation without retaining the result in metadata",
+    () =>
+      Effect.gen(function* () {
+        const dir = (yield* TestInstance).directory
+        const file = path.join(dir, "test.ts")
+        yield* put(file)
+
+        for (const operation of operations) {
+          responses.result = []
+          const empty = yield* run({ operation, filePath: file, line: 3, character: 7 })
+          expect(empty.output).toBe(`No results found for ${operation}`)
+          expect(empty.metadata).toEqual({ truncated: false })
+
+          responses.result = [symbol(`symbol-${operation}`)]
+          const found = yield* run({ operation, filePath: file, line: 3, character: 7 })
+          expect(found.output).toBe(JSON.stringify(responses.result, null, 2))
+          expect(found.metadata).toEqual({ truncated: false })
+        }
+      }),
+    { git: true },
+  )
+
+  it.instance(
+    "spills one complete large result while serializing its marker only once",
+    () =>
+      Effect.gen(function* () {
+        const dir = (yield* TestInstance).directory
+        const file = path.join(dir, "test.ts")
+        yield* put(file)
+        const marker = "LSP-LARGE-RESULT-MARKER"
+        responses.result = [symbol(marker), symbol("x".repeat(Truncate.MAX_BYTES * 2))]
+        const full = JSON.stringify(responses.result, null, 2)
+
+        const result = yield* run({ operation: "goToDefinition", filePath: file, line: 3, character: 7 })
+        const outputPath = "outputPath" in result.metadata ? result.metadata.outputPath : undefined
+        if (typeof outputPath !== "string") return yield* Effect.die("missing LSP output path")
+        expect(result.metadata).toEqual({ truncated: true, outputPath })
+        expect(result.metadata).not.toHaveProperty("result")
+        expect(result.output).toContain(marker)
+        expect(result.output).toContain("bytes truncated")
+        expect(result.output).toContain(outputPath)
+        const fs = yield* FSUtil.Service
+        expect(yield* fs.readFileString(outputPath)).toBe(full)
+
+        const serialized = JSON.stringify(result)
+        const legacy = JSON.stringify({ ...result, metadata: { ...result.metadata, result: responses.result } })
+        expect(serialized.split(marker)).toHaveLength(2)
+        expect(Buffer.byteLength(serialized)).toBeLessThan(Buffer.byteLength(legacy) / 10)
+      }),
+    { git: true },
+  )
 })
