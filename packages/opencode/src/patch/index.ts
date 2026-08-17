@@ -400,6 +400,9 @@ function computeReplacements(
   return replacements
 }
 
+// Requires strictly-ascending, non-overlapping replacements (as produced by
+// computeReplacements); overlapping input would yield a different result than
+// the reverse-splice it replaced.
 export function applyReplacements(lines: string[], replacements: Array<[number, number, string[]]>): string[] {
   // Copy once into a new output buffer, walking replacements in ascending
   // order. Every original line before a hunk and every inserted new line is
