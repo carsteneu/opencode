@@ -18,9 +18,13 @@ export const Input = Schema.Struct({
   name: Schema.String.annotate({ description: "The name of the skill from the available skills list" }),
 })
 
-export const Output = Schema.Struct({
+const StructuredOutput = Schema.Struct({
   name: Schema.String,
   directory: Schema.String,
+})
+
+export const Output = Schema.Struct({
+  ...StructuredOutput.fields,
   output: Schema.String,
 })
 
@@ -66,6 +70,11 @@ const layer = Layer.effectDiscard(
           description,
           input: Input,
           output: Output,
+          structured: StructuredOutput,
+          toStructuredOutput: ({ output }) => ({
+            name: output.name,
+            directory: output.directory,
+          }),
           toModelOutput: ({ output }) => [{ type: "text", text: output.output }],
           execute: (input, context) =>
             Effect.gen(function* () {

@@ -4,6 +4,7 @@ import { describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { Global } from "@opencode-ai/core/global"
 import { PermissionV2 } from "@opencode-ai/core/permission"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionV2 } from "@opencode-ai/core/session"
@@ -71,15 +72,23 @@ describe("SkillTool", () => {
               [PermissionV2.node, permission],
               [SkillV2.node, skills],
               [ToolOutputStore.node, ToolOutputStore.nodeWithoutConfig],
+              [Global.node, Global.layerWith({ data: tmp.path })],
             ],
           )
 
           return yield* Effect.gen(function* () {
             const registry = yield* ToolRegistry.Service
-            expect((yield* toolDefinitions(registry))[0]).toMatchObject({
+            const definition = (yield* toolDefinitions(registry))[0]
+            expect(definition).toMatchObject({
               name: "skill",
               description: SkillTool.description,
             })
+            const outputSchema = definition?.outputSchema
+            if (!outputSchema || typeof outputSchema !== "object" || !("properties" in outputSchema))
+              return yield* Effect.die("missing skill output schema")
+            const properties = outputSchema.properties
+            if (!properties || typeof properties !== "object") return yield* Effect.die("missing schema properties")
+            expect(Object.keys(properties)).toEqual(["name", "directory"])
             expect(
               yield* executeTool(registry, {
                 sessionID,
@@ -91,15 +100,17 @@ describe("SkillTool", () => {
               value: SkillTool.toModelOutput(info, [reference]),
             })
             expect(SkillTool.toModelOutput(info, [reference])).toContain(`Base directory for this skill: ${directory}`)
-            expect(
-              yield* settleTool(registry, {
-                sessionID,
-                ...toolIdentity,
-                call: { type: "tool-call", id: "call-skill-overflow", name: "skill", input: { name: "effect" } },
-              }),
-            ).toMatchObject({
+            const settled = yield* settleTool(registry, {
+              sessionID,
+              ...toolIdentity,
+              call: { type: "tool-call", id: "call-skill-overflow", name: "skill", input: { name: "effect" } },
+            })
+            expect(settled).toEqual({
               result: { type: "text", value: SkillTool.toModelOutput(info, [reference]) },
-              output: { structured: { name: "effect" } },
+              output: {
+                structured: { name: "effect", directory },
+                content: [{ type: "text", text: SkillTool.toModelOutput(info, [reference]) }],
+              },
             })
             expect(assertions).toMatchObject([
               { sessionID, action: "skill", resources: ["effect"], save: ["effect"] },
@@ -141,6 +152,56 @@ describe("SkillTool", () => {
                 call: { type: "tool-call", id: "call-flat-skill", name: "skill", input: { name: "public" } },
               }),
             ).toEqual({ type: "text", value: SkillTool.toModelOutput(flat, []) })
+
+            const marker = "SKILL-LARGE-PAYLOAD"
+            const tail = "SKILL-LARGE-TAIL"
+            const largeDirectory = path.join(tmp.path, "large")
+            const largeLocation = path.join(largeDirectory, "SKILL.md")
+            const largeReference = path.join(largeDirectory, "reference.md")
+            const large = SkillV2.Info.make({
+              name: "large",
+              description: "Large guidance",
+              location: AbsolutePath.make(largeLocation),
+              content: `${marker}\n${"x".repeat(512 * 1024)}\n${tail}`,
+            })
+            yield* Effect.promise(() => fs.mkdir(largeDirectory, { recursive: true }))
+            yield* Effect.promise(() =>
+              Promise.all([
+                fs.writeFile(largeLocation, large.content),
+                fs.writeFile(largeReference, "large reference"),
+              ]),
+            )
+            current = [large]
+            const full = SkillTool.toModelOutput(large, [largeReference])
+            expect(Buffer.byteLength(full)).toBeGreaterThan(ToolOutputStore.MAX_BYTES)
+            const largeSettled = yield* settleTool(registry, {
+              sessionID,
+              ...toolIdentity,
+              call: { type: "tool-call", id: "call-skill-large", name: "skill", input: { name: "large" } },
+            })
+            const output = largeSettled.output
+            const outputPath = largeSettled.outputPaths?.[0]
+            if (!output || output.content[0]?.type !== "text" || !outputPath)
+              return yield* Effect.die("missing bounded skill output")
+            const content = output.content[0]
+
+            expect(output.structured).toEqual({ name: "large", directory: largeDirectory })
+            expect(output.structured).not.toHaveProperty("output")
+            expect(largeSettled.outputPaths).toHaveLength(1)
+            expect(largeSettled.result).toEqual({ type: "text", value: content.text })
+            expect(content.text).toContain(marker)
+            expect(content.text).toContain(tail)
+            expect(content.text).toContain("output truncated; full content saved to")
+            expect(Buffer.byteLength(content.text)).toBeLessThanOrEqual(ToolOutputStore.MAX_BYTES)
+            expect(yield* Effect.promise(() => Bun.file(outputPath).text())).toBe(full)
+
+            const serialized = JSON.stringify(output)
+            const legacy = JSON.stringify({
+              ...output,
+              structured: { name: "large", directory: largeDirectory, output: full },
+            })
+            expect(serialized.split(marker)).toHaveLength(2)
+            expect(Buffer.byteLength(serialized)).toBeLessThan(Buffer.byteLength(legacy) / 5)
           }).pipe(Effect.provide(skillToolLayer))
         }),
       ),
