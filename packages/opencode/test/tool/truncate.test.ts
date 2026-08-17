@@ -118,6 +118,17 @@ describe("truncate.buildPreview (linear, no full split)", () => {
     }
   })
 
+  test("tail text starting with a newline does not over-produce phantom empty lines", () => {
+    // lastIndexOf clamps a negative fromIndex to 0, so a leading "\n" would be
+    // re-found forever unless the exhaustion break guards end === 0.
+    const text = "\n" + "l1\nl2\nl3\n"
+    for (const maxLines of [10, 3]) {
+      expect(buildPreview(text, maxLines, 10_000, "tail")).toEqual(
+        referenceBuildPreview(text, maxLines, 10_000, "tail"),
+      )
+    }
+  })
+
   test("empty and single-line text match reference", () => {
     for (const text of ["", "solo", "solo\n"]) {
       for (const dir of ["head", "tail"] as const) {

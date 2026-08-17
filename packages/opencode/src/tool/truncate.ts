@@ -72,7 +72,9 @@ export function buildPreview(
     // yields a final empty segment, matching text.split semantics.
     let end = text.length
     while (out.length < maxLines) {
-      const nl = text.lastIndexOf("\n", end - 1)
+      // lastIndexOf clamps a negative fromIndex to 0, so without this guard a
+      // leading "\n" would be re-found forever and emit phantom empty lines.
+      const nl = end === 0 ? -1 : text.lastIndexOf("\n", end - 1)
       const start = nl === -1 ? 0 : nl + 1
       const line = text.slice(start, end)
       const size = Buffer.byteLength(line, "utf-8") + (out.length > 0 ? 1 : 0)
