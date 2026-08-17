@@ -223,20 +223,18 @@ describe("Instruction.resolve", () => {
         [RuntimeFlags.node, RuntimeFlags.layer({})],
       ])
 
-    const remoteRun =
-      <A, E, R>(
-        self: Effect.Effect<A, E, R>,
-        config: Record<string, unknown>,
-        http: HttpClient.HttpClient,
-        home: string,
-      ) =>
-        Effect.provide(self, remoteLayer(config, http, home))
+    const remoteRun = <A, E, R>(
+      self: Effect.Effect<A, E, R>,
+      config: Record<string, unknown>,
+      http: HttpClient.HttpClient,
+      home: string,
+    ) => Effect.provide(self, remoteLayer(config, http, home))
 
     it.live("fetches remote instructions from config URLs", () =>
       provideTmpdirInstance((home) => {
         const url = "https://example.test/AGENTS.md"
-        const http = remoteHttp((request) =>
-          new Response("# Remote Rules", { status: 200, headers: { "content-type": "text/markdown" } }),
+        const http = remoteHttp(
+          (request) => new Response("# Remote Rules", { status: 200, headers: { "content-type": "text/markdown" } }),
         )
         return remoteRun(
           Effect.gen(function* () {
@@ -254,11 +252,12 @@ describe("Instruction.resolve", () => {
     it.live("skips remote instructions that exceed the body cap", () =>
       provideTmpdirInstance((home) => {
         const url = "https://example.test/big.md"
-        const http = remoteHttp((request) =>
-          new Response("x", {
-            status: 200,
-            headers: { "content-type": "text/plain", "content-length": String(2 * 1024 * 1024) },
-          }),
+        const http = remoteHttp(
+          (request) =>
+            new Response("x", {
+              status: 200,
+              headers: { "content-type": "text/plain", "content-length": String(2 * 1024 * 1024) },
+            }),
         )
         return remoteRun(
           Effect.gen(function* () {

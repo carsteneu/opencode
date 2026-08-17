@@ -4,20 +4,14 @@ import path from "path"
 import { Duration, Effect, FileSystem } from "effect"
 import { NodeFileSystem } from "@effect/platform-node"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
-import {
-  downloadBounded,
-  fetchBoundedBody,
-  fetchBoundedText,
-} from "@opencode-ai/core/http/bounded-download"
+import { downloadBounded, fetchBoundedBody, fetchBoundedText } from "@opencode-ai/core/http/bounded-download"
 import { tmpdir } from "./fixture/tmpdir"
 
 const MAX = 5 * 1024 * 1024
 
 const stub = (handler: (request: HttpClientRequest.HttpClientRequest) => Response) =>
   HttpClient.make((request) =>
-    Effect.sync(() => handler(request)).pipe(
-      Effect.map((response) => HttpClientResponse.fromWeb(request, response)),
-    ),
+    Effect.sync(() => handler(request)).pipe(Effect.map((response) => HttpClientResponse.fromWeb(request, response))),
   )
 
 const failure = async (eff: Effect.Effect<unknown, Error>): Promise<Error> => {
@@ -33,17 +27,21 @@ const options = { maxBytes: MAX, timeout: Duration.seconds(5) }
 
 describe("fetchBoundedBody", () => {
   test("returns the body and content type", async () => {
-    const http = stub(() => new Response("# hi", { status: 200, headers: { "content-type": "text/plain; charset=utf-8" } }))
-    const { body, contentType } = await Effect.runPromise(
-      fetchBoundedBody(http, "https://example.test/a.md", options),
+    const http = stub(
+      () => new Response("# hi", { status: 200, headers: { "content-type": "text/plain; charset=utf-8" } }),
     )
+    const { body, contentType } = await Effect.runPromise(fetchBoundedBody(http, "https://example.test/a.md", options))
     expect(new TextDecoder().decode(body)).toBe("# hi")
     expect(contentType).toBe("text/plain; charset=utf-8")
   })
 
   test("rejects a body whose Content-Length exceeds the cap before reading it", async () => {
-    const http = stub(() =>
-      new Response("x", { status: 200, headers: { "content-type": "text/plain", "content-length": String(MAX + 1) } }),
+    const http = stub(
+      () =>
+        new Response("x", {
+          status: 200,
+          headers: { "content-type": "text/plain", "content-length": String(MAX + 1) },
+        }),
     )
     const error = await failure(fetchBoundedBody(http, "https://example.test/big.md", options))
     expect(error.message).toMatch(/too large/i)
@@ -67,7 +65,9 @@ describe("fetchBoundedBody", () => {
   })
 
   test("rejects a content type outside the allowlist", async () => {
-    const http = stub(() => new Response("data", { status: 200, headers: { "content-type": "application/octet-stream" } }))
+    const http = stub(
+      () => new Response("data", { status: 200, headers: { "content-type": "application/octet-stream" } }),
+    )
     const error = await failure(
       fetchBoundedBody(http, "https://example.test/x.bin", {
         ...options,
@@ -78,7 +78,9 @@ describe("fetchBoundedBody", () => {
   })
 
   test("allows binary content types when no allowlist is set", async () => {
-    const http = stub(() => new Response("data", { status: 200, headers: { "content-type": "application/octet-stream" } }))
+    const http = stub(
+      () => new Response("data", { status: 200, headers: { "content-type": "application/octet-stream" } }),
+    )
     const { body } = await Effect.runPromise(fetchBoundedBody(http, "https://example.test/x.bin", options))
     expect(new TextDecoder().decode(body)).toBe("data")
   })
@@ -122,8 +124,12 @@ describe("downloadBounded", () => {
   test("does not leave a partial file at the destination when the download fails", async () => {
     const tmp = await tmpdir()
     try {
-      const http = stub(() =>
-        new Response("x", { status: 200, headers: { "content-type": "text/plain", "content-length": String(MAX + 1) } }),
+      const http = stub(
+        () =>
+          new Response("x", {
+            status: 200,
+            headers: { "content-type": "text/plain", "content-length": String(MAX + 1) },
+          }),
       )
       const dest = path.join(tmp.path, "out.md")
       const run = Effect.gen(function* () {

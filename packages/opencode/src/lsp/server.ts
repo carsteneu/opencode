@@ -25,8 +25,12 @@ const pathExists = async (p: string) =>
     .stat(p)
     .then(() => true)
     .catch(() => false)
-const run = (cmd: string[], opts: Process.RunOptions = {}) => Process.run(cmd, { ...opts, nothrow: true })
-const output = (cmd: string[], opts: Process.RunOptions = {}) => Process.text(cmd, { ...opts, nothrow: true })
+// Runs an install/extract step. Carries a kill deadline so a wedged child cannot
+// remain orphaned after the surrounding install sequence gives up.
+const run = (cmd: string[], opts: Process.RunOptions = {}) =>
+  Process.run(cmd, { ...opts, nothrow: true, timeout: opts.timeout ?? INSTALL_DEADLINE_MS })
+const output = (cmd: string[], opts: Process.RunOptions = {}) =>
+  Process.text(cmd, { ...opts, nothrow: true, timeout: opts.timeout ?? INSTALL_DEADLINE_MS })
 
 // Runs an install/download/extract step; on deadline expiry it resolves to
 // `undefined` so spawn treats the well-known server as unavailable instead of
@@ -221,8 +225,8 @@ export const ESLint: Info = {
       const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm"
       const npmOk = await deadline(
         (async () => {
-          await Process.run([npmCmd, "install"], { cwd: finalPath })
-          await Process.run([npmCmd, "run", "compile"], { cwd: finalPath })
+          await Process.run([npmCmd, "install"], { cwd: finalPath, timeout: INSTALL_DEADLINE_MS })
+          await Process.run([npmCmd, "run", "compile"], { cwd: finalPath, timeout: INSTALL_DEADLINE_MS })
           return true
         })(),
       )
@@ -395,6 +399,7 @@ export const Gopls: Info = {
         stdout: "pipe",
         stderr: "pipe",
         stdin: "pipe",
+        timeout: INSTALL_DEADLINE_MS,
       })
       const exit = await proc.exited
       if (exit !== 0) {
@@ -427,6 +432,7 @@ export const Rubocop: Info = {
         stdout: "pipe",
         stderr: "pipe",
         stdin: "pipe",
+        timeout: INSTALL_DEADLINE_MS,
       })
       const exit = await proc.exited
       if (exit !== 0) {
@@ -589,9 +595,9 @@ export const ElixirLS: Info = {
 
         const cwd = path.join(Global.Path.bin, "elixir-ls-master")
         const env = { MIX_ENV: "prod", ...process.env }
-        await Process.run(["mix", "deps.get"], { cwd, env })
-        await Process.run(["mix", "compile"], { cwd, env })
-        await Process.run(["mix", "elixir_ls.release2", "-o", "release"], { cwd, env })
+        await Process.run(["mix", "deps.get"], { cwd, env, timeout: INSTALL_DEADLINE_MS })
+        await Process.run(["mix", "compile"], { cwd, env, timeout: INSTALL_DEADLINE_MS })
+        await Process.run(["mix", "elixir_ls.release2", "-o", "release"], { cwd, env, timeout: INSTALL_DEADLINE_MS })
       }
     }
 
@@ -777,6 +783,7 @@ async function installRoslynLanguageServer(disableLspDownload: boolean) {
     stdout: "pipe",
     stderr: "pipe",
     stdin: "pipe",
+    timeout: INSTALL_DEADLINE_MS,
   })
   const exit = await proc.exited
   if (exit !== 0) {
@@ -856,6 +863,7 @@ export const FSharp: Info = {
         stdout: "pipe",
         stderr: "pipe",
         stdin: "pipe",
+        timeout: INSTALL_DEADLINE_MS,
       })
       const exit = await proc.exited
       if (exit !== 0) {

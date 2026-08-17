@@ -171,6 +171,13 @@ describe("LSPClient lifecycle bounding", () => {
     expect(scoped.has(b)).toBe(false)
     expect(scoped.get(a)?.[0]?.message).toContain(`diag ${a}`)
 
+    // otherFiles surfaces a bounded set of non-selected files so cross-file
+    // reporting (write.ts) still works without materializing the whole map.
+    const withOthers = client.diagnosticsFor([a], 1)
+    expect(withOthers.has(a)).toBe(true)
+    expect(withOthers.has(b)).toBe(true)
+    expect(withOthers.size).toBe(2)
+
     await client.shutdown()
   })
 })

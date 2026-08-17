@@ -718,11 +718,18 @@ export async function create(input: {
     get diagnostics() {
       return getDiagnostics()
     },
-    diagnosticsFor(scopedTo?: readonly string[]) {
+    diagnosticsFor(scopedTo?: readonly string[], otherFiles = 0) {
       const wanted = scopedTo ? new Set(scopedTo.map(Filesystem.normalizePath)) : undefined
       const result = new Map<string, Diagnostic[]>()
+      let othersAdded = 0
       for (const key of new Set([...pushDiagnostics.keys(), ...pullDiagnostics.keys()])) {
-        if (wanted && !wanted.has(key)) continue
+        if (wanted && !wanted.has(key)) {
+          // Bounded cross-file set: surface up to `otherFiles` non-selected
+          // files so callers (e.g. write.ts) can report "errors in other
+          // files" without materializing the whole workspace diagnostic map.
+          if (otherFiles <= 0 || othersAdded >= otherFiles) continue
+          othersAdded++
+        }
         result.set(key, mergedDiagnostics(key))
       }
       return result

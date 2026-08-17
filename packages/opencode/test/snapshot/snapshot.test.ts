@@ -1069,67 +1069,67 @@ it.instance(
     expect(yield* withGitWrapper(wrapper, "preview-timeout", snapshot.sessionPreviewDiff(before!))).toBeUndefined()
     const pid = Number((yield* readText(wrapper.pid)).trim())
     expect(Number.isSafeInteger(pid)).toBe(true)
-      yield* pollWithTimeout(
-        Effect.sync(() => {
-          try {
-            process.kill(pid, 0)
-            return
-          } catch {
-            return true
-          }
-        }),
-        "timed-out git wrapper was not force-killed",
-      )
-    }),
-    { git: true },
-    { timeout: 15_000 },
-  )
+    yield* pollWithTimeout(
+      Effect.sync(() => {
+        try {
+          process.kill(pid, 0)
+          return
+        } catch {
+          return true
+        }
+      }),
+      "timed-out git wrapper was not force-killed",
+    )
+  }),
+  { git: true },
+  { timeout: 15_000 },
+)
 
-  it.instance(
-    "a hanging write-path git op is bounded and releases the shared snapshot lock without an orphan",
-    Effect.gen(function* () {
-      const tmp = yield* bootstrap()
-      const snapshot = yield* Snapshot.Service
-      const before = yield* snapshot.track()
-      expect(before).toBeTruthy()
-      yield* write(`${tmp.path}/changed.txt`, "changed")
-      const wrapper = yield* makeGitWrapper(yield* scopedTmpdir())
+it.instance(
+  "a hanging write-path git op is bounded and releases the shared snapshot lock without an orphan",
+  Effect.gen(function* () {
+    const tmp = yield* bootstrap()
+    const snapshot = yield* Snapshot.Service
+    const before = yield* snapshot.track()
+    expect(before).toBeTruthy()
+    yield* write(`${tmp.path}/changed.txt`, "changed")
+    const wrapper = yield* makeGitWrapper(yield* scopedTmpdir())
 
-      yield* withProcessEnvironment(
-        {
-          OPENCODE_SNAPSHOT_GIT_TIMEOUT: "5000",
-          OPENCODE_SNAPSHOT_GIT_FORCEKILL: "1000",
-        },
-        Effect.gen(function* () {
-          // write-tree hangs forever; the git helper default timeout must bound it.
-            const hungHash = yield* withGitWrapper(wrapper, "write-tree-hang", snapshot.track())
-            expect(hungHash).toBe("")
+    yield* withProcessEnvironment(
+      {
+        OPENCODE_SNAPSHOT_GIT_TIMEOUT: "5000",
+        OPENCODE_SNAPSHOT_GIT_FORCEKILL: "1000",
+      },
+      Effect.gen(function* () {
+        // write-tree hangs forever; the git helper default timeout must bound it.
+        const hungHash = yield* withGitWrapper(wrapper, "write-tree-hang", snapshot.track())
+        expect(hungHash).toBe("")
 
-            // The shared per-worktree lock must have been released by the deadline,
-            // so a subsequent track can still acquire it and complete.
-            yield* write(`${tmp.path}/changed.txt`, "changed again")
-            const hashAfter = yield* withGitWrapper(wrapper, "record", snapshot.track())
-            expect(hashAfter).toBeTruthy()
+        // The shared per-worktree lock must have been released by the deadline,
+        // so a subsequent track can still acquire it and complete.
+        yield* write(`${tmp.path}/changed.txt`, "changed again")
+        const hashAfter = yield* withGitWrapper(wrapper, "record", snapshot.track())
+        expect(hashAfter).toBeTruthy()
 
-          const pid = Number((yield* readText(wrapper.pid)).trim())
-          expect(Number.isSafeInteger(pid)).toBe(true)
-          yield* pollWithTimeout(
-            Effect.sync(() => {
-              try {
-                process.kill(pid, 0)
-                return
-              } catch {
-                return true
-              }
-            }),
-            "hung write-path git wrapper was not force-killed",
-          )
-        }),
-      )
-    }),
-    { git: true },
-    { timeout: 30_000 },
-  )
+        const pid = Number((yield* readText(wrapper.pid)).trim())
+        expect(Number.isSafeInteger(pid)).toBe(true)
+        yield* pollWithTimeout(
+          Effect.sync(() => {
+            try {
+              process.kill(pid, 0)
+              return
+            } catch {
+              return true
+            }
+          }),
+          "hung write-path git wrapper was not force-killed",
+        )
+      }),
+    )
+  }),
+  { git: true },
+  { timeout: 30_000 },
+)
 
 it.instance(
   "restore function",

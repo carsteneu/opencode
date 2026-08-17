@@ -403,7 +403,9 @@ const layer = Layer.effect(
       const results: Record<string, LSPClient.Diagnostic[]> = Object.fromEntries(
         (files ?? []).map((file) => [file, []]),
       )
-      const all = yield* runAll(async (client) => (files ? client.diagnosticsFor(files) : client.diagnostics))
+      const all = yield* runAll(async (client) =>
+        files ? client.diagnosticsFor(files, options?.otherFiles) : client.diagnostics,
+      )
       for (const result of all) {
         if (files) {
           for (const file of files) {
