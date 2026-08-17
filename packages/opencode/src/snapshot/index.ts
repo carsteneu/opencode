@@ -39,6 +39,7 @@ interface GitResult {
   readonly code: ChildProcessSpawner.ExitCode
   readonly text: string
   readonly stderr: string
+  readonly stdoutTruncated: boolean
 }
 
 type State = Omit<Interface, "init">
@@ -51,6 +52,7 @@ export interface Interface {
   readonly restore: (snapshot: string) => Effect.Effect<void>
   readonly revert: (patches: Patch[]) => Effect.Effect<void>
   readonly diff: (hash: string) => Effect.Effect<string>
+  readonly sessionPreviewDiff: (hash: string) => Effect.Effect<string | undefined>
   readonly pinDiff: (input: DiffPin & { from: string; to: string }) => Effect.Effect<boolean>
   readonly copyDiffPin: (input: { from: DiffPin; to: DiffPin }) => Effect.Effect<boolean>
   readonly unpinDiff: (input: DiffPin) => Effect.Effect<void>
@@ -103,15 +105,37 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
           encodeNulTerminatedPaths(files.map((file) => `:(top,literal)${file}`))
 
         const git = Effect.fnUntraced(
-          function* (cmd: string[], opts?: { cwd?: string; env?: Record<string, string>; stdin?: string }) {
+          function* (
+            cmd: string[],
+            opts?: {
+              cwd?: string
+              env?: Record<string, string>
+              stdin?: string
+              maxOutputBytes?: number
+              maxErrorBytes?: number
+              timeout?: Duration.Input
+              forceKillAfter?: Duration.Input
+            },
+          ) {
             const result = yield* appProcess.run(
-              ChildProcess.make("git", cmd, { cwd: opts?.cwd, env: opts?.env, extendEnv: true }),
-              { stdin: opts?.stdin },
+              ChildProcess.make("git", cmd, {
+                cwd: opts?.cwd,
+                env: opts?.env,
+                extendEnv: true,
+                forceKillAfter: opts?.forceKillAfter,
+              }),
+              {
+                stdin: opts?.stdin,
+                maxOutputBytes: opts?.maxOutputBytes,
+                maxErrorBytes: opts?.maxErrorBytes,
+                timeout: opts?.timeout,
+              },
             )
             return {
               code: ChildProcessSpawner.ExitCode(result.exitCode),
               text: result.stdout.toString("utf8"),
               stderr: result.stderr.toString("utf8"),
+              stdoutTruncated: result.stdoutTruncated,
             } satisfies GitResult
           },
           Effect.catch((err) =>
@@ -119,6 +143,7 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
               code: ChildProcessSpawner.ExitCode(1),
               text: "",
               stderr: err instanceof Error ? err.message : String(err),
+              stdoutTruncated: false,
             }),
           ),
         )
@@ -585,6 +610,27 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
           )
         })
 
+        const sessionPreviewDiff = Effect.fnUntraced(function* (hash: string) {
+          return yield* locked(
+            Effect.gen(function* () {
+              yield* add()
+              const result = yield* git([...quote, ...args(["diff", "--cached", "--no-ext-diff", hash, "--", "."])], {
+                cwd: state.worktree,
+                // Git appends a newline that trim removes before the serialized-size check.
+                maxOutputBytes: StructuredFileDiff.MAX_PATCH_BYTES + 1,
+                maxErrorBytes: 16 * 1024,
+                timeout: Duration.seconds(5),
+                forceKillAfter: Duration.seconds(1),
+              })
+              if (result.code !== 0 || result.stdoutTruncated) return
+              const value = result.text.trim()
+              if (JsonString.bytesUpTo(value, StructuredFileDiff.MAX_PATCH_BYTES) > StructuredFileDiff.MAX_PATCH_BYTES)
+                return
+              return value
+            }),
+          )
+        })
+
         type Row = {
           file: string
           status: "added" | "deleted" | "modified"
@@ -1024,6 +1070,7 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
           restore,
           revert,
           diff,
+          sessionPreviewDiff,
           pinDiff,
           copyDiffPin,
           unpinDiff,
@@ -1057,6 +1104,9 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
       }),
       diff: Effect.fn("Snapshot.diff")(function* (hash: string) {
         return yield* InstanceState.useEffect(state, (s) => s.diff(hash))
+      }),
+      sessionPreviewDiff: Effect.fn("Snapshot.sessionPreviewDiff")(function* (hash: string) {
+        return yield* InstanceState.useEffect(state, (s) => s.sessionPreviewDiff(hash))
       }),
       pinDiff: Effect.fn("Snapshot.pinDiff")(function* (input: DiffPin & { from: string; to: string }) {
         return yield* InstanceState.useEffect(state, (s) => s.pinDiff(input))

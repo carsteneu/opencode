@@ -5,7 +5,9 @@ import { SessionProjector } from "@opencode-ai/core/session/projector"
 import fs from "fs/promises"
 import path from "path"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
-import { Effect } from "effect"
+import { Effect, Schema } from "effect"
+import { StructuredFileDiff } from "@opencode-ai/core/tool/structured-file-diff"
+import { EventV2Bridge } from "@/event-v2-bridge"
 import { Session } from "@/session/session"
 
 import { SessionRevert } from "../../src/session/revert"
@@ -16,10 +18,18 @@ import { provideTmpdirInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
+import { sanitize } from "../../src/cli/cmd/export"
 
 const it = testEffect(
   LayerNode.compile(
-    LayerNode.group([Session.node, SessionRevert.node, Snapshot.node, SessionProjector.node, CrossSpawnSpawner.node]),
+    LayerNode.group([
+      Session.node,
+      SessionRevert.node,
+      Snapshot.node,
+      SessionProjector.node,
+      EventV2Bridge.node,
+      CrossSpawnSpawner.node,
+    ]),
   ),
 )
 
@@ -494,6 +504,92 @@ describe("revert + compact workflow", () => {
         }),
       { git: true },
     ),
+  )
+
+  it.live(
+    "overflow omits the preview while revert state, summary, event, export, and unrevert remain complete",
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          const session = yield* Session.Service
+          const revert = yield* SessionRevert.Service
+          const snapshot = yield* Snapshot.Service
+          const events = yield* EventV2Bridge.Service
+          const updates: SessionV1.SessionInfo[] = []
+          const unsubscribe = yield* events.listen((event) => {
+            if (event.type !== SessionV1.Event.Updated.type) return Effect.void
+            return Effect.sync(() => updates.push((event.data as typeof SessionV1.Event.Updated.data.Type).info))
+          })
+          yield* Effect.addFinalizer(() => unsubscribe)
+
+          const file = path.join(dir, "oversized.txt")
+          const original = "a".repeat(StructuredFileDiff.MAX_PATCH_BYTES + 100_000)
+          const changed = "b".repeat(StructuredFileDiff.MAX_PATCH_BYTES + 100_000)
+          yield* write(file, original)
+          const info = yield* session.create({})
+          const userMessage = yield* user(info.id)
+          yield* text(info.id, userMessage.id, "change the oversized file")
+          const assistantMessage = yield* assistant(info.id, userMessage.id, dir)
+          const before = yield* snapshot.track()
+          if (!before) throw new Error("expected snapshot before oversized edit")
+          yield* write(file, changed)
+          const after = yield* snapshot.track()
+          if (!after) throw new Error("expected snapshot after oversized edit")
+          const patch = yield* snapshot.patch(before, after)
+          yield* session.updatePart({
+            id: PartID.ascending(),
+            messageID: assistantMessage.id,
+            sessionID: info.id,
+            type: "step-start",
+            snapshot: before,
+          })
+          yield* session.updatePart({
+            id: PartID.ascending(),
+            messageID: assistantMessage.id,
+            sessionID: info.id,
+            type: "step-finish",
+            reason: "stop",
+            snapshot: after,
+            cost: 0,
+            tokens,
+          })
+          yield* session.updatePart({
+            id: PartID.ascending(),
+            messageID: assistantMessage.id,
+            sessionID: info.id,
+            type: "patch",
+            hash: patch.hash,
+            files: patch.files,
+          })
+          updates.length = 0
+
+          const reverted = yield* revert.revert({ sessionID: info.id, messageID: userMessage.id })
+          expect(yield* read(file)).toBe(original)
+          expect(reverted.revert?.snapshot).toBeTruthy()
+          expect(reverted.revert?.diff).toBeUndefined()
+          expect(Object.hasOwn(JSON.parse(JSON.stringify(reverted.revert)) as object, "diff")).toBe(false)
+          expect(reverted.summary).toEqual({ additions: 1, deletions: 1, files: 1 })
+
+          const stored = yield* session.get(info.id)
+          expect(stored.revert?.diff).toBeUndefined()
+          expect(Object.hasOwn(JSON.parse(JSON.stringify(stored.revert)) as object, "diff")).toBe(false)
+          const encoded = Schema.encodeSync(SessionV1.SessionInfo)(stored)
+          expect(Object.hasOwn(encoded.revert ?? {}, "diff")).toBe(false)
+          const update = updates.findLast((event) => event.revert?.messageID === userMessage.id)
+          expect(update?.summary).toEqual(stored.summary)
+          expect(Object.hasOwn(update?.revert ?? {}, "diff")).toBe(false)
+          const exported = JSON.parse(
+            JSON.stringify(sanitize({ info: stored, messages: yield* session.messages({ sessionID: info.id }) })),
+          ) as { info: { revert?: Record<string, unknown> } }
+          expect(Object.hasOwn(exported.info.revert ?? {}, "diff")).toBe(false)
+
+          const restored = yield* revert.unrevert({ sessionID: info.id })
+          expect(restored.revert).toBeUndefined()
+          expect(yield* read(file)).toBe(changed)
+        }),
+      { git: true },
+    ),
+    { timeout: 15_000 },
   )
 
   it.live(

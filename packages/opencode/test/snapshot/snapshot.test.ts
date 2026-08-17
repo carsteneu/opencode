@@ -18,7 +18,7 @@ import {
   TestInstance,
   tmpdirScoped,
 } from "../fixture/fixture"
-import { testEffect } from "../lib/effect"
+import { pollWithTimeout, testEffect } from "../lib/effect"
 
 const it = testEffect(
   Layer.mergeAll(LayerNode.compile(LayerNode.group([Snapshot.node, FSUtil.node])), testInstanceStoreLayer),
@@ -89,6 +89,8 @@ const bootstrapScoped = Effect.fn("SnapshotTest.bootstrapScoped")(function* () {
 const scopedGitTmpdir = () =>
   tmpdirScoped({ git: true }).pipe(Effect.provide(LayerNode.compile(CrossSpawnSpawner.node)))
 
+const scopedTmpdir = () => tmpdirScoped().pipe(Effect.provide(LayerNode.compile(CrossSpawnSpawner.node)))
+
 const cleanupWorktree = (repo: string, worktree: string, files: string[] = []) =>
   Effect.promise(async () => {
     await $`git worktree remove --force ${worktree}`.cwd(repo).quiet().nothrow()
@@ -123,6 +125,7 @@ const makeGitWrapper = Effect.fn("SnapshotTest.makeGitWrapper")(function* (dir: 
   const wrapperDir = path.join(dir, "git-wrapper")
   const wrapper = path.join(wrapperDir, "git")
   const log = path.join(wrapperDir, "commands.jsonl")
+  const pid = path.join(wrapperDir, "pid")
   yield* mkdirp(wrapperDir)
   yield* write(
     wrapper,
@@ -136,6 +139,18 @@ if (log) await appendFile(log, JSON.stringify(args) + "\\n")
 const catFile = args.indexOf("cat-file")
 const option = catFile < 0 ? undefined : args[catFile + 1]
 const mode = Bun.env.OPENCODE_SNAPSHOT_GIT_MODE
+const preview = args.includes("diff") && args.includes("--cached") && args.includes("--no-ext-diff")
+if (preview && mode === "preview-failure") process.exit(42)
+if (preview && mode === "preview-overflow") {
+  await Bun.write(Bun.stdout, "diff --git a/partial.txt b/partial.txt\\n" + "x".repeat(300_000))
+  process.exit(0)
+}
+if (preview && mode === "preview-timeout") {
+  const pid = Bun.env.OPENCODE_SNAPSHOT_GIT_PID
+  if (pid) await Bun.write(pid, String(process.pid))
+  process.on("SIGTERM", () => {})
+  await new Promise(() => {})
+}
 if (option?.startsWith("--batch-check")) {
   if (mode === "check-failure") process.exit(42)
   if (mode === "check-malformed") {
@@ -154,12 +169,19 @@ process.exit(await child.exited)
 `,
   )
   yield* Effect.promise(() => fs.chmod(wrapper, 0o755))
-  return { directory: wrapperDir, log }
+  return { directory: wrapperDir, log, pid }
 })
 
 const withGitWrapper = <A, E, R>(
-  wrapper: { directory: string; log: string },
-  mode: "record" | "check-failure" | "check-malformed" | "batch-failure",
+  wrapper: { directory: string; log: string; pid: string },
+  mode:
+    | "record"
+    | "check-failure"
+    | "check-malformed"
+    | "batch-failure"
+    | "preview-failure"
+    | "preview-overflow"
+    | "preview-timeout",
   self: Effect.Effect<A, E, R>,
 ) =>
   withProcessEnvironment(
@@ -167,6 +189,7 @@ const withGitWrapper = <A, E, R>(
       PATH: `${wrapper.directory}${path.delimiter}${process.env.PATH ?? ""}`,
       OPENCODE_SNAPSHOT_GIT_LOG: wrapper.log,
       OPENCODE_SNAPSHOT_GIT_MODE: mode,
+      OPENCODE_SNAPSHOT_GIT_PID: wrapper.pid,
     },
     self,
   )
@@ -891,6 +914,168 @@ it.instance(
     }),
   ),
   { git: true },
+)
+
+it.instance(
+  "sessionPreviewDiff keeps small raw git patches byte-identical to legacy diff",
+  Effect.gen(function* () {
+    const tmp = yield* bootstrap()
+    const snapshot = yield* Snapshot.Service
+    yield* write(`${tmp.path}/exact-é.txt`, "\uFEFFone\r\ntwo\tend")
+    const before = yield* snapshot.track()
+    expect(before).toBeTruthy()
+    expect(yield* snapshot.sessionPreviewDiff(before!)).toBe("")
+
+    yield* write(`${tmp.path}/exact-é.txt`, "\uFEFFone\r\nthree\t🙂")
+    const legacy = yield* snapshot.diff(before!)
+    const preview = yield* snapshot.sessionPreviewDiff(before!)
+    expect(preview).toBe(legacy)
+    expect(preview).toContain("diff --git a/exact-é.txt b/exact-é.txt")
+    expect(preview).toContain("-two\tend")
+    expect(preview).toContain("+three\t🙂")
+    expect(preview).toContain("\\ No newline at end of file")
+    expect(preview?.endsWith("\n")).toBe(false)
+  }),
+  { git: true },
+)
+
+it.instance(
+  "sessionPreviewDiff includes the exact serialized JSON boundary and omits one byte over",
+  Effect.gen(function* () {
+    const tmp = yield* bootstrap()
+    const snapshot = yield* Snapshot.Service
+    yield* write(`${tmp.path}/boundary.txt`, "a")
+    const before = yield* snapshot.track()
+    expect(before).toBeTruthy()
+
+    yield* write(`${tmp.path}/boundary.txt`, "b")
+    const base = yield* snapshot.diff(before!)
+    const baseBytes = Buffer.byteLength(JSON.stringify(base))
+    expect(baseBytes).toBeLessThan(StructuredFileDiff.MAX_PATCH_BYTES)
+    const extra = StructuredFileDiff.MAX_PATCH_BYTES - baseBytes
+
+    yield* write(`${tmp.path}/boundary.txt`, "b".repeat(1 + extra))
+    const exactLegacy = yield* snapshot.diff(before!)
+    expect(Buffer.byteLength(JSON.stringify(exactLegacy))).toBe(StructuredFileDiff.MAX_PATCH_BYTES)
+    expect(yield* snapshot.sessionPreviewDiff(before!)).toBe(exactLegacy)
+
+    yield* write(`${tmp.path}/boundary.txt`, "b".repeat(2 + extra))
+    const overLegacy = yield* snapshot.diff(before!)
+    expect(Buffer.byteLength(JSON.stringify(overLegacy))).toBe(StructuredFileDiff.MAX_PATCH_BYTES + 1)
+    expect(yield* snapshot.sessionPreviewDiff(before!)).toBeUndefined()
+  }),
+  { git: true },
+)
+
+it.instance(
+  "sessionPreviewDiff counts JSON escapes even when raw output stays below the cap",
+  Effect.gen(function* () {
+    const tmp = yield* bootstrap()
+    const snapshot = yield* Snapshot.Service
+    yield* write(`${tmp.path}/escaped.txt`, "before")
+    const before = yield* snapshot.track()
+    expect(before).toBeTruthy()
+    yield* write(`${tmp.path}/escaped.txt`, "\t".repeat(150_000))
+
+    const legacy = yield* snapshot.diff(before!)
+    expect(Buffer.byteLength(legacy)).toBeLessThan(StructuredFileDiff.MAX_PATCH_BYTES)
+    expect(Buffer.byteLength(JSON.stringify(legacy))).toBeGreaterThan(StructuredFileDiff.MAX_PATCH_BYTES)
+    expect(yield* snapshot.sessionPreviewDiff(before!)).toBeUndefined()
+  }),
+  { git: true },
+)
+
+it.instance(
+  "sessionPreviewDiff conservatively omits oversized raw trailing whitespace before legacy trim",
+  Effect.gen(function* () {
+    const tmp = yield* bootstrap()
+    const snapshot = yield* Snapshot.Service
+    yield* write(`${tmp.path}/spaces.txt`, "before\n")
+    const before = yield* snapshot.track()
+    expect(before).toBeTruthy()
+    yield* write(`${tmp.path}/spaces.txt`, `${" ".repeat(StructuredFileDiff.MAX_PATCH_BYTES + 1)}\n`)
+
+    const legacy = yield* snapshot.diff(before!)
+    expect(Buffer.byteLength(JSON.stringify(legacy))).toBeLessThan(StructuredFileDiff.MAX_PATCH_BYTES)
+    expect(yield* snapshot.sessionPreviewDiff(before!)).toBeUndefined()
+  }),
+  { git: true },
+)
+
+it.instance(
+  "sessionPreviewDiff bounds huge single-line and sparse raw output without changing legacy diff",
+  Effect.gen(function* () {
+    const tmp = yield* bootstrap()
+    const snapshot = yield* Snapshot.Service
+    yield* write(`${tmp.path}/huge.txt`, "before")
+    const sparse = Array.from({ length: 50_000 }, (_, i) => `v${i}`).join("\n")
+    yield* write(`${tmp.path}/sparse.txt`, sparse)
+    const before = yield* snapshot.track()
+    expect(before).toBeTruthy()
+
+    yield* write(`${tmp.path}/huge.txt`, "x".repeat(StructuredFileDiff.MAX_PATCH_BYTES + 100_000))
+    expect(yield* snapshot.sessionPreviewDiff(before!)).toBeUndefined()
+    const hugeLegacy = yield* snapshot.diff(before!)
+    expect(typeof hugeLegacy).toBe("string")
+    expect(Buffer.byteLength(JSON.stringify(hugeLegacy))).toBeGreaterThan(StructuredFileDiff.MAX_PATCH_BYTES)
+
+    yield* write(`${tmp.path}/huge.txt`, "before")
+    yield* write(
+      `${tmp.path}/sparse.txt`,
+      Array.from({ length: 50_000 }, (_, i) => (i % 8 === 0 ? `changed-${i}` : `v${i}`)).join("\n"),
+    )
+    expect(yield* snapshot.sessionPreviewDiff(before!)).toBeUndefined()
+    const sparseLegacy = yield* snapshot.diff(before!)
+    expect(typeof sparseLegacy).toBe("string")
+    expect(Buffer.byteLength(JSON.stringify(sparseLegacy))).toBeGreaterThan(StructuredFileDiff.MAX_PATCH_BYTES)
+  }),
+  { git: true },
+  { timeout: 15_000 },
+)
+
+it.instance(
+  "sessionPreviewDiff discards truncated and failed process output",
+  Effect.gen(function* () {
+    const tmp = yield* bootstrap()
+    const snapshot = yield* Snapshot.Service
+    const before = yield* snapshot.track()
+    expect(before).toBeTruthy()
+    yield* write(`${tmp.path}/changed.txt`, "changed")
+    const wrapper = yield* makeGitWrapper(yield* scopedTmpdir())
+
+    expect(yield* withGitWrapper(wrapper, "preview-overflow", snapshot.sessionPreviewDiff(before!))).toBeUndefined()
+    expect(yield* withGitWrapper(wrapper, "preview-failure", snapshot.sessionPreviewDiff(before!))).toBeUndefined()
+  }),
+  { git: true },
+)
+
+it.instance(
+  "sessionPreviewDiff force-kills a SIGTERM-ignoring timed-out git process",
+  Effect.gen(function* () {
+    const tmp = yield* bootstrap()
+    const snapshot = yield* Snapshot.Service
+    const before = yield* snapshot.track()
+    expect(before).toBeTruthy()
+    yield* write(`${tmp.path}/changed.txt`, "changed")
+    const wrapper = yield* makeGitWrapper(yield* scopedTmpdir())
+
+    expect(yield* withGitWrapper(wrapper, "preview-timeout", snapshot.sessionPreviewDiff(before!))).toBeUndefined()
+    const pid = Number((yield* readText(wrapper.pid)).trim())
+    expect(Number.isSafeInteger(pid)).toBe(true)
+    yield* pollWithTimeout(
+      Effect.sync(() => {
+        try {
+          process.kill(pid, 0)
+          return
+        } catch {
+          return true
+        }
+      }),
+      "timed-out git wrapper was not force-killed",
+    )
+  }),
+  { git: true },
+  { timeout: 15_000 },
 )
 
 it.instance(

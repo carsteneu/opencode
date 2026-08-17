@@ -2,6 +2,10 @@ import { describe, expect, test } from "bun:test"
 import { getRevertDiffFiles } from "../../src/util/revert-diff"
 
 describe("revert diff", () => {
+  test("returns no file rows when the optional preview is absent", () => {
+    expect(getRevertDiffFiles("")).toEqual([])
+  })
+
   test("prefers the actual file path over /dev/null for added and deleted files", () => {
     const files = getRevertDiffFiles(`diff --git a/new.txt b/new.txt
 new file mode 100644

@@ -75,4 +75,15 @@ describe("Session schema", () => {
       expect(Object.hasOwn(encoded.revert as Record<string, unknown>, key)).toBe(false)
     }
   })
+
+  test("round-trips legacy revert rows that contain a raw diff", () => {
+    const revert = {
+      messageID: MessageID.ascending(),
+      snapshot: "legacy-tree",
+      diff: "diff --git a/a.txt b/a.txt\n-old\n+new",
+    }
+    const encoded = Schema.encodeSync(Session.Info)({ ...info, revert })
+    expect(encoded.revert).toEqual(revert)
+    expect(Schema.decodeUnknownSync(Session.Info)(encoded).revert).toEqual(revert)
+  })
 })

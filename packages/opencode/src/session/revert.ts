@@ -72,7 +72,10 @@ const layer = Layer.effect(
       rev.snapshot = session.revert?.snapshot ?? (yield* snap.track())
       if (session.revert?.snapshot) yield* snap.restore(session.revert.snapshot)
       yield* snap.revert(patches)
-      if (rev.snapshot) rev.diff = yield* snap.diff(rev.snapshot)
+      if (rev.snapshot) {
+        const diff = yield* snap.sessionPreviewDiff(rev.snapshot)
+        if (diff !== undefined) rev.diff = diff
+      }
       const index = all.findIndex((msg) => msg.info.id === rev.messageID)
       const range = index < 0 ? [] : all.slice(index)
       const diffs = yield* summary.computeDiff({ messages: range })
