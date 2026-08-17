@@ -1955,6 +1955,7 @@ export type Config = {
   small_model?: string
   default_agent?: string
   subagent_depth?: number
+  subagent_timeout?: number
   username?: string
   mode?: {
     build?: AgentConfig
