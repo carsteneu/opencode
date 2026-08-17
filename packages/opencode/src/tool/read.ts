@@ -120,17 +120,42 @@ export const ReadTool = Tool.define<
       yield* lsp.touchFile(filepath).pipe(Effect.ignoreCause, Effect.forkIn(scope))
     })
 
-    const readSample = Effect.fn("ReadTool.readSample")(function* (
-      filepath: string,
-      fileSize: number,
-      sampleSize: number,
-    ) {
-      if (fileSize === 0) return new Uint8Array()
-
+    const readSample = Effect.fn("ReadTool.readSample")(function* (filepath: string) {
       return yield* Effect.scoped(
         Effect.gen(function* () {
           const file = yield* fs.open(filepath, { flag: "r" })
-          return Option.getOrElse(yield* file.readAlloc(Math.min(sampleSize, fileSize)), () => new Uint8Array())
+          const chunks: Uint8Array[] = []
+          let size = 0
+
+          while (size < SAMPLE_BYTES) {
+            const chunk = yield* file.readAlloc(SAMPLE_BYTES - size)
+            if (Option.isNone(chunk) || chunk.value.length === 0) break
+            chunks.push(chunk.value)
+            size += chunk.value.length
+          }
+
+          const sample =
+            chunks.length === 0 ? new Uint8Array() : chunks.length === 1 ? chunks[0] : Buffer.concat(chunks, size)
+          const mime = sniffAttachmentMime(sample, FSUtil.mimeType(filepath))
+          if (!SUPPORTED_IMAGE_MIMES.has(mime) && !isPdfAttachment(mime)) {
+            return { sample, media: undefined }
+          }
+          const info = yield* file.stat
+          if (Number(info.size) > MAX_MEDIA_BYTES) {
+            return yield* Effect.fail(new Error(`Media exceeds ${MAX_MEDIA_BYTES} byte ingestion limit: ${filepath}`))
+          }
+
+          while (size <= MAX_MEDIA_BYTES) {
+            const chunk = yield* file.readAlloc(Math.min(64 * 1024, MAX_MEDIA_BYTES + 1 - size))
+            if (Option.isNone(chunk) || chunk.value.length === 0) break
+            chunks.push(chunk.value)
+            size += chunk.value.length
+          }
+          if (size > MAX_MEDIA_BYTES) {
+            return yield* Effect.fail(new Error(`Media exceeds ${MAX_MEDIA_BYTES} byte ingestion limit: ${filepath}`))
+          }
+
+          return { sample, media: { mime, bytes: Buffer.concat(chunks, size) } }
         }),
       )
     })
@@ -320,17 +345,10 @@ export const ReadTool = Tool.define<
       }
 
       const loaded = yield* instruction.resolve(ctx.messages, filepath, ctx.messageID)
-      const sample = yield* readSample(filepath, Number(stat.size), SAMPLE_BYTES)
+      const content = yield* readSample(filepath)
 
-      const mime = sniffAttachmentMime(sample, FSUtil.mimeType(filepath))
-      const isImage = SUPPORTED_IMAGE_MIMES.has(mime)
-
-      if (isImage || isPdfAttachment(mime)) {
-        if (Number(stat.size) > MAX_MEDIA_BYTES) {
-          return yield* Effect.fail(new Error(`Media exceeds ${MAX_MEDIA_BYTES} byte ingestion limit: ${filepath}`))
-        }
-        const bytes = yield* fs.readFile(filepath)
-        const msg = isPdfAttachment(mime) ? "PDF read successfully" : "Image read successfully"
+      if (content.media) {
+        const msg = isPdfAttachment(content.media.mime) ? "PDF read successfully" : "Image read successfully"
         return {
           title,
           output: msg,
@@ -342,14 +360,14 @@ export const ReadTool = Tool.define<
           attachments: [
             {
               type: "file" as const,
-              mime,
-              url: `data:${mime};base64,${Buffer.from(bytes).toString("base64")}`,
+              mime: content.media.mime,
+              url: `data:${content.media.mime};base64,${content.media.bytes.toString("base64")}`,
             },
           ],
         }
       }
 
-      if (isBinaryFile(filepath, sample)) {
+      if (isBinaryFile(filepath, content.sample)) {
         return yield* Effect.fail(new Error(`Cannot read binary file: ${filepath}`))
       }
 

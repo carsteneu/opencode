@@ -2,7 +2,7 @@ import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { afterEach, describe, expect } from "bun:test"
 import { open } from "node:fs/promises"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Cause, Effect, Exit, Layer, Stream } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, FileSystem, Layer, Stream } from "effect"
 import path from "path"
 import { Agent } from "../../src/agent/agent"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
@@ -29,6 +29,7 @@ import {
 import { testEffect } from "../lib/effect"
 
 const FIXTURES_DIR = path.join(import.meta.dir, "fixtures")
+const MAX_MEDIA_BYTES = 20 * 1024 * 1024
 
 afterEach(async () => {
   await disposeAllInstances()
@@ -455,6 +456,43 @@ describe("tool.read truncation", () => {
     }),
   )
 
+  it.instance("keeps empty and text files off the media stat and full-read path", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const fs = yield* FSUtil.Service
+      for (const item of [
+        { name: "empty.txt", content: "", output: "End of file - total 0 lines" },
+        { name: "small.txt", content: "hello world", output: "1: hello world" },
+      ]) {
+        const filepath = path.join(test.directory, item.name)
+        yield* put(filepath, item.content)
+        const result = yield* run({ filePath: filepath }).pipe(
+          Effect.provideService(
+            FSUtil.Service,
+            FSUtil.Service.of({
+              ...fs,
+              readFile: () => Effect.die("text must not use the media full-read path"),
+              open: (file, options) =>
+                Effect.gen(function* () {
+                  const handle = yield* fs.open(file, options)
+                  return new Proxy(handle, {
+                    get(target, property, receiver) {
+                      if (property === "stat") return Effect.die("text must not use media handle stat")
+                      return Reflect.get(target, property, receiver)
+                    },
+                  })
+                }),
+            }),
+          ),
+        )
+
+        expect(result.output).toContain(item.output)
+        expect(result.metadata.truncated).toBe(false)
+        expect(result.attachments).toBeUndefined()
+      }
+    }),
+  )
+
   it.live("respects offset parameter", () =>
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped()
@@ -557,6 +595,11 @@ describe("tool.read truncation", () => {
       expect(result.attachments?.[0]).not.toHaveProperty("id")
       expect(result.attachments?.[0]).not.toHaveProperty("sessionID")
       expect(result.attachments?.[0]).not.toHaveProperty("messageID")
+      expect(result.attachments?.[0]).toEqual({
+        type: "file",
+        mime: "image/png",
+        url: `data:image/png;base64,${png.toString("base64")}`,
+      })
     }),
   )
 
@@ -569,7 +612,66 @@ describe("tool.read truncation", () => {
       const result = yield* exec(dir, { filePath: path.join(dir, "image.bin") })
       expect(result.output).toBe("Image read successfully")
       expect(result.attachments?.[0].mime).toBe("image/jpeg")
-      expect(result.attachments?.[0].url.startsWith("data:image/jpeg;base64,")).toBe(true)
+      expect(result.attachments?.[0].url).toBe(`data:image/jpeg;base64,${jpeg.toString("base64")}`)
+    }),
+  )
+
+  it.live("preserves image and PDF bytes across short handle reads without a pathname reread", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const fs = yield* FSUtil.Service
+      const cases = [
+        {
+          name: "image.bin",
+          bytes: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]),
+          mime: "image/png",
+          output: "Image read successfully",
+        },
+        {
+          name: "report.bin",
+          bytes: Buffer.from("%PDF-1.7\nbody\n%%EOF"),
+          mime: "application/pdf",
+          output: "PDF read successfully",
+        },
+      ] as const
+
+      for (const item of cases) {
+        const filepath = path.join(dir, item.name)
+        const opens = { count: 0 }
+        yield* put(filepath, item.bytes)
+        const result = yield* exec(dir, { filePath: filepath }).pipe(
+          Effect.provideService(
+            FSUtil.Service,
+            FSUtil.Service.of({
+              ...fs,
+              readFile: () => Effect.die("media must stay on its scoped handle"),
+              open: (file, options) =>
+                Effect.gen(function* () {
+                  opens.count++
+                  const handle = yield* fs.open(file, options)
+                  return new Proxy(handle, {
+                    get(target, property, receiver) {
+                      if (property !== "readAlloc") return Reflect.get(target, property, receiver)
+                      return (size: Parameters<typeof handle.readAlloc>[0]) =>
+                        handle.readAlloc(Math.min(Number(size), 2))
+                    },
+                  })
+                }),
+            }),
+          ),
+        )
+
+        expect(result.output).toBe(item.output)
+        expect(result.metadata.truncated).toBe(false)
+        expect(opens.count).toBe(1)
+        expect(result.attachments).toEqual([
+          {
+            type: "file",
+            mime: item.mime,
+            url: `data:${item.mime};base64,${item.bytes.toString("base64")}`,
+          },
+        ])
+      }
     }),
   )
 
@@ -586,6 +688,31 @@ describe("tool.read truncation", () => {
     }),
   )
 
+  it.live("accepts media at the exact ingestion limit without losing bytes", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const filepath = path.join(dir, "limit.png")
+      const header = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+      yield* Effect.promise(async () => {
+        const file = await open(filepath, "w")
+        await file.write(header)
+        await file.truncate(MAX_MEDIA_BYTES)
+        await file.close()
+      })
+
+      const result = yield* exec(dir, { filePath: filepath })
+      const attachment = result.attachments?.[0]
+      if (!attachment) return yield* Effect.die("missing exact-limit media attachment")
+      const bytes = Buffer.from(attachment.url.slice(`data:${attachment.mime};base64,`.length), "base64")
+      expect(result.output).toBe("Image read successfully")
+      expect(result.metadata.truncated).toBe(false)
+      expect(attachment.mime).toBe("image/png")
+      expect(bytes.length).toBe(MAX_MEDIA_BYTES)
+      expect(bytes.subarray(0, header.length)).toEqual(header)
+      expect(bytes.at(-1)).toBe(0)
+    }),
+  )
+
   it.live("rejects oversized media before loading it into memory", () =>
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped()
@@ -593,13 +720,95 @@ describe("tool.read truncation", () => {
       yield* Effect.promise(async () => {
         const file = await open(filepath, "w")
         await file.write(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
-        await file.truncate(20 * 1024 * 1024 + 1)
+        await file.truncate(MAX_MEDIA_BYTES + 1)
         await file.close()
       })
 
       const error = yield* fail(dir, { filePath: filepath })
-      expect(error.message).toContain("Media exceeds")
-      expect(error.message).toContain(filepath)
+      expect(error.message).toBe(`Media exceeds ${MAX_MEDIA_BYTES} byte ingestion limit: ${filepath}`)
+    }),
+  )
+
+  it.live("rejects media that grows beyond the limit after its sample is read", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const filepath = path.join(dir, "growing.png")
+      const initial = Buffer.alloc(8192)
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(initial)
+      yield* put(filepath, initial)
+
+      const fs = yield* FSUtil.Service
+      const reads = { count: 0 }
+      const error = yield* fail(dir, { filePath: filepath }).pipe(
+        Effect.provideService(
+          FSUtil.Service,
+          FSUtil.Service.of({
+            ...fs,
+            open: (file, options) =>
+              Effect.gen(function* () {
+                const handle = yield* fs.open(file, options)
+                return new Proxy(handle, {
+                  get(target, property, receiver) {
+                    if (property !== "readAlloc") return Reflect.get(target, property, receiver)
+                    return (size: Parameters<typeof handle.readAlloc>[0]) =>
+                      Effect.gen(function* () {
+                        reads.count++
+                        if (reads.count === 2) yield* fs.truncate(filepath, MAX_MEDIA_BYTES + 1)
+                        return yield* handle.readAlloc(size)
+                      })
+                  },
+                })
+              }),
+          }),
+        ),
+      )
+
+      expect(reads.count).toBeGreaterThan(2)
+      expect(error.message).toBe(`Media exceeds ${MAX_MEDIA_BYTES} byte ingestion limit: ${filepath}`)
+    }),
+  )
+
+  it.live("closes the media handle when a read is interrupted", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const filepath = path.join(dir, "interrupted.png")
+      const initial = Buffer.alloc(8192)
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(initial)
+      yield* put(filepath, initial)
+
+      const fs = yield* FSUtil.Service
+      const waiting = yield* Deferred.make<void>()
+      const captured = { file: undefined as FileSystem.File | undefined }
+      const reads = { count: 0 }
+      const fiber = yield* exec(dir, { filePath: filepath }).pipe(
+        Effect.provideService(
+          FSUtil.Service,
+          FSUtil.Service.of({
+            ...fs,
+            open: (file, options) =>
+              Effect.gen(function* () {
+                const handle = yield* fs.open(file, options)
+                captured.file = handle
+                return new Proxy(handle, {
+                  get(target, property, receiver) {
+                    if (property !== "readAlloc") return Reflect.get(target, property, receiver)
+                    return (size: Parameters<typeof handle.readAlloc>[0]) => {
+                      reads.count++
+                      if (reads.count === 1) return handle.readAlloc(size)
+                      return Deferred.succeed(waiting, undefined).pipe(Effect.andThen(Effect.never))
+                    }
+                  },
+                })
+              }),
+          }),
+        ),
+        Effect.forkChild,
+      )
+      yield* Deferred.await(waiting)
+      yield* Fiber.interrupt(fiber)
+
+      if (!captured.file) return yield* Effect.die("missing interrupted media handle")
+      expect(Exit.isFailure(yield* captured.file.readAlloc(1).pipe(Effect.exit))).toBe(true)
     }),
   )
 
