@@ -113,6 +113,18 @@ describe("tool.webfetch", () => {
     ),
   )
 
+  it.instance("returns empty text for no-content responses", () =>
+    withFetch(
+      () => new Response(null, { status: 204, headers: { "content-type": "text/plain" } }),
+      (url) =>
+        Effect.gen(function* () {
+          const result = yield* exec({ url: new URL("/empty", url).toString(), format: "text" })
+          expect(result.output).toBe("")
+          expect(result.attachments).toBeUndefined()
+        }),
+    ),
+  )
+
   it.instance("extracts text from html without scripts or styles", () =>
     withFetch(
       () =>

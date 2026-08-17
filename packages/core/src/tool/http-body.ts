@@ -1,5 +1,5 @@
 import { Effect, Stream } from "effect"
-import { HttpClientResponse } from "effect/unstable/http"
+import { HttpClientError, HttpClientResponse } from "effect/unstable/http"
 
 export const collectBoundedResponseBody = (
   response: HttpClientResponse.HttpClientResponse,
@@ -12,7 +12,7 @@ export const collectBoundedResponseBody = (
     const declaredSize =
       parsedSize !== undefined && Number.isSafeInteger(parsedSize) && parsedSize >= 0 ? parsedSize : undefined
     if (declaredSize !== undefined && declaredSize > maximumBytes) return yield* Effect.fail(tooLarge())
-    let body = Buffer.allocUnsafe(Math.min(maximumBytes, declaredSize || 64 * 1024))
+    let body = Buffer.allocUnsafe(Math.min(maximumBytes, declaredSize ?? 64 * 1024))
     let size = 0
     yield* Stream.runForEach(response.stream, (chunk) => {
       if (chunk.byteLength === 0) return Effect.void
@@ -25,6 +25,11 @@ export const collectBoundedResponseBody = (
       body.set(chunk, size)
       size += chunk.byteLength
       return Effect.void
-    })
+    }).pipe(
+      Effect.catchIf(
+        (error) => size === 0 && HttpClientError.isHttpClientError(error) && error.reason._tag === "EmptyBodyError",
+        () => Effect.void,
+      ),
+    )
     return body.subarray(0, size)
   })
