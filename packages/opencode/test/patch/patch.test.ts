@@ -1,156 +1,384 @@
-import { describe, expect, test } from "bun:test"
-import { applyReplacements, deriveNewContentsFromChunks, type UpdateFileChunk } from "../../src/patch"
-import { join as bomJoin } from "../../src/util/bom"
+import { describe, test, expect, beforeEach, afterEach } from "bun:test"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { Effect } from "effect"
+import * as fs from "fs/promises"
+import * as path from "path"
+import { tmpdir } from "os"
+import { Patch } from "../../src/patch"
+import { FSUtil } from "@opencode-ai/core/fs-util"
+import { testEffect } from "../lib/effect"
 
-type Replacement = [number, number, string[]]
+const it = testEffect(LayerNode.compile(FSUtil.node))
 
-// Reference implementation of the previous (quadratic) algorithm. Kept here so
-// the linear replacement can be proven byte-identical against it.
-function referenceApplyReplacements(lines: string[], replacements: Replacement[]): string[] {
-  const result = [...lines]
+describe("Patch namespace", () => {
+  let tempDir: string
 
-  for (let i = replacements.length - 1; i >= 0; i--) {
-    const [startIdx, oldLen, newSegment] = replacements[i]
-
-    result.splice(startIdx, oldLen)
-
-    for (let j = 0; j < newSegment.length; j++) {
-      result.splice(startIdx + j, 0, newSegment[j])
-    }
-  }
-
-  return result
-}
-
-// Deterministic pseudo-random source so large cases are reproducible.
-function makeSeeded(seed: number) {
-  let s = seed
-  return () => {
-    s = (s * 1664525 + 1013904223) >>> 0
-    return s / 0xffffffff
-  }
-}
-
-function overlapFreeReplacements(lineCount: number, count: number, rand: () => number, ceil = lineCount): Replacement[] {
-  const parts: Replacement[] = []
-  let cursor = 0
-  for (let i = 0; i < count; i++) {
-    cursor += Math.floor(rand() * 3)
-    const start = Math.min(cursor, Math.max(ceil - 1, 0))
-    const oldLen = Math.min(1 + Math.floor(rand() * 2), Math.max(ceil - start, 0))
-    const newLen = Math.floor(rand() * 4)
-    const newSegment: string[] = []
-    for (let j = 0; j < newLen; j++) newSegment.push(`new-${i}-${j}`)
-    parts.push([start, oldLen, newSegment])
-    cursor = start + oldLen
-    if (cursor >= ceil) break
-  }
-  return parts
-}
-
-describe("patch.applyReplacements (linear)", () => {
-  test("single insertion in the middle is byte-identical to reference", () => {
-    const lines = ["a", "b", "c", "d", "e"]
-    const replacements: Replacement[] = [[2, 1, ["X", "Y"]]]
-
-    expect(applyReplacements(lines, replacements)).toEqual(referenceApplyReplacements(lines, replacements))
-    expect(applyReplacements(lines, replacements)).toEqual(["a", "b", "X", "Y", "d", "e"])
+  beforeEach(async () => {
+    tempDir = await fs.mkdtemp(path.join(tmpdir(), "patch-test-"))
   })
 
-  test("pure deletion (empty newSegment)", () => {
-    const lines = ["a", "b", "c"]
-    const replacements: Replacement[] = [[1, 2, []]]
-
-    expect(applyReplacements(lines, replacements)).toEqual(referenceApplyReplacements(lines, replacements))
-    expect(applyReplacements(lines, replacements)).toEqual(["a"])
+  afterEach(async () => {
+    // Clean up temp directory
+    await fs.rm(tempDir, { recursive: true, force: true })
   })
 
-  test("insertion at start and at end", () => {
-    const lines = ["b", "c"]
-    const replacements: Replacement[] = [
-      [0, 0, ["head"]],
-      [2, 0, ["tail"]],
-    ]
+  describe("parsePatch", () => {
+    test("should parse simple add file patch", () => {
+      const patchText = `*** Begin Patch
+*** Add File: test.txt
++Hello World
+*** End Patch`
 
-    expect(applyReplacements(lines, replacements)).toEqual(referenceApplyReplacements(lines, replacements))
-    expect(applyReplacements(lines, replacements)).toEqual(["head", "b", "c", "tail"])
+      const result = Patch.parsePatch(patchText)
+      expect(result.hunks).toHaveLength(1)
+      expect(result.hunks[0]).toEqual({
+        type: "add",
+        path: "test.txt",
+        contents: "Hello World",
+      })
+    })
+
+    test("should parse delete file patch", () => {
+      const patchText = `*** Begin Patch
+*** Delete File: old.txt
+*** End Patch`
+
+      const result = Patch.parsePatch(patchText)
+      expect(result.hunks).toHaveLength(1)
+      const hunk = result.hunks[0]
+      expect(hunk.type).toBe("delete")
+      expect(hunk.path).toBe("old.txt")
+    })
+
+    test("should parse patch with multiple hunks", () => {
+      const patchText = `*** Begin Patch
+*** Add File: new.txt
++This is a new file
+*** Update File: existing.txt
+@@
+ old line
+-new line
++updated line
+*** End Patch`
+
+      const result = Patch.parsePatch(patchText)
+      expect(result.hunks).toHaveLength(2)
+      expect(result.hunks[0].type).toBe("add")
+      expect(result.hunks[1].type).toBe("update")
+    })
+
+    test("should parse file move operation", () => {
+      const patchText = `*** Begin Patch
+*** Update File: old-name.txt
+*** Move to: new-name.txt
+@@
+-Old content
++New content
+*** End Patch`
+
+      const result = Patch.parsePatch(patchText)
+      expect(result.hunks).toHaveLength(1)
+      const hunk = result.hunks[0]
+      expect(hunk.type).toBe("update")
+      expect(hunk.path).toBe("old-name.txt")
+      if (hunk.type === "update") {
+        expect(hunk.move_path).toBe("new-name.txt")
+      }
+    })
+
+    test("should throw error for invalid patch format", () => {
+      const invalidPatch = `This is not a valid patch`
+
+      expect(() => Patch.parsePatch(invalidPatch)).toThrow("Invalid patch format")
+    })
   })
 
-  test("multiple hunks in overlap-free order are byte-identical to reference", () => {
-    const lines = ["l0", "l1", "l2", "l3", "l4", "l5", "l6", "l7"]
-    const replacements: Replacement[] = [
-      [1, 2, ["r1", "r2"]],
-      [5, 1, ["r5"]],
-      [7, 1, []],
-    ]
+  describe("maybeParseApplyPatch", () => {
+    test("should parse direct apply_patch command", () => {
+      const patchText = `*** Begin Patch
+*** Add File: test.txt
++Content
+*** End Patch`
 
-    expect(applyReplacements(lines, replacements)).toEqual(referenceApplyReplacements(lines, replacements))
+      const result = Patch.maybeParseApplyPatch(["apply_patch", patchText])
+      expect(result.type).toBe(Patch.MaybeApplyPatch.Body)
+      if (result.type === Patch.MaybeApplyPatch.Body) {
+        expect(result.args.patch).toBe(patchText)
+        expect(result.args.hunks).toHaveLength(1)
+      }
+    })
+
+    test("should parse applypatch command", () => {
+      const patchText = `*** Begin Patch
+*** Add File: test.txt
++Content
+*** End Patch`
+
+      const result = Patch.maybeParseApplyPatch(["applypatch", patchText])
+      expect(result.type).toBe(Patch.MaybeApplyPatch.Body)
+    })
+
+    test("should handle bash heredoc format", () => {
+      const script = `apply_patch <<'PATCH'
+*** Begin Patch
+*** Add File: test.txt
++Content
+*** End Patch
+PATCH`
+
+      const result = Patch.maybeParseApplyPatch(["bash", "-lc", script])
+      expect(result.type).toBe(Patch.MaybeApplyPatch.Body)
+      if (result.type === Patch.MaybeApplyPatch.Body) {
+        expect(result.args.hunks).toHaveLength(1)
+      }
+    })
+
+    test("should return NotApplyPatch for non-patch commands", () => {
+      const result = Patch.maybeParseApplyPatch(["echo", "hello"])
+      expect(result.type).toBe(Patch.MaybeApplyPatch.NotApplyPatch)
+    })
   })
 
-  test("large middle insertion matches reference and keeps byte order", () => {
-    const lineCount = 5_000
-    const lines = Array.from({ length: lineCount }, (_, i) => `line-${i}`)
-    const rand = makeSeeded(42)
-    const midIdx = Math.floor(lineCount / 2)
+  describe("applyPatch", () => {
+    it.live("should add a new file", () =>
+      Effect.gen(function* () {
+        const patchText = `*** Begin Patch
+*** Add File: ${tempDir}/new-file.txt
++Hello World
++This is a new file
+*** End Patch`
 
-    // Generate replacements strictly below midIdx so midIdx is guaranteed free.
-    const replacements = overlapFreeReplacements(lineCount, 1_000, rand, midIdx)
+        const result = yield* Patch.applyPatch(patchText)
+        expect(result.added).toHaveLength(1)
+        expect(result.modified).toHaveLength(0)
+        expect(result.deleted).toHaveLength(0)
 
-    const big = Array.from({ length: 2_000 }, (_, i) => `big-${i}`)
-    replacements.push([midIdx, 0, big])
+        const content = yield* Effect.promise(() => fs.readFile(result.added[0], "utf-8"))
+        expect(content).toBe("Hello World\nThis is a new file")
+      }),
+    )
 
-    const linear = applyReplacements(lines, replacements)
-    const reference = referenceApplyReplacements(lines, replacements)
+    it.live("should delete an existing file", () =>
+      Effect.gen(function* () {
+        const filePath = path.join(tempDir, "to-delete.txt")
+        yield* Effect.promise(() => fs.writeFile(filePath, "This file will be deleted"))
 
-    expect(linear).toEqual(reference)
-    expect(linear.length).toBe(reference.length)
+        const patchText = `*** Begin Patch
+*** Delete File: ${filePath}
+*** End Patch`
+
+        const result = yield* Patch.applyPatch(patchText)
+        expect(result.deleted).toHaveLength(1)
+        expect(result.deleted[0]).toBe(filePath)
+
+        const exists = yield* Effect.promise(() =>
+          fs
+            .access(filePath)
+            .then(() => true)
+            .catch(() => false),
+        )
+        expect(exists).toBe(false)
+      }),
+    )
+
+    it.live("should update an existing file", () =>
+      Effect.gen(function* () {
+        const filePath = path.join(tempDir, "to-update.txt")
+        yield* Effect.promise(() => fs.writeFile(filePath, "line 1\nline 2\nline 3\n"))
+
+        const patchText = `*** Begin Patch
+*** Update File: ${filePath}
+@@
+ line 1
+-line 2
++line 2 updated
+ line 3
+*** End Patch`
+
+        const result = yield* Patch.applyPatch(patchText)
+        expect(result.modified).toHaveLength(1)
+        expect(result.modified[0]).toBe(filePath)
+
+        const content = yield* Effect.promise(() => fs.readFile(filePath, "utf-8"))
+        expect(content).toBe("line 1\nline 2 updated\nline 3\n")
+      }),
+    )
+
+    it.live("should move and update a file", () =>
+      Effect.gen(function* () {
+        const oldPath = path.join(tempDir, "old-name.txt")
+        const newPath = path.join(tempDir, "new-name.txt")
+        yield* Effect.promise(() => fs.writeFile(oldPath, "old content\n"))
+
+        const patchText = `*** Begin Patch
+*** Update File: ${oldPath}
+*** Move to: ${newPath}
+@@
+-old content
++new content
+*** End Patch`
+
+        const result = yield* Patch.applyPatch(patchText)
+        expect(result.modified).toHaveLength(1)
+        expect(result.modified[0]).toBe(newPath)
+
+        const oldExists = yield* Effect.promise(() =>
+          fs
+            .access(oldPath)
+            .then(() => true)
+            .catch(() => false),
+        )
+        expect(oldExists).toBe(false)
+
+        const newContent = yield* Effect.promise(() => fs.readFile(newPath, "utf-8"))
+        expect(newContent).toBe("new content\n")
+      }),
+    )
+
+    it.live("should handle multiple operations in one patch", () =>
+      Effect.gen(function* () {
+        const file1 = path.join(tempDir, "file1.txt")
+        const file2 = path.join(tempDir, "file2.txt")
+        const file3 = path.join(tempDir, "file3.txt")
+
+        yield* Effect.promise(() => fs.writeFile(file1, "content 1"))
+        yield* Effect.promise(() => fs.writeFile(file2, "content 2"))
+
+        const patchText = `*** Begin Patch
+*** Add File: ${file3}
++new file content
+*** Update File: ${file1}
+@@
+-content 1
++updated content 1
+*** Delete File: ${file2}
+*** End Patch`
+
+        const result = yield* Patch.applyPatch(patchText)
+        expect(result.added).toHaveLength(1)
+        expect(result.modified).toHaveLength(1)
+        expect(result.deleted).toHaveLength(1)
+      }),
+    )
+
+    it.live("should create parent directories when adding files", () =>
+      Effect.gen(function* () {
+        const nestedPath = path.join(tempDir, "deep", "nested", "file.txt")
+
+        const patchText = `*** Begin Patch
+*** Add File: ${nestedPath}
++Deep nested content
+*** End Patch`
+
+        const result = yield* Patch.applyPatch(patchText)
+        expect(result.added).toHaveLength(1)
+        expect(result.added[0]).toBe(nestedPath)
+
+        const exists = yield* Effect.promise(() =>
+          fs
+            .access(nestedPath)
+            .then(() => true)
+            .catch(() => false),
+        )
+        expect(exists).toBe(true)
+      }),
+    )
   })
 
-  test("large replacement set stays linear (bounded work, not wall-time)", () => {
-    const lineCount = 10_000
-    const lines = Array.from({ length: lineCount }, (_, i) => `line-${i}`)
-    const rand = makeSeeded(7)
-    const replacements = overlapFreeReplacements(lineCount, 4_000, rand)
+  describe("error handling", () => {
+    it.live("should fail when updating non-existent file", () =>
+      Effect.gen(function* () {
+        const nonExistent = path.join(tempDir, "does-not-exist.txt")
 
-    const start = performance.now()
-    const out = applyReplacements(lines, replacements)
-    const elapsed = performance.now() - start
+        const patchText = `*** Begin Patch
+*** Update File: ${nonExistent}
+@@
+-old line
++new line
+*** End Patch`
 
-    expect(out.length).toBeGreaterThan(0)
-    expect(elapsed).toBeLessThan(200)
-  })
-})
+        const exit = yield* Effect.exit(Patch.applyPatch(patchText))
+        expect(exit._tag).toBe("Failure")
+      }),
+    )
 
-describe("patch.deriveNewContentsFromChunks (public path)", () => {
-  test("preserves BOM through replacement", () => {
-    const original = "\uFEFFline1\nline2\nline3\n"
-    const chunks: UpdateFileChunk[] = [{ old_lines: ["line2"], new_lines: ["line2b"] }]
+    it.live("should fail when deleting non-existent file", () =>
+      Effect.gen(function* () {
+        const nonExistent = path.join(tempDir, "does-not-exist.txt")
 
-    const result = deriveNewContentsFromChunks("f.ts", chunks, original)
+        const patchText = `*** Begin Patch
+*** Delete File: ${nonExistent}
+*** End Patch`
 
-    expect(result.bom).toBe(true)
-    expect(bomJoin(result.content, true)).toBe("\uFEFFline1\nline2b\nline3\n")
-    expect(result.content).toBe("line1\nline2b\nline3\n")
-  })
-
-  test("adds missing final newline", () => {
-    const original = "line1\nline2"
-    const chunks: UpdateFileChunk[] = [{ old_lines: ["line1"], new_lines: ["line1x"] }]
-
-    const result = deriveNewContentsFromChunks("f.ts", chunks, original)
-
-    expect(result.content).toBe("line1x\nline2\n")
+        const exit = yield* Effect.exit(Patch.applyPatch(patchText))
+        expect(exit._tag).toBe("Failure")
+      }),
+    )
   })
 
-  test("multi-hunk apply over the public path", () => {
-    const original = "a\nb\nc\nd\n"
-    const chunks: UpdateFileChunk[] = [
-      { old_lines: ["a"], new_lines: ["a1"] },
-      { old_lines: ["c"], new_lines: ["c1"] },
-    ]
+  describe("edge cases", () => {
+    it.live("should handle empty files", () =>
+      Effect.gen(function* () {
+        const emptyFile = path.join(tempDir, "empty.txt")
+        yield* Effect.promise(() => fs.writeFile(emptyFile, ""))
 
-    const result = deriveNewContentsFromChunks("f.ts", chunks, original)
+        const patchText = `*** Begin Patch
+*** Update File: ${emptyFile}
+@@
++First line
+*** End Patch`
 
-    expect(result.content).toBe("a1\nb\nc1\nd\n")
+        const result = yield* Patch.applyPatch(patchText)
+        expect(result.modified).toHaveLength(1)
+
+        const content = yield* Effect.promise(() => fs.readFile(emptyFile, "utf-8"))
+        expect(content).toBe("First line\n")
+      }),
+    )
+
+    it.live("should handle files with no trailing newline", () =>
+      Effect.gen(function* () {
+        const filePath = path.join(tempDir, "no-newline.txt")
+        yield* Effect.promise(() => fs.writeFile(filePath, "no newline"))
+
+        const patchText = `*** Begin Patch
+*** Update File: ${filePath}
+@@
+-no newline
++has newline now
+*** End Patch`
+
+        const result = yield* Patch.applyPatch(patchText)
+        expect(result.modified).toHaveLength(1)
+
+        const content = yield* Effect.promise(() => fs.readFile(filePath, "utf-8"))
+        expect(content).toBe("has newline now\n")
+      }),
+    )
+
+    it.live("should handle multiple update chunks in single file", () =>
+      Effect.gen(function* () {
+        const filePath = path.join(tempDir, "multi-chunk.txt")
+        yield* Effect.promise(() => fs.writeFile(filePath, "line 1\nline 2\nline 3\nline 4\n"))
+
+        const patchText = `*** Begin Patch
+*** Update File: ${filePath}
+@@
+ line 1
+-line 2
++LINE 2
+@@
+ line 3
+-line 4
++LINE 4
+*** End Patch`
+
+        const result = yield* Patch.applyPatch(patchText)
+        expect(result.modified).toHaveLength(1)
+
+        const content = yield* Effect.promise(() => fs.readFile(filePath, "utf-8"))
+        expect(content).toBe("line 1\nLINE 2\nline 3\nLINE 4\n")
+      }),
+    )
   })
 })
