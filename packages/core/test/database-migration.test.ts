@@ -24,6 +24,7 @@ import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionSchema } from "@opencode-ai/core/session/schema"
 import { SessionTable } from "@opencode-ai/core/session/sql"
 import sessionMetadataMigration from "@opencode-ai/core/database/migration/20260511173437_session-metadata"
+import sessionListIndexesMigration from "@opencode-ai/core/database/migration/20260817000652_session_list_indexes"
 import type { SqlClient as SqlClientService } from "effect/unstable/sql/SqlClient"
 import { Database } from "@opencode-ai/core/database/database"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
@@ -83,17 +84,20 @@ describe("DatabaseMigration", () => {
         expect(yield* db.get(sql`SELECT count(*) as count FROM migration`)).toEqual({ count: migrations.length })
         expect(
           yield* db.all(
-            sql`SELECT name FROM sqlite_master WHERE type = 'index' AND name IN ('event_aggregate_seq_idx', 'event_aggregate_type_seq_idx', 'session_input_session_pending_seq_idx', 'session_input_session_pending_delivery_seq_idx', 'session_input_session_admitted_seq_idx', 'session_input_session_promoted_seq_idx', 'session_message_session_idx', 'session_message_session_type_idx', 'session_message_session_seq_idx', 'session_message_session_type_seq_idx', 'session_message_session_time_created_id_idx') ORDER BY name`,
+            sql`SELECT name FROM sqlite_master WHERE type = 'index' AND name IN ('event_aggregate_seq_idx', 'event_aggregate_type_seq_idx', 'session_directory_time_updated_id_idx', 'session_input_session_pending_seq_idx', 'session_input_session_pending_delivery_seq_idx', 'session_input_session_admitted_seq_idx', 'session_input_session_promoted_seq_idx', 'session_message_session_idx', 'session_message_session_type_idx', 'session_message_session_seq_idx', 'session_message_session_type_seq_idx', 'session_message_session_time_created_id_idx', 'session_project_time_updated_id_idx', 'session_time_updated_id_idx') ORDER BY name`,
           ),
         ).toEqual([
           { name: "event_aggregate_seq_idx" },
           { name: "event_aggregate_type_seq_idx" },
+          { name: "session_directory_time_updated_id_idx" },
           { name: "session_input_session_admitted_seq_idx" },
           { name: "session_input_session_pending_delivery_seq_idx" },
           { name: "session_input_session_promoted_seq_idx" },
           { name: "session_message_session_seq_idx" },
           { name: "session_message_session_time_created_id_idx" },
           { name: "session_message_session_type_seq_idx" },
+          { name: "session_project_time_updated_id_idx" },
+          { name: "session_time_updated_id_idx" },
         ])
       }),
     )
@@ -399,6 +403,35 @@ describe("DatabaseMigration", () => {
           tokens_cache_read: 5,
           tokens_cache_write: 6,
         })
+      }),
+    )
+  })
+
+  test("replaces the project session index with ordered list indexes", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* db.run(
+          sql`CREATE TABLE session (id text PRIMARY KEY, project_id text NOT NULL, directory text NOT NULL, time_updated integer NOT NULL)`,
+        )
+        yield* db.run(sql`CREATE INDEX session_project_idx ON session (project_id)`)
+
+        yield* DatabaseMigration.applyOnly(db, [sessionListIndexesMigration])
+
+        const indexes = yield* db.all<{ name: string }>(sql`PRAGMA index_list(session)`)
+        expect(indexes.map((index) => index.name)).not.toContain("session_project_idx")
+        expect(indexes.map((index) => index.name)).toEqual(
+          expect.arrayContaining([
+            "session_time_updated_id_idx",
+            "session_project_time_updated_id_idx",
+            "session_directory_time_updated_id_idx",
+          ]),
+        )
+        expect(
+          yield* db.all<{ name: string }>(
+            sql`SELECT name FROM pragma_index_info('session_project_time_updated_id_idx')`,
+          ),
+        ).toEqual([{ name: "project_id" }, { name: "time_updated" }, { name: "id" }])
       }),
     )
   })
