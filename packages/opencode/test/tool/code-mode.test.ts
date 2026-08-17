@@ -75,17 +75,22 @@ describe("code-mode.groupByServer (linear, mutable groups)", () => {
     const keys = Array.from({ length: n }, (_, i) => `${server}_tool${i}`)
     const tools = makeTools(keys)
 
-    expect(entriesOf(groupByServer(tools, [server]))).toEqual(entriesOf(referenceGroupByServer(tools, [server])))
+      // Compare linear vs. the quadratic reference on the same data so the
+      // assertion is machine/load tolerant instead of an absolute ms bound.
+      const refStart = performance.now()
+      const refOut = referenceGroupByServer(tools, [server])
+      const refElapsed = performance.now() - refStart
 
-    const start = performance.now()
-    const out = groupByServer(tools, [server])
-    const elapsed = performance.now() - start
+      const linStart = performance.now()
+      const out = groupByServer(tools, [server])
+      const linElapsed = performance.now() - linStart
 
-    expect(out.get(server)!.length).toBe(n)
-    // 16k tools grouped by a shared server: the copy-on-every-push cost ~490 ms;
-    // in-place push must be far below that.
-    expect(elapsed).toBeLessThan(80)
-  })
+      expect(out.get(server)!.length).toBe(n)
+      expect(out).toEqual(refOut)
+      // For 16k tools on one server, linear is ~O(n) vs reference ~O(n²); the
+      // in-place-push path must be at least several times faster.
+      expect(linElapsed * 4).toBeLessThan(refElapsed)
+    })
 
   test("empty input", () => {
     expect(groupByServer({}, [])).toEqual(referenceGroupByServer({}, []))
