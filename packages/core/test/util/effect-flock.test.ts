@@ -389,4 +389,32 @@ describe("util.effect-flock", () => {
       }),
     30_000,
   )
+
+  it.live(
+    "acquire respects caller timeoutMs override (fails fast instead of waiting the default)",
+    Effect.gen(function* () {
+      const flock = yield* EffectFlock.Service
+      const tmp = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "eflock-test-")))
+      const dir = path.join(tmp, "locks")
+      const ready = path.join(tmp, "ready")
+      const key = "eflock:timeout"
+
+      // A subprocess holds the lock; we then contend for it with a tiny caller timeout.
+      const proc = yield* Effect.promise(() => Promise.resolve(spawnWorker({ key, dir, ready, holdMs: 5_000 })))
+      try {
+        yield* Effect.promise(() => waitForFile(ready, 5_000))
+
+        const started = Date.now()
+        const exit = yield* Effect.exit(Effect.scoped(flock.acquire(key, { dir, timeoutMs: 200 })))
+        const elapsed = Date.now() - started
+        expect(Exit.isFailure(exit)).toBe(true)
+        // The override must fail fast rather than wait the 5-minute default.
+        expect(elapsed).toBeLessThan(10_000)
+      } finally {
+        yield* Effect.promise(() => stopWorker(proc).catch(() => {}))
+      }
+      yield* Effect.promise(() => fs.rm(tmp, { recursive: true, force: true }))
+    }),
+    20_000,
+  )
 })

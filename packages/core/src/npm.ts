@@ -42,6 +42,14 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/Np
 
 const illegal = process.platform === "win32" ? new Set(["<", ">", ":", '"', "|", "?", "*"]) : undefined
 
+// Hard cap on a single npm install/network reify so a hung registry cannot block
+// tool/plugin discovery forever. Read lazily so it is testable/overrideable at runtime.
+const installTimeoutMs = () => {
+  const raw = process.env["OPENCODE_NPM_INSTALL_TIMEOUT_MS"]
+  const ms = raw === undefined ? NaN : Number(raw)
+  return Number.isFinite(ms) && ms > 0 ? ms : 10 * 60_000
+}
+
 export function sanitize(pkg: string) {
   if (!illegal) return pkg
   return Array.from(pkg, (char) => (illegal.has(char) || char.charCodeAt(0) < 32 ? "_" : char)).join("")
@@ -91,21 +99,32 @@ const layer = Layer.effect(
           savePrefix: "",
           ignoreScripts: true,
         })
-        return yield* Effect.tryPromise({
-          try: () =>
-            arborist.reify({
-              ...npmOptions,
-              add,
-              save: true,
-              saveType: "prod",
-            }),
-          catch: (cause) =>
-            new InstallFailedError({
-              cause,
-              add,
-              dir: input.dir,
-            }),
-        }) as Effect.Effect<ArboristTree, InstallFailedError>
+          return yield* (Effect.tryPromise({
+            try: () =>
+              arborist.reify({
+                ...npmOptions,
+                add,
+                save: true,
+                saveType: "prod",
+              }),
+            catch: (cause) =>
+              new InstallFailedError({
+                cause,
+                add,
+                dir: input.dir,
+              }),
+          }) as Effect.Effect<ArboristTree, InstallFailedError>).pipe(
+            Effect.timeout(installTimeoutMs()),
+            Effect.catchTag("TimeoutError", () =>
+              Effect.fail(
+                new InstallFailedError({
+                  cause: new Error("npm install timed out"),
+                  add,
+                  dir: input.dir,
+                }),
+              ),
+            ),
+          )
       }).pipe(
         Effect.withSpan("Npm.reify", {
           attributes: input,
