@@ -6,11 +6,13 @@ import { Flag } from "@opencode-ai/core/flag/flag"
 import { Database } from "@opencode-ai/core/database/database"
 import { EventV2 } from "@opencode-ai/core/event"
 import { EventSequenceTable, EventTable } from "@opencode-ai/core/event/sql"
+import { SessionTable } from "@opencode-ai/core/session/sql"
 import { SyncPaths } from "../../src/server/routes/instance/httpapi/groups/sync"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
 import { WorkspaceSyncProtocol } from "../../src/control-plane/sync-protocol"
-import { replayBatches } from "../../src/control-plane/workspace"
+import { WARP_REPLAY_EVENTS, replayBatches } from "../../src/control-plane/workspace"
 import { Session } from "@/session/session"
+import { SessionID } from "@/session/schema"
 import { MessageDiff } from "@opencode-ai/core/session/message-diff"
 import { MessageID, SessionV1 } from "@opencode-ai/core/v1/session"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -21,6 +23,7 @@ import { testEffect } from "../lib/effect"
 import { httpApiLayer, requestInDirectory } from "./httpapi-layer"
 
 const originalWorkspaces = Flag.OPENCODE_EXPERIMENTAL_WORKSPACES
+const originalWorkspaceID = Flag.OPENCODE_WORKSPACE_ID
 const context = Context.empty() as Context.Context<unknown>
 const it = testEffect(
   Layer.mergeAll(LayerNode.compile(LayerNode.group([Session.node, MessageDiff.node, Database.node])), httpApiLayer),
@@ -55,9 +58,21 @@ function appendHistoryEvents(input: {
   )
 }
 
+function sessionReplayEvent(input: { aggregateID: SessionID; seq: number; info: SessionV1.SessionInfo }) {
+  const definition = input.seq === 0 ? SessionV1.Event.Created : SessionV1.Event.Updated
+  return {
+    id: EventV2.ID.create(),
+    aggregateID: input.aggregateID,
+    seq: input.seq,
+    type: EventV2.versionedType(definition.type, definition.durable!.version),
+    data: { sessionID: input.aggregateID, info: input.info },
+  }
+}
+
 afterEach(async () => {
   mock.restore()
   Flag.OPENCODE_EXPERIMENTAL_WORKSPACES = originalWorkspaces
+  Flag.OPENCODE_WORKSPACE_ID = originalWorkspaceID
   await disposeAllInstances()
   await resetDatabase()
 })
@@ -159,6 +174,161 @@ describe("sync HttpApi", () => {
         })
       }),
     { git: true, config: { formatter: false, lsp: false } },
+  )
+
+  it.instance(
+    "rejects mismatched portable diffs before replay writes events or projections",
+    () =>
+      Effect.gen(function* () {
+        const tmp = yield* TestInstance
+        const source = yield* Session.use.create({ title: "mismatch source" })
+        const aggregateID = SessionID.make("ses_sync_mismatch_target")
+        const info = SessionV1.SessionInfo.make({ ...source, id: aggregateID, title: "must not project" })
+        const event = sessionReplayEvent({ aggregateID, seq: 0, info })
+        const response = yield* requestInDirectory(SyncPaths.replay, tmp.directory, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            directory: tmp.directory,
+            events: [event],
+            messageDiffs: { sessionID: source.id, rows: [] },
+          }),
+        })
+        const { db } = yield* Database.Service
+
+        expect(response.status).toBe(400)
+        expect(yield* db.select().from(EventTable).where(eq(EventTable.aggregate_id, aggregateID)).all()).toEqual([])
+        expect(
+          yield* db.select().from(EventSequenceTable).where(eq(EventSequenceTable.aggregate_id, aggregateID)).all(),
+        ).toEqual([])
+        expect(yield* db.select().from(SessionTable).where(eq(SessionTable.id, aggregateID)).all()).toEqual([])
+      }),
+    { git: true, config: { formatter: false, lsp: false } },
+    { timeout: 15_000 },
+  )
+
+  it.instance(
+    "commits a full Warp batch atomically and preserves it when the next request fails or changes owner",
+    () =>
+      Effect.gen(function* () {
+        const tmp = yield* TestInstance
+        const source = yield* Session.use.create({ title: "atomic replay source" })
+        const aggregateID = SessionID.make("ses_sync_atomic_target")
+        const firstInfo = SessionV1.SessionInfo.make({ ...source, id: aggregateID, title: "first batch" })
+        const lastInfo = SessionV1.SessionInfo.make({ ...source, id: aggregateID, title: "last event" })
+        const eventRows = Array.from({ length: WARP_REPLAY_EVENTS + 1 }, (_, seq) =>
+          sessionReplayEvent({ aggregateID, seq, info: seq === WARP_REPLAY_EVENTS ? lastInfo : firstInfo }),
+        )
+        const bodies = [...replayBatches({ directory: tmp.directory, events: eventRows })]
+        const payloads = bodies.map(
+          (body) => JSON.parse(body) as { directory: string; events: EventV2.SerializedEvent[] },
+        )
+        const headers = { "content-type": "application/json" }
+        const { db } = yield* Database.Service
+
+        expect(payloads.map((payload) => payload.events.length)).toEqual([WARP_REPLAY_EVENTS, 1])
+        Flag.OPENCODE_WORKSPACE_ID = "wrk_atomic_owner_a"
+        const first = yield* requestInDirectory(SyncPaths.replay, tmp.directory, {
+          method: "POST",
+          headers,
+          body: bodies[0],
+        })
+        expect(first.status).toBe(200)
+        expect(
+          yield* db
+            .select({ seq: EventSequenceTable.seq, ownerID: EventSequenceTable.owner_id })
+            .from(EventSequenceTable)
+            .where(eq(EventSequenceTable.aggregate_id, aggregateID))
+            .get()
+            .pipe(Effect.orDie),
+        ).toEqual({ seq: WARP_REPLAY_EVENTS - 1, ownerID: "wrk_atomic_owner_a" })
+        expect(
+          yield* db
+            .select({ title: SessionTable.title })
+            .from(SessionTable)
+            .where(eq(SessionTable.id, aggregateID))
+            .get()
+            .pipe(Effect.orDie),
+        ).toEqual({ title: "first batch" })
+
+        const defective = {
+          ...payloads[1],
+          events: [
+            ...payloads[1]!.events,
+            {
+              id: EventV2.ID.create(),
+              aggregateID,
+              seq: WARP_REPLAY_EVENTS + 1,
+              type: "unknown.atomic.1",
+              data: {},
+            },
+          ],
+        }
+        const failed = yield* requestInDirectory(SyncPaths.replay, tmp.directory, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(defective),
+        })
+        expect(failed.status).toBe(500)
+        expect(
+          yield* db
+            .select({ seq: EventSequenceTable.seq, ownerID: EventSequenceTable.owner_id })
+            .from(EventSequenceTable)
+            .where(eq(EventSequenceTable.aggregate_id, aggregateID))
+            .get()
+            .pipe(Effect.orDie),
+        ).toEqual({ seq: WARP_REPLAY_EVENTS - 1, ownerID: "wrk_atomic_owner_a" })
+        expect(
+          yield* db
+            .select({ title: SessionTable.title })
+            .from(SessionTable)
+            .where(eq(SessionTable.id, aggregateID))
+            .get()
+            .pipe(Effect.orDie),
+        ).toEqual({ title: "first batch" })
+
+        Flag.OPENCODE_WORKSPACE_ID = "wrk_atomic_owner_b"
+        const fenced = yield* requestInDirectory(SyncPaths.replay, tmp.directory, {
+          method: "POST",
+          headers,
+          body: bodies[1],
+        })
+        expect(fenced.status).toBe(500)
+        expect(
+          yield* db
+            .select({ seq: EventSequenceTable.seq, ownerID: EventSequenceTable.owner_id })
+            .from(EventSequenceTable)
+            .where(eq(EventSequenceTable.aggregate_id, aggregateID))
+            .get()
+            .pipe(Effect.orDie),
+        ).toEqual({ seq: WARP_REPLAY_EVENTS - 1, ownerID: "wrk_atomic_owner_a" })
+
+        Flag.OPENCODE_WORKSPACE_ID = "wrk_atomic_owner_a"
+        const resumed = yield* requestInDirectory(SyncPaths.replay, tmp.directory, {
+          method: "POST",
+          headers,
+          body: bodies[1],
+        })
+        expect(resumed.status).toBe(200)
+        expect(
+          yield* db
+            .select({ seq: EventSequenceTable.seq, ownerID: EventSequenceTable.owner_id })
+            .from(EventSequenceTable)
+            .where(eq(EventSequenceTable.aggregate_id, aggregateID))
+            .get()
+            .pipe(Effect.orDie),
+        ).toEqual({ seq: WARP_REPLAY_EVENTS, ownerID: "wrk_atomic_owner_a" })
+        expect(
+          yield* db
+            .select({ title: SessionTable.title })
+            .from(SessionTable)
+            .where(eq(SessionTable.id, aggregateID))
+            .get()
+            .pipe(Effect.orDie),
+        ).toEqual({ title: "last event" })
+      }),
+    { git: true, config: { formatter: false, lsp: false } },
+    { timeout: 15_000 },
   )
 
   it.instance(

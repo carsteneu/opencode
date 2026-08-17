@@ -63,10 +63,11 @@ export const syncHandlers = HttpApiBuilder.group(InstanceHttpApi, "sync", (handl
         last: payload.at(-1)?.seq,
         directory: ctx.payload.directory,
       })
+      if (ctx.payload.messageDiffs && ctx.payload.messageDiffs.sessionID !== source)
+        return yield* new HttpApiError.BadRequest({})
       const ownerID = yield* InstanceState.workspaceID
-      yield* events.replayAll(payload, { ownerID, strictOwner: true })
+      yield* events.replayAllAtomic(payload, { ownerID, strictOwner: true })
       if (ctx.payload.messageDiffs) {
-        if (ctx.payload.messageDiffs.sessionID !== source) return yield* new HttpApiError.BadRequest({})
         yield* messageDiff.replace(ctx.payload.messageDiffs)
       }
       yield* Effect.logInfo("sync replay complete", {

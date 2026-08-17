@@ -78,6 +78,16 @@ const durableData = (sessionID: Session.ID, text: string) => ({
   messageID: SessionV1.MessageID.ascending(`msg_${text}`),
 })
 
+function replayEvent(input: { aggregateID: Session.ID; seq: number; text: string; id?: EventV2.ID }) {
+  return {
+    id: input.id ?? EventV2.ID.create(),
+    type: EventV2.versionedType(DurableMessage.type, DurableMessage.durable!.version),
+    seq: input.seq,
+    aggregateID: input.aggregateID,
+    data: durableData(input.aggregateID, input.text),
+  }
+}
+
 const it = testEffect(
   AppNodeBuilder.build(LayerNode.group([Database.node, EventV2.node, Location.node]), [[Location.node, locationLayer]]),
 )
@@ -770,6 +780,334 @@ describe("EventV2", () => {
       expect(one).toBe(aggregateID)
       expect(two).toBe(aggregateID)
       expect(rows.map((row) => row.seq)).toEqual([0, 1, 2, 3])
+    }),
+  )
+
+  it.effect("replayAll keeps its committed prefix when a later event fails", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const { db } = yield* Database.Service
+      const aggregateID = Session.ID.create()
+      yield* db.run("CREATE TABLE IF NOT EXISTS event_replay_prefix_probe (value text NOT NULL)")
+      yield* db.run("DELETE FROM event_replay_prefix_probe")
+      yield* events.project(DurableMessage, () =>
+        db.run("INSERT INTO event_replay_prefix_probe (value) VALUES ('committed')").pipe(Effect.orDie, Effect.asVoid),
+      )
+      const first = replayEvent({ aggregateID, seq: 0, text: "committed" })
+
+      const exit = yield* events
+        .replayAll(
+          [
+            first,
+            {
+              id: EventV2.ID.create(),
+              type: "unknown.replay.1",
+              seq: 1,
+              aggregateID,
+              data: {},
+            },
+          ],
+          { ownerID: "owner-prefix", strictOwner: true },
+        )
+        .pipe(Effect.exit)
+      const sequence = yield* db
+        .select({ seq: EventSequenceTable.seq, ownerID: EventSequenceTable.owner_id })
+        .from(EventSequenceTable)
+        .where(eq(EventSequenceTable.aggregate_id, aggregateID))
+        .get()
+        .pipe(Effect.orDie)
+
+      expect(String(exit)).toContain("Unknown durable event type")
+      expect(
+        yield* db.select().from(EventTable).where(eq(EventTable.aggregate_id, aggregateID)).all().pipe(Effect.orDie),
+      ).toMatchObject([{ id: first.id, seq: 0 }])
+      expect(sequence).toEqual({ seq: 0, ownerID: "owner-prefix" })
+      expect(yield* db.all("SELECT value FROM event_replay_prefix_probe")).toEqual([{ value: "committed" }])
+    }),
+  )
+
+  it.effect("replayAllAtomic rolls back events, sequence ownership, and projectors on a late failure", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const { db } = yield* Database.Service
+      const aggregateID = Session.ID.create()
+      const published = yield* events.publish(DurableMessage, durableData(aggregateID, "seed"))
+      const seed = {
+        id: published.id,
+        type: EventV2.versionedType(DurableMessage.type, DurableMessage.durable!.version),
+        seq: published.durable!.seq,
+        aggregateID,
+        data: published.data,
+      }
+      yield* db.run("CREATE TABLE IF NOT EXISTS event_atomic_probe (value text NOT NULL)")
+      yield* db.run("DELETE FROM event_atomic_probe")
+      const projected = replayEvent({ aggregateID, seq: 1, text: "projected" })
+      const bad = replayEvent({ aggregateID, seq: 2, text: "bad" })
+      yield* events.project(DurableMessage, (event) =>
+        db
+          .run("INSERT INTO event_atomic_probe (value) VALUES ('projected')")
+          .pipe(Effect.orDie, Effect.andThen(event.id === bad.id ? Effect.die("late projector failure") : Effect.void)),
+      )
+
+      const exit = yield* events
+        .replayAllAtomic([seed, projected, bad], { ownerID: "owner-atomic", strictOwner: true })
+        .pipe(Effect.exit)
+      const rows = yield* db
+        .select()
+        .from(EventTable)
+        .where(eq(EventTable.aggregate_id, aggregateID))
+        .orderBy(asc(EventTable.seq))
+        .all()
+        .pipe(Effect.orDie)
+      const sequence = yield* db
+        .select({ seq: EventSequenceTable.seq, ownerID: EventSequenceTable.owner_id })
+        .from(EventSequenceTable)
+        .where(eq(EventSequenceTable.aggregate_id, aggregateID))
+        .get()
+        .pipe(Effect.orDie)
+
+      expect(String(exit)).toContain("late projector failure")
+      expect(rows.map((row) => [row.id, row.seq])).toEqual([[seed.id, 0]])
+      expect(sequence).toEqual({ seq: 0, ownerID: null })
+      expect(yield* db.all("SELECT value FROM event_atomic_probe")).toEqual([])
+    }),
+  )
+
+  it.effect("replayAllAtomic validates empty, single-aggregate, and contiguous batches before writing", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const { db } = yield* Database.Service
+      const aggregateID = Session.ID.create()
+      const foreignID = Session.ID.create()
+
+      expect(yield* events.replayAllAtomic([])).toBeUndefined()
+      const mixed = yield* events
+        .replayAllAtomic([
+          replayEvent({ aggregateID, seq: 0, text: "zero" }),
+          replayEvent({ aggregateID: foreignID, seq: 1, text: "foreign" }),
+        ])
+        .pipe(Effect.exit)
+      const gap = yield* events
+        .replayAllAtomic([
+          replayEvent({ aggregateID, seq: 0, text: "zero" }),
+          replayEvent({ aggregateID, seq: 2, text: "gap" }),
+        ])
+        .pipe(Effect.exit)
+
+      expect(String(mixed)).toContain("same aggregate")
+      expect(String(gap)).toContain("Replay sequence mismatch")
+      expect(yield* db.select().from(EventTable).where(eq(EventTable.aggregate_id, aggregateID)).all()).toEqual([])
+      expect(yield* db.select().from(EventTable).where(eq(EventTable.aggregate_id, foreignID)).all()).toEqual([])
+      expect(
+        yield* db.select().from(EventSequenceTable).where(eq(EventSequenceTable.aggregate_id, aggregateID)).all(),
+      ).toEqual([])
+    }),
+  )
+
+  it.effect("replayAllAtomic accepts an exact stale prefix and commits only the new suffix", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const { db } = yield* Database.Service
+      const aggregateID = Session.ID.create()
+      const projected = new Array<string>()
+      const zero = replayEvent({ aggregateID, seq: 0, text: "zero" })
+      const one = replayEvent({ aggregateID, seq: 1, text: "one" })
+      const two = replayEvent({ aggregateID, seq: 2, text: "two" })
+      yield* events.project(DurableMessage, (event) => Effect.sync(() => projected.push(event.data.messageID)))
+
+      const first = yield* events.replayAllAtomic([zero, one], { ownerID: "owner-a", strictOwner: true })
+      const second = yield* events.replayAllAtomic([zero, one, two], { ownerID: "owner-a", strictOwner: true })
+      const stale = yield* events.replayAllAtomic([zero, one, two], { ownerID: "owner-a", strictOwner: true })
+      const rows = yield* db
+        .select({ seq: EventTable.seq })
+        .from(EventTable)
+        .where(eq(EventTable.aggregate_id, aggregateID))
+        .orderBy(asc(EventTable.seq))
+        .all()
+        .pipe(Effect.orDie)
+      const sequence = yield* db
+        .select({ seq: EventSequenceTable.seq, ownerID: EventSequenceTable.owner_id })
+        .from(EventSequenceTable)
+        .where(eq(EventSequenceTable.aggregate_id, aggregateID))
+        .get()
+        .pipe(Effect.orDie)
+
+      expect([first, second, stale]).toEqual([aggregateID, aggregateID, aggregateID])
+      expect(rows.map((row) => row.seq)).toEqual([0, 1, 2])
+      expect(sequence).toEqual({ seq: 2, ownerID: "owner-a" })
+      expect(projected).toEqual(["zero", "one", "two"].map((text) => SessionV1.MessageID.ascending(`msg_${text}`)))
+    }),
+  )
+
+  it.effect("replayAllAtomic rolls back a new suffix on divergent stale data or a duplicate event ID", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const { db } = yield* Database.Service
+      const aggregateID = Session.ID.create()
+      const zero = replayEvent({ aggregateID, seq: 0, text: "zero" })
+      const one = replayEvent({ aggregateID, seq: 1, text: "one" })
+      const two = replayEvent({ aggregateID, seq: 2, text: "two" })
+      yield* events.replayAllAtomic([zero, one])
+
+      const divergent = yield* events
+        .replayAllAtomic([zero, { ...one, data: durableData(aggregateID, "divergent") }, two])
+        .pipe(Effect.exit)
+      const duplicate = yield* events
+        .replayAllAtomic([zero, one, two, replayEvent({ aggregateID, seq: 3, text: "duplicate", id: zero.id })])
+        .pipe(Effect.exit)
+      const rows = yield* db
+        .select({ id: EventTable.id, seq: EventTable.seq })
+        .from(EventTable)
+        .where(eq(EventTable.aggregate_id, aggregateID))
+        .orderBy(asc(EventTable.seq))
+        .all()
+        .pipe(Effect.orDie)
+
+      expect(String(divergent)).toContain("Replay diverged")
+      expect(String(duplicate)).toContain(`Event ${zero.id} already exists`)
+      expect(rows).toEqual([
+        { id: zero.id, seq: 0 },
+        { id: one.id, seq: 1 },
+      ])
+      expect(
+        yield* db
+          .select({ seq: EventSequenceTable.seq })
+          .from(EventSequenceTable)
+          .where(eq(EventSequenceTable.aggregate_id, aggregateID))
+          .get()
+          .pipe(Effect.orDie),
+      ).toEqual({ seq: 1 })
+    }),
+  )
+
+  it.effect("replayAllAtomic strictly fences a stale prefix before it can append for another owner", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const { db } = yield* Database.Service
+      const aggregateID = Session.ID.create()
+      const zero = replayEvent({ aggregateID, seq: 0, text: "zero" })
+      const one = replayEvent({ aggregateID, seq: 1, text: "one" })
+      yield* events.replayAllAtomic([zero], { ownerID: "owner-a", strictOwner: true })
+
+      const exit = yield* events
+        .replayAllAtomic([zero, one], { ownerID: "owner-b", strictOwner: true })
+        .pipe(Effect.exit)
+      const rows = yield* db
+        .select({ seq: EventTable.seq })
+        .from(EventTable)
+        .where(eq(EventTable.aggregate_id, aggregateID))
+        .all()
+        .pipe(Effect.orDie)
+      const sequence = yield* db
+        .select({ seq: EventSequenceTable.seq, ownerID: EventSequenceTable.owner_id })
+        .from(EventSequenceTable)
+        .where(eq(EventSequenceTable.aggregate_id, aggregateID))
+        .get()
+        .pipe(Effect.orDie)
+
+      expect(String(exit)).toContain("Replay owner mismatch")
+      expect(rows).toEqual([{ seq: 0 }])
+      expect(sequence).toEqual({ seq: 0, ownerID: "owner-a" })
+    }),
+  )
+
+  it.effect("replayAllAtomic keeps concurrent writers behind the complete immediate transaction", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const { db } = yield* Database.Service
+      const aggregateID = Session.ID.create()
+      const started = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      const zero = replayEvent({ aggregateID, seq: 0, text: "zero" })
+      const one = replayEvent({ aggregateID, seq: 1, text: "one" })
+      yield* events.project(DurableMessage, (event) =>
+        event.id === zero.id
+          ? Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(release)))
+          : Effect.void,
+      )
+
+      const replay = yield* events.replayAllAtomic([zero, one]).pipe(Effect.forkScoped)
+      yield* Deferred.await(started)
+      const publish = yield* events
+        .publish(DurableMessage, durableData(aggregateID, "concurrent"))
+        .pipe(Effect.forkScoped)
+      yield* Effect.yieldNow
+
+      expect(publish.pollUnsafe()).toBeUndefined()
+      yield* Deferred.succeed(release, undefined)
+      expect(yield* Fiber.join(replay)).toBe(aggregateID)
+      expect((yield* Fiber.join(publish)).durable?.seq).toBe(2)
+      expect(
+        (yield* db
+          .select({ seq: EventTable.seq })
+          .from(EventTable)
+          .where(eq(EventTable.aggregate_id, aggregateID))
+          .orderBy(asc(EventTable.seq))
+          .all()
+          .pipe(Effect.orDie)).map((row) => row.seq),
+      ).toEqual([0, 1, 2])
+    }),
+  )
+
+  it.effect("replayAllAtomic wakes durable readers once after commit and never publishes general notifications", () =>
+    Effect.gen(function* () {
+      const initialRead = yield* Deferred.make<void>()
+      let reads = 0
+      const eventLayer = EventV2.layerWith({
+        beforeAggregateRead: () =>
+          Effect.sync(() => ++reads).pipe(
+            Effect.flatMap((count) => (count === 1 ? Deferred.succeed(initialRead, undefined) : Effect.void)),
+          ),
+      }).pipe(Layer.provide(LayerNode.compile(Database.node)))
+
+      yield* Effect.gen(function* () {
+        const events = yield* EventV2.Service
+        const aggregateID = Session.ID.create()
+        const zero = replayEvent({ aggregateID, seq: 0, text: "zero" })
+        const one = replayEvent({ aggregateID, seq: 1, text: "one" })
+        const two = replayEvent({ aggregateID, seq: 2, text: "two" })
+        const received = new Array<EventV2.Payload>()
+        yield* events.replayAllAtomic([zero, one, two], { ownerID: "owner-a", strictOwner: true })
+        yield* events.listen((event) => Effect.sync(() => received.push(event)))
+        const typed = yield* events.subscribe(DurableMessage).pipe(Stream.take(1), Stream.runCollect, Effect.forkScoped)
+        const all = yield* events.all().pipe(Stream.take(1), Stream.runCollect, Effect.forkScoped)
+        const durable = yield* events
+          .durable({ aggregateID, after: 2 })
+          .pipe(Stream.take(2), Stream.runCollect, Effect.forkScoped)
+        yield* Deferred.await(initialRead)
+        yield* Effect.yieldNow
+        const rolledBack = replayEvent({ aggregateID, seq: 3, text: "rolled back" })
+        const fail = replayEvent({ aggregateID, seq: 4, text: "fail" })
+        yield* events.project(DurableMessage, (event) =>
+          event.id === fail.id ? Effect.die("wake rollback") : Effect.void,
+        )
+
+        expect(yield* events.replayAllAtomic([])).toBeUndefined()
+        yield* events.replayAllAtomic([zero, one, two], { ownerID: "owner-a", strictOwner: true })
+        const failed = yield* events
+          .replayAllAtomic([zero, one, two, rolledBack, fail], { ownerID: "owner-a", strictOwner: true })
+          .pipe(Effect.exit)
+        yield* Effect.yieldNow
+
+        expect(String(failed)).toContain("wake rollback")
+        expect(reads).toBe(1)
+        yield* events.replayAllAtomic(
+          [
+            zero,
+            one,
+            two,
+            replayEvent({ aggregateID, seq: 3, text: "three" }),
+            replayEvent({ aggregateID, seq: 4, text: "four" }),
+          ],
+          { ownerID: "owner-a", strictOwner: true },
+        )
+
+        expect(Array.from(yield* Fiber.join(durable)).map((event) => event.durable?.seq)).toEqual([3, 4])
+        expect(reads).toBe(2)
+        expect(received).toEqual([])
+        expect(typed.pollUnsafe()).toBeUndefined()
+        expect(all.pollUnsafe()).toBeUndefined()
+      }).pipe(Effect.provide(Layer.merge(LayerNode.compile(Database.node), eventLayer)))
     }),
   )
 
