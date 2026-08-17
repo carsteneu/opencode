@@ -24,6 +24,75 @@ export interface Options {
   direction?: "head" | "tail"
 }
 
+// Number of lines text.split("\n") would yield (1 for "", "a"; 2 for "a\n", "a\nb").
+function countLines(text: string): number {
+  if (text.length === 0) return 1
+  let count = 1
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) === 10) count++
+  }
+  return count
+}
+
+/**
+ * Selects at most `maxLines` head or tail lines, honoring `maxBytes`, without
+ * materializing the full line array via text.split. Produces the same
+ * { lines, bytes, hitBytes } as the previous split-based loop.
+ */
+export function buildPreview(
+  text: string,
+  maxLines: number,
+  maxBytes: number,
+  direction: "head" | "tail",
+): { lines: string[]; bytes: number; hitBytes: boolean } {
+  const out: string[] = []
+  let bytes = 0
+  let hitBytes = false
+
+  if (direction === "head") {
+    let start = 0
+    let lineIdx = 0
+    while (lineIdx < maxLines) {
+      const nl = text.indexOf("\n", start)
+      const end = nl === -1 ? text.length : nl
+      const line = text.slice(start, end)
+      const size = Buffer.byteLength(line, "utf-8") + (lineIdx > 0 ? 1 : 0)
+      if (bytes + size > maxBytes) {
+        hitBytes = true
+        break
+      }
+      out.push(line)
+      bytes += size
+      lineIdx++
+      if (nl === -1) break
+      start = nl + 1
+    }
+  } else {
+    // Scan from the end so only the tail is materialized. A trailing newline
+    // yields a final empty segment, matching text.split semantics.
+    let end = text.length
+    while (out.length < maxLines) {
+      // lastIndexOf clamps a negative fromIndex to 0, so without this guard a
+      // leading "\n" would be re-found forever and emit phantom empty lines.
+      const nl = end === 0 ? -1 : text.lastIndexOf("\n", end - 1)
+      const start = nl === -1 ? 0 : nl + 1
+      const line = text.slice(start, end)
+      const size = Buffer.byteLength(line, "utf-8") + (out.length > 0 ? 1 : 0)
+      if (bytes + size > maxBytes) {
+        hitBytes = true
+        break
+      }
+      out.push(line)
+      bytes += size
+      if (nl === -1) break
+      end = nl
+    }
+    out.reverse()
+  }
+
+  return { lines: out, bytes, hitBytes }
+}
+
 function hasTaskTool(agent?: Agent.Info) {
   if (!agent?.permission) return false
   return evaluate("task", "*", agent.permission).action !== "deny"
@@ -87,43 +156,18 @@ const layer = Layer.effect(
       const maxLines = options.maxLines ?? resolved.maxLines
       const maxBytes = options.maxBytes ?? resolved.maxBytes
       const direction = options.direction ?? "head"
-      const lines = text.split("\n")
       const totalBytes = Buffer.byteLength(text, "utf-8")
+      const totalLines = countLines(text)
 
-      if (lines.length <= maxLines && totalBytes <= maxBytes) {
+      if (totalLines <= maxLines && totalBytes <= maxBytes) {
         return { content: text, truncated: false } as const
       }
 
-      const out: string[] = []
-      let i = 0
-      let bytes = 0
-      let hitBytes = false
+      const { lines: kept, bytes, hitBytes } = buildPreview(text, maxLines, maxBytes, direction)
 
-      if (direction === "head") {
-        for (i = 0; i < lines.length && i < maxLines; i++) {
-          const size = Buffer.byteLength(lines[i], "utf-8") + (i > 0 ? 1 : 0)
-          if (bytes + size > maxBytes) {
-            hitBytes = true
-            break
-          }
-          out.push(lines[i])
-          bytes += size
-        }
-      } else {
-        for (i = lines.length - 1; i >= 0 && out.length < maxLines; i--) {
-          const size = Buffer.byteLength(lines[i], "utf-8") + (out.length > 0 ? 1 : 0)
-          if (bytes + size > maxBytes) {
-            hitBytes = true
-            break
-          }
-          out.unshift(lines[i])
-          bytes += size
-        }
-      }
-
-      const removed = hitBytes ? totalBytes - bytes : lines.length - out.length
+      const removed = hitBytes ? totalBytes - bytes : totalLines - kept.length
       const unit = hitBytes ? "bytes" : "lines"
-      const preview = out.join("\n")
+      const preview = kept.join("\n")
       const file = yield* write(text)
 
       const hint = hasTaskTool(agent)
