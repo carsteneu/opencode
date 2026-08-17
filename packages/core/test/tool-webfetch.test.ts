@@ -5,12 +5,14 @@ import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstab
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { LayerNodePlatform } from "@opencode-ai/core/effect/app-node-platform"
+import { Global } from "@opencode-ai/core/global"
 import { PermissionV2 } from "@opencode-ai/core/permission"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { ToolRegistry } from "@opencode-ai/core/tool/registry"
 import { WebFetchTool } from "@opencode-ai/core/tool/webfetch"
 import { ToolOutputStore } from "@opencode-ai/core/tool-output-store"
 import { testEffect } from "./lib/effect"
+import { tmpdir } from "./fixture/tmpdir"
 import { toolIdentity, executeTool, settleTool, toolDefinitions } from "./lib/tool"
 
 const sessionID = SessionV2.ID.make("ses_webfetch_test")
@@ -82,11 +84,13 @@ describe("WebFetchTool registration", () => {
       const registry = yield* ToolRegistry.Service
       const url = "http://example.com/public"
 
-      expect((yield* toolDefinitions(registry)).map((tool) => tool.name)).toEqual(["webfetch"])
+      const definitions = yield* toolDefinitions(registry)
+      expect(definitions.map((tool) => tool.name)).toEqual(["webfetch"])
+      expect(definitions[0]?.outputSchema).not.toHaveProperty("properties.output")
       expect(yield* settleTool(registry, call({ url, format: "text", timeout: 4 }))).toEqual({
         result: { type: "text", value: "hello" },
         output: {
-          structured: { url, contentType: "text/plain", format: "text", output: "hello" },
+          structured: { url, contentType: "text/plain", format: "text" },
           content: [{ type: "text", text: "hello" }],
         },
       })
@@ -277,5 +281,58 @@ describe("WebFetchTool registration", () => {
 
       expect(yield* Fiber.join(fiber)).toEqual({ type: "error", value: "Unable to fetch https://1.1.1.1/slow" })
     }),
+  )
+
+  it.live("retains one large model output without copying it into structured metadata", () =>
+    Effect.acquireUseRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) =>
+        Effect.gen(function* () {
+          reset()
+          const marker = "WEBFETCH-LARGE-PAYLOAD"
+          const tail = "WEBFETCH-LARGE-TAIL"
+          const full = `${marker}${"x".repeat(WebFetchTool.MAX_RESPONSE_BYTES - marker.length - tail.length)}${tail}`
+          respond = () =>
+            Effect.succeed(new Response(full, { headers: { "content-type": "text/plain; charset=utf-8" } }))
+          const registry = yield* ToolRegistry.Service
+          const url = "https://example.com/large"
+          const settled = yield* settleTool(registry, call({ url, format: "text" }, "call-webfetch-large"))
+
+          const output = settled.output
+          const outputPath = settled.outputPaths?.[0]
+          if (!output || output.content[0]?.type !== "text" || !outputPath)
+            return yield* Effect.die("missing bounded output")
+          expect(settled.outputPaths).toHaveLength(1)
+          expect(output.structured).toEqual({
+            url,
+            contentType: "text/plain; charset=utf-8",
+            format: "text",
+          })
+          expect(output.structured).not.toHaveProperty("output")
+          const content = output.content[0]
+          expect(settled.result).toEqual({ type: "text", value: content.text })
+          expect(content.text).toContain(marker)
+          expect(content.text).toContain(tail)
+          expect(content.text).toContain("output truncated; full content saved to")
+          expect(Buffer.byteLength(content.text)).toBeLessThanOrEqual(ToolOutputStore.MAX_BYTES)
+          expect(yield* Effect.promise(() => Bun.file(outputPath).text())).toBe(full)
+
+          const serialized = JSON.stringify(output)
+          const legacy = JSON.stringify({
+            ...output,
+            structured: { url, contentType: "text/plain; charset=utf-8", format: "text", output: full },
+          })
+          expect(serialized.split(marker)).toHaveLength(2)
+          expect(Buffer.byteLength(serialized)).toBeLessThan(Buffer.byteLength(legacy) / 50)
+        }).pipe(
+          Effect.provide(
+            toolLayer([
+              [LayerNodePlatform.httpClient, http],
+              [Global.node, Global.layerWith({ data: tmp.path })],
+            ]),
+          ),
+        ),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ),
   )
 })

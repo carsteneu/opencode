@@ -34,10 +34,14 @@ export const Input = Schema.Struct({
   }),
 })
 
-const Output = Schema.Struct({
+const StructuredOutput = Schema.Struct({
   url: Schema.String,
   contentType: Schema.String,
   format: Input.fields.format,
+})
+
+const Output = Schema.Struct({
+  ...StructuredOutput.fields,
   output: Schema.String,
 })
 
@@ -127,6 +131,12 @@ const layer = Layer.effectDiscard(
           description,
           input: Input,
           output: Output,
+          structured: StructuredOutput,
+          toStructuredOutput: ({ input, output }) => ({
+            url: output.url,
+            contentType: output.contentType,
+            format: input.format,
+          }),
           toModelOutput: ({ output }) => [{ type: "text", text: output.output }],
           execute: (input, context) =>
             Effect.gen(function* () {
