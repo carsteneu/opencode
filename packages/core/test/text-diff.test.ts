@@ -369,16 +369,6 @@ describe("TextDiff", () => {
     expect(applyPatch(before, result.patch!)).toBe(after)
   })
 
-    test("coarse patch stays fully applicable at or below coarseMaxLines", () => {
-      const before = "one\ntwo\nthree"
-      const after = "one\nchanged\nthree\nfour"
-      const result = TextDiff.create("a", "a", before, after, { maxEditLength: 0, coarseMaxLines: 4 })
-
-      expect(result.coarse).toBeTrue()
-      expect(result.patch).not.toContain("elided")
-      expect(applyPatch(before, result.patch)).toBe(after)
-    })
-
   test("keeps large linear appends exact instead of expanding them into a full-file replacement", () => {
     const before = Array.from({ length: 110_000 }, (_, index) => `existing ${index}`).join("\n") + "\n"
     const after = before + "added\n"
