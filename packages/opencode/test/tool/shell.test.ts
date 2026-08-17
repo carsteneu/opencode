@@ -116,7 +116,7 @@ const evalarg = (text: string) => (sh() === "cmd" ? quote(text) : squote(text))
 const fill = (mode: "lines" | "bytes", n: number) => {
   const code =
     mode === "lines"
-      ? "console.log(Array.from({length:Number(Bun.argv[1])},(_,i)=>i+1).join(String.fromCharCode(10)))"
+      ? "await new Promise((resolve,reject)=>process.stdout.write(Array.from({length:Number(Bun.argv[1])},(_,i)=>i+1).join(String.fromCharCode(10))+String.fromCharCode(10),error=>error?reject(error):resolve()))"
       : "process.stdout.write(String.fromCharCode(97).repeat(Number(Bun.argv[1])))"
   const text = `${bin} -e ${evalarg(code)} ${n}`
   if (PS.has(sh())) return `& ${text}`
