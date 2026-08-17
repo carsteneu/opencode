@@ -1,16 +1,30 @@
 export * as SkillDiscovery from "./discovery"
 
 import path from "path"
-import { Context, Effect, Layer, Schedule, Schema } from "effect"
-import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
+import { Context, Effect, Duration, Layer, Schedule, Schema } from "effect"
+import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import { FSUtil } from "../fs-util"
 import { Global } from "../global"
 import { makeGlobalNode } from "../effect/app-node"
 import { httpClient } from "../effect/app-node-platform"
 import { AbsolutePath } from "../schema"
+import { downloadBounded } from "../http/bounded-download"
 
 const skillConcurrency = 4
 const fileConcurrency = 8
+
+const MAX_SKILL_FILE_BYTES = 1 * 1024 * 1024
+const SKILL_DOWNLOAD_TIMEOUT = Duration.seconds(30)
+
+const isTextualMime = (mime: string) =>
+  !mime ||
+  mime.startsWith("text/") ||
+  mime === "application/json" ||
+  mime.endsWith("+json") ||
+  mime === "application/xml" ||
+  mime.endsWith("+xml") ||
+  mime === "application/javascript" ||
+  mime === "application/x-javascript"
 
 function isSafeSegment(value: string) {
   return (
@@ -84,10 +98,11 @@ const layer = Layer.effect(
 
     const download = Effect.fn("SkillDiscovery.download")(function* (url: string, destination: string) {
       if (yield* fs.exists(destination).pipe(Effect.orDie)) return true
-      return yield* HttpClientRequest.get(url).pipe(
-        http.execute,
-        Effect.flatMap((response) => response.arrayBuffer),
-        Effect.flatMap((body) => fs.writeWithDirs(destination, new Uint8Array(body))),
+      return yield* downloadBounded(fs, http, url, destination, {
+        maxBytes: MAX_SKILL_FILE_BYTES,
+        timeout: SKILL_DOWNLOAD_TIMEOUT,
+        allowContentType: isTextualMime,
+      }).pipe(
         Effect.as(true),
         Effect.catch((error) =>
           Effect.logError("failed to download skill file", { url, error }).pipe(Effect.as(false)),

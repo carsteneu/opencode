@@ -2,8 +2,9 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { httpClient } from "@opencode-ai/core/effect/app-node-platform"
 import path from "path"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { Effect, Layer, Context } from "effect"
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http"
+import { Effect, Duration, Layer, Context } from "effect"
+import { HttpClient } from "effect/unstable/http"
+import { fetchBoundedText } from "@opencode-ai/core/http/bounded-download"
 import { Config } from "@/config/config"
 import { InstanceState } from "@/effect/instance-state"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -13,6 +14,18 @@ import { withTransientReadRetry } from "@/util/effect-http-client"
 import { Global } from "@opencode-ai/core/global"
 import type { MessageV2 } from "./message-v2"
 import type { MessageID } from "./schema"
+
+const MAX_INSTRUCTION_BYTES = 1 * 1024 * 1024
+
+const isTextualMime = (mime: string) =>
+  !mime ||
+  mime.startsWith("text/") ||
+  mime === "application/json" ||
+  mime.endsWith("+json") ||
+  mime === "application/xml" ||
+  mime.endsWith("+xml") ||
+  mime === "application/javascript" ||
+  mime === "application/x-javascript"
 
 function extract(messages: SessionV1.WithParts[]) {
   const paths = new Set<string>()
@@ -93,13 +106,12 @@ const layer: Layer.Layer<
     })
 
     const fetch = Effect.fnUntraced(function* (url: string) {
-      const res = yield* http.execute(HttpClientRequest.get(url)).pipe(
-        Effect.timeout(5000),
-        Effect.catch(() => Effect.succeed(null)),
-      )
-      if (!res) return ""
-      const body = yield* res.arrayBuffer.pipe(Effect.catch(() => Effect.succeed(new ArrayBuffer(0))))
-      return new TextDecoder().decode(body)
+      const body = yield* fetchBoundedText(http, url, {
+        maxBytes: MAX_INSTRUCTION_BYTES,
+        timeout: Duration.seconds(5),
+        allowContentType: isTextualMime,
+      }).pipe(Effect.catch(() => Effect.succeed("")))
+      return body
     })
 
     const clear = Effect.fn("Instruction.clear")(function* (messageID: MessageID) {
