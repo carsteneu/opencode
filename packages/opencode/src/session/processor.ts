@@ -75,6 +75,8 @@ type ToolCall = {
   done: Deferred.Deferred<void>
 }
 
+type ToolCallUpdate = (part: SessionV1.ToolPart) => SessionV1.ToolPart
+
 type ToolInputProgress = {
   received: number
   published: number
@@ -88,6 +90,7 @@ type BufferedPart<Part extends SessionV1.TextPart | SessionV1.ReasoningPart> = {
 
 interface ProcessorContext extends Input {
   toolcalls: Record<string, ToolCall>
+  pendingToolCallUpdates: Record<string, ToolCallUpdate[]>
   toolInputProgress: Record<string, ToolInputProgress>
   shouldBreak: boolean
   closing: boolean
@@ -137,6 +140,7 @@ const layer = Layer.effect(
           ? undefined
           : (input.initialSnapshot ?? (yield* snapshot.track()))
       const snapshotLock = Semaphore.makeUnsafe(1)
+      const toolCallLock = Semaphore.makeUnsafe(1)
       let activeTools = 0
       let toolsIdle: Deferred.Deferred<void> | undefined
       const ctx: ProcessorContext = {
@@ -144,6 +148,7 @@ const layer = Layer.effect(
         sessionID: input.sessionID,
         model: input.model,
         toolcalls: {},
+        pendingToolCallUpdates: {},
         toolInputProgress: {},
         shouldBreak: false,
         closing: false,
@@ -217,6 +222,7 @@ const layer = Layer.effect(
       const settleToolCall = Effect.fn("SessionProcessor.settleToolCall")(function* (toolCallID: string) {
         const done = ctx.toolcalls[toolCallID]?.done
         delete ctx.toolcalls[toolCallID]
+        delete ctx.pendingToolCallUpdates[toolCallID]
         delete ctx.toolInputProgress[toolCallID]
         if (done) yield* Deferred.succeed(done, undefined).pipe(Effect.ignore)
       })
@@ -239,18 +245,26 @@ const layer = Layer.effect(
 
       const updateToolCall = Effect.fn("SessionProcessor.updateToolCall")(function* (
         toolCallID: string,
-        update: (part: SessionV1.ToolPart) => SessionV1.ToolPart,
+        update: ToolCallUpdate,
       ) {
-        const match = yield* readToolCall(toolCallID)
-        if (!match) return undefined
-        const part = yield* session.updatePart(update(match.part))
-        ctx.toolcalls[toolCallID] = {
-          ...match.call,
-          partID: part.id,
-          messageID: part.messageID,
-          sessionID: part.sessionID,
-        }
-        return part
+        return yield* toolCallLock.withPermits(1)(
+          Effect.gen(function* () {
+            if (!ctx.toolcalls[toolCallID]) {
+              ctx.pendingToolCallUpdates[toolCallID] = [...(ctx.pendingToolCallUpdates[toolCallID] ?? []), update]
+              return undefined
+            }
+            const match = yield* readToolCall(toolCallID)
+            if (!match) return undefined
+            const part = yield* session.updatePart(update(match.part))
+            ctx.toolcalls[toolCallID] = {
+              ...match.call,
+              partID: part.id,
+              messageID: part.messageID,
+              sessionID: part.sessionID,
+            }
+            return part
+          }),
+        )
       })
 
       const completeToolCall = Effect.fn("SessionProcessor.completeToolCall")(function* (
@@ -314,39 +328,48 @@ const layer = Layer.effect(
         name: string
         providerExecuted?: boolean
       }) {
-        if (ctx.toolcalls[input.id] && !input.providerExecuted) return undefined
-        const existing = yield* readToolCall(input.id)
-        if (existing) {
-          if (!input.providerExecuted || existing.part.metadata?.providerExecuted) return existing
-          const part = yield* session.updatePart({
-            ...existing.part,
-            metadata: { ...existing.part.metadata, providerExecuted: true },
-          })
-          ctx.toolcalls[input.id] = {
-            ...existing.call,
-            partID: part.id,
-            messageID: part.messageID,
-            sessionID: part.sessionID,
-          }
-          return { call: ctx.toolcalls[input.id], part }
-        }
-        const part = yield* session.updatePart({
-          id: PartID.ascending(),
-          messageID: ctx.assistantMessage.id,
-          sessionID: ctx.assistantMessage.sessionID,
-          type: "tool",
-          tool: input.name,
-          callID: input.id,
-          state: { status: "pending", input: {}, raw: "" },
-          metadata: input.providerExecuted ? { providerExecuted: true } : undefined,
-        } satisfies SessionV1.ToolPart)
-        ctx.toolcalls[input.id] = {
-          done: yield* Deferred.make<void>(),
-          partID: part.id,
-          messageID: part.messageID,
-          sessionID: part.sessionID,
-        }
-        return { call: ctx.toolcalls[input.id], part }
+        return yield* toolCallLock.withPermits(1)(
+          Effect.gen(function* () {
+            if (ctx.toolcalls[input.id] && !input.providerExecuted) return undefined
+            const existing = yield* readToolCall(input.id)
+            if (existing) {
+              if (!input.providerExecuted || existing.part.metadata?.providerExecuted) return existing
+              const part = yield* session.updatePart({
+                ...existing.part,
+                metadata: { ...existing.part.metadata, providerExecuted: true },
+              })
+              ctx.toolcalls[input.id] = {
+                ...existing.call,
+                partID: part.id,
+                messageID: part.messageID,
+                sessionID: part.sessionID,
+              }
+              return { call: ctx.toolcalls[input.id], part }
+            }
+            const pending: SessionV1.ToolPart = yield* session.updatePart({
+              id: PartID.ascending(),
+              messageID: ctx.assistantMessage.id,
+              sessionID: ctx.assistantMessage.sessionID,
+              type: "tool",
+              tool: input.name,
+              callID: input.id,
+              state: { status: "pending", input: {}, raw: "" },
+              metadata: input.providerExecuted ? { providerExecuted: true } : undefined,
+            } satisfies SessionV1.ToolPart)
+            ctx.toolcalls[input.id] = {
+              done: yield* Deferred.make<void>(),
+              partID: pending.id,
+              messageID: pending.messageID,
+              sessionID: pending.sessionID,
+            }
+            const updates = ctx.pendingToolCallUpdates[input.id]
+            delete ctx.pendingToolCallUpdates[input.id]
+            const part = updates?.length
+              ? yield* session.updatePart(updates.reduce((current, update) => update(current), pending))
+              : pending
+            return { call: ctx.toolcalls[input.id], part }
+          }),
+        )
       })
 
       const isFilePart = (value: unknown): value is SessionV1.FilePart => Schema.is(SessionV1.FilePart)(value)
@@ -809,6 +832,7 @@ const layer = Layer.effect(
           })
         }
         ctx.toolcalls = {}
+        ctx.pendingToolCallUpdates = {}
         ctx.toolInputProgress = {}
         ctx.assistantMessage.time.completed = Date.now()
         yield* session.updateMessage(ctx.assistantMessage)
