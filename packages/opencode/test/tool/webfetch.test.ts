@@ -1,11 +1,11 @@
 import { describe, expect } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { httpClient } from "@opencode-ai/core/effect/app-node-platform"
-import { Effect, Layer } from "effect"
-import { FetchHttpClient, HttpClient } from "effect/unstable/http"
+import { Cause, Effect, Exit, Layer } from "effect"
+import { FetchHttpClient, HttpClient, HttpClientResponse } from "effect/unstable/http"
 import { Agent } from "../../src/agent/agent"
 import { Truncate } from "@/tool/truncate"
-import { WebFetchTool } from "../../src/tool/webfetch"
+import { MAX_RESPONSE_SIZE, WebFetchTool } from "../../src/tool/webfetch"
 import { SessionID, MessageID } from "../../src/session/schema"
 import { Tool } from "@/tool/tool"
 import { testEffect } from "../lib/effect"
@@ -13,6 +13,21 @@ import { testEffect } from "../lib/effect"
 const it = testEffect(
   LayerNode.compile(LayerNode.group([httpClient, Truncate.node, Agent.node]), [
     [httpClient, FetchHttpClient.layer as Layer.Layer<HttpClient.HttpClient>],
+  ]),
+)
+
+let respond = () => Effect.succeed(new Response("hello", { headers: { "content-type": "text/plain" } }))
+const mocked = testEffect(
+  LayerNode.compile(LayerNode.group([httpClient, Truncate.node, Agent.node]), [
+    [
+      httpClient,
+      Layer.succeed(
+        HttpClient.HttpClient,
+        HttpClient.make((request) =>
+          respond().pipe(Effect.map((response) => HttpClientResponse.fromWeb(request, response))),
+        ),
+      ),
+    ],
   ]),
 )
 
@@ -115,5 +130,90 @@ describe("tool.webfetch", () => {
           expect(result.attachments).toBeUndefined()
         }),
     ),
+  )
+
+  mocked.instance("rejects declared oversized bodies before reading them", () =>
+    Effect.gen(function* () {
+      let pulled = false
+      respond = () =>
+        Effect.succeed(
+          new Response(
+            new ReadableStream({
+              pull() {
+                pulled = true
+              },
+            }),
+            {
+              headers: {
+                "content-type": "text/plain",
+                "content-length": String(MAX_RESPONSE_SIZE + 1),
+              },
+            },
+          ),
+        )
+
+      const exit = yield* Effect.exit(exec({ url: "https://example.com/declared", format: "text" }))
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) expect(Cause.pretty(exit.cause)).toContain("Response too large")
+      expect(pulled).toBe(false)
+    }),
+  )
+
+  mocked.instance("stops streamed bodies at the hard byte limit", () =>
+    Effect.gen(function* () {
+      const chunk = new Uint8Array(64 * 1024).fill(120)
+      let produced = 0
+      let cancelled = false
+      respond = () =>
+        Effect.succeed(
+          new Response(
+            new ReadableStream({
+              pull(controller) {
+                produced += chunk.byteLength
+                controller.enqueue(chunk)
+              },
+              cancel() {
+                cancelled = true
+              },
+            }),
+            { headers: { "content-type": "text/plain" } },
+          ),
+        )
+
+      const exit = yield* Effect.exit(exec({ url: "https://example.com/chunked", format: "text" }))
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) expect(Cause.pretty(exit.cause)).toContain("Response too large")
+      expect(produced).toBeLessThanOrEqual(MAX_RESPONSE_SIZE + chunk.byteLength)
+      expect(cancelled).toBe(true)
+    }),
+  )
+
+  mocked.instance("applies the request timeout while collecting the body", () =>
+    Effect.gen(function* () {
+      let release: (() => void) | undefined
+      let cancelled = false
+      respond = () =>
+        Effect.succeed(
+          new Response(
+            new ReadableStream({
+              pull() {
+                return new Promise<void>((resolve) => {
+                  release = resolve
+                })
+              },
+              cancel() {
+                cancelled = true
+                release?.()
+              },
+            }),
+            { headers: { "content-type": "text/plain" } },
+          ),
+        )
+
+      const exit = yield* Effect.exit(exec({ url: "https://example.com/stalled", format: "text", timeout: 0.05 }))
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) expect(Cause.pretty(exit.cause)).toContain("Request timed out")
+      expect(cancelled).toBe(true)
+    }),
   )
 })
