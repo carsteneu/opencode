@@ -674,6 +674,7 @@ export const RunCommand = effectCmd({
           process.exit(1)
         }
         const sessionID = sess.id
+        let failed = false
 
         function emit(type: string, data: Record<string, unknown>) {
           if (args.format === "json") {
@@ -690,13 +691,19 @@ export const RunCommand = effectCmd({
           return false
         }
 
+        function reportError(error: unknown, message: string) {
+          if (failed) return
+          failed = true
+          if (emit("error", { error })) return
+          UI.error(message)
+        }
+
         // Consume one subscribed event stream for the active session and mirror it
         // to stdout/UI. `client` is passed explicitly because attach mode may
         // rebind the SDK to the session's directory after the subscription is
         // created, and replies issued from inside the loop must use that client.
         async function loop(client: OpencodeClient, events: Awaited<ReturnType<typeof sdk.event.subscribe>>) {
           const toggles = new Map<string, boolean>()
-          let error: string | undefined
 
           for await (const event of events.stream) {
             if (
@@ -780,9 +787,7 @@ export const RunCommand = effectCmd({
               if ("data" in props.error && props.error.data && "message" in props.error.data) {
                 err = String(props.error.data.message)
               }
-              error = error ? error + EOL + err : err
-              if (emit("error", { error: props.error })) continue
-              UI.error(err)
+              reportError(props.error, err)
             }
 
             if (
@@ -815,7 +820,7 @@ export const RunCommand = effectCmd({
               }
             }
           }
-          return error
+          return failed
         }
         const cwd = args.attach ? (directory ?? sess.directory ?? (await current(sdk))) : (directory ?? root)
         const client = args.attach ? attachSDK(cwd) : sdk
@@ -847,7 +852,7 @@ export const RunCommand = effectCmd({
               variant: args.variant,
             })
             if (result.error) {
-              if (!emit("error", { error: result.error })) UI.error(formatRunError(result.error))
+              reportError(result.error, formatRunError(result.error))
               process.exitCode = 1
               return
             }
@@ -864,7 +869,7 @@ export const RunCommand = effectCmd({
             parts: [...files, { type: "text", text: message }],
           })
           if (result.error) {
-            if (!emit("error", { error: result.error })) UI.error(formatRunError(result.error))
+            reportError(result.error, formatRunError(result.error))
             process.exitCode = 1
             return
           }
