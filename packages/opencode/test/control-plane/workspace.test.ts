@@ -2053,13 +2053,20 @@ describe("workspace sync state", () => {
                 { type: "page", aggregateID: session.id, head: historyNextSeq + 1, after: historyNextSeq },
               ])
               expect(historyEncodings).toEqual(["identity", "identity", "identity"])
-              expect(requests).toEqual([
-                "/history/global/event",
-                "/history/sync/history/v2",
-                "/history/sync/history/v2",
-                "/history/sync/history/v2",
-                "/history/sync/message-diffs/manifest",
-              ])
+              // The message-diffs manifest request is issued after the last page replay, so poll
+              // until the sync engine has finished requesting it before asserting the exact log.
+              yield* eventuallyEffect(
+                Effect.gen(function* () {
+                  expect(requests).toEqual([
+                    "/history/global/event",
+                    "/history/sync/history/v2",
+                    "/history/sync/history/v2",
+                    "/history/sync/history/v2",
+                    "/history/sync/message-diffs/manifest",
+                  ])
+                }),
+                3000,
+              )
               expect(
                 captured.events.some(
                   (event) =>
