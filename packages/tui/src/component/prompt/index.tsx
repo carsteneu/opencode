@@ -17,6 +17,7 @@ import { useLocal } from "../../context/local"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { tint, useTheme } from "../../context/theme"
 import { EmptyBorder, SplitBorder } from "../../ui/border"
+import { PartialText } from "../../ui/partial-text"
 import { useTuiPaths, useTuiTerminalEnvironment } from "../../context/runtime"
 import { useClipboard } from "../../context/clipboard"
 import { Spinner } from "../spinner"
@@ -178,8 +179,6 @@ export function Prompt(props: PromptProps) {
   const [dismissedEditorSelectionKey, setDismissedEditorSelectionKey] = createSignal<string>()
   const [promptSpinnerEl, setPromptSpinnerEl] = createSignal<Renderable | undefined>(undefined)
   usePartialRender(promptSpinnerEl)
-  const [waitTimerEl, setWaitTimerEl] = createSignal<Renderable | undefined>(undefined)
-  usePartialRender(waitTimerEl)
   const [modelWait, setModelWait] = createSignal<ModelWaitState>({ phase: "idle" })
   createEffect(() => {
     const s = status()
@@ -1559,76 +1558,84 @@ export function Prompt(props: PromptProps) {
                 flexGrow={1}
                 justifyContent={status().type === "retry" ? "space-between" : "flex-start"}
               >
-                  <box flexShrink={0} flexDirection="row" gap={1}>
-                    <box marginLeft={1}>
-                      <Show when={kv.get("animations_enabled", true)} fallback={<text fg={theme.textMuted}>[⋯]</text>}>
-                        <spinner ref={setPromptSpinnerEl} color={spinnerDef().color} frames={spinnerDef().frames} interval={40} />
-                      </Show>
-                    </box>
-                    <Show when={modelWait().phase === "waiting" && status().type === "busy"}>
-                      <text fg={theme.textMuted} wrapMode="none" ref={setWaitTimerEl}>
-                        ◷ Waiting on model · {waitElapsed()}
-                      </text>
+                <box flexShrink={0} flexDirection="row" gap={1}>
+                  <box marginLeft={1}>
+                    <Show when={kv.get("animations_enabled", true)} fallback={<text fg={theme.textMuted}>[⋯]</text>}>
+                      <spinner
+                        ref={setPromptSpinnerEl}
+                        color={spinnerDef().color}
+                        frames={spinnerDef().frames}
+                        interval={40}
+                      />
                     </Show>
                   </box>
-                  <box flexDirection="row" gap={1} flexShrink={0}>
-                    {(() => {
-                      const retry = createMemo(() => {
-                        const s = status()
-                        if (s.type !== "retry") return
-                        return s
-                      })
-                      const message = createMemo(() => {
-                        const r = retry()
-                        if (!r) return
-                        if (r.message.includes("exceeded your current quota") && r.message.includes("gemini"))
-                          return "gemini is way too hot right now"
-                        if (r.message.length > 80) return r.message.slice(0, 80) + "..."
-                        return r.message
-                      })
-                      const isTruncated = createMemo(() => {
-                        const r = retry()
-                        if (!r) return false
-                        return r.message.length > 120
-                      })
-                      const [seconds, setSeconds] = createSignal(0)
-                      onMount(() => {
-                        const timer = setInterval(() => {
-                          const next = retry()?.next
-                          if (next) setSeconds(Math.round((next - Date.now()) / 1000))
-                        }, 1000)
+                  <Show when={modelWait().phase === "waiting" && status().type === "busy"}>
+                    <box flexDirection="row" flexShrink={0}>
+                      <text fg={theme.textMuted} wrapMode="none">
+                        ◷ Waiting on model ·{" "}
+                      </text>
+                      <PartialText content={waitElapsed()} fg={theme.textMuted} width={8} truncate />
+                    </box>
+                  </Show>
+                </box>
+                <box flexDirection="row" gap={1} flexShrink={0}>
+                  {(() => {
+                    const retry = createMemo(() => {
+                      const s = status()
+                      if (s.type !== "retry") return
+                      return s
+                    })
+                    const message = createMemo(() => {
+                      const r = retry()
+                      if (!r) return
+                      if (r.message.includes("exceeded your current quota") && r.message.includes("gemini"))
+                        return "gemini is way too hot right now"
+                      if (r.message.length > 80) return r.message.slice(0, 80) + "..."
+                      return r.message
+                    })
+                    const isTruncated = createMemo(() => {
+                      const r = retry()
+                      if (!r) return false
+                      return r.message.length > 120
+                    })
+                    const [seconds, setSeconds] = createSignal(0)
+                    onMount(() => {
+                      const timer = setInterval(() => {
+                        const next = retry()?.next
+                        if (next) setSeconds(Math.round((next - Date.now()) / 1000))
+                      }, 1000)
 
-                        onCleanup(() => {
-                          clearInterval(timer)
-                        })
+                      onCleanup(() => {
+                        clearInterval(timer)
                       })
-                      const handleMessageClick = () => {
-                        const r = retry()
-                        if (!r) return
-                        if (isTruncated()) {
-                          void DialogAlert.show(dialog, "Retry Error", r.message)
-                        }
+                    })
+                    const handleMessageClick = () => {
+                      const r = retry()
+                      if (!r) return
+                      if (isTruncated()) {
+                        void DialogAlert.show(dialog, "Retry Error", r.message)
                       }
+                    }
 
-                      const retryText = () => {
-                        const r = retry()
-                        if (!r) return ""
-                        const baseMessage = message()
-                        const truncatedHint = isTruncated() ? " (click to expand)" : ""
-                        const duration = formatDuration(seconds())
-                        const retryInfo = ` [retrying ${duration ? `in ${duration} ` : ""}attempt #${r.attempt}]`
-                        return baseMessage + truncatedHint + retryInfo
-                      }
+                    const retryText = () => {
+                      const r = retry()
+                      if (!r) return ""
+                      const baseMessage = message()
+                      const truncatedHint = isTruncated() ? " (click to expand)" : ""
+                      const duration = formatDuration(seconds())
+                      const retryInfo = ` [retrying ${duration ? `in ${duration} ` : ""}attempt #${r.attempt}]`
+                      return baseMessage + truncatedHint + retryInfo
+                    }
 
-                      return (
-                        <Show when={retry()}>
-                          <box onMouseUp={handleMessageClick}>
-                            <text fg={theme.error}>{retryText()}</text>
-                          </box>
-                        </Show>
-                      )
-                    })()}
-                  </box>
+                    return (
+                      <Show when={retry()}>
+                        <box onMouseUp={handleMessageClick}>
+                          <text fg={theme.error}>{retryText()}</text>
+                        </box>
+                      </Show>
+                    )
+                  })()}
+                </box>
                 <text fg={store.interrupt > 0 ? theme.primary : theme.text}>
                   esc{" "}
                   <span style={{ fg: store.interrupt > 0 ? theme.primary : theme.textMuted }}>

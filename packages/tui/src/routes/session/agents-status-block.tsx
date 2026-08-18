@@ -3,16 +3,13 @@ import { useRoute, useRouteData } from "../../context/route"
 import { useSync } from "../../context/sync"
 import { useTheme } from "../../context/theme"
 import { SplitBorder } from "../../ui/border"
-import { usePartialRender } from "../../ui/partial-render"
+import { PartialText } from "../../ui/partial-text"
 import { type AgentRow, deriveAgentRows, formatDuration } from "./agents-status"
 import { Locale } from "../../util/locale"
 import { useTerminalDimensions } from "@opentui/solid"
-import type { Renderable } from "@opentui/core"
 
 function AgentStatusRow(props: { row: AgentRow; now: number; onOpen: (id: string) => void }) {
   const { theme } = useTheme()
-  const [timerEl, setTimerEl] = createSignal<Renderable | undefined>(undefined)
-  usePartialRender(timerEl)
   const [hover, setHover] = createSignal(false)
 
   const stateColor = () => {
@@ -41,8 +38,7 @@ function AgentStatusRow(props: { row: AgentRow; now: number; onOpen: (id: string
     }
   }
 
-  const elapsed = () =>
-    formatDuration(props.now - (props.row.detailSince ?? props.row.startedAt))
+  const elapsed = () => formatDuration(props.now - (props.row.detailSince ?? props.row.startedAt))
 
   return (
     <box
@@ -61,9 +57,16 @@ function AgentStatusRow(props: { row: AgentRow; now: number; onOpen: (id: string
         {props.row.state === "done" ? "✓" : "◗"} {stateLabel()}
       </text>
       <Show when={props.row.state === "running"}>
-        <text fg={theme.textMuted} wrapMode="none" ref={setTimerEl}>
-          {props.row.detail ? `${props.row.detail} · ${elapsed()}` : elapsed()}
-        </text>
+        <box flexDirection="row" flexShrink={0}>
+          <Show when={props.row.detail}>
+            {(detail) => (
+              <text fg={theme.textMuted} wrapMode="none">
+                {detail()} ·{" "}
+              </text>
+            )}
+          </Show>
+          <PartialText content={elapsed()} fg={theme.textMuted} width={8} truncate />
+        </box>
       </Show>
       <Show when={props.row.state === "failed"}>
         <text fg={theme.textMuted} wrapMode="none">
@@ -96,7 +99,7 @@ export function AgentsStatusBlock() {
 
   const [now, setNow] = createSignal(Date.now())
   createEffect(() => {
-    if (activeCount() === 0) return
+    if (!expanded() || activeCount() === 0) return
     setNow(Date.now())
     const timer = setInterval(() => setNow(Date.now()), 1000)
     onCleanup(() => clearInterval(timer))
@@ -108,42 +111,40 @@ export function AgentsStatusBlock() {
   return (
     <Show when={rows().length > 0}>
       <box flexShrink={0}>
-      <box
-        paddingTop={0}
-        paddingBottom={1}
-        paddingLeft={2}
-        paddingRight={1}
-        {...SplitBorder}
-        border={["left"]}
-        borderColor={theme.border}
-        flexShrink={0}
-        backgroundColor={theme.backgroundPanel}
-      >
         <box
-          flexDirection="row"
-          gap={1}
-          onMouseOver={() => setHoverHeader(true)}
-          onMouseOut={() => setHoverHeader(false)}
-          onMouseUp={() => setExpanded((x) => !x)}
-          backgroundColor={hoverHeader() ? theme.backgroundElement : undefined}
+          paddingTop={0}
+          paddingBottom={1}
+          paddingLeft={2}
+          paddingRight={1}
+          {...SplitBorder}
+          border={["left"]}
+          borderColor={theme.border}
+          flexShrink={0}
+          backgroundColor={theme.backgroundPanel}
         >
-          <text fg={theme.text}>
-            <b>Agents</b>
-          </text>
-          <text fg={activeCount() > 0 ? theme.accent : theme.textMuted}>
-            {activeCount()}/{rows().length} active
-          </text>
-          <text fg={theme.textMuted}>{expanded() ? "collapse" : "expand"}</text>
-        </box>
-        <Show when={expanded()}>
-          <box flexDirection="column" gap={0}>
-            <Index each={rows()}>
-              {(row) => <AgentStatusRow row={row()} now={now()} onOpen={open} />}
-            </Index>
+          <box
+            flexDirection="row"
+            gap={1}
+            onMouseOver={() => setHoverHeader(true)}
+            onMouseOut={() => setHoverHeader(false)}
+            onMouseUp={() => setExpanded((x) => !x)}
+            backgroundColor={hoverHeader() ? theme.backgroundElement : undefined}
+          >
+            <text fg={theme.text}>
+              <b>Agents</b>
+            </text>
+            <text fg={activeCount() > 0 ? theme.accent : theme.textMuted}>
+              {activeCount()}/{rows().length} active
+            </text>
+            <text fg={theme.textMuted}>{expanded() ? "collapse" : "expand"}</text>
           </box>
-        </Show>
+          <Show when={expanded()}>
+            <box flexDirection="column" gap={0}>
+              <Index each={rows()}>{(row) => <AgentStatusRow row={row()} now={now()} onOpen={open} />}</Index>
+            </box>
+          </Show>
+        </box>
       </box>
-    </box>
     </Show>
   )
 }

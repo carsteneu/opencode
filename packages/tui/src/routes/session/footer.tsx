@@ -1,4 +1,4 @@
-import { createMemo, createSignal, Match, onCleanup, onMount, Show, Switch } from "solid-js"
+import { createEffect, createMemo, createSignal, Match, onCleanup, onMount, Show, Switch } from "solid-js"
 import { useTheme } from "../../context/theme"
 import { useSync } from "../../context/sync"
 import { useDirectory } from "../../context/directory"
@@ -6,61 +6,79 @@ import { useConnected } from "../../component/use-connected"
 import { createStore } from "solid-js/store"
 import { useRoute } from "../../context/route"
 import { useEvent } from "../../context/event"
-import { TokenRateMeter } from "../../util/token-rate"
+import { LiveOutputRate } from "../../util/token-rate"
+import { fg, t } from "@opentui/core"
+import { PartialText } from "../../ui/partial-text"
+
+const TOKEN_RATE_REFRESH_MS = 1000
+const TOKEN_RATE_WINDOW_MS = 3000
 
 function TokenRate() {
   const { theme } = useTheme()
   const event = useEvent()
-  const outMeter = new TokenRateMeter()
-  const inMeter = new TokenRateMeter()
-  let currentId: string | undefined
-  let currentOut = 0
-  let currentIn = 0
-  const [tick, setTick] = createSignal(0)
+  const route = useRoute()
+  const output = new LiveOutputRate(TOKEN_RATE_WINDOW_MS)
+  const [rate, setRate] = createSignal(0)
+  let sessionID = route.data.type === "session" ? route.data.sessionID : undefined
+  let messageID: string | undefined
+  let latestDeltaAt: number | undefined
+  let timer: ReturnType<typeof setTimeout> | undefined
 
+  output.selectSession(sessionID)
+
+  const stop = () => {
+    if (timer) clearTimeout(timer)
+    timer = undefined
+    latestDeltaAt = undefined
+    setRate(0)
+  }
+
+  const refresh = () => {
+    timer = undefined
+    const now = Date.now()
+    setRate(output.rate(now))
+    if (latestDeltaAt === undefined) return
+    const remaining = latestDeltaAt + TOKEN_RATE_WINDOW_MS - now
+    if (remaining < 0) {
+      latestDeltaAt = undefined
+      return
+    }
+    timer = setTimeout(refresh, Math.min(TOKEN_RATE_REFRESH_MS, remaining + 1))
+  }
+
+  createEffect(() => {
+    const next = route.data.type === "session" ? route.data.sessionID : undefined
+    if (next === sessionID) return
+    sessionID = next
+    messageID = undefined
+    output.selectSession(next)
+    stop()
+  })
   const unsubs = [
     event.on("message.updated", (evt) => {
       const info = evt.properties.info
-      if (info.role !== "assistant") return
-      const out = (info.tokens?.output ?? 0) + (info.tokens?.reasoning ?? 0)
-      const input = info.tokens?.input ?? 0
-      if (info.id !== currentId) {
-        currentId = info.id
-        currentOut = 0
-        currentIn = 0
-        outMeter.reset()
-        inMeter.reset()
-      }
-      if (out >= currentOut) {
-        currentOut = out
-        outMeter.add(currentOut, Date.now())
-      }
-      if (input >= currentIn) {
-        currentIn = input
-        inMeter.add(currentIn, Date.now())
-      }
+      if (info.role !== "assistant" || info.sessionID !== sessionID || info.id === messageID) return
+      messageID = info.id
+      output.selectMessage(info.sessionID, info.id)
+      stop()
+    }),
+    event.on("message.part.delta", (evt) => {
+      const input = evt.properties
+      if (input.sessionID !== sessionID || input.field !== "text") return
+      if (!messageID) messageID = input.messageID
+      if (input.messageID !== messageID) return
+      const now = Date.now()
+      output.add(input, now)
+      latestDeltaAt = now
+      if (!timer) timer = setTimeout(refresh, TOKEN_RATE_REFRESH_MS)
     }),
   ]
-  const timer = setInterval(() => setTick((t) => (t + 1) % 1_000_000_000), 1000)
   onCleanup(() => {
     for (const unsub of unsubs) unsub()
-    clearInterval(timer)
+    if (timer) clearTimeout(timer)
   })
 
-  const view = createMemo(() => {
-    tick()
-    const now = Date.now()
-    return {
-      out: outMeter.rate(now),
-      input: inMeter.rate(now),
-    }
-  })
-
-  return (
-    <text fg={theme.textMuted} flexShrink={0}>
-      out {Math.round(view().out)} tk/s · in {Math.round(view().input)} tk/s
-    </text>
-  )
+  return <PartialText content={`out ~${Math.round(rate())} tk/s`} fg={theme.textMuted} width={14} truncate />
 }
 
 export function Footer() {
@@ -76,6 +94,11 @@ export function Footer() {
   })
   const directory = useDirectory()
   const connected = useConnected()
+  const welcome = createMemo(() => t`Get started ${fg(theme.textMuted)("/connect")}`)
+  const lspStatus = createMemo(
+    () => t`${fg(lsp().length > 0 ? theme.success : theme.textMuted)("•")} ${lsp().length} LSP`,
+  )
+  const mcpStatus = createMemo(() => t`${fg(mcpError() ? theme.error : theme.success)("⊙")} ${mcp()} MCP`)
 
   const [store, setStore] = createStore({
     welcome: false,
@@ -108,39 +131,29 @@ export function Footer() {
 
   return (
     <box flexDirection="row" justifyContent="space-between" gap={1} flexShrink={0}>
-      <text fg={theme.textMuted}>{directory()}</text>
+      <box flexGrow={1} minWidth={0}>
+        <PartialText content={directory()} fg={theme.textMuted} width="100%" truncate />
+      </box>
       <box gap={2} flexDirection="row" flexShrink={0}>
         <TokenRate />
         <Switch>
-          <Match when={store.welcome}>
-            <text fg={theme.text}>
-              Get started <span style={{ fg: theme.textMuted }}>/connect</span>
-            </text>
-          </Match>
           <Match when={connected()}>
             <Show when={permissions().length > 0}>
-              <text fg={theme.warning}>
-                <span style={{ fg: theme.warning }}>△</span> {permissions().length} Permission
-                {permissions().length > 1 ? "s" : ""}
-              </text>
+              <PartialText
+                content={`△ ${permissions().length} Permission${permissions().length > 1 ? "s" : ""}`}
+                fg={theme.warning}
+                width={16}
+                truncate
+              />
             </Show>
-            <text fg={theme.text}>
-              <span style={{ fg: lsp().length > 0 ? theme.success : theme.textMuted }}>•</span> {lsp().length} LSP
-            </text>
+            <PartialText content={lspStatus()} fg={theme.text} width={8} truncate />
             <Show when={mcp()}>
-              <text fg={theme.text}>
-                <Switch>
-                  <Match when={mcpError()}>
-                    <span style={{ fg: theme.error }}>⊙ </span>
-                  </Match>
-                  <Match when={true}>
-                    <span style={{ fg: theme.success }}>⊙ </span>
-                  </Match>
-                </Switch>
-                {mcp()} MCP
-              </text>
+              <PartialText content={mcpStatus()} fg={theme.text} width={8} truncate />
             </Show>
             <text fg={theme.textMuted}>/status</text>
+          </Match>
+          <Match when={true}>
+            <PartialText content={store.welcome ? welcome() : ""} fg={theme.text} width={20} />
           </Match>
         </Switch>
       </box>

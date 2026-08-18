@@ -1,3 +1,5 @@
+import { Token } from "@opencode-ai/core/util/token"
+
 type Sample = { at: number; tokens: number }
 
 /**
@@ -15,6 +17,12 @@ export class TokenRateMeter {
   add(tokens: number, at: number) {
     const last = this.samples[this.samples.length - 1]
     if (last && tokens <= last.tokens) return
+    // The SDK flushes several deltas synchronously; keep the final cumulative
+    // count for that timestamp instead of treating one batch as many samples.
+    if (last?.at === at) {
+      last.tokens = tokens
+      return
+    }
     this.samples.push({ at, tokens })
     this.prune(at)
   }
@@ -42,5 +50,43 @@ export class TokenRateMeter {
     let drop = 0
     while (drop < this.samples.length - 2 && this.samples[drop].at < windowStart) drop++
     if (drop > 0) this.samples.splice(0, drop)
+  }
+}
+
+export class LiveOutputRate {
+  private meter: TokenRateMeter
+  private sessionID: string | undefined
+  private messageID: string | undefined
+  private characters = 0
+
+  constructor(windowMs = 3000) {
+    this.meter = new TokenRateMeter(windowMs)
+  }
+
+  selectSession(sessionID: string | undefined) {
+    if (sessionID === this.sessionID) return
+    this.sessionID = sessionID
+    this.messageID = undefined
+    this.characters = 0
+    this.meter.reset()
+  }
+
+  selectMessage(sessionID: string, messageID: string) {
+    if (sessionID !== this.sessionID || messageID === this.messageID) return
+    this.messageID = messageID
+    this.characters = 0
+    this.meter.reset()
+  }
+
+  add(input: { sessionID: string; messageID: string; field: string; delta: string }, at: number) {
+    if (input.sessionID !== this.sessionID || input.field !== "text") return
+    if (!this.messageID) this.selectMessage(input.sessionID, input.messageID)
+    if (input.messageID !== this.messageID) return
+    this.characters += input.delta.length
+    this.meter.add(Token.estimateLength(this.characters), at)
+  }
+
+  rate(at = Date.now()) {
+    return this.meter.rate(at)
   }
 }
