@@ -58,7 +58,7 @@ import { useTuiConfig } from "../../config"
 import { usePromptWorkspace } from "./workspace"
 import { usePromptMove } from "./move"
 import { nextModelWait, type ModelWaitState } from "./model-wait"
-import { readLocalAttachment } from "./local-attachment"
+import { localAttachmentKind, readLocalAttachment } from "./local-attachment"
 import { useLocation } from "../../context/location"
 
 export type PromptProps = {
@@ -1240,6 +1240,14 @@ export function Prompt(props: PromptProps) {
         })
         return
       }
+      if (attachment?.type === "error") {
+        toast.show({
+          title: "Attachment too large",
+          message: `Files are limited to ${attachment.maxBytes / 1024 / 1024} MB`,
+          variant: "error",
+        })
+        return
+      }
     }
 
     const lineCount = (pastedContent.match(/\n/g)?.length ?? 0) + 1
@@ -1263,13 +1271,14 @@ export function Prompt(props: PromptProps) {
   async function pasteAttachment(file: { filename?: string; filepath?: string; content: string; mime: string }) {
     const currentOffset = input.cursorOffset
     const extmarkStart = currentOffset
-    const pdf = file.mime === "application/pdf"
+    const kind = localAttachmentKind(file.mime)
     const count = store.prompt.parts.filter((x) => {
       if (x.type !== "file") return false
-      if (pdf) return x.mime === "application/pdf"
-      return x.mime.startsWith("image/")
+      if (!x.url.startsWith("data:")) return false
+      return localAttachmentKind(x.mime) === kind
     }).length
-    const virtualText = pdf ? `[PDF ${count + 1}]` : `[Image ${count + 1}]`
+    const virtualText =
+      kind === "pdf" ? `[PDF ${count + 1}]` : kind === "image" ? `[Image ${count + 1}]` : `[File ${count + 1}]`
     const extmarkEnd = extmarkStart + virtualText.length
     const textToInsert = virtualText + " "
 

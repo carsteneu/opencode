@@ -5,8 +5,18 @@ import { createTestRenderer } from "@opentui/core/testing"
 import { Effect } from "effect"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { Global } from "@opencode-ai/core/global"
+import { pathToFileURL } from "node:url"
 import { createTuiResolvedConfig } from "./fixture/tui-runtime"
 import { createEventSource, createFetch, directory, json } from "./fixture/tui-sdk"
+import { tmpdir } from "./fixture/fixture"
+
+async function wait(fn: () => boolean, timeout = 2000) {
+  const start = Date.now()
+  while (!fn()) {
+    if (Date.now() - start > timeout) throw new Error("timed out waiting for condition")
+    await Bun.sleep(10)
+  }
+}
 
 test("SIGHUP clears title and disposes scoped resources once", async () => {
   const setup = await createTestRenderer({ width: 80, height: 24, useThread: false })
@@ -212,3 +222,159 @@ test("session prompt handles boundary keys and app.exit prints the epilogue", as
     mock.restore()
   }
 })
+
+test("pasted local documents become independently counted data URL attachments", async () => {
+  await using tmp = await tmpdir()
+  const setup = await createTestRenderer({ width: 80, height: 24, useThread: false })
+  const core = await import("@opentui/core")
+  mock.module("@opentui/core", () => ({ ...core, createCliRenderer: async () => setup.renderer }))
+  const events = createEventSource()
+  const session = {
+    id: "attachment-test",
+    title: "Attachment test",
+    slug: "attachment-test",
+    projectID: "project",
+    directory,
+    version: "0.0.0-test",
+    time: { created: 0, updated: 0 },
+  }
+  const model = {
+    id: "model",
+    providerID: "test",
+    api: { id: "model", url: "http://test", npm: "test" },
+    name: "Test model",
+    capabilities: {
+      temperature: false,
+      reasoning: false,
+      attachment: true,
+      toolcall: true,
+      input: { text: true, audio: false, image: true, video: false, pdf: true },
+      output: { text: true, audio: false, image: false, video: false, pdf: false },
+      interleaved: false,
+    },
+    cost: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+    limit: { context: 100_000, output: 4_096 },
+    status: "active",
+    options: {},
+    headers: {},
+    release_date: "2026-01-01",
+  }
+  let promptBody: unknown
+  let findRequests = 0
+  const calls = createFetch((url, request) => {
+    if (url.pathname === "/config/providers")
+      return json({
+        providers: [{ id: "test", name: "Test", source: "api", env: [], options: {}, models: { model } }],
+        default: { test: "model" },
+      })
+    if (url.pathname === "/agent") return json([{ name: "build", mode: "primary", permission: [], options: {} }])
+    if (url.pathname === "/api/fs/find") {
+      findRequests++
+      return json({
+        location: { directory: tmp.path, project: { id: "project", directory: tmp.path } },
+        data: [{ path: "context.txt", type: "file" }],
+      })
+    }
+    if (url.pathname === "/session") return json([session])
+    if (url.pathname === `/session/${session.id}`) return json(session)
+    if (url.pathname === `/session/${session.id}/message` && request.method === "POST") {
+      void request.json().then((value) => {
+        promptBody = value
+      })
+      return json({})
+    }
+    if (url.pathname === `/session/${session.id}/message`) return json([])
+    if (url.pathname === `/session/${session.id}/todo` || url.pathname === `/session/${session.id}/diff`)
+      return json([])
+    return undefined
+  })
+  const attachments = [
+    { name: "report.docx", bytes: new Uint8Array([80, 75, 3, 4]), marker: "[File 1]" },
+    { name: "spec.pdf", bytes: new Uint8Array([37, 80, 68, 70]), marker: "[PDF 1]" },
+    { name: "diagram.png", bytes: new Uint8Array([137, 80, 78, 71]), marker: "[Image 1]" },
+    { name: "notes.odt", bytes: new Uint8Array([80, 75, 3, 4]), marker: "[File 2]" },
+  ]
+  const originalWrite = process.stdout.write.bind(process.stdout)
+  let api: TuiPluginApi | undefined
+  let stopSlots: (() => void) | undefined
+  let started!: () => void
+  const ready = new Promise<void>((resolve) => {
+    started = resolve
+  })
+
+  process.stdout.write = (() => true) as typeof process.stdout.write
+  await Promise.all([
+    Bun.write(`${tmp.path}/context.txt`, "reference only"),
+    ...attachments.map((item) => Bun.write(`${tmp.path}/${item.name}`, item.bytes)),
+  ])
+
+  try {
+    const { run } = await import("../src/app")
+    const task = Effect.runPromise(
+      run({
+        url: "http://test",
+        directory,
+        config: createTuiResolvedConfig({ plugin_enabled: {} }),
+        fetch: calls.fetch,
+        events: events.source,
+        args: { continue: true },
+        pluginHost: {
+          async start(input) {
+            api = input.api
+            stopSlots = input.runtime.setupSlots(input.api).dispose
+            started()
+          },
+          async dispose() {
+            stopSlots?.()
+          },
+        },
+      }).pipe(Effect.provide(AppNodeBuilder.build(Global.node))),
+    )
+
+    await ready
+    await setup.waitFor(
+      () => api?.route.current.name === "session" && setup.renderer.currentFocusedEditor instanceof TextareaRenderable,
+    )
+    const editor = setup.renderer.currentFocusedEditor
+    if (!(editor instanceof TextareaRenderable)) throw new Error("Expected the session prompt textarea")
+
+    await setup.mockInput.typeText("@context")
+    await wait(() => findRequests > 0)
+    await setup.waitForFrame((frame) => frame.includes("context.t"))
+    api?.keymap.dispatchCommand("prompt.autocomplete.select")
+    await wait(() => editor.plainText === "@context.txt ")
+
+    for (const attachment of attachments) {
+      setup.renderer.keyInput.processPaste(new TextEncoder().encode(`${tmp.path}/${attachment.name}`))
+      await wait(() => editor.plainText.endsWith(`${attachment.marker} `))
+    }
+
+    expect(editor.plainText).toBe("@context.txt [File 1] [PDF 1] [Image 1] [File 2] ")
+    api?.keymap.dispatchCommand("prompt.submit")
+    await wait(() => promptBody !== undefined)
+
+    expect(promptBody).toMatchObject({
+      parts: [
+        { type: "text", text: "@context.txt [File 1] [PDF 1] [Image 1] [File 2] " },
+        {
+          type: "file",
+          mime: "text/plain",
+          filename: "context.txt",
+          url: pathToFileURL(`${tmp.path}/context.txt`).href,
+        },
+        ...attachments.map((item) => ({
+          type: "file",
+          filename: item.name,
+          url: `data:${Bun.file(`${tmp.path}/${item.name}`).type};base64,${Buffer.from(item.bytes).toString("base64")}`,
+        })),
+      ],
+    })
+
+    api?.keymap.dispatchCommand("app.exit")
+    await task
+  } finally {
+    process.stdout.write = originalWrite
+    if (!setup.renderer.isDestroyed) setup.renderer.destroy()
+    mock.restore()
+  }
+}, 15_000)
