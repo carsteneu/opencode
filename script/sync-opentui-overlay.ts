@@ -4,13 +4,15 @@ import { randomUUID } from "node:crypto"
 import { cp, realpath, rename, rm } from "node:fs/promises"
 import path from "node:path"
 
-const expectedCommit = "568db413e7bc3a110981d2e54ddb7ebb8e906075"
-const expectedTag = "opencode-1.18.16-patched.98"
-const expectedVersion = "0.5.1"
+const expectedCommit = "2cd44364513f59a7a5937ef257042ddb0fca4fb7"
+const expectedPatchBase = "568db413e7bc3a110981d2e54ddb7ebb8e906075"
+const expectedTag = "v0.5.3"
+const expectedTagCommit = "1500698af07951ea0c1c67c9ad737fc54382ee20"
+const expectedVersion = "0.5.3"
 const expectedHashes = {
-  core: "e15a4537e890882bee62068cb91b7cc5206dc5ea5fbc0b8def2e7f00a0c9d39b",
-  solid: "294dcc12fb498a5a8427bea3b7fc30b89ff1b37b39c76e93f2dbb47247330617",
-  native: "e459247a3ac0e92fd68011fc60a77f09ba5d6dfa18dab31ed4b62cf2fa136639",
+  core: "ea25ad97c266d36b994697e5b6a57a1dfce7b0543b2e118e52ad39c7a9e1cd78",
+  solid: "ba9ffd6b55ea9f2785a01cc3b072bd3587116442607f5f19d20b383d75d16179",
+  native: "cfae310ac456004ef63788fdf2c715a95f330d0fdaab86f147dda5eeaeaab707",
 }
 const usage = "Usage: bun run script/sync-opentui-overlay.ts --source=<opentui-root> [--check | --apply]"
 const args = process.argv.slice(2)
@@ -44,17 +46,27 @@ if (process.platform !== "linux" || process.arch !== "x64") {
 const root = path.resolve(import.meta.dir, "..")
 const head = await git(source, "rev-parse", "HEAD")
 const tag = await git(source, "rev-parse", `${expectedTag}^{commit}`)
+const patchBase = await git(source, "merge-base", expectedPatchBase, head)
+const upstreamBase = await git(source, "merge-base", expectedTagCommit, head)
 const status = await git(source, "status", "--short", "--untracked-files=no")
-if (head !== expectedCommit || tag !== expectedCommit) {
-  throw new Error(`Expected OpenTUI ${expectedTag} at ${expectedCommit}, got HEAD ${head} and tag ${tag}`)
+if (
+  head !== expectedCommit ||
+  tag !== expectedTagCommit ||
+  patchBase !== expectedPatchBase ||
+  upstreamBase !== expectedTagCommit
+) {
+  throw new Error(
+    `Expected patched OpenTUI ${expectedVersion} at ${expectedCommit}, got HEAD ${head}, tag ${tag}, patch base ${patchBase}, and upstream base ${upstreamBase}`,
+  )
 }
 if (status) throw new Error(`OpenTUI has tracked changes:\n${status}`)
 
+const coreTarget = await realpath(path.join(root, "packages/tui/node_modules/@opentui/core"))
 const artifacts = [
   {
     name: "core",
     source: path.join(source, "packages/core/dist"),
-    target: await realpath(path.join(root, "packages/tui/node_modules/@opentui/core")),
+    target: coreTarget,
     expected: expectedHashes.core,
   },
   {
@@ -66,7 +78,7 @@ const artifacts = [
   {
     name: "native",
     source: path.join(source, "packages/core/node_modules/@opentui/core-linux-x64"),
-    target: await realpath(path.join(root, "node_modules/.bun/node_modules/@opentui/core-linux-x64")),
+    target: await realpath(path.join(coreTarget, "..", "core-linux-x64")),
     expected: expectedHashes.native,
   },
 ]
