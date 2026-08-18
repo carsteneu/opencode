@@ -11,7 +11,15 @@ function mimeToModality(mime: string): Modality | undefined {
   if (mime.startsWith("image/")) return "image"
   if (mime.startsWith("audio/")) return "audio"
   if (mime.startsWith("video/")) return "video"
-  if (mime === "application/pdf") return "pdf"
+  if (
+    mime === "application/pdf" ||
+    mime === "application/msword" ||
+    mime === "application/vnd.ms-excel" ||
+    mime === "application/vnd.ms-powerpoint" ||
+    mime.startsWith("application/vnd.openxmlformats-officedocument.") ||
+    mime.startsWith("application/vnd.oasis.opendocument.")
+  )
+    return "pdf"
   return undefined
 }
 

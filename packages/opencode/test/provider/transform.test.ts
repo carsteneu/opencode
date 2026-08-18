@@ -2083,6 +2083,79 @@ describe("ProviderTransform.message - surrogate sanitization", () => {
   })
 })
 
+describe("ProviderTransform.message - Office document modality", () => {
+  const model = {
+    id: ModelV2.ID.make("custom/document-model"),
+    providerID: ProviderV2.ID.make("custom"),
+    api: {
+      id: "document-model",
+      url: "https://example.com/v1",
+      npm: "@ai-sdk/openai-compatible",
+    },
+    name: "Document Model",
+    capabilities: {
+      temperature: true,
+      reasoning: false,
+      attachment: true,
+      toolcall: true,
+      input: { text: true, audio: false, image: false, video: false, pdf: false },
+      output: { text: true, audio: false, image: false, video: false, pdf: false },
+      interleaved: false,
+    },
+    cost: {
+      input: 0,
+      output: 0,
+      cache: { read: 0, write: 0 },
+    },
+    limit: {
+      context: 128_000,
+      output: 8_192,
+    },
+    status: "active",
+    options: {},
+    headers: {},
+    release_date: "2026-01-01",
+  } satisfies Parameters<typeof ProviderTransform.message>[1]
+
+  test.each([
+    ["application/msword", "document.doc"],
+    ["application/vnd.ms-excel", "spreadsheet.xls"],
+    ["application/vnd.ms-powerpoint", "slides.ppt"],
+    ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "document.docx"],
+    ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "spreadsheet.xlsx"],
+    ["application/vnd.openxmlformats-officedocument.presentationml.presentation", "slides.pptx"],
+    ["application/vnd.oasis.opendocument.text", "document.odt"],
+    ["application/vnd.oasis.opendocument.spreadsheet", "spreadsheet.ods"],
+    ["application/vnd.oasis.opendocument.presentation", "slides.odp"],
+  ])("treats %s as pdf input", (mediaType, filename) => {
+    const message = {
+      role: "user" as const,
+      content: [{ type: "file" as const, data: new Uint8Array([0, 1, 2]), mediaType, filename }],
+    }
+
+    expect(ProviderTransform.message([message], model, {})[0].content).toEqual([
+      {
+        type: "text",
+        text: `ERROR: Cannot read "${filename}" (this model does not support pdf input). Inform the user.`,
+      },
+    ])
+
+    expect(
+      ProviderTransform.message(
+        [message],
+        {
+          ...model,
+          capabilities: {
+            ...model.capabilities,
+            input: { ...model.capabilities.input, pdf: true },
+          },
+        },
+        {},
+      )[0].content,
+    ).toEqual(message.content)
+  })
+})
+
 describe("ProviderTransform.message - empty image handling", () => {
   const mockModel = {
     id: "anthropic/claude-3-5-sonnet",
