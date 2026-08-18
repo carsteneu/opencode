@@ -383,3 +383,213 @@ schwächen.
 Damit sind die zusätzlichen Punkte technisch, durch Tests und in diesem Plan dokumentiert abgeschlossen. Ein
 neuer gepatchter Release oder GitHub-Prerelease ist davon getrennte Release-Arbeit und wurde in dieser Runde
 nicht ungefragt ausgeführt.
+
+## Nachtrag: Footer-Partial-Rendering und OpenTUI 0.5.3 nach `.113` (2026-08-17)
+
+`1.18.18-patched.113` wurde korrekt aus dem damaligen sauberen `working`-Commit `639d705bd86e` gebaut. Der
+Release verwendete jedoch weiterhin den gepatchten OpenTUI-Stand 0.5.1 (`568db413e7bc`) und nicht 0.5.3. Die
+starke Last war kein Mergeverlust: Der neue Tokenraten-Text wurde im großen Session-Footer jede Sekunde über
+einen normalen Root-Render aktualisiert, selbst wenn der Wert dauerhaft `0` blieb. Die Kosten wuchsen dadurch
+mit dem Session-Renderbaum.
+
+### Korrigierter OpenTUI- und Footer-Vertrag
+
+- [x] Als OpenTUI-Basis dient ausschließlich der bereits portierte und vollständig geprüfte 0.5.3-Stand
+      `2cd44364513f59a7a5937ef257042ddb0fca4fb7`. Er vereinigt den bisherigen Patchstand mit Upstream 0.5.3;
+      spätere unfertige Optimierungswellen sind ausdrücklich nicht enthalten.
+- [x] Der Overlay-Guard pinnt Commit, Upstream-Tag und beide Mergebasen sowie Core-, Solid- und
+      Native-Pakethashes. Ein frischer Frozen-Lockfile-Install löst auch den aktiven Spinner-Peerpfad auf
+      OpenTUI 0.5.3 auf.
+- [x] Die Anzeige lautet bewusst nur `out ~N tk/s`. Laufende Provider-Usage existiert nicht; deshalb wird der
+      Output grob aus kumulierten Text-Deltas mit ungefähr vier Zeichen pro Token geschätzt. Session,
+      Assistant-Message und Deltafeld werden strikt gefiltert.
+- [x] Tokenrate, Pfad/Branch, Welcome-, Permission-, LSP- und MCP-Werte aktualisieren ihren festen
+      `TextRenderable` direkt. Dynamische JSX-Textknoten werden vermieden, weil sie den Root-Renderer
+      invalidieren. Feste Breiten halten Yoga sauber.
+- [x] Transparente Footer-Zellen verwenden NBSP für sichtbare Leerstellen und Padding. Normale Spaces löschen
+      beim retained Partial-Render keine alten Glyphen zuverlässig; NBSP verhindert Artefakte bei Übergängen
+      wie `100 -> 0` ohne einen deckenden Hintergrund zu erzwingen.
+- [x] Der Tokenzähler besitzt keinen permanenten 1-Hz-Timer mehr. Nach Aktivität laufen nur One-Shot-Updates
+      bis zum Drei-Sekunden-Decay; anschließend wird einmal `0` gerendert und der Footer bleibt vollständig
+      inaktiv.
+- [x] Seltene Strukturänderungen wie Connect/Disconnect oder das Ein-/Ausblenden optionaler Felder dürfen
+      weiterhin sicher auf einen normalen Full-Render zurückfallen. Laufende Inhalts- und Farbänderungen
+      bleiben Partial-Renderings.
+
+### Large-Session-A/B
+
+Die Systemmessung verwendete dieselbe importierte große Session mit 241 Messages, 1.767 Parts und 6,15 MB
+Export, ein 200x50-Terminal, `--pure`, feste CPU-Affinität sowie je 20 Sekunden Warmup und ungefähr 30,5
+Sekunden Sampling. Die Reihenfolge war A-B-B-A, um Reihenfolge- und Hostlasteffekte zu begrenzen. Der Host war
+weiterhin stark ausgelastet; die Werte sind deshalb als vorsichtiger Produktvergleich und nicht als
+Mikrobenchmark zu lesen.
+
+| Build                            | CPU eines Kerns, Lauf 1 |  Lauf 2 |  Mittel | Kontextwechsel pro 30 s |
+| -------------------------------- | ----------------------: | ------: | ------: | ----------------------: |
+| `.113`, SHA `a29110a7...`        |                 7,343 % | 6,755 % | 7,049 % |                     631 |
+| Korrektur-A/B, SHA `446ed312...` |                 1,998 % | 2,318 % | 2,158 % |                     193 |
+
+Damit benötigt der korrigierte Client in diesem Large-Session-Idle-Szenario im Mittel **69,4 % weniger CPU**
+beziehungsweise **3,27-mal weniger CPU**; die Kontextwechsel sinken ebenfalls um 69,4 %. Die Terminalwrites
+waren in beiden Varianten nahezu null, daher belegt der separate Rendergate den kausalen Pfad: In einem Baum
+mit mehr als 500 Renderables erzeugen Aktivwert und Decay jeweils exakt einen nativen 16x1-Partial-Frame und
+keinen Full-/Root-Frame; während der folgenden fünf Sekunden entstehen weder Renderrequests noch Frames.
+
+### Prüf- und Auslieferungsstatus
+
+- Footer-, Tokenraten- und Spinner-Regressionssuiten: 22/22 grün; der Footer-Test enthält den großen
+  Renderbaum, transparentes Long-to-short-Clearing, Dialog-Fallback und fünf Sekunden echten Idle.
+- Typechecks in Core, TUI und OpenCode sowie Overlay-Check, Prettier und `git diff --check` sind grün.
+- OpenTUI-Partial-Renderer-Quelltests: 92 grün, 1 bestehender Skip. Die breite TUI-Suite erreichte 353 grüne,
+  1 übersprungenen Test; ein durch gemeinsam benutzten `/tmp`-State gestörter Test war isoliert 3/3 grün.
+- Wegen der bereits vorhandenen Zwischenversionen `.115` bis `.119` trägt der finale lokale Testbuild die
+  Version `1.18.18-patched.120`. Er hat SHA-256
+  `d9215b6dee9c5c810a8df497824812c4f0588e390d6f0c8685deb5f37703a6cf` und wurde atomar als
+  `~/.opencode/bin/opencode` installiert. `.113` bleibt unter
+  `~/.opencode/bin/opencode-1.18.18-patched.113.bak` als hashverifiziertes Rollback erhalten. Laufende Prozesse
+  behalten ihre alte Inode; neu gestartete Prozesse verwenden `.120`. Ein Tag, Release oder GitHub-Prerelease
+  wurde nicht erstellt. Der vorangehende interne A/B-Messbuild enthielt denselben Produktcode; sein
+  abweichender Hash entstand vor allem durch die eingebettete Zwischenversionskennung.
+- Die wiederverwendbaren Erkenntnisse zu OpenTUI-Provenienz, Token-Datenquelle, transparentem
+  Partial-Rendering, activity-scoped Timern und dem Versionssprung sind zusätzlich als Yesmem-Learnings
+  `#85430` bis `#85433` sowie im aktuellen Deployment-Eintrag `#85435` gespeichert; `#85435` ersetzt den
+  vor der lokalen Installation angelegten Zwischenstand `#85434`.
+
+## Nachtrag: aktive Yesloop-Skalierung und Worker-Coalescing nach `.120` (2026-08-18)
+
+Vier gleichzeitig laufende `.120`-Yesloops wurden ohne Attach, Signal, Request oder Neustart ausschließlich
+über ihre bestehenden Prozessbäume gemessen. Alle liefen im verifizierten `balanced`-Profil. Drei Loops waren
+aktiv, ein vierter wartete in einem offenen Providerstream. Über 75 Sekunden verbrauchten die vier Bäume im
+Mittel 5,60 Kerne; die drei aktiven Loops davon 5,54 Kerne. Client und Server beanspruchten gemeinsam 3,69
+Kerne, AI-Worker 1,11 Kerne und absichtlich gestartete Build-/Testprozesse 0,81 Kerne. Der wartende vierte
+Loop lag nur bei 0,066 Kernen. Die Last war damit arbeitskorreliert und nicht der bereits behobene permanente
+Footer-Idle-Render, unter schnellen Streams aber dennoch unnötig hoch.
+
+Tmux war nicht beteiligt: Sämtliche gefundenen tmux-Sockets waren verwaist und es lief kein tmux-Server. Die
+OpenCode-TUIs liefen unter Yesmem-/Terminal-Relays; die CPU-Zeit entstand direkt in Bun-Hauptthreads sowie
+JIT-/HeapHelper-Threads von Client und Server. Die PTY-Datenrate war klein und physische Client-I/O blieb null.
+
+Der konkrete Rückfall lag in `packages/opencode/src/session/llm/ai-process-worker.ts`: Commit `82dbf2eec7`
+hatte das zuvor bewährte Delta-Fenster von 200 auf 50 ms reduziert. Damit waren während schneller Streams bis
+zu 20 statt 5 Worker-IPC-/ACK-/Event-Wakeups pro Sekunde möglich, obwohl die nachfolgende TUI-SDK-Pipeline
+ohnehin nur im 100-ms-Takt sichtbar aktualisiert. Das erste Delta war bereits unabhängig vom Timer sofort;
+auch Tool-, Fehler- und andere Kontrollereignisse erzwingen weiterhin einen sofortigen Flush.
+
+### Korrektur und Gates
+
+- [x] `deltaFlushMs` ist wieder 200 ms. Inhalt, Reihenfolge, ACK-Backpressure, sofortiges erstes Delta und
+      sofortige Kontrollereignisse bleiben unverändert; nur nachfolgende gleichartige Streaming-Deltas werden
+      wieder mit höchstens 5 Hz gebündelt.
+- [x] Dasselbe Fenster gilt nun auch für benachbarte `tool-input-delta`-Fragmente derselben Call-ID. Der
+      AI-SDK-Rohtext wird dabei korrekt über `event.delta` statt `event.text` zusammengesetzt. Das erste
+      Fragment bleibt sofort sichtbar, Typ-, ID- und Kontrollgrenzen flushen weiterhin strikt geordnet, und
+      eine 64-KiB-UTF-8-High-Water-Schwelle begrenzt die Akkumulation je ACK-Frame. Ein einzelnes
+      Providerfragment bleibt ungeteilt; ein gebündelter Frame kann die Schwelle deshalb höchstens um dieses
+      eine Fragment überschreiten.
+- [x] Der Coalescing-Test normalisiert seine zulässige Framezahl auf die tatsächlich beobachtete
+      Providerdauer. Mit 50 ms scheitert der scharfe Gate reproduzierbar mit 21 Frames bei höchstens 10; mit
+      200 ms ist er grün.
+- [x] Der EOF-/ACK-Test verwendet explizite Provider-Gates und beweist weiterhin die Reihenfolge
+      `A bestätigt -> B unbestätigt -> C dahinter gepuffert -> stdin geschlossen`, ohne sich auf den früheren
+      50-ms-Takt zu verlassen.
+- [x] Die vollständige Worker-Datei ist 25/25 grün; zusammen mit der vollständigen Worker-Pool-Suite sind
+      60/60 Tests und 424 Assertions grün. Ein
+      erster Lauf traf unter den vier Volllast-Loops bei 5,055 Sekunden das bestehende 5-Sekunden-Harnesslimit;
+      derselbe Fall und danach die gesamte Suite liefen mit 15-Sekunden-Testbudget vollständig grün.
+- [x] OpenCode-Typecheck, Prettier, Overlay-Guard für den gepatchten OpenTUI-0.5.3-Stand und
+      `git diff --check` sind grün. Ein unabhängiger Read-only-Review fand keinen Semantik- oder Race-Blocker.
+
+### Weitere Regressionsprüfung
+
+Der anschließende systematische Cadence-/Render-/Event-Audit fand zwei weitere echte Root-Render-Rückfälle
+und einen zweiten Worker-Hotpath:
+
+- Die neuen Model-Wait- und Agent-Laufzeitzähler hatten zwar `usePartialRender` am umgebenden
+  `TextRenderable`, aktualisierten aber dynamische Solid-Textkinder. Deren `RootTextNodeRenderable` ruft in
+  OpenTUI direkt `ctx.requestRender()` auf und umgeht damit die Partial-Berechtigung des Parents. Beide
+  Laufzeiten verwenden nun die gemeinsame feste `PartialText`-Zelle, die `TextRenderable.content` direkt
+  setzt. Der Agent-Timer läuft zusätzlich nur bei ausgeklapptem Block.
+- Der echte 16.066-Byte-Write-Replay bestand aus 2.009 tokenähnlichen Tool-Argumentfragmenten. Der bisherige
+  Worker erzeugte daraus 2.017 Frames und serielle ACKs. Im zeitverteilten Replay reduzierte die sichere
+  Bündelung dies auf 63 Frames; Parent-CPU sank von 5,756 auf 1,184 Sekunden, Wallclock von 12,26 auf 10,85
+  Sekunden. Inhalt, geparstes Toolobjekt und Kontrollreihenfolge blieben exakt.
+- Ein separater 160-KiB-Emoji-Gate beweist UTF-8-korrekte Rekonstruktion und im geprüften 512-Byte-Fragmentfall
+  maximal 64 KiB je gebündeltem Frame. Ein 16-KiB-/2.009-Fragment-Gate beweist sofortiges erstes Fragment,
+  echte Parent-Toolausführung und
+  `tool-input-start -> deltas -> tool-input-end -> tool-call -> tool-result`.
+- Der gemeinsame `PartialText`-Renderer ist in einem Baum mit mehr als 520 Renderables gegated: StyledText
+  lang -> kurz -> leer erzeugt jeweils genau einen nativen Partial-Frame, keinen Full-/Root-Frame und keine
+  alten transparenten Glyphen; anschließend entstehen fünf Sekunden lang keinerlei Renderrequests. Der
+  Agent-Zähler stoppt eingeklappt vollständig und startet ausgeklappt wieder ausschließlich partiell.
+
+Der Prompt-Spinner bleibt dagegen **bewusst bei 40 ms**. Frühere A/B-Messungen zeigten keinen Nutzen einer
+Frequenzreduktion; die gespeicherten Entscheidungen `#83990` und `#84601` verlangen deshalb ausdrücklich,
+die Arbeit pro Tick statt die sichtbare Animationsgeschwindigkeit zu optimieren. `.105` stellte genau diesen
+Spinner absichtlich von 100 auf 40 ms zurück. Der Audit hatte diesen historischen Vertrag zunächst übersehen;
+der vorübergehende lokale Rückbau wurde vor dem finalen Teststand vollständig entfernt.
+
+Tool-Input-Fortschrittsanzeigen erzeugen nur bei großen `write`-/`edit`-/`apply_patch`-Argumenten bis zu zwei
+dauerhafte Updates pro Sekunde. Über die vier gesamten Yesloop-Historien waren es 158 von 6.309 Part-Updates
+(2,5 Prozent bzw. 3,8 pro aggregierter Loop-Stunde); dies ist ein begrenzter späterer UI-Folgescope, nicht die
+Ursache der anhaltenden Last. Gleiches gilt für Snapshot-Diff-Invalidierung an Step-Grenzen und die nur bei
+strukturellen Agent-/Toolübergängen laufende Agentenzeilen-Ableitung.
+
+Zum Abschluss der read-only Ursachenanalyse blieb die installierte Datei zunächst
+`1.18.18-patched.120` mit SHA-256 `d9215b6d...`; alle beobachteten TUIs behielten ihre ursprüngliche Startzeit
+und `.120`-Inode. Bis zur anschließend dokumentierten `.122`-Installation erfolgte ausdrücklich kein
+Deployment oder Neustart. Eine End-to-end-CPU-A/B-Messung des Fixes benötigt einen separat gestarteten
+Kandidaten bei identischem Replay; aus dem laufenden Altprozess darf keine Verbesserungszahl abgeleitet werden.
+
+### Lokale Installation `.122`
+
+Der erste lokale Dirty-Tree-Kandidat hatte SHA-256
+`a07a9271a2b21bfadbfe99c35c6e81bf97e97aba8565be706ec5a62169966c2e`. Der anschließende breite
+Release-Gate fand zusätzlich zwei echte Lifecycle-Randfehler und zwei veraltete Testfixtures: Der
+non-interaktive JSON-Run konnte denselben Fehler aus Sessionevent und Promptantwort doppelt ausgeben; ACP
+konnte ein sehr frühes stdin-EOF zwischen zwei Listenerregistrierungen verpassen. Beide Produktpfade wurden
+behoben. Der PartUpdated-Test hält nun den absichtlichen No-Clone-Vertrag fest, und die Remote-Workspace-
+Fixture beantwortet den V2-Probe korrekt mit 404, bevor der Legacy-Fallback greift.
+
+Nach diesen Korrekturen wurde derselbe noch unveröffentlichte Versionsname erneut mit
+`OPENCODE_VERSION=1.18.18-patched.122 bun run build:patched --single --skip-install` gebaut. Das finale lokale
+Artefakt liegt unter `packages/opencode/dist/opencode-linux-x64/bin/opencode`, meldet
+`1.18.18-patched.122`, ist 192.891.008 Byte groß und hat SHA-256
+`79a99c3c924e6ca5b4056366303c151e250cc9edfced04da631a3d6c133db7fc`. Der zuvor kurz erzeugte
+`.121`-Zwischenbuild und der erste `.122`-Kandidat sind damit ersetzt; zu diesem Dokumentationsstand besitzt
+`.122` noch keinen Tag oder GitHub-Release.
+
+Zusätzlich zu den Worker-Gates sind die fokussierte TUI-Matrix mit 51/51 Tests und 170 Assertions sowie die
+vollständige serielle TUI-Suite mit 356 grünen Tests, einem bestehenden Skip, 1.024 Assertions und acht
+Snapshots grün. Die Paket-Vollsuiten bestanden in Core 1.188, LLM 308 mit 30 expliziten Provider-Skips,
+Schema 16, Protocol 2, Client 16, SDK-next 5, Session-UI 84, SDK-JS 1 sowie App 741 Unit- und 41
+Browser-Tests. Sämtliche Paket-Typechecks, Migration-/Generator-Drift, Overlay-Guard, Prettier und
+`git diff --check` sind grün.
+
+Der serielle OpenCode-Volltest bestand 3.584 Tests und legte unter hoher Hostlast sieben Befunde offen. Der
+Umask-Fall war mit `umask 022` grün; zwei 25-ms-TERM-Kill-Fixtures waren isoliert, gemeinsam und CPU-gepinnt
+insgesamt 41/41 grün. Die übrigen vier Befunde waren die oben korrigierten Produkt-/Fixturefälle und liefen
+danach in ihren vollständigen Dateien grün. Der Worker-Pool-Benchmark über 20 Turns verwendete im gepoolten
+Arm genau einen Prozess und eine Providerinitialisierung, reuse-te ihn 19-mal und beendete ihn beim Close.
+
+Das finale Artefakt wurde atomar als `~/.opencode/bin/opencode` installiert; Build und Installation sind
+bytegleich. `1.18.18-patched.120` bleibt unter
+`~/.opencode/bin/opencode-1.18.18-patched.120.bak` mit SHA-256
+`d9215b6dee9c5c810a8df497824812c4f0588e390d6f0c8685deb5f37703a6cf` als geprüftes Rollback erhalten. Die
+vier während der Analyse laufenden TUI-Wurzeln wurden weder signalisiert, attached, angefragt noch
+neugestartet und verwenden weiterhin ihre ursprüngliche `.120`-Inode; neue Prozesse lösen den installierten
+`.122`-Pfad auf.
+
+Die End-to-end-Gates B01 bis B03 des neuen Runbooks bleiben bewusst `INCOMPLETE`, weil die historischen
+Sampler-/Provider-/Fixture-Invocations nicht vollständig reproduzierbar archiviert sind. Dieser fehlende
+Harnessbeleg wird nicht als erfundenes `PASS` ausgegeben; die Freigabe stützt sich hier auf die nativen
+Rendergates, das frühere kontrollierte A-B-B-A und die vollständig dokumentierten Funktionssuiten.
+
+Die abschließende Yesmem-Notiz `#85477` ersetzt die Zwischenstände `#85475` und `#85462` und hält Worker-
+Coalescing, Messwerte, Gates, den absichtlich unveränderten 40-ms-Spinner sowie Installation und Rollback fest.
+Das wiederverwendbare OpenTUI-Muster für direkte `TextRenderable.content`-Updates, feste Breiten und
+NBSP-Clearing ist separat unter `#85476` dokumentiert.
+
+Die verbindliche, versionsunabhängige Prüfreihenfolge für künftige Kandidaten, lokale Installationen und
+Prereleases steht in `yesdocs/patched-release-verification.md`. Sie trennt stabile Funktionsgates von
+profilgleichen Performance-A/Bs und verlangt bei Dirty-Testbuilds ausdrücklich auch die Archivierung aller
+ungetrackten Quellen. Diese Entscheidung ist als Yesmem-Learning `#85483` hinterlegt.
