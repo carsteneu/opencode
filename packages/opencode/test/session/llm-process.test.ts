@@ -63,14 +63,20 @@ function input(server: Bun.Server<unknown>, tools: AIProcessInput["tools"] = {})
   }
 }
 
-function serve(lines: unknown[], delay = 0, inspect?: (request: Request) => void | Promise<void>) {
+function serve(
+  lines: unknown[],
+  delay = 0,
+  inspect?: (request: Request) => void | Promise<void>,
+  observe?: (index: number) => void,
+) {
   const server = Bun.serve({
     port: 0,
     async fetch(request) {
       await inspect?.(request)
       const body = new ReadableStream({
         async start(controller) {
-          for (const value of lines) {
+          for (const [index, value] of lines.entries()) {
+            observe?.(index)
             controller.enqueue(`data: ${value === "[DONE]" ? value : JSON.stringify(value)}\n\n`)
             if (delay) await Bun.sleep(delay)
           }
@@ -239,9 +245,16 @@ describe("LLM AI process", () => {
 
   test("streams through a child and coalesces text without changing content", async () => {
     const text = Array.from({ length: 80 }, (_, index) => String(index % 10))
+    let firstDeltaAt = 0
+    let lastDeltaAt = 0
     const server = serve(
       [chunk({ role: "assistant" }), ...text.map((value) => chunk({ content: value })), chunk({}, "stop"), "[DONE]"],
       4,
+      undefined,
+      (index) => {
+        if (index === 1) firstDeltaAt = performance.now()
+        if (index === text.length) lastDeltaAt = performance.now()
+      },
     )
     const events = await Effect.runPromise(
       LLMAIProcess.stream(input(server), {}, [{ role: "user", content: "hello" }], new AbortController().signal).pipe(
@@ -250,7 +263,9 @@ describe("LLM AI process", () => {
     )
     const deltas = events.filter((event) => event.type === "text-delta")
     expect(deltas.map((event) => event.text).join("")).toBe(text.join(""))
-    expect(deltas.length).toBeLessThan(20)
+    // Producer sleeps stretch under host load, so derive the envelope bound
+    // from the observed stream duration instead of assuming 80 * 4 ms.
+    expect(deltas.length).toBeLessThanOrEqual(Math.ceil((lastDeltaAt - firstDeltaAt) / 200) + 2)
     expect(events.some((event) => event.type === "finish")).toBeTrue()
   }, 10_000)
 
@@ -312,6 +327,210 @@ describe("LLM AI process", () => {
       clearTimeout(watchdog)
     }
   }, 10_000)
+
+  test("coalesces thousands of tool input fragments without changing parsed execution", async () => {
+    const value = "x".repeat(16 * 1024 - Buffer.byteLength('{"value":""}'))
+    const argument = JSON.stringify({ value })
+    const fragments = Array.from({ length: 2_009 }, (_, index) =>
+      argument.slice(
+        Math.floor((index * argument.length) / 2_009),
+        Math.floor(((index + 1) * argument.length) / 2_009),
+      ),
+    )
+    expect(Buffer.byteLength(argument)).toBe(16 * 1024)
+    expect(fragments.every((fragment) => fragment.length > 0)).toBeTrue()
+
+    const release = Promise.withResolvers<void>()
+    const firstObserved = Promise.withResolvers<void>()
+    const encoder = new TextEncoder()
+    const server = Bun.serve({
+      port: 0,
+      fetch() {
+        return new Response(
+          new ReadableStream({
+            async start(controller) {
+              const write = (value: unknown) =>
+                controller.enqueue(encoder.encode(`data: ${value === "[DONE]" ? value : JSON.stringify(value)}\n\n`))
+              write(chunk({ role: "assistant" }))
+              write(
+                chunk({
+                  tool_calls: [
+                    { index: 0, id: "call-fast", type: "function", function: { name: "capture", arguments: "" } },
+                  ],
+                }),
+              )
+              write(chunk({ tool_calls: [{ index: 0, function: { arguments: fragments[0] } }] }))
+              await release.promise
+              for (const fragment of fragments.slice(1)) {
+                write(chunk({ tool_calls: [{ index: 0, function: { arguments: fragment } }] }))
+              }
+              write(chunk({}, "tool_calls"))
+              write("[DONE]")
+              controller.close()
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        )
+      },
+    })
+    servers.push(server)
+
+    let executed: { value: string } | undefined
+    const capture = tool<{ value: string }, number>({
+      inputSchema: jsonSchema({
+        type: "object",
+        properties: { value: { type: "string" } },
+        required: ["value"],
+        additionalProperties: false,
+      }),
+      execute: async (input) => {
+        executed = input
+        return input.value.length
+      },
+    })
+    const processTools = LLMAIProcess.prepareTools({ capture })
+    if (!processTools) throw new Error("Expected tool to be safe for the AI process")
+    const abort = new AbortController()
+    const watchdog = setTimeout(() => abort.abort(), 12_000)
+    let firstDeltaAt = 0
+    let inputEndAt = 0
+    let output: AISDKEvent[] = []
+    let visible = false
+    try {
+      const run = Effect.runPromise(
+        LLMAIProcess.stream(
+          input(server, processTools),
+          { capture },
+          [{ role: "user", content: "hello" }],
+          abort.signal,
+        ).pipe(
+          Stream.tap((event) =>
+            Effect.sync(() => {
+              if (event.type === "tool-input-delta" && event.id === "call-fast" && firstDeltaAt === 0) {
+                firstDeltaAt = performance.now()
+                firstObserved.resolve()
+              }
+              if (event.type === "tool-input-end" && event.id === "call-fast") inputEndAt = performance.now()
+            }),
+          ),
+          Stream.runCollect,
+        ),
+      )
+      visible = await Promise.race([firstObserved.promise.then(() => true), Bun.sleep(8_000).then(() => false)])
+      release.resolve()
+      output = [...(await run)]
+    } finally {
+      release.resolve()
+      clearTimeout(watchdog)
+    }
+
+    const deltas = output.flatMap((event) => {
+      if (event.type !== "tool-input-delta" || event.id !== "call-fast") return []
+      if (!("delta" in event) || typeof event.delta !== "string") return []
+      return [event.delta]
+    })
+    const inputStart = output.findIndex((event) => event.type === "tool-input-start" && event.id === "call-fast")
+    const firstDelta = output.findIndex((event) => event.type === "tool-input-delta" && event.id === "call-fast")
+    const lastDelta = output.findLastIndex((event) => event.type === "tool-input-delta" && event.id === "call-fast")
+    const inputEnd = output.findIndex((event) => event.type === "tool-input-end" && event.id === "call-fast")
+    const toolCall = output.findIndex((event) => event.type === "tool-call" && event.toolCallId === "call-fast")
+    const toolResult = output.findIndex((event) => event.type === "tool-result" && event.toolCallId === "call-fast")
+
+    expect(visible).toBeTrue()
+    expect(deltas[0]).toBe(fragments[0])
+    expect(deltas.join("")).toBe(argument)
+    expect(deltas.length).toBeLessThanOrEqual(Math.ceil((inputEndAt - firstDeltaAt) / 200) + 2)
+    expect(deltas.length).toBeLessThan(20)
+    expect(executed).toEqual({ value })
+    expect(inputStart).toBeLessThan(firstDelta)
+    expect(firstDelta).toBeLessThanOrEqual(lastDelta)
+    expect(lastDelta).toBeLessThan(inputEnd)
+    expect(inputEnd).toBeLessThan(toolCall)
+    expect(toolCall).toBeLessThan(toolResult)
+  }, 15_000)
+
+  test("bounds fast Unicode tool input frames by UTF-8 bytes", async () => {
+    const unit = "🙂".repeat(128)
+    const prefix = '{"value":"'
+    const suffix = '"}'
+    const fragments = [prefix, ...Array.from({ length: 320 }, () => unit), suffix]
+    const argument = fragments.join("")
+    const value = "🙂".repeat(40 * 1024)
+    expect(argument).toBe(JSON.stringify({ value }))
+    expect(Buffer.byteLength(value)).toBe(160 * 1024)
+
+    const server = serve([
+      chunk({ role: "assistant" }),
+      chunk({
+        tool_calls: [{ index: 0, id: "call-unicode", type: "function", function: { name: "capture", arguments: "" } }],
+      }),
+      ...fragments.map((fragment) => chunk({ tool_calls: [{ index: 0, function: { arguments: fragment } }] })),
+      chunk({}, "tool_calls"),
+      "[DONE]",
+    ])
+    let executed: { value: string } | undefined
+    const capture = tool<{ value: string }, number>({
+      inputSchema: jsonSchema({
+        type: "object",
+        properties: { value: { type: "string" } },
+        required: ["value"],
+        additionalProperties: false,
+      }),
+      execute: async (input) => {
+        executed = input
+        return Buffer.byteLength(input.value)
+      },
+    })
+    const processTools = LLMAIProcess.prepareTools({ capture })
+    if (!processTools) throw new Error("Expected tool to be safe for the AI process")
+    const abort = new AbortController()
+    const watchdog = setTimeout(() => abort.abort(), 12_000)
+    let firstDeltaAt = 0
+    let inputEndAt = 0
+    let output: AISDKEvent[] = []
+    try {
+      output = [
+        ...(await Effect.runPromise(
+          LLMAIProcess.stream(
+            input(server, processTools),
+            { capture },
+            [{ role: "user", content: "hello" }],
+            abort.signal,
+          ).pipe(
+            Stream.tap((event) =>
+              Effect.sync(() => {
+                if (event.type === "tool-input-delta" && event.id === "call-unicode" && firstDeltaAt === 0) {
+                  firstDeltaAt = performance.now()
+                }
+                if (event.type === "tool-input-end" && event.id === "call-unicode") inputEndAt = performance.now()
+              }),
+            ),
+            Stream.runCollect,
+          ),
+        )),
+      ]
+    } finally {
+      clearTimeout(watchdog)
+    }
+
+    const deltas = output.flatMap((event) => {
+      if (event.type !== "tool-input-delta" || event.id !== "call-unicode") return []
+      if (!("delta" in event) || typeof event.delta !== "string") return []
+      return [event.delta]
+    })
+    const bytes = deltas.map((delta) => Buffer.byteLength(delta, "utf8"))
+    const lastDelta = output.findLastIndex((event) => event.type === "tool-input-delta" && event.id === "call-unicode")
+    const inputEnd = output.findIndex((event) => event.type === "tool-input-end" && event.id === "call-unicode")
+
+    expect(deltas.join("")).toBe(argument)
+    expect(bytes.reduce((total, size) => total + size, 0)).toBe(Buffer.byteLength(argument))
+    expect(Math.max(...bytes)).toBeLessThanOrEqual(64 * 1024)
+    expect(deltas.length).toBeGreaterThanOrEqual(4)
+    expect(deltas.length).toBeLessThanOrEqual(Math.ceil((inputEndAt - firstDeltaAt) / 200) + 4)
+    expect(executed).toEqual({ value })
+    expect(lastDelta).toBeGreaterThanOrEqual(0)
+    expect(inputEnd).toBe(lastDelta + 1)
+  }, 15_000)
 
   test("executes tools in the parent process", async () => {
     let requestBody: { tools?: Array<{ function?: { strict?: boolean } }> } = {}
@@ -950,17 +1169,35 @@ describe("LLM AI process", () => {
   }, 10_000)
 
   test("exits when stdin ends with an event acknowledgement and a later delta queued", async () => {
-    const server = serve(
-      [
-        chunk({ role: "assistant" }),
-        chunk({ content: "A" }),
-        chunk({ content: "B" }),
-        chunk({ content: "C" }),
-        chunk({}, "stop"),
-        "[DONE]",
-      ],
-      150,
-    )
+    const sendB = Promise.withResolvers<void>()
+    const sendC = Promise.withResolvers<void>()
+    const providerDone = Promise.withResolvers<void>()
+    const encoder = new TextEncoder()
+    const server = Bun.serve({
+      port: 0,
+      fetch() {
+        return new Response(
+          new ReadableStream({
+            async start(controller) {
+              const write = (value: unknown) =>
+                controller.enqueue(encoder.encode(`data: ${value === "[DONE]" ? value : JSON.stringify(value)}\n\n`))
+              write(chunk({ role: "assistant" }))
+              write(chunk({ content: "A" }))
+              await sendB.promise
+              write(chunk({ content: "B" }))
+              await sendC.promise
+              write(chunk({ content: "C" }))
+              write(chunk({}, "stop"))
+              write("[DONE]")
+              controller.close()
+              providerDone.resolve()
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        )
+      },
+    })
+    servers.push(server)
     const child = Bun.spawn([process.execPath, runtimeWorker], {
       stdin: "pipe",
       stdout: "pipe",
@@ -986,8 +1223,13 @@ describe("LLM AI process", () => {
           events?: Array<{ type?: string; text?: string }>
         }
         if (message.type !== "events" || message.id === undefined || !message.events) continue
-        if (message.events.some((event) => event.type === "text-delta" && event.text === "B")) break
+        const deltas = message.events.filter((event) => event.type === "text-delta").map((event) => event.text)
+        if (deltas.includes("B")) {
+          sendC.resolve()
+          break
+        }
         await stdin.write({ type: "events-ack", run: message.run, id: message.id })
+        if (deltas.includes("A")) sendB.resolve()
       }
 
       rescue = setTimeout(() => {
@@ -995,11 +1237,14 @@ describe("LLM AI process", () => {
         rescued = true
         child.kill("SIGKILL")
       }, 3_000)
-      // C's coalescing timer queues another event behind the deliberately unacknowledged B frame.
+      await providerDone.promise
+      // C is queued behind the deliberately unacknowledged B frame.
       await Bun.sleep(350)
       await stdin.end()
       await child.exited
     } finally {
+      sendB.resolve()
+      sendC.resolve()
       if (rescue) clearTimeout(rescue)
       await stdout.cancel().catch(() => undefined)
       if (running(child.pid)) child.kill("SIGKILL")

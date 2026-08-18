@@ -8,7 +8,12 @@ import { ProviderError } from "@/provider/error"
 
 // @ts-ignore AI SDK uses this global flag to suppress provider warnings on stdout.
 globalThis.AI_SDK_LOG_WARNINGS = false
-const deltaFlushMs = 50
+// The downstream event and TUI pipelines are frequency-bound rather than
+// byte-bound. Keep streaming deltas at the proven 5 Hz cadence; the first
+// delta and every control event still flush immediately. Tool arguments also
+// use a byte high-water mark because each frame waits for an acknowledgement.
+const deltaFlushMs = 200
+const deltaFlushBytes = 64 * 1024
 
 type ToolRequest =
   | { action: "execute"; name: string; input: unknown; callID: string }
@@ -288,7 +293,9 @@ async function run(turn: Turn, input: AIProcessInput) {
       }
     },
   })
-  let pendingDelta: { event: unknown & { type: string; id?: string; text?: string } } | undefined
+  let pendingDelta:
+    | { event: unknown & { type: string; id?: string; text?: string; delta?: string }; bytes: number }
+    | undefined
   let currentDelta: { type: string; id?: string } | undefined
   let timer: Timer | undefined
   const flush = async () => {
@@ -305,7 +312,7 @@ async function run(turn: Turn, input: AIProcessInput) {
         await flush()
         throw event.error
       }
-      if (event.type !== "text-delta" && event.type !== "reasoning-delta") {
+      if (event.type !== "text-delta" && event.type !== "reasoning-delta" && event.type !== "tool-input-delta") {
         await flush()
         currentDelta = undefined
         await writeEvents([event])
@@ -318,10 +325,23 @@ async function run(turn: Turn, input: AIProcessInput) {
         continue
       }
       if (pendingDelta) {
+        if (event.type === "tool-input-delta") {
+          pendingDelta.event = { ...event, delta: (pendingDelta.event.delta ?? "") + (event.delta ?? "") }
+          pendingDelta.bytes += Buffer.byteLength(event.delta ?? "", "utf8")
+          if (pendingDelta.bytes >= deltaFlushBytes) await flush()
+          continue
+        }
         pendingDelta.event = { ...event, text: (pendingDelta.event.text ?? "") + event.text }
         continue
       }
-      pendingDelta = { event }
+      pendingDelta = {
+        event,
+        bytes: event.type === "tool-input-delta" ? Buffer.byteLength(event.delta ?? "", "utf8") : 0,
+      }
+      if (pendingDelta.bytes >= deltaFlushBytes) {
+        await flush()
+        continue
+      }
       timer = setTimeout(() => {
         void flush().catch((error) => turn.abort.abort(error))
       }, deltaFlushMs)
