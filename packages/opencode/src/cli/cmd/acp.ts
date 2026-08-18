@@ -42,13 +42,25 @@ export const AcpCommand = effectCmd({
         })
       },
     })
+    const stdinClosed = Promise.withResolvers<void>()
     const output = new ReadableStream<Uint8Array>({
       start(controller) {
+        if (process.stdin.readableEnded) {
+          controller.close()
+          stdinClosed.resolve()
+          return
+        }
         process.stdin.on("data", (chunk: Buffer) => {
           controller.enqueue(new Uint8Array(chunk))
         })
-        process.stdin.on("end", () => controller.close())
-        process.stdin.on("error", (err) => controller.error(err))
+        process.stdin.once("end", () => {
+          controller.close()
+          stdinClosed.resolve()
+        })
+        process.stdin.once("error", (err) => {
+          controller.error(err)
+          stdinClosed.reject(err)
+        })
       },
     })
 
@@ -62,12 +74,6 @@ export const AcpCommand = effectCmd({
 
     yield* Effect.logInfo("setup connection")
     process.stdin.resume()
-    yield* Effect.promise(
-      () =>
-        new Promise<void>((resolve, reject) => {
-          process.stdin.on("end", () => resolve())
-          process.stdin.on("error", reject)
-        }),
-    )
+    yield* Effect.promise(() => stdinClosed.promise)
   }),
 })
