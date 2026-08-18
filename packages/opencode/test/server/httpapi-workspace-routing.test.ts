@@ -116,6 +116,7 @@ const eventStreamResponse = () =>
 const syncResponse = (request: HttpServerRequest.HttpServerRequest) => {
   const url = requestURL(request)
   if (url.pathname === "/base/global/event") return Effect.succeed(eventStreamResponse())
+  if (url.pathname === "/base/sync/history/v2") return Effect.succeed(HttpServerResponse.empty({ status: 404 }))
   if (url.pathname === "/base/sync/history") return HttpServerResponse.json([])
   return undefined
 }

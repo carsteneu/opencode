@@ -197,7 +197,7 @@ describe("step-finish token propagation via event", () => {
         expect(finish.tokens.cache.read).toBe(100)
         expect(finish.tokens.cache.write).toBe(50)
         expect(finish.cost).toBe(0.005)
-        expect(receivedPart).not.toBe(partInput)
+        expect(receivedPart).toBe(partInput)
 
         yield* session.remove(info.id)
       }),
