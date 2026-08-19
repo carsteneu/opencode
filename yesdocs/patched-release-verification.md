@@ -529,6 +529,11 @@ Standard-Untersuchungsschwelle: Eine reproduzierbare Verschlechterung von mehr a
 Task-clock oder Context-Switches gegenüber der direkten Baseline stoppt die Freigabe bis zur Erklärung. Dies
 ist eine Triage-Schwelle, kein plattformübergreifendes Leistungsversprechen.
 
+Werkzeuge für die B-Protokolle liegen im Repo: `script/perf/bench_proc.py` (B01/B03-Einzelinstanz mit
+Phasen-Segmenten und DB-Korrelation), `script/perf/live_process_sampler.py` + `script/perf/analyze_live_samples.py`
+(Multi-Root/Parallelinstanzen). Nutzung und Regeln: `script/perf/README.md`. Rohdaten bleiben in `/tmp`,
+nur Zusammenfassungen sind zu dokumentieren.
+
 ### B03 – große Session und Retained Rendering
 
 Referenzfixture: 241 Messages, 1.767 Parts, 6,15-MB-Export, 200x50-Terminal, 20 s Warmup und ungefähr 30,5 s

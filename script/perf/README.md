@@ -1,0 +1,84 @@
+# Perf /proc Tools
+
+Python-Werkzeuge für Live-Messungen an laufenden OpenCode-Instanzen. Alle drei
+arbeiten rein passiv über `/proc` (keine Signale, kein ptrace, kein perf-attach,
+kein Terminal-Input) und erfassen das Power-Profil (`powerprofilesctl`) vor, in
+jedem Bin und nach der Messung — niemals absolute CPU-Prozente über Profile hinweg vergleichen.
+
+Protokoll-Einordnung: diese Tools implementieren die Messverfahren für B01
+(echtes Idle) und B03 (Live-Session) aus
+[`yesdocs/patched-release-verification.md`](../../yesdocs/patched-release-verification.md).
+Für B02 (deterministisches Streaming) den TUI-Harness unter
+`packages/tui/test/perf/` verwenden (stream-fence/cold-start, im jeweiligen
+Worktree).
+
+## Werkzeuge
+
+### `bench_proc.py` — Einzel-Root-Benchmark mit Phasen & DB-Korrelation
+
+Der maßgebliche Benchmark für Idle-Messungen (B01) und aktive Phasen.
+
+```sh
+python3 script/perf/bench_proc.py --root <CLIENT_PID> --session <SESSION_ID> \
+  [--duration 60] [--interval 1.0] \
+  [--db ~/.local/share/opencode/opencode.db] \
+  [--log ~/.local/share/opencode/log/opencode.log]
+```
+
+- Klassifiziert Prozesse in Rollen: `client`, `server` (`__opencode_tui_server__`),
+  `worker` (`__opencode_ai_worker__`), `descendant:<comm>` (z. B. yesmem-MCP).
+- Identity-Guard über `starttime_ticks`: PID-Reuse kann eine Serie nicht verfälschen.
+- Bins mit Rollen-CPU %, RSS/PSS, Context-Switches, I/O-Deltas; Counter-Gaps werden
+  protokolliert, nicht ignoriert.
+- Phasen-Segmente: zerlegt das Fenster anhand Worker-Presence (`phase_key`
+  `no-worker` / `worker:<ids>`) — Mittel nur innerhalb homogener Phasen bilden.
+- Korreliert mit Session-DB (messages/parts im Fenster, read-only) und Log-Datei-Stats.
+- `summary.warnings` enthält strukturelle Hinweise (Tree geändert, Power nicht
+  stabil, Worker im angeblichen Idle, Abbruch durch Root-Tod). Warnungen ernst
+  nehmen — eine Messung mit `power_profile_stable: false` ist nicht B01-tauglich.
+- Ergebnis: `/tmp/opencode-proc-bench-<ts>/` mit `summary.json` (gleichzeitig auf
+  stdout), `snapshots.jsonl`, `bins.jsonl`, `power.jsonl`, `workload.json`, `metadata.json`.
+
+### `live_process_sampler.py` — Multi-Root-Sampler für Parallelinstanzen
+
+Für Messungen über **mehrere unabhängige OpenCode-Instanzen** hinweg (z. B.
+ruhige Referenzinstanz + aktive Testinstanz im selben Fenster, wie beim
+.126-Praxistest).
+
+```sh
+python3 script/perf/live_process_sampler.py <PID_A,PID_B,...> <DAUER_S> <OUTPUT_DIR>
+```
+
+- 1-s-Bins, pro Bin: kompletter Prozess-Snapshot aller Trees (CPU-Ticks, RSS/PSS,
+  Ctx, I/O, cmdline/exe/cwd), Host-CPU, Loadavg, Power-Profil.
+- Rollen: `client`, `server`, `ai`, `yesmem`, `tool`.
+- Binary-SHA256 aller Roots (nur wenn identisch) in `meta.json` — Provenienz der
+  Messung ist damit Teil der Rohdaten.
+- 2 s Vorlauf nach dem Hashing, damit der erste Bin nicht durch den Sampler
+  selbst kontaminiert ist.
+
+### `analyze_live_samples.py` — Auswertung der Sampler-Daten
+
+```sh
+python3 script/perf/analyze_live_samples.py <OUTPUT_DIR>
+```
+
+Liest `meta.json` (inkl. `clk_tck` — nichts hartkodiert) und `samples.jsonl`,
+gibt pro Tree aus: Rollen-CPU %, Ctx/s, Read/Write B/s, RSS/PSS avg/max/end,
+Bin-Min/Median/Max und Signatur-Segmente (Phasen konstanter Tree-Komposition).
+`signature_changed`-Bins markieren Prozess-Spawns — aktive Phasen abgrenzen.
+
+## Regeln
+
+- **Rohdaten nach `/tmp`** (flüchtig, bewusst): `samples.jsonl` & Co. sind
+  Wegwerf-Daten. Persistente Zusammenfassungen, Tabellen, Entscheidungen gehören
+  in `yesdocs/` oder Learnings — niemals Binaries, Branches oder Reports in `/tmp`
+  erzeugen (Pin #53).
+- **Attribution vor Glauben**: Fremde Zusammenfassungen (auch von Agenten) anhand
+  der Rohdaten nachrechnen — Instanz-Zuordnung über `meta.json.roots`, nicht über
+  Annahmen (beim .126-Praxistest meldete eine Auswertung versehentlich nur eine
+  von zwei Instanzen als "die" Messung).
+- **Phasen nutzen**: Ganzzahlenfenster-Mittel sind über Worker-Phasen hinweg
+  unbrauchbar; `segments`/`phase_key` zuerst prüfen.
+- **Power-Profil** in jedem Bin prüfen; gemischte Profile disqualifizieren
+  absolute Vergleiche (B-Protokoll-Regel der Runbooks).
