@@ -4,15 +4,15 @@ import { randomUUID } from "node:crypto"
 import { cp, realpath, rename, rm } from "node:fs/promises"
 import path from "node:path"
 
-const expectedCommit = "2cd44364513f59a7a5937ef257042ddb0fca4fb7"
+const expectedCommit = "8816eebd9decda4af6c352b6c4caf7a28b12e21b"
 const expectedPatchBase = "568db413e7bc3a110981d2e54ddb7ebb8e906075"
 const expectedTag = "v0.5.3"
 const expectedTagCommit = "1500698af07951ea0c1c67c9ad737fc54382ee20"
 const expectedVersion = "0.5.3"
 const expectedHashes = {
-  core: "ea25ad97c266d36b994697e5b6a57a1dfce7b0543b2e118e52ad39c7a9e1cd78",
+  core: "01a408cb3278372a5eb7800226cae89ca357c1ca8f23daf6d1564b634377e553",
   solid: "ba9ffd6b55ea9f2785a01cc3b072bd3587116442607f5f19d20b383d75d16179",
-  native: "cfae310ac456004ef63788fdf2c715a95f330d0fdaab86f147dda5eeaeaab707",
+  native: "7d02a2b2af22567c5ed5f625e7791d4343f5d53cfb227aa93e59b0372dc24c97",
 }
 const usage = "Usage: bun run script/sync-opentui-overlay.ts --source=<opentui-root> [--check | --apply]"
 const args = process.argv.slice(2)
