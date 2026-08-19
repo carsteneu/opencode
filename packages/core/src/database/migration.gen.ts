@@ -42,5 +42,6 @@ export const migrations = (
     import("./migration/20260622202450_simplify_session_input"),
     import("./migration/20260815222004_message_diff"),
     import("./migration/20260817000652_session_list_indexes"),
+    import("./migration/20260817153515_normalize_assistant_content"),
   ])
 ).map((module) => module.default) satisfies DatabaseMigration.Migration[]

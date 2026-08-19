@@ -36,7 +36,7 @@ type CatalogEntry = {
   tool: MCP.McpTool
 }
 
-function groupByServer(mcpTools: Record<string, MCP.McpTool>, servers: readonly string[]): Map<string, CatalogEntry[]> {
+export function groupByServer(mcpTools: Record<string, MCP.McpTool>, servers: readonly string[]): Map<string, CatalogEntry[]> {
   const byLongest = [...servers].sort((a, b) => b.length - a.length)
   const groups = new Map<string, CatalogEntry[]>()
   for (const key of Object.keys(mcpTools).sort((a, b) => a.localeCompare(b))) {
@@ -50,7 +50,10 @@ function groupByServer(mcpTools: Record<string, MCP.McpTool>, servers: readonly 
       local,
       tool: mcpTools[key]!,
     }
-    groups.set(server, [...(groups.get(server) ?? []), entry])
+    // Mutate the group array in place; the previous spread-copy made grouping quadratic.
+    const group = groups.get(server)
+    if (group) group.push(entry)
+    else groups.set(server, [entry])
   }
   return groups
 }

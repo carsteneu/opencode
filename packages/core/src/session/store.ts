@@ -9,6 +9,7 @@ import { MessageDecodeError } from "./error"
 import { SessionMessage } from "./message"
 import { SessionSchema } from "./schema"
 import { SessionMessageTable, SessionTable } from "./sql"
+import { SessionHydrate } from "./hydrate"
 import { fromRow } from "./info"
 
 export interface Interface {
@@ -49,12 +50,13 @@ const layer = Layer.effect(
           .where(eq(SessionMessageTable.id, messageID))
           .get()
           .pipe(Effect.orDie)
-        return row
-          ? {
-              sessionID: SessionSchema.ID.make(row.session_id),
-              message: yield* decodeMessage({ ...row.data, id: row.id, type: row.type }).pipe(Effect.orDie),
-            }
-          : undefined
+        if (!row) return undefined
+        const message = yield* decodeMessage({ ...row.data, id: row.id, type: row.type }).pipe(Effect.orDie)
+        const content = row.type === "assistant" ? yield* SessionHydrate.contentByMessage(db, [row.id]) : undefined
+        return {
+          sessionID: SessionSchema.ID.make(row.session_id),
+          message: SessionHydrate.withContent(message, content?.get(row.id)),
+        }
       }),
     })
   }),

@@ -260,6 +260,10 @@ export function makeFffLayer(create: typeof Fff.create) {
   )
 }
 
+// FFF-ignore evaluation (P31): upstream Fff.create's Init (fff.node.ts / fff.bun.ts) exposes no
+// watch/ignore option, so watcher.ignore cannot reach FFF. We intentionally do NOT wire a hidden
+// .ignore, disableWatch, or stale-index semantics here — those would silently diverge from FFF's own
+// index. Closing the gap requires a real upstream init API or a separately benchmarked FFF upgrade.
 export const fffLayer = makeFffLayer(Fff.create)
 
 const layer = Layer.unwrap(Effect.sync(() => (Flag.OPENCODE_DISABLE_FFF || !Fff.available() ? ripgrepLayer : fffLayer)))

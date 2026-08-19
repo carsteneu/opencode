@@ -1,9 +1,9 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "3ad2d6fc-2a4d-4274-b698-6aed28a24a14",
+  "id": "8f675dc5-ec77-4971-a225-de6e972e8a74",
   "prevIds": [
-    "bcdd4bba-9796-48ed-8a94-6169767610f7"
+    "3ad2d6fc-2a4d-4274-b698-6aed28a24a14"
   ],
   "ddl": [
     {
@@ -68,6 +68,10 @@
     },
     {
       "name": "session_input",
+      "entityType": "tables"
+    },
+    {
+      "name": "session_message_content",
       "entityType": "tables"
     },
     {
@@ -1048,6 +1052,56 @@
     },
     {
       "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "message_id",
+      "entityType": "columns",
+      "table": "session_message_content"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "item_id",
+      "entityType": "columns",
+      "table": "session_message_content"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "session_id",
+      "entityType": "columns",
+      "table": "session_message_content"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "seq",
+      "entityType": "columns",
+      "table": "session_message_content"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "data",
+      "entityType": "columns",
+      "table": "session_message_content"
+    },
+    {
+      "type": "text",
       "notNull": false,
       "autoincrement": false,
       "default": null,
@@ -1688,6 +1742,36 @@
     },
     {
       "columns": [
+        "message_id"
+      ],
+      "tableTo": "session_message",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_session_message_content_message_id_session_message_id_fk",
+      "entityType": "fks",
+      "table": "session_message_content"
+    },
+    {
+      "columns": [
+        "session_id"
+      ],
+      "tableTo": "session",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_session_message_content_session_id_session_id_fk",
+      "entityType": "fks",
+      "table": "session_message_content"
+    },
+    {
+      "columns": [
         "session_id"
       ],
       "tableTo": "session",
@@ -1765,6 +1849,16 @@
       "name": "project_directory_pk",
       "entityType": "pks",
       "table": "project_directory"
+    },
+    {
+      "columns": [
+        "message_id",
+        "item_id"
+      ],
+      "nameExplicit": false,
+      "name": "session_message_content_pk",
+      "entityType": "pks",
+      "table": "session_message_content"
     },
     {
       "columns": [
@@ -2106,6 +2200,42 @@
       "name": "session_input_session_promoted_seq_idx",
       "entityType": "indexes",
       "table": "session_input"
+    },
+    {
+      "columns": [
+        {
+          "value": "message_id",
+          "isExpression": false
+        },
+        {
+          "value": "seq",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "session_message_content_message_seq_idx",
+      "entityType": "indexes",
+      "table": "session_message_content"
+    },
+    {
+      "columns": [
+        {
+          "value": "session_id",
+          "isExpression": false
+        },
+        {
+          "value": "seq",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "session_message_content_session_seq_idx",
+      "entityType": "indexes",
+      "table": "session_message_content"
     },
     {
       "columns": [

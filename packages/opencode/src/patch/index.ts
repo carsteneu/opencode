@@ -400,22 +400,38 @@ function computeReplacements(
   return replacements
 }
 
-function applyReplacements(lines: string[], replacements: Array<[number, number, string[]]>): string[] {
-  // Apply replacements in reverse order to avoid index shifting
-  const result = [...lines]
+// Requires strictly-ascending, non-overlapping replacements (as produced by
+// computeReplacements); overlapping input would yield a different result than
+// the reverse-splice it replaced.
+export function applyReplacements(lines: string[], replacements: Array<[number, number, string[]]>): string[] {
+  // Copy once into a new output buffer, walking replacements in ascending
+  // order. Every original line before a hunk and every inserted new line is
+  // appended exactly once — O(n) instead of the previous repeated splice.
+  const result: string[] = []
+  result.length = lines.length + replacements.reduce((acc, [, , newSegment]) => acc + newSegment.length, 0)
 
-  for (let i = replacements.length - 1; i >= 0; i--) {
-    const [startIdx, oldLen, newSegment] = replacements[i]
+  let out = 0
+  let cursor = 0
 
-    // Remove old lines
-    result.splice(startIdx, oldLen)
-
-    // Insert new lines
-    for (let j = 0; j < newSegment.length; j++) {
-      result.splice(startIdx + j, 0, newSegment[j])
+  for (const [startIdx, oldLen, newSegment] of replacements) {
+    // Copy unchanged lines leading up to this hunk
+    for (let i = cursor; i < startIdx; i++) {
+      result[out++] = lines[i]
     }
+    // Insert new lines
+    for (let i = 0; i < newSegment.length; i++) {
+      result[out++] = newSegment[i]
+    }
+    // Skip the replaced region
+    cursor = startIdx + oldLen
   }
 
+  // Tail after the last hunk
+  for (let i = cursor; i < lines.length; i++) {
+    result[out++] = lines[i]
+  }
+
+  result.length = out
   return result
 }
 

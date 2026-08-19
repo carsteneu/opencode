@@ -178,6 +178,18 @@ export default {
         );
       `)
       yield* tx.run(`
+        CREATE TABLE \`session_message_content\` (
+          \`message_id\` text NOT NULL,
+          \`item_id\` text NOT NULL,
+          \`session_id\` text NOT NULL,
+          \`seq\` integer NOT NULL,
+          \`data\` text NOT NULL,
+          CONSTRAINT \`session_message_content_pk\` PRIMARY KEY(\`message_id\`, \`item_id\`),
+          CONSTRAINT \`fk_session_message_content_message_id_session_message_id_fk\` FOREIGN KEY (\`message_id\`) REFERENCES \`session_message\`(\`id\`) ON DELETE CASCADE,
+          CONSTRAINT \`fk_session_message_content_session_id_session_id_fk\` FOREIGN KEY (\`session_id\`) REFERENCES \`session\`(\`id\`) ON DELETE CASCADE
+        );
+      `)
+      yield* tx.run(`
         CREATE TABLE \`session_message\` (
           \`id\` text PRIMARY KEY,
           \`session_id\` text NOT NULL,
@@ -265,6 +277,12 @@ export default {
       )
       yield* tx.run(
         `CREATE UNIQUE INDEX \`session_input_session_promoted_seq_idx\` ON \`session_input\` (\`session_id\`,\`promoted_seq\`);`,
+      )
+      yield* tx.run(
+        `CREATE INDEX \`session_message_content_message_seq_idx\` ON \`session_message_content\` (\`message_id\`,\`seq\`);`,
+      )
+      yield* tx.run(
+        `CREATE INDEX \`session_message_content_session_seq_idx\` ON \`session_message_content\` (\`session_id\`,\`seq\`);`,
       )
       yield* tx.run(
         `CREATE UNIQUE INDEX \`session_message_session_seq_idx\` ON \`session_message\` (\`session_id\`,\`seq\`);`,
