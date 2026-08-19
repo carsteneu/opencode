@@ -33,3 +33,6 @@ UPCOMING_CHANGELOG.md
 logs/
 *.bun-build
 tsconfig.tsbuildinfo
+
+# python perf tools
+script/perf/__pycache__/
