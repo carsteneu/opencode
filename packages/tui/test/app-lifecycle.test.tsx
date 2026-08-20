@@ -145,7 +145,7 @@ test("session prompt handles boundary keys and app.exit prints the epilogue", as
     if (!tui) throw new Error("Expected the TUI plugin API")
 
     const commands = ["session.first", "session.last", "input.buffer.home", "input.buffer.end"]
-    await setup.waitFor(() => {
+    await wait(() => {
       if (tui.route.current.name !== "session") return false
       if (!(setup.renderer.currentFocusedEditor instanceof TextareaRenderable)) return false
       return [...tui.keymap.getCommandBindings({ visibility: "active", commands }).values()].every(
@@ -332,7 +332,7 @@ test("pasted local documents become independently counted data URL attachments",
     )
 
     await ready
-    await setup.waitFor(
+    await wait(
       () => api?.route.current.name === "session" && setup.renderer.currentFocusedEditor instanceof TextareaRenderable,
     )
     const editor = setup.renderer.currentFocusedEditor
@@ -340,7 +340,9 @@ test("pasted local documents become independently counted data URL attachments",
 
     await setup.mockInput.typeText("@context")
     await wait(() => findRequests > 0)
-    await setup.waitForFrame((frame) => frame.includes("context.t"))
+    // waitForFrame snapshots the same committed frame while rendering is idle and can
+    // starve the async autocomplete pipeline; poll with yields instead.
+    await wait(() => setup.captureCharFrame().includes("context.t"))
     api?.keymap.dispatchCommand("prompt.autocomplete.select")
     await wait(() => editor.plainText === "@context.txt ")
 
