@@ -6,6 +6,8 @@
  * Session-Route erreicht ist und das Prompt-Textarea fokussiert gerendert wurde.
  * Ein Prozess pro Messwert: Aufruf über Bash-Loop `bun test ...` → frische Samples.
  * Ausgabe: "[RESULT] cold_start_ms=NN.N" für die A/B-Aggregation.
+ * HINWEIS: misst den Dev-Transpile-Pfad (lazy imports werden von bun hier inline),
+ * kein Abbild des Produktions-Bundles — als konsistente A/B-Basis gedacht.
  */
 import { mock, test } from "bun:test"
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"

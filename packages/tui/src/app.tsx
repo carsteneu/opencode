@@ -241,15 +241,15 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
       renderer.once("destroy", () => Deferred.doneUnsafe(shutdown, Effect.void))
       const pluginRuntime = createPluginRuntime()
 
-        yield* Effect.tryPromise(async () => {
-          // Prewarm palette before ThemeProvider mounts so `system` theme avoids a first-paint fallback flash.
-          void renderer.getPalette({ size: 16 }).catch(() => undefined)
-          // Start with the last-known theme mode (kv.json) instead of blocking first
-          // paint on the terminal's OSC theme query, which takes the full second on
-          // terminals that never reply. ThemeProvider adopts the real mode reactively
-          // once the reply lands.
-          const mode = (await readLastKnownThemeMode(global.state)) ?? "dark"
-          if (renderer.isDestroyed) return
+      yield* Effect.tryPromise(async () => {
+        // Prewarm palette before ThemeProvider mounts so `system` theme avoids a first-paint fallback flash.
+        void renderer.getPalette({ size: 16 }).catch(() => undefined)
+        // Start with the last-known theme mode (kv.json) instead of blocking first
+        // paint on the terminal's OSC theme query, which takes the full second on
+        // terminals that never reply. ThemeProvider adopts the real mode reactively
+        // once the reply lands.
+        const mode = (await readLastKnownThemeMode(global.state)) ?? "dark"
+        if (renderer.isDestroyed) return
 
         await render(() => {
           return (
@@ -1128,22 +1128,22 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
       <Show when={Flag.OPENCODE_SHOW_TTFD}>
         <TimeToFirstDraw />
       </Show>
-        <Show when={ready()}>
-          <box flexGrow={1} minHeight={0} flexDirection="column">
-            <Suspense fallback={<box flexGrow={1} minHeight={0} />}>
-              <Switch>
-                <Match when={route.data.type === "home"}>
-                  <Home />
-                </Match>
-                <Match when={route.data.type === "session"}>
-                  <Show when={route.data.type === "session" ? route.data.sessionID : undefined} keyed>
-                    {(_) => <Session />}
-                  </Show>
-                </Match>
-              </Switch>
-              {plugin()}
-            </Suspense>
-          </box>
+      <Show when={ready()}>
+        <box flexGrow={1} minHeight={0} flexDirection="column">
+          <Suspense fallback={<box flexGrow={1} minHeight={0} />}>
+            <Switch>
+              <Match when={route.data.type === "home"}>
+                <Home />
+              </Match>
+              <Match when={route.data.type === "session"}>
+                <Show when={route.data.type === "session" ? route.data.sessionID : undefined} keyed>
+                  {(_) => <Session />}
+                </Show>
+              </Match>
+            </Switch>
+            {plugin()}
+          </Suspense>
+        </box>
         <box flexShrink={0}>
           <pluginRuntime.Slot name="app_bottom" />
         </box>
