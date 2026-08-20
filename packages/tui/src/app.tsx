@@ -29,7 +29,6 @@ import {
 } from "solid-js"
 import { TuiPathsProvider, TuiStartupProvider, TuiTerminalEnvironmentProvider, useTuiStartup } from "./context/runtime"
 import { DialogProvider, useDialog } from "./ui/dialog"
-import { DialogProvider as DialogProviderList } from "./component/dialog-provider"
 import { ErrorComponent } from "./component/error-component"
 import { PluginRouteMissing } from "./component/plugin-route-missing"
 import { ProjectProvider, useProject } from "./context/project"
@@ -42,22 +41,26 @@ import { DataProvider } from "./context/data"
 import { LocationProvider } from "./context/location"
 import { LocalProvider, useLocal } from "./context/local"
 import { PermissionProvider } from "./context/permission"
-import { DialogModel } from "./component/dialog-model"
 import { useConnected } from "./component/use-connected"
-import { DialogMcp } from "./component/dialog-mcp"
-import { DialogStatus } from "./component/dialog-status"
-import { DialogDebug } from "./component/dialog-debug"
-import { DialogThemeList } from "./component/dialog-theme-list"
-import { DialogHelp } from "./ui/dialog-help"
-import { DialogAgent } from "./component/dialog-agent"
-import { DialogSessionList } from "./component/dialog-session-list"
-import { DialogWorkspaceList } from "./component/dialog-workspace-list"
-import { DialogConsoleOrg } from "./component/dialog-console-org"
 import { ThemeProvider, useTheme } from "./context/theme"
 // Routes mount on demand so the shell paints before the heavy session prompt
 // stack (routes/session ~2950 lines + prompt) is evaluated.
 const Home = lazy(() => import("./routes/home").then((m) => ({ default: m.Home })))
 const Session = lazy(() => import("./routes/session").then((m) => ({ default: m.Session })))
+// Dialogs open on user action; their modules (providers, mcp/lsp/model forms)
+// evaluate only when the dialog is first requested.
+const DialogProviderList = lazy(() => import("./component/dialog-provider").then((m) => ({ default: m.DialogProvider })))
+const CommandPaletteDialog = lazy(() => import("./component/command-palette").then((m) => ({ default: m.CommandPaletteDialog })))
+const DialogSessionList = lazy(() => import("./component/dialog-session-list").then((m) => ({ default: m.DialogSessionList })))
+const DialogWorkspaceList = lazy(() => import("./component/dialog-workspace-list").then((m) => ({ default: m.DialogWorkspaceList })))
+const DialogModel = lazy(() => import("./component/dialog-model").then((m) => ({ default: m.DialogModel })))
+const DialogAgent = lazy(() => import("./component/dialog-agent").then((m) => ({ default: m.DialogAgent })))
+const DialogMcp = lazy(() => import("./component/dialog-mcp").then((m) => ({ default: m.DialogMcp })))
+const DialogConsoleOrg = lazy(() => import("./component/dialog-console-org").then((m) => ({ default: m.DialogConsoleOrg })))
+const DialogStatus = lazy(() => import("./component/dialog-status").then((m) => ({ default: m.DialogStatus })))
+const DialogDebug = lazy(() => import("./component/dialog-debug").then((m) => ({ default: m.DialogDebug })))
+const DialogThemeList = lazy(() => import("./component/dialog-theme-list").then((m) => ({ default: m.DialogThemeList })))
+const DialogHelp = lazy(() => import("./ui/dialog-help").then((m) => ({ default: m.DialogHelp })))
 import { PromptHistoryProvider } from "./component/prompt/history"
 import { FrecencyProvider } from "./component/prompt/frecency"
 import { PromptStashProvider } from "./component/prompt/stash"
@@ -74,7 +77,6 @@ import { TuiConfigProvider, useTuiConfig, type TuiConfig } from "./config"
 import { createTuiApiAdapters } from "./plugin/adapters"
 import { createTuiApi } from "./plugin/api"
 import { createPluginRuntime, PluginRuntimeProvider, usePluginRuntime, type TuiPluginHost } from "./plugin/runtime"
-import { CommandPaletteDialog } from "./component/command-palette"
 import {
   COMMAND_PALETTE_COMMAND,
   OPENCODE_BASE_MODE,
