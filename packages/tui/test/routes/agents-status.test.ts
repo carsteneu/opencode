@@ -11,7 +11,13 @@ function session(id: string, parentID: string | undefined, title: string, create
   } as Session
 }
 
-function taskPart(id: string, childID: string, status: ToolPart["state"]["status"], error?: string): Part {
+function taskPart(
+  id: string,
+  childID: string,
+  status: ToolPart["state"]["status"],
+  error?: string,
+  time?: { start: number; end?: number },
+): Part {
   return {
     id,
     type: "tool",
@@ -22,6 +28,7 @@ function taskPart(id: string, childID: string, status: ToolPart["state"]["status
       ...(status === "error" ? { error: error ?? "boom" } : {}),
       ...(status === "running" ? { time: { start: 5_000 } } : {}),
       ...(status === "completed" ? { output: "ok", title: "done", metadata: {}, time: { start: 1, end: 2 } } : {}),
+      ...(time ? { time } : {}),
     },
     metadata: { sessionId: childID, parentSessionId: "ses_parent" },
   } as unknown as Part
@@ -45,6 +52,7 @@ function input(rows: {
   status?: Record<string, SessionStatus>
   messages?: Record<string, Message[]>
   parts?: Record<string, Part[]>
+  dismissed?: readonly string[]
 }) {
   return {
     parentID: "ses_parent",
@@ -52,6 +60,7 @@ function input(rows: {
     status: rows.status ?? {},
     messages: rows.messages ?? {},
     parts: rows.parts ?? {},
+    ...(rows.dismissed ? { dismissed: rows.dismissed } : {}),
   }
 }
 
@@ -231,13 +240,140 @@ describe("deriveAgentRows", () => {
     expect(rows[0].state).toBe("running")
   })
 
-  test("falls back to plain title when agent suffix is missing", () => {
-    const odd = session("ses_child_c", "ses_parent", "Just a description")
-    const rows = deriveAgentRows(input({ sessions: [odd], status: { [odd.id]: { type: "idle" } } }))
-    expect(rows[0].title).toBe("Just a description")
-    expect(rows[0].agent).toBe("subagent")
+    test("falls back to plain title when agent suffix is missing", () => {
+      const odd = session("ses_child_c", "ses_parent", "Just a description")
+      const rows = deriveAgentRows(input({ sessions: [odd], status: { [odd.id]: { type: "idle" } } }))
+      expect(rows[0].title).toBe("Just a description")
+      expect(rows[0].agent).toBe("subagent")
+    })
+
+    // helper: `count` user turns in the parent, each strictly after `after`
+    function userTurns(count: number, after: number): Message[] {
+      return Array.from({ length: count }, (_, i) => message(`p_turn_${i}_${after}`, "ses_parent", "user", after + (i + 1) * 10))
+    }
+
+    test("done row expires after 10 parent user turns following completion", () => {
+      const completed = taskPart("prt_done", child.id, "completed", undefined, { start: 9_000, end: 10_000 })
+        const base = { sessions: [child], status: { [child.id]: { type: "idle" } } as Record<string, SessionStatus> }
+      const visible = deriveAgentRows(
+        input({
+          ...base,
+          messages: {
+            ses_parent: [
+              message("p_work", "ses_parent", "assistant", 9_500),
+              // a turn at exactly the completion timestamp does not count
+              message("p_same", "ses_parent", "user", 10_000),
+              ...userTurns(9, 10_000),
+            ],
+          },
+          parts: { p_work: [completed] },
+        }),
+      )
+      expect(visible.map((x) => x.id)).toEqual([child.id])
+      const gone = deriveAgentRows(
+        input({
+          ...base,
+          messages: {
+            ses_parent: [message("p_work", "ses_parent", "assistant", 9_500), ...userTurns(10, 10_000)],
+          },
+          parts: { p_work: [completed] },
+        }),
+      )
+      expect(gone).toEqual([])
+    })
+
+    test("failed row expires after 10 parent user turns following completion", () => {
+      const failed = taskPart("prt_err", child.id, "error", "agent crashed", { start: 9_000, end: 10_000 })
+        const base = { sessions: [child], status: { [child.id]: { type: "idle" } } as Record<string, SessionStatus> }
+      expect(
+        deriveAgentRows(
+          input({ ...base, messages: { ses_parent: [message("p_work", "ses_parent", "assistant", 9_500), ...userTurns(9, 10_000)] }, parts: { p_work: [failed] } }),
+        ),
+      ).toHaveLength(1)
+      expect(
+        deriveAgentRows(
+          input({ ...base, messages: { ses_parent: [message("p_work", "ses_parent", "assistant", 9_500), ...userTurns(10, 10_000)] }, parts: { p_work: [failed] } }),
+        ),
+      ).toEqual([])
+    })
+
+    test("running and waiting rows never expire", () => {
+      const running = taskPart("prt_run", child.id, "running")
+      const waiting = session("ses_wait", "ses_parent", "Waiter (@explore subagent)")
+      const rows = deriveAgentRows(
+        input({
+          sessions: [child, waiting],
+          status: { [child.id]: { type: "busy" }, [waiting.id]: { type: "retry", attempt: 2, message: "rate limited", next: 30_000 } },
+          messages: { ses_parent: [message("p_work", "ses_parent", "assistant", 1), ...userTurns(20, 1)] },
+          parts: { p_work: [running] },
+        }),
+      )
+      expect(rows).toHaveLength(2)
+    })
+
+    test("caps finished rows at 5, dropping the oldest completion first", () => {
+      // six finished children with distinct completion times; none expired by turns
+      const ids = ["c1", "c2", "c3", "c4", "c5", "c6"].map((n, i) =>
+        session(`ses_cap_${n}`, "ses_parent", `Cap child ${n} (@explore subagent)`, 1_000 * (i + 1)),
+      )
+      const messages: Message[] = [message("p_work", "ses_parent", "assistant", 500)]
+      const parts: Record<string, Part[]> = {
+        p_work: ids.map((s, i) =>
+          taskPart(`prt_cap_${s.id}`, s.id, "completed", undefined, { start: 100, end: 2_000 + i * 1_000 }),
+        ),
+      }
+      const rows = deriveAgentRows(
+        input({ sessions: ids, status: Object.fromEntries(ids.map((s) => [s.id, { type: "idle" }])), messages: { ses_parent: messages }, parts }),
+      )
+      expect(rows).toHaveLength(5)
+      expect(rows.map((x) => x.id)).not.toContain("ses_cap_c1") // oldest completion (c1, end 2000) dropped
+      expect(rows.map((x) => x.id)).toEqual(expect.arrayContaining(["ses_cap_c2", "ses_cap_c3", "ses_cap_c4", "ses_cap_c5", "ses_cap_c6"]))
+    })
+
+    test("running rows do not count against the finished cap", () => {
+      const done = ["d1", "d2", "d3", "d4", "d5", "d6"].map((n, i) =>
+        session(`ses_capd_${n}`, "ses_parent", `Done child ${n} (@explore subagent)`, 500 + i * 100),
+      )
+      const live = session("ses_cap_running", "ses_parent", "Live (@explore subagent)")
+      const messages: Message[] = [message("p_work", "ses_parent", "assistant", 1)]
+      const parts: Record<string, Part[]> = {
+        p_work: [
+          ...done.map((s, i) => taskPart(`prt_d_${s.id}`, s.id, "completed", undefined, { start: 100, end: 5_000 + i * 100 })),
+          taskPart("prt_run", live.id, "running"),
+        ],
+      }
+      const rows = deriveAgentRows(
+        input({
+          sessions: [...done, live],
+          status: { ...Object.fromEntries(done.map((s) => [s.id, { type: "idle" }])), [live.id]: { type: "busy" } },
+          messages: { ses_parent: messages },
+          parts,
+        }),
+      )
+      expect(rows).toHaveLength(6) // 5 finished (cap) + 1 running
+      expect(rows.map((x) => x.id)).toContain(live.id)
+    })
+
+    test("finished row without a task part falls back to child update time", () => {
+      // child.time.updated = created + 1000 = 10000; 10 user turns strictly after 10000 expire it
+      const bare = session("ses_bare", "ses_parent", "No task (@explore subagent)", 9_000)
+      const base = { sessions: [bare], status: { [bare.id]: { type: "idle" } } as Record<string, SessionStatus> }
+      expect(deriveAgentRows(input({ ...base, messages: { ses_parent: userTurns(9, 10_000) } }))).toHaveLength(1)
+      expect(deriveAgentRows(input({ ...base, messages: { ses_parent: userTurns(10, 10_000) } }))).toEqual([])
+    })
+
+    test("dismissed child ids are filtered out", () => {
+      const other = session("ses_keep", "ses_parent", "Kept (@explore subagent)")
+      const rows = deriveAgentRows(
+        input({
+          sessions: [child, other],
+          status: { [child.id]: { type: "idle" }, [other.id]: { type: "idle" } },
+          dismissed: [child.id],
+        }),
+      )
+      expect(rows.map((x) => x.id)).toEqual([other.id])
+    })
   })
-})
 
 describe("formatDuration", () => {
   test("formats seconds below a minute", () => {
