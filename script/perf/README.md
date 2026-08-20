@@ -82,3 +82,18 @@ Bin-Min/Median/Max und Signatur-Segmente (Phasen konstanter Tree-Komposition).
   unbrauchbar; `segments`/`phase_key` zuerst prüfen.
 - **Power-Profil** in jedem Bin prüfen; gemischte Profile disqualifizieren
   absolute Vergleiche (B-Protokoll-Regel der Runbooks).
+
+### `ab-server-boot.sh` + `boot-timeline.py` — Server-Boot A/B (Bootstrap-Phase)
+
+Interleaved A/B server boot measurement between two checkouts (base vs candidate levers).
+
+```sh
+# two worktrees needed: base (pre-change) and candidate
+script/perf/ab-server-boot.sh .worktrees/tmp-server-base/packages/opencode packages/opencode /tmp/ab-server 3
+python3 script/perf/boot-timeline.py /tmp/ab-server A B
+```
+
+- Boots `bun src/bootstrap.ts` per run in tmux (fresh XDG_DATA_HOME + unique port per run, primer run warms plugin installs in both trees first, results interleaved A/B/A/B order)
+- Produces `*.tty`, `*.frame`, `*.log` per run; boot-timeline.py extracts `boot->wb` (bootstrapping → first watcher backend = total boot window) and `init_gap` (plugin-init marker → watcher backend)
+- opencode.log lines are not strictly time-ordered (client/server interleave) — extractor takes earliest timestamp per marker, negative deltas dropped
+- Safety: only its own tmux sessions (`abm-*`) and temp dirs are touched; no broad process kills (see process-kill rule from Learning #85668)
