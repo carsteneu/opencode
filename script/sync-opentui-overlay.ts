@@ -4,13 +4,13 @@ import { randomUUID } from "node:crypto"
 import { cp, realpath, rename, rm } from "node:fs/promises"
 import path from "node:path"
 
-const expectedCommit = "8816eebd9decda4af6c352b6c4caf7a28b12e21b"
+const expectedCommit = "13dc719306083c90040470ff401b3f29bee3dffb"
 const expectedPatchBase = "568db413e7bc3a110981d2e54ddb7ebb8e906075"
 const expectedTag = "v0.5.3"
 const expectedTagCommit = "1500698af07951ea0c1c67c9ad737fc54382ee20"
 const expectedVersion = "0.5.3"
 const expectedHashes = {
-  core: "01a408cb3278372a5eb7800226cae89ca357c1ca8f23daf6d1564b634377e553",
+  core: "9df11fb30fbd61e4721db028a0534c04fa9066532f360450314f3fde6bbb3440",
   solid: "ba9ffd6b55ea9f2785a01cc3b072bd3587116442607f5f19d20b383d75d16179",
   native: "7d02a2b2af22567c5ed5f625e7791d4343f5d53cfb227aa93e59b0372dc24c97",
 }
