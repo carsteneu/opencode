@@ -643,10 +643,10 @@ it.instance(
       const files = initializationServers.map((name) => path.join(directory, `${name}.started`))
       const release = path.join(directory, "release")
       yield* registerPidCleanup(files, release)
-      const mcp = yield* MCP.Service
-      const loading = yield* Effect.forkScoped(mcp.status())
+        const mcp = yield* MCP.Service
+        const loading = yield* Effect.forkScoped(mcp.clients())
 
-      const firstWave = yield* pollWithTimeout(
+        const firstWave = yield* pollWithTimeout(
         Effect.promise(async () => {
           const count = (await Promise.all(files.map((file) => Bun.file(file).exists()))).filter(Boolean).length
           return count >= 4 ? count : undefined
@@ -664,12 +664,10 @@ it.instance(
       ).pipe(Effect.timeoutOption("750 millis"))
       expect(overflow._tag).toBe("None")
 
-      yield* Effect.promise(() => Bun.write(release, "release"))
-      const statuses = yield* Fiber.join(loading)
-      expect(initializationServers.filter((name) => statuses[name]?.status === "connected")).toHaveLength(
-        initializationServers.length,
-      )
-    }),
+        yield* Effect.promise(() => Bun.write(release, "release"))
+        const clients = yield* Fiber.join(loading)
+        expect(initializationServers.every((name) => clients[name] !== undefined)).toBe(true)
+      }),
   {
     config: {
       mcp: initializationMcp,
@@ -691,9 +689,9 @@ it.instance(
       const readyListed = path.join(directory, "ready.listed")
       const files = [readyPid, ...barrierFiles]
       yield* registerPidCleanup(files)
-      const mcp = yield* MCP.Service
-      const loading = yield* Effect.forkScoped(mcp.status())
-      const pids = yield* pollWithTimeout(
+        const mcp = yield* MCP.Service
+        const loading = yield* Effect.forkScoped(mcp.tools())
+        const pids = yield* pollWithTimeout(
         Effect.promise(async () => {
           if (!(await Bun.file(readyListed).exists())) return undefined
           const started = await Promise.all(
