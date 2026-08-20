@@ -82,12 +82,19 @@ test("cold start to input-ready", async () => {
       }).pipe(Effect.provide(AppNodeBuilder.build(Global.node))),
     )
     await ready
-    await setup.waitFor(() => {
+    // Yielding poll: waitForFrame snapshots a stale committed frame while the
+    // renderer idles, which starves the async route/prompt pipeline under load.
+    const deadline = performance.now() + 15_000
+    while (true) {
       const tui = api!
-      if (tui.route.current.name !== "session") return false
-      if (!(setup.renderer.currentFocusedEditor instanceof TextareaRenderable)) return false
-      return [...tui.keymap.getCommandBindings({ visibility: "active", commands: ["session.first", "input.buffer.home"] }).values()].every((items) => items.length > 0)
-    })
+      const readyNow =
+        tui.route.current.name === "session" &&
+        setup.renderer.currentFocusedEditor instanceof TextareaRenderable &&
+        [...tui.keymap.getCommandBindings({ visibility: "active", commands: ["session.first", "input.buffer.home"] }).values()].every((items) => items.length > 0)
+      if (readyNow) break
+      if (performance.now() > deadline) throw new Error("timed out waiting for input-ready")
+      await new Promise((r) => setTimeout(r, 10))
+    }
     const ms = (performance.now() - t0).toFixed(2)
     console.log(`[RESULT] cold_start_ms=${ms}`)
 

@@ -25,7 +25,13 @@ function isHostSlotPlugin(value: unknown): value is HostSlotPlugin<Record<string
 export function createSlots() {
   const empty: SlotView = () => null
   const [view, setView] = createSignal<SlotView>(empty)
-  const Slot: SlotView = (props) => view()(props)
+  const Slot: SlotView = (props) => {
+    const current = view()
+    // Before pluginHost.setupSlots() runs, render fallback children so routes
+    // (Home/Session with their logo/prompt placeholders) paint shell-first.
+    if (current === empty) return props.children ?? null
+    return current(props)
+  }
 
   return {
     Slot,
