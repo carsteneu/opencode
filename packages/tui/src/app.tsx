@@ -5,6 +5,7 @@ import { Deferred, Effect } from "effect"
 import { Global } from "@opencode-ai/core/global"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
+import { readLastKnownThemeMode } from "./util/last-theme-mode"
 import { ClipboardProvider, useClipboard } from "./context/clipboard"
 import { ExitProvider, useExit } from "./context/exit"
 import { EpilogueProvider } from "./context/epilogue"
@@ -23,6 +24,8 @@ import {
   batch,
   Show,
   on,
+  lazy,
+  Suspense,
 } from "solid-js"
 import { TuiPathsProvider, TuiStartupProvider, TuiTerminalEnvironmentProvider, useTuiStartup } from "./context/runtime"
 import { DialogProvider, useDialog } from "./ui/dialog"
@@ -51,8 +54,10 @@ import { DialogSessionList } from "./component/dialog-session-list"
 import { DialogWorkspaceList } from "./component/dialog-workspace-list"
 import { DialogConsoleOrg } from "./component/dialog-console-org"
 import { ThemeProvider, useTheme } from "./context/theme"
-import { Home } from "./routes/home"
-import { Session } from "./routes/session"
+// Routes mount on demand so the shell paints before the heavy session prompt
+// stack (routes/session ~2950 lines + prompt) is evaluated.
+const Home = lazy(() => import("./routes/home").then((m) => ({ default: m.Home })))
+const Session = lazy(() => import("./routes/session").then((m) => ({ default: m.Session })))
 import { PromptHistoryProvider } from "./component/prompt/history"
 import { FrecencyProvider } from "./component/prompt/frecency"
 import { PromptStashProvider } from "./component/prompt/stash"
@@ -239,7 +244,11 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
       yield* Effect.tryPromise(async () => {
         // Prewarm palette before ThemeProvider mounts so `system` theme avoids a first-paint fallback flash.
         void renderer.getPalette({ size: 16 }).catch(() => undefined)
-        const mode = (await renderer.waitForThemeMode(1000)) ?? "dark"
+        // Start with the last-known theme mode (kv.json) instead of blocking first
+        // paint on the terminal's OSC theme query, which takes the full second on
+        // terminals that never reply. ThemeProvider adopts the real mode reactively
+        // once the reply lands.
+        const mode = (await readLastKnownThemeMode(global.state)) ?? "dark"
         if (renderer.isDestroyed) return
 
         await render(() => {
@@ -1121,17 +1130,19 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
       </Show>
       <Show when={ready()}>
         <box flexGrow={1} minHeight={0} flexDirection="column">
-          <Switch>
-            <Match when={route.data.type === "home"}>
-              <Home />
-            </Match>
-            <Match when={route.data.type === "session"}>
-              <Show when={route.data.type === "session" ? route.data.sessionID : undefined} keyed>
-                {(_) => <Session />}
-              </Show>
-            </Match>
-          </Switch>
-          {plugin()}
+          <Suspense fallback={<box flexGrow={1} minHeight={0} />}>
+            <Switch>
+              <Match when={route.data.type === "home"}>
+                <Home />
+              </Match>
+              <Match when={route.data.type === "session"}>
+                <Show when={route.data.type === "session" ? route.data.sessionID : undefined} keyed>
+                  {(_) => <Session />}
+                </Show>
+              </Match>
+            </Switch>
+            {plugin()}
+          </Suspense>
         </box>
         <box flexShrink={0}>
           <pluginRuntime.Slot name="app_bottom" />

@@ -118,7 +118,6 @@ export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
       produce((draft) => {
         const lock = pick(kv.get("theme_mode_lock"))
         const mode = lock ?? pick(renderer.themeMode) ?? props.mode
-        if (!lock && pick(kv.get("theme_mode")) !== undefined) kv.set("theme_mode", undefined)
         draft.mode = mode
         draft.lock = lock
         const active = config.theme ?? kv.get("theme", "opencode")
@@ -224,6 +223,8 @@ export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
 
     const handle = (mode: "dark" | "light") => {
       if (store.lock) return
+      // Remember the terminal's mode so the next boot can paint without the OSC round-trip.
+      kv.set("theme_mode", mode)
       apply(mode)
     }
     renderer.on(CliRenderEvents.THEME_MODE, handle)
