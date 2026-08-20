@@ -99,3 +99,16 @@ python3 script/perf/boot-timeline.py /tmp/ab-server A B
 - Variants: each side is a packages/opencode dir (dev: `bun src/bootstrap.ts`) OR a compiled binary (runs `<binary> --port N` from repo root via AB_BOOT_CWD). Enables installed-vs-fresh binary A/B
 - Metrics per run (boot-timeline.py): TTFD (`OPENCODE_SHOW_TTFD=1`), boot->wb, init_gap, mcp_gap (loc->unav); medians per tag
 - Safety: only its own tmux sessions (`abm-*`) and temp dirs are touched; no broad process kills (see process-kill rule from Learning #85668)
+
+### `ab-ghostty-boot.sh` — A/B im echten Terminal (Ghostty)
+
+Misst TTFD so, wie der Nutzer es sieht — inkl. OSC-10/11-Theme-Detection, die der tmux-Harness stummschaltet.
+
+```sh
+script/perf/ab-ghostty-boot.sh ~/.opencode/bin/opencode \
+  packages/opencode/dist/local-only/1.18.18-patched.130-serverstartup/opencode /tmp/ab-gh 3
+```
+
+- Öffnet pro Run ein echtes Ghostty-Fenster (`ghostty -e script -qfec 'timeout 12 <binary>' out.io`): opencode läuft auf echter pty-Kette, OSC-Antworten fließen durch
+- Cleanup rein timeout-basiert (Regel: keine pattern-kills); öffnet 2×runs Fenster nacheinander (~9 s pro Run)
+- Befund 20.08. (.128 vs .130, n=3 interleaved): tmux-Harness zeigte TTFD −910ms — in Ghostty DASSELBE Median (3610 vs 3843ms, Rauschen). Der Theme-Wait-Hebel zahlt nur in OSC-stummen Terminals; echte Nutzer-Terminals (Ghostty) hatten die 1s-Strafe nie
