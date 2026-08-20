@@ -605,6 +605,11 @@ export function Session() {
 
   createEffect(() => {
     const sessionID = route.sessionID
+    // -c/--continue seeds {type:"session", sessionID:"dummy"} as a sentinel so
+    // routes can mount before sync resolves. It is not a real session — firing
+    // session.get would 404 and navigate("home"), racing (and killing) the
+    // continue-redirect once sync completes.
+    if (sessionID === "dummy") return
     void (async () => {
       const previousWorkspace = untrack(() => project.workspace.current())
       const result = await sdk.client.session.get({ sessionID }, { throwOnError: true })

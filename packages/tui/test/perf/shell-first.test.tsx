@@ -56,7 +56,9 @@ test("session route mounts before pluginHost resolves", async () => {
   const core = await import("@opentui/core")
   mock.module("@opentui/core", () => ({ ...core, createCliRenderer: async () => setup.renderer }))
   const events = createEventSource()
+  const fetched = new Set<string>()
   const calls = createFetch((url) => {
+    fetched.add(url.pathname)
     if (url.pathname === "/config/providers") return json(providers)
     if (url.pathname === "/agent") return json([{ name: "build", mode: "primary", permission: [], options: {} }])
     if (url.pathname === "/session") return json([session])
@@ -112,6 +114,9 @@ test("session route mounts before pluginHost resolves", async () => {
       if (setup.renderer.currentFocusedEditor instanceof TextareaRenderable) break
       await new Promise((r) => setTimeout(r, 10))
     }
+    // The -c sentinel route must never issue a session.get for "dummy": that
+    // would 404 and navigate home, breaking the continue-redirect.
+    expect(fetched.has("/session/dummy"), `fetched ${[...fetched].join(", ")}`).toBe(false)
     expect(setup.renderer.currentFocusedEditor instanceof TextareaRenderable).toBe(true)
     api?.keymap.dispatchCommand("app.exit")
     await task
