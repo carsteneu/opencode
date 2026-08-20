@@ -96,4 +96,6 @@ python3 script/perf/boot-timeline.py /tmp/ab-server A B
 - Boots `bun src/bootstrap.ts` per run in tmux (fresh XDG_DATA_HOME + unique port per run, primer run warms plugin installs in both trees first, results interleaved A/B/A/B order)
 - Produces `*.tty`, `*.frame`, `*.log` per run; boot-timeline.py extracts `boot->wb` (bootstrapping → first watcher backend = total boot window) and `init_gap` (plugin-init marker → watcher backend)
 - opencode.log lines are not strictly time-ordered (client/server interleave) — extractor takes earliest timestamp per marker, negative deltas dropped
+- Variants: each side is a packages/opencode dir (dev: `bun src/bootstrap.ts`) OR a compiled binary (runs `<binary> --port N` from repo root via AB_BOOT_CWD). Enables installed-vs-fresh binary A/B
+- Metrics per run (boot-timeline.py): TTFD (`OPENCODE_SHOW_TTFD=1`), boot->wb, init_gap, mcp_gap (loc->unav); medians per tag
 - Safety: only its own tmux sessions (`abm-*`) and temp dirs are touched; no broad process kills (see process-kill rule from Learning #85668)
