@@ -72,7 +72,7 @@ test("session route mounts before pluginHost resolves", async () => {
   const gate = new Promise<void>((resolve) => { openGate = resolve })
   let api: TuiPluginApi | undefined
   let stopSlots: (() => void) | undefined
-  let task!: Promise<{ epilogue?: string; reason?: unknown }>
+  let task!: Promise<void>
   // Skip the StartupLoading overlay so the un-gated route subtree's frames
   // (not the loading screen) are what we sample during the gated window.
   process.env.OPENCODE_FAST_BOOT = "1"
