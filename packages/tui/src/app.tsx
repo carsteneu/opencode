@@ -36,6 +36,23 @@ import { EditorContextProvider } from "./context/editor"
 import { useEvent } from "./context/event"
 import { SDKProvider, useSDK } from "./context/sdk"
 import { StartupLoading } from "./component/startup-loading"
+
+// Shown while the shell draws but the server process has not finished booting.
+// The SDK queues calls during this window, so nothing here blocks on the
+// connection being live.
+function Connecting() {
+  const theme = useTheme().theme
+  const sdk = useSDK()
+  return (
+    <Show when={!sdk.connected()}>
+      <box position="absolute" zIndex={4999} left={0} right={0} top={1} justifyContent="center" alignItems="center">
+        <box backgroundColor={theme.backgroundPanel} paddingLeft={1} paddingRight={1}>
+          <text fg={theme.textMuted}>Connecting to server...</text>
+        </box>
+      </box>
+    </Show>
+  )
+}
 import { SyncProvider, useSync } from "./context/sync"
 import { DataProvider } from "./context/data"
 import { LocationProvider } from "./context/location"
@@ -49,17 +66,29 @@ const Home = lazy(() => import("./routes/home").then((m) => ({ default: m.Home }
 const Session = lazy(() => import("./routes/session").then((m) => ({ default: m.Session })))
 // Dialogs open on user action; their modules (providers, mcp/lsp/model forms)
 // evaluate only when the dialog is first requested.
-const DialogProviderList = lazy(() => import("./component/dialog-provider").then((m) => ({ default: m.DialogProvider })))
-const CommandPaletteDialog = lazy(() => import("./component/command-palette").then((m) => ({ default: m.CommandPaletteDialog })))
-const DialogSessionList = lazy(() => import("./component/dialog-session-list").then((m) => ({ default: m.DialogSessionList })))
-const DialogWorkspaceList = lazy(() => import("./component/dialog-workspace-list").then((m) => ({ default: m.DialogWorkspaceList })))
+const DialogProviderList = lazy(() =>
+  import("./component/dialog-provider").then((m) => ({ default: m.DialogProvider })),
+)
+const CommandPaletteDialog = lazy(() =>
+  import("./component/command-palette").then((m) => ({ default: m.CommandPaletteDialog })),
+)
+const DialogSessionList = lazy(() =>
+  import("./component/dialog-session-list").then((m) => ({ default: m.DialogSessionList })),
+)
+const DialogWorkspaceList = lazy(() =>
+  import("./component/dialog-workspace-list").then((m) => ({ default: m.DialogWorkspaceList })),
+)
 const DialogModel = lazy(() => import("./component/dialog-model").then((m) => ({ default: m.DialogModel })))
 const DialogAgent = lazy(() => import("./component/dialog-agent").then((m) => ({ default: m.DialogAgent })))
 const DialogMcp = lazy(() => import("./component/dialog-mcp").then((m) => ({ default: m.DialogMcp })))
-const DialogConsoleOrg = lazy(() => import("./component/dialog-console-org").then((m) => ({ default: m.DialogConsoleOrg })))
+const DialogConsoleOrg = lazy(() =>
+  import("./component/dialog-console-org").then((m) => ({ default: m.DialogConsoleOrg })),
+)
 const DialogStatus = lazy(() => import("./component/dialog-status").then((m) => ({ default: m.DialogStatus })))
 const DialogDebug = lazy(() => import("./component/dialog-debug").then((m) => ({ default: m.DialogDebug })))
-const DialogThemeList = lazy(() => import("./component/dialog-theme-list").then((m) => ({ default: m.DialogThemeList })))
+const DialogThemeList = lazy(() =>
+  import("./component/dialog-theme-list").then((m) => ({ default: m.DialogThemeList })),
+)
 const DialogHelp = lazy(() => import("./ui/dialog-help").then((m) => ({ default: m.DialogHelp })))
 import { PromptHistoryProvider } from "./component/prompt/history"
 import { FrecencyProvider } from "./component/prompt/frecency"
@@ -147,7 +176,7 @@ const appBindingCommands = [
 ] as const
 
 export type TuiInput = {
-  url: string
+  url: string | Promise<string>
   args: Args
   config: TuiConfig.Resolved
   onSnapshot?: () => Promise<string[]>
@@ -1154,6 +1183,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
       <Show when={!startup.skipInitialLoading}>
         <StartupLoading ready={ready} />
       </Show>
+      <Connecting />
     </box>
   )
 }

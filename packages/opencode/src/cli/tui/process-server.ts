@@ -140,12 +140,27 @@ export async function startTuiServerProcess(input: {
     eventHandlers.clear()
   })
 
-  const url = await Promise.race([
-    ready.promise,
-    Bun.sleep(20_000).then(() => Promise.reject(new Error("Timed out waiting for TUI server process"))),
-  ]).catch((error) => {
-    child.kill()
-    throw error
+  // Resolve as soon as the server prints its URL, but never block here: the
+  // TUI must start drawing while the server finishes booting in the
+  // background. Rejects on a child crash before readiness or when the
+  // time-to-ready budget (20s, mirrors the previous blocking timeout) is hit.
+  const url = new Promise<string>((resolve, reject) => {
+    let settled = false
+    const finish = (step: () => void) => {
+      if (settled) return
+      settled = true
+      step()
+    }
+    ready.promise.then(
+      (value) => finish(() => resolve(value)),
+      (error: unknown) => finish(() => reject(error)),
+    )
+    Bun.sleep(20_000).then(() =>
+      finish(() => {
+        child.kill()
+        reject(new Error("Timed out waiting for TUI server process"))
+      }),
+    )
   })
 
   const call = (action: Action) => {

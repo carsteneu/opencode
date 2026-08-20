@@ -2,6 +2,7 @@ import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import type { GlobalEvent } from "@opencode-ai/sdk/v2"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { createSimpleContext } from "./helper"
+import { createQueuedClient } from "./sdk-queued"
 import { batch, onCleanup, onMount } from "solid-js"
 
 export type EventSource = {
@@ -11,7 +12,7 @@ export type EventSource = {
 export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
   name: "SDK",
   init: (props: {
-    url: string
+    url: string | Promise<string>
     directory?: string
     fetch?: typeof fetch
     headers?: RequestInit["headers"]
@@ -19,18 +20,21 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
   }) => {
     const abort = new AbortController()
     let sse: AbortController | undefined
-
-    function createSDK() {
-      return createOpencodeClient({
-        baseUrl: props.url,
-        signal: abort.signal,
-        directory: props.directory,
-        fetch: props.fetch,
-        headers: props.headers,
-      })
-    }
-
-    let sdk = createSDK()
+    // The server URL only resolves once the child process reports ready. The
+    // queued client lets the shell draw immediately; nothing blocks on the
+    // server finishing its boot.
+    const sdk = createQueuedClient({
+      url: props.url,
+      create: (baseUrl) =>
+        createOpencodeClient({
+          baseUrl,
+          signal: abort.signal,
+          directory: props.directory,
+          fetch: props.fetch,
+          headers: props.headers,
+        }),
+    })
+    const { client, connected } = sdk
 
     const handlers = new Set<(event: GlobalEvent) => void>()
     const emitter = {
@@ -92,7 +96,7 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
         while (true) {
           if (abort.signal.aborted || ctrl.signal.aborted) break
 
-          const events = await sdk.global.event({
+          const events = await client.global.event({
             signal: ctrl.signal,
             sseMaxRetryAttempts: 0,
           })
@@ -100,7 +104,7 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
           if (Flag.OPENCODE_EXPERIMENTAL_WORKSPACES) {
             // Start syncing workspaces, it's important to do this after
             // we've started listening to events
-            await sdk.sync.start().catch(() => {})
+            await client.sync.start().catch(() => {})
           }
 
           for await (const event of events.stream) {
@@ -128,7 +132,7 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
         if (Flag.OPENCODE_EXPERIMENTAL_WORKSPACES) {
           // Start syncing workspaces, it's important to do this after
           // we've started listening to events
-          await sdk.sync.start().catch(() => {})
+          await client.sync.start().catch(() => {})
         }
       } else {
         startSSE()
@@ -144,8 +148,9 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
 
     return {
       get client() {
-        return sdk
+        return client
       },
+      connected,
       directory: props.directory,
       event: emitter,
       fetch: props.fetch ?? fetch,

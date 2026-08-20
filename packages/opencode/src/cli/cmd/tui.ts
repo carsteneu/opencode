@@ -181,7 +181,7 @@ export const TuiThreadCommand = cmd({
 
       try {
         await validateSession({
-          url: server.url,
+          url: await server.url,
           sessionID: args.session,
           directory: cwd,
           headers,
@@ -193,10 +193,12 @@ export const TuiThreadCommand = cmd({
       }
 
       setTimeout(() => {
-        fetch(new URL("/global/config", server.url), { headers })
-          .then((response) => response.json() as Promise<{ autoupdate?: ConfigV1.Info["autoupdate"] }>)
-          .then((global) => server.call({ name: "checkUpgrade", input: { autoupdate: global.autoupdate } }))
-          .catch(() => {})
+        void server.url.then((url) => {
+          fetch(new URL("/global/config", url), { headers })
+            .then((response) => response.json() as Promise<{ autoupdate?: ConfigV1.Info["autoupdate"] }>)
+            .then((global) => server.call({ name: "checkUpgrade", input: { autoupdate: global.autoupdate } }))
+            .catch(() => {})
+        })
       }, 1000).unref?.()
 
       try {

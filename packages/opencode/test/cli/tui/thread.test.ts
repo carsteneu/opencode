@@ -36,7 +36,7 @@ describe("tui thread", () => {
       entrypoint: path.resolve(import.meta.dir, "../../../src/bootstrap.ts"),
     })
 
-    expect(server.url).toStartWith("http://127.0.0.1:")
+    expect(await server.url).toStartWith("http://127.0.0.1:")
     expect(server.password).toBeString()
     expect(server.events).toBeDefined()
     if (!server.events) throw new Error("Private TUI server did not expose IPC events")
@@ -44,11 +44,11 @@ describe("tui thread", () => {
     const unsubscribe = await server.events.subscribe((event) => {
       if (event.payload.type === "global.disposed") disposed.resolve(event.payload.type)
     })
-    const response = await fetch(server.url + "/global/health", {
+    const response = await fetch((await server.url) + "/global/health", {
       headers: { Authorization: `Basic ${btoa(`opencode:${server.password}`)}` },
     })
     expect(response.status).toBe(200)
-    const dispose = await fetch(server.url + "/global/dispose", {
+    const dispose = await fetch((await server.url) + "/global/dispose", {
       method: "POST",
       headers: { Authorization: `Basic ${btoa(`opencode:${server.password}`)}` },
     })
