@@ -3,6 +3,7 @@ import fs from "fs/promises"
 import { describe, expect } from "bun:test"
 import { Effect, Layer, Schema } from "effect"
 import { FastCheck } from "effect/testing"
+import { Duration } from "effect"
 import { Config } from "@opencode-ai/core/config"
 import { ConfigProvider } from "@opencode-ai/core/config/provider"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
@@ -85,6 +86,20 @@ describe("Config", () => {
         }),
         { numRuns: 100 },
       )
+    }),
+  )
+
+  it.effect("decodes a per-formatter timeout as a Duration", () =>
+    Effect.sync(() => {
+      const info = Schema.decodeUnknownSync(Config.Info)({
+        model: "test/model",
+        formatter: {
+          custom: { command: ["custom-fmt", "$FILE"], extensions: [".foo"], timeout: 15_000 },
+        },
+      })
+      const formatter = info.formatter as Record<string, { timeout?: Duration.Duration }>
+      expect(formatter.custom.timeout).toBeDefined()
+      expect(Duration.toMillis(formatter.custom.timeout!)).toBe(15_000)
     }),
   )
 

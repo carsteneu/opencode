@@ -1,6 +1,6 @@
 import path from "path"
-import { Context, Effect, Layer, Stream } from "effect"
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http"
+import { Context, Duration, Effect, Layer, Stream } from "effect"
+import { HttpClient } from "effect/unstable/http"
 import { ChildProcess } from "effect/unstable/process"
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
 import { CrossSpawnSpawner } from "../cross-spawn-spawner"
@@ -9,9 +9,12 @@ import { httpClient } from "../effect/app-node-platform"
 import { FSUtil } from "../fs-util"
 import { Global } from "../global"
 import { which } from "../util/which"
+import { downloadBounded } from "../http/bounded-download"
 
 export namespace RipgrepBinary {
   const VERSION = "15.1.0"
+  const MAX_RIPGREP_BYTES = 10 * 1024 * 1024
+  const DOWNLOAD_TIMEOUT = Duration.minutes(5)
   const PLATFORM = {
     "arm64-darwin": { platform: "aarch64-apple-darwin", extension: "tar.gz" },
     "arm64-linux": { platform: "aarch64-unknown-linux-gnu", extension: "tar.gz" },
@@ -107,14 +110,17 @@ export namespace RipgrepBinary {
 
             yield* Effect.logInfo("downloading ripgrep", { url })
             yield* fs.ensureDir(Global.Path.bin).pipe(Effect.orDie)
-            const bytes = yield* HttpClientRequest.get(url).pipe(
-              http.execute,
-              Effect.flatMap((response) => response.arrayBuffer),
-              Effect.mapError((cause) => (cause instanceof Error ? cause : new Error(String(cause)))),
+            const ok = yield* downloadBounded(fs, http, url, archive, {
+              maxBytes: MAX_RIPGREP_BYTES,
+              timeout: DOWNLOAD_TIMEOUT,
+            }).pipe(
+              Effect.as(true),
+              Effect.catch((error) =>
+                Effect.logError("failed to download ripgrep", { url, error }).pipe(Effect.as(false)),
+              ),
             )
-            if (bytes.byteLength === 0) throw new Error(`failed to download ripgrep from ${url}`)
+            if (!ok) throw new Error(`failed to download ripgrep from ${url}`)
 
-            yield* fs.writeWithDirs(archive, new Uint8Array(bytes))
             yield* extract(archive, config, target)
             yield* fs.remove(archive, { force: true }).pipe(Effect.ignore)
             return target

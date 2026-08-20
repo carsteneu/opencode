@@ -120,12 +120,16 @@ function shouldSeedDiagnosticsOnFirstPush(serverID: string) {
   return serverID === "typescript"
 }
 
+const MAX_OPEN_FILES = 512
+
 export async function create(input: {
   serverID: string
   server: LSPServer.Handle
   root: string
   directory: string
   instance: InstanceContext
+  /** Upper bound on concurrently open documents before LRU eviction kicks in. */
+  openFileLimit?: number
 }) {
   const instance = input.instance
 
@@ -150,6 +154,14 @@ export async function create(input: {
   }
   const updatePullDiagnostics = (filePath: string, next: Diagnostic[]) => {
     pullDiagnostics.set(filePath, next)
+  }
+  const getDiagnostics = (scopedTo?: ReadonlySet<string>) => {
+    const result = new Map<string, Diagnostic[]>()
+    for (const key of new Set([...pushDiagnostics.keys(), ...pullDiagnostics.keys()])) {
+      if (scopedTo && !scopedTo.has(key)) continue
+      result.set(key, mergedDiagnostics(key))
+    }
+    return result
   }
   const emitRegistrationChange = () => {
     for (const listener of [...registrationListeners]) listener()
@@ -265,7 +277,138 @@ export async function create(input: {
     })
   }
 
-  const files: Record<string, { version: number; text: string }> = {}
+  type OpenFile = {
+    version: number
+    text: string
+    mtimeMs: number
+    size: number
+    lastAccess: number
+  }
+
+  const maxOpen = input.openFileLimit ?? MAX_OPEN_FILES
+  // Insertion order doubles as LRU recency: re-set on access moves a key to the end.
+  const files = new Map<string, OpenFile>()
+
+  const touchOpen = (filePath: string) => {
+    const record = files.get(filePath)
+    if (!record) return
+    record.lastAccess = Date.now()
+    files.delete(filePath)
+    files.set(filePath, record)
+  }
+
+  // Sends didClose and drops all state for an open document.
+  const releaseFile = async (filePath: string) => {
+    const removed = files.delete(filePath)
+    pushDiagnostics.delete(filePath)
+    pullDiagnostics.delete(filePath)
+    published.delete(filePath)
+    if (!removed) return
+    await connection.sendNotification("textDocument/didClose", {
+      textDocument: { uri: pathToFileURL(filePath).href },
+    })
+  }
+
+  const evictIfNeeded = async (keep: string) => {
+    while (files.size > maxOpen) {
+      let lru: string | undefined
+      let oldest = Infinity
+      for (const [filePath, record] of files) {
+        if (filePath === keep) continue
+        if (record.lastAccess < oldest) {
+          oldest = record.lastAccess
+          lru = filePath
+        }
+      }
+      if (!lru) break
+      await releaseFile(lru)
+    }
+  }
+
+  // Open a document if not already open; if open and unchanged, no-op without
+  // re-reading the file or re-sending didChange. Bumps the version and sends
+  // didChange only when the on-disk content actually changed.
+  async function ensureOpen(request: { path: string }): Promise<number> {
+    const stat = await Filesystem.statAsync(request.path)
+    const existing = files.get(request.path)
+
+    if (existing && stat && Number(stat.mtimeMs) === existing.mtimeMs && Number(stat.size) === existing.size) {
+      touchOpen(request.path)
+      return existing.version
+    }
+
+    const text = await Filesystem.readText(request.path)
+    const mtimeMs = stat ? Number(stat.mtimeMs) : 0
+    const size = stat ? Number(stat.size) : text.length
+
+    if (existing) {
+      // Do not wipe diagnostics on didChange. Some servers (e.g. clangd) only
+      // re-emit diagnostics when the content actually changes, so clearing
+      // here would lose errors for no-op touchFile calls. Let the server's
+      // next push/pull overwrite naturally.
+      await connection.sendNotification("workspace/didChangeWatchedFiles", {
+        changes: [
+          {
+            uri: pathToFileURL(request.path).href,
+            type: FILE_CHANGE_CHANGED,
+          },
+        ],
+      })
+
+      const next = existing.version + 1
+      files.set(request.path, {
+        version: next,
+        text,
+        mtimeMs,
+        size,
+        lastAccess: Date.now(),
+      })
+      await connection.sendNotification("textDocument/didChange", {
+        textDocument: {
+          uri: pathToFileURL(request.path).href,
+          version: next,
+        },
+        contentChanges:
+          syncKind === TEXT_DOCUMENT_SYNC_INCREMENTAL
+            ? [
+                {
+                  range: {
+                    start: { line: 0, character: 0 },
+                    end: endPosition(existing.text),
+                  },
+                  text,
+                },
+              ]
+            : [{ text }],
+      })
+      return next
+    }
+
+    const extension = path.extname(request.path)
+    const languageId = LANGUAGE_EXTENSIONS[extension] ?? "plaintext"
+
+    await connection.sendNotification("workspace/didChangeWatchedFiles", {
+      changes: [
+        {
+          uri: pathToFileURL(request.path).href,
+          type: FILE_CHANGE_CREATED,
+        },
+      ],
+    })
+
+    pushDiagnostics.delete(request.path)
+    pullDiagnostics.delete(request.path)
+    await connection.sendNotification("textDocument/didOpen", {
+      textDocument: {
+        uri: pathToFileURL(request.path).href,
+        languageId,
+        version: 0,
+        text,
+      },
+    })
+    files.set(request.path, { version: 0, text, mtimeMs, size, lastAccess: Date.now() })
+    return 0
+  }
 
   // --- Diagnostic helpers ---
 
@@ -555,74 +698,38 @@ export async function create(input: {
         request.path = Filesystem.normalizePath(
           path.isAbsolute(request.path) ? request.path : path.resolve(input.directory, request.path),
         )
-        const text = await Filesystem.readText(request.path)
-        const extension = path.extname(request.path)
-        const languageId = LANGUAGE_EXTENSIONS[extension] ?? "plaintext"
-
-        const document = files[request.path]
-        if (document !== undefined) {
-          // Do not wipe diagnostics on didChange. Some servers (e.g. clangd) only
-          // re-emit diagnostics when the content actually changes, so clearing
-          // here would lose errors for no-op touchFile calls. Let the server's
-          // next push/pull overwrite naturally.
-          await connection.sendNotification("workspace/didChangeWatchedFiles", {
-            changes: [
-              {
-                uri: pathToFileURL(request.path).href,
-                type: FILE_CHANGE_CHANGED,
-              },
-            ],
-          })
-
-          const next = document.version + 1
-          files[request.path] = { version: next, text }
-          await connection.sendNotification("textDocument/didChange", {
-            textDocument: {
-              uri: pathToFileURL(request.path).href,
-              version: next,
-            },
-            contentChanges:
-              syncKind === TEXT_DOCUMENT_SYNC_INCREMENTAL
-                ? [
-                    {
-                      range: {
-                        start: { line: 0, character: 0 },
-                        end: endPosition(document.text),
-                      },
-                      text,
-                    },
-                  ]
-                : [{ text }],
-          })
-          return next
-        }
-
-        await connection.sendNotification("workspace/didChangeWatchedFiles", {
-          changes: [
-            {
-              uri: pathToFileURL(request.path).href,
-              type: FILE_CHANGE_CREATED,
-            },
-          ],
-        })
-
-        pushDiagnostics.delete(request.path)
-        pullDiagnostics.delete(request.path)
-        await connection.sendNotification("textDocument/didOpen", {
-          textDocument: {
-            uri: pathToFileURL(request.path).href,
-            languageId,
-            version: 0,
-            text,
-          },
-        })
-        files[request.path] = { version: 0, text }
-        return 0
+        const version = await ensureOpen(request)
+        await evictIfNeeded(request.path)
+        return version
+      },
+      async close(request: { path: string }) {
+        const filePath = Filesystem.normalizePath(
+          path.isAbsolute(request.path) ? request.path : path.resolve(input.directory, request.path),
+        )
+        await releaseFile(filePath)
       },
     },
+    close: async (request: { path: string }) => {
+      const filePath = Filesystem.normalizePath(
+        path.isAbsolute(request.path) ? request.path : path.resolve(input.directory, request.path),
+      )
+      await releaseFile(filePath)
+    },
     get diagnostics() {
+      return getDiagnostics()
+    },
+    diagnosticsFor(scopedTo?: readonly string[], otherFiles = 0) {
+      const wanted = scopedTo ? new Set(scopedTo.map(Filesystem.normalizePath)) : undefined
       const result = new Map<string, Diagnostic[]>()
+      let othersAdded = 0
       for (const key of new Set([...pushDiagnostics.keys(), ...pullDiagnostics.keys()])) {
+        if (wanted && !wanted.has(key)) {
+          // Bounded cross-file set: surface up to `otherFiles` non-selected
+          // files so callers (e.g. write.ts) can report "errors in other
+          // files" without materializing the whole workspace diagnostic map.
+          if (otherFiles <= 0 || othersAdded >= otherFiles) continue
+          othersAdded++
+        }
         result.set(key, mergedDiagnostics(key))
       }
       return result

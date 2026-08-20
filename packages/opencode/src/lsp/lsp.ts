@@ -18,6 +18,11 @@ import { compact } from "./diagnostic"
 
 export const Event = LspEvent
 
+// Overall budget for opening many files in one apply_patch pass and awaiting
+// their diagnostics. Bounds the batch so N files never take N serial markdown
+// wait timeouts.
+const APPLY_PATCH_LSP_TOTAL_TIMEOUT_MS = 15_000
+
 const Position = Schema.Struct({
   line: NonNegativeInt,
   character: NonNegativeInt,
@@ -115,6 +120,7 @@ interface State {
   servers: Record<string, LSPServer.Info>
   broken: Set<string>
   spawning: Map<string, Promise<LSPClient.Info | undefined>>
+  disposed: boolean
 }
 
 export interface Interface {
@@ -122,6 +128,8 @@ export interface Interface {
   readonly status: () => Effect.Effect<Status[]>
   readonly hasClients: (file: string) => Effect.Effect<boolean>
   readonly touchFile: (input: string, diagnostics?: "document" | "full") => Effect.Effect<void>
+  /** Open many files in parallel and await their diagnostics once, under a single overall deadline. */
+  readonly touchFiles?: (inputs: readonly string[], diagnostics?: "document" | "full") => Effect.Effect<void>
   /** Return all diagnostics, or a compact error-only view for selected files. */
   readonly diagnostics: (options?: {
     readonly files: readonly string[]
@@ -199,11 +207,15 @@ const layer = Layer.effect(
           servers,
           broken: new Set(),
           spawning: new Map(),
+          disposed: false,
         }
 
         yield* Effect.addFinalizer(() =>
           Effect.promise(async () => {
+            s.disposed = true
             await Promise.all(s.clients.map((client) => client.shutdown()))
+            // Completing in-flight spawns see `disposed` in schedule() and shut
+            // their freshly-built clients down rather than registering them.
           }),
         )
 
@@ -246,6 +258,13 @@ const layer = Layer.effect(
           })
 
           if (!client) return undefined
+
+          // A dispose may have landed while this spawn was in flight. Do not
+          // register a post-dispose client; shut it down so no process is orphaned.
+          if (s.disposed) {
+            await client.shutdown()
+            return undefined
+          }
 
           const existing = s.clients.find((x) => x.root === root && x.serverID === server.id)
           if (existing) {
@@ -367,6 +386,12 @@ const layer = Layer.effect(
       )
     })
 
+    const touchFiles: NonNullable<Interface["touchFiles"]> = (inputs, diagnostics) =>
+      Effect.forEach(inputs, (input) => touchFile(input, diagnostics), {
+        discard: true,
+        concurrency: "unbounded",
+      }).pipe(Effect.timeout(APPLY_PATCH_LSP_TOTAL_TIMEOUT_MS), Effect.exit)
+
     const diagnostics = Effect.fn("LSP.diagnostics")(function* (options?: {
       readonly files: readonly string[]
       readonly limit?: number
@@ -378,7 +403,9 @@ const layer = Layer.effect(
       const results: Record<string, LSPClient.Diagnostic[]> = Object.fromEntries(
         (files ?? []).map((file) => [file, []]),
       )
-      const all = yield* runAll(async (client) => client.diagnostics)
+      const all = yield* runAll(async (client) =>
+        files ? client.diagnosticsFor(files, options?.otherFiles) : client.diagnostics,
+      )
       for (const result of all) {
         if (files) {
           for (const file of files) {
@@ -515,6 +542,7 @@ const layer = Layer.effect(
       status,
       hasClients,
       touchFile,
+      touchFiles,
       diagnostics,
       hover,
       definition,

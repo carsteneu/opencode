@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import path from "path"
 import { Effect, FileSystem, Layer } from "effect"
+import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 
 import { Instruction } from "../../src/session/instruction"
@@ -206,7 +207,71 @@ describe("Instruction.resolve", () => {
     ),
   )
 
-  test.todo("fetches remote instructions from config URLs via HttpClient", () => {})
+  describe("Instruction.system remote URLs", () => {
+    const remoteHttp = (handler: (request: HttpClientRequest.HttpClientRequest) => Response) =>
+      HttpClient.make((request) =>
+        Effect.sync(() => handler(request)).pipe(
+          Effect.map((response) => HttpClientResponse.fromWeb(request, response)),
+        ),
+      )
+
+    const remoteLayer = (config: Record<string, unknown>, http: HttpClient.HttpClient, home: string) =>
+      AppNodeBuilder.build(Instruction.node, [
+        [Config.node, Layer.succeed(Config.Service, TestConfig.make({ get: () => Effect.succeed(config) }))],
+        [LayerNodePlatform.httpClient, Layer.succeed(HttpClient.HttpClient, http)],
+        [Global.node, Global.layerWith({ home, config: home })],
+        [RuntimeFlags.node, RuntimeFlags.layer({})],
+      ])
+
+    const remoteRun = <A, E, R>(
+      self: Effect.Effect<A, E, R>,
+      config: Record<string, unknown>,
+      http: HttpClient.HttpClient,
+      home: string,
+    ) => Effect.provide(self, remoteLayer(config, http, home))
+
+    it.live("fetches remote instructions from config URLs", () =>
+      provideTmpdirInstance((home) => {
+        const url = "https://example.test/AGENTS.md"
+        const http = remoteHttp(
+          (request) => new Response("# Remote Rules", { status: 200, headers: { "content-type": "text/markdown" } }),
+        )
+        return remoteRun(
+          Effect.gen(function* () {
+            const svc = yield* Instruction.Service
+            const rules = yield* svc.system()
+            expect(rules).toEqual([`Instructions from: ${url}\n# Remote Rules`])
+          }),
+          { instructions: [url] },
+          http,
+          home,
+        )
+      }),
+    )
+
+    it.live("skips remote instructions that exceed the body cap", () =>
+      provideTmpdirInstance((home) => {
+        const url = "https://example.test/big.md"
+        const http = remoteHttp(
+          (request) =>
+            new Response("x", {
+              status: 200,
+              headers: { "content-type": "text/plain", "content-length": String(2 * 1024 * 1024) },
+            }),
+        )
+        return remoteRun(
+          Effect.gen(function* () {
+            const svc = yield* Instruction.Service
+            const rules = yield* svc.system()
+            expect(rules).toEqual([])
+          }),
+          { instructions: [url] },
+          http,
+          home,
+        )
+      }),
+    )
+  })
 })
 
 describe("Instruction.system", () => {

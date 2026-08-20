@@ -42,6 +42,15 @@ interface GitResult {
   readonly stdoutTruncated: boolean
 }
 
+// Every git call gets a bounded runtime so a hanging git (e.g. a wedged add/commit
+// on the shared per-worktree snapshot lock) cannot starve other sessions. The env
+// overrides exist so tests can shrink the deadline deterministically.
+const gitTimeoutMs = (value: string | undefined, fallback: number): number => {
+  if (value === undefined) return fallback
+  const n = Number(value)
+  return Number.isFinite(n) && n > 0 ? n : fallback
+}
+
 type State = Omit<Interface, "init">
 
 export interface Interface {
@@ -117,18 +126,22 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
               forceKillAfter?: Duration.Input
             },
           ) {
+            const timeout =
+              opts?.timeout ?? Duration.millis(gitTimeoutMs(process.env.OPENCODE_SNAPSHOT_GIT_TIMEOUT, 120_000))
+            const forceKillAfter =
+              opts?.forceKillAfter ?? Duration.millis(gitTimeoutMs(process.env.OPENCODE_SNAPSHOT_GIT_FORCEKILL, 5_000))
             const result = yield* appProcess.run(
               ChildProcess.make("git", cmd, {
                 cwd: opts?.cwd,
                 env: opts?.env,
                 extendEnv: true,
-                forceKillAfter: opts?.forceKillAfter,
+                forceKillAfter,
               }),
               {
                 stdin: opts?.stdin,
                 maxOutputBytes: opts?.maxOutputBytes,
                 maxErrorBytes: opts?.maxErrorBytes,
-                timeout: opts?.timeout,
+                timeout,
               },
             )
             return {

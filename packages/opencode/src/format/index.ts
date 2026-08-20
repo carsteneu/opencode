@@ -1,5 +1,5 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Effect, Layer, Context, Schema } from "effect"
+import { Effect, Layer, Context, Schema, Duration } from "effect"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import { ChildProcess } from "effect/unstable/process"
 import { AppProcess } from "@opencode-ai/core/process"
@@ -10,6 +10,10 @@ import { Config } from "@/config/config"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { errorMessage } from "@/util/error"
 import * as Formatter from "./formatter"
+
+// Formatters are best-effort post-write steps, so a stuck one must never hold a
+// write/edit path indefinitely. Configurable per formatter; this is the fallback.
+const defaultTimeout = Duration.minutes(1)
 
 export const Status = Schema.Struct({
   name: Schema.String,
@@ -91,6 +95,9 @@ const layer = Layer.effect(
                     stdout: "ignore",
                     stderr: "ignore",
                   }),
+                  {
+                    timeout: item.timeout ?? defaultTimeout,
+                  },
                 )
                 .pipe(
                   Effect.catch((error) =>

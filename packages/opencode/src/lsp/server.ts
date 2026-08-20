@@ -13,14 +13,30 @@ import { Module } from "@opencode-ai/core/util/module"
 import { spawn } from "./launch"
 import { Npm } from "@opencode-ai/core/npm"
 import type { RuntimeFlags } from "@/effect/runtime-flags"
+import { withTimeout } from "../util/timeout"
+
+// Hard ceiling on a single well-known server's download/extract/install during
+// spawn. Auto-downloaded binaries must never hang spawn waiting on a network
+// call that stalled; on expiry the server is treated as unavailable.
+const INSTALL_DEADLINE_MS = 60_000
 
 const pathExists = async (p: string) =>
   fs
     .stat(p)
     .then(() => true)
     .catch(() => false)
-const run = (cmd: string[], opts: Process.RunOptions = {}) => Process.run(cmd, { ...opts, nothrow: true })
-const output = (cmd: string[], opts: Process.RunOptions = {}) => Process.text(cmd, { ...opts, nothrow: true })
+// Runs an install/extract step. Carries a kill deadline so a wedged child cannot
+// remain orphaned after the surrounding install sequence gives up.
+const run = (cmd: string[], opts: Process.RunOptions = {}) =>
+  Process.run(cmd, { ...opts, nothrow: true, timeout: opts.timeout ?? INSTALL_DEADLINE_MS })
+const output = (cmd: string[], opts: Process.RunOptions = {}) =>
+  Process.text(cmd, { ...opts, nothrow: true, timeout: opts.timeout ?? INSTALL_DEADLINE_MS })
+
+// Runs an install/download/extract step; on deadline expiry it resolves to
+// `undefined` so spawn treats the well-known server as unavailable instead of
+// blocking indefinitely.
+const deadline = <T>(promise: Promise<T>): Promise<T | undefined> =>
+  withTimeout(promise, INSTALL_DEADLINE_MS, "LSP install").catch(() => undefined)
 
 export interface Handle {
   process: ChildProcessWithoutNullStreams
@@ -180,18 +196,21 @@ export const ESLint: Info = {
     const serverPath = path.join(Global.Path.bin, "vscode-eslint", "server", "out", "eslintServer.js")
     if (!(await Filesystem.exists(serverPath))) {
       if (flags.disableLspDownload) return
-      const response = await fetch("https://github.com/microsoft/vscode-eslint/archive/refs/heads/main.zip")
-      if (!response.ok) return
-
       const zipPath = path.join(Global.Path.bin, "vscode-eslint.zip")
-      if (response.body) await Filesystem.writeStream(zipPath, response.body)
+      const installed = await deadline(
+        (async () => {
+          const response = await fetch("https://github.com/microsoft/vscode-eslint/archive/refs/heads/main.zip")
+          if (!response.ok) return false
+          if (response.body) await Filesystem.writeStream(zipPath, response.body)
 
-      const ok = await Archive.extractZip(zipPath, Global.Path.bin)
-        .then(() => true)
-        .catch((error) => {
-          return false
-        })
-      if (!ok) return
+          const ok = await Archive.extractZip(zipPath, Global.Path.bin)
+            .then(() => true)
+            .catch((error) => false)
+          if (!ok) return false
+          return true
+        })(),
+      )
+      if (!installed) return
       await fs.rm(zipPath, { force: true })
 
       const extractedPath = path.join(Global.Path.bin, "vscode-eslint-main")
@@ -204,8 +223,14 @@ export const ESLint: Info = {
       await fs.rename(extractedPath, finalPath)
 
       const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm"
-      await Process.run([npmCmd, "install"], { cwd: finalPath })
-      await Process.run([npmCmd, "run", "compile"], { cwd: finalPath })
+      const npmOk = await deadline(
+        (async () => {
+          await Process.run([npmCmd, "install"], { cwd: finalPath, timeout: INSTALL_DEADLINE_MS })
+          await Process.run([npmCmd, "run", "compile"], { cwd: finalPath, timeout: INSTALL_DEADLINE_MS })
+          return true
+        })(),
+      )
+      if (!npmOk) return
     }
 
     const proc = spawn("node", [serverPath, "--stdio"], {
@@ -374,6 +399,7 @@ export const Gopls: Info = {
         stdout: "pipe",
         stderr: "pipe",
         stdin: "pipe",
+        timeout: INSTALL_DEADLINE_MS,
       })
       const exit = await proc.exited
       if (exit !== 0) {
@@ -406,6 +432,7 @@ export const Rubocop: Info = {
         stdout: "pipe",
         stderr: "pipe",
         stdin: "pipe",
+        timeout: INSTALL_DEADLINE_MS,
       })
       const exit = await proc.exited
       if (exit !== 0) {
@@ -568,9 +595,9 @@ export const ElixirLS: Info = {
 
         const cwd = path.join(Global.Path.bin, "elixir-ls-master")
         const env = { MIX_ENV: "prod", ...process.env }
-        await Process.run(["mix", "deps.get"], { cwd, env })
-        await Process.run(["mix", "compile"], { cwd, env })
-        await Process.run(["mix", "elixir_ls.release2", "-o", "release"], { cwd, env })
+        await Process.run(["mix", "deps.get"], { cwd, env, timeout: INSTALL_DEADLINE_MS })
+        await Process.run(["mix", "compile"], { cwd, env, timeout: INSTALL_DEADLINE_MS })
+        await Process.run(["mix", "elixir_ls.release2", "-o", "release"], { cwd, env, timeout: INSTALL_DEADLINE_MS })
       }
     }
 
@@ -644,24 +671,23 @@ export const Zls: Info = {
       }
 
       const downloadUrl = asset.browser_download_url
-      const downloadResponse = await fetch(downloadUrl)
-      if (!downloadResponse.ok) {
-        return
-      }
-
       const tempPath = path.join(Global.Path.bin, assetName)
-      if (downloadResponse.body) await Filesystem.writeStream(tempPath, downloadResponse.body)
+      const installed = await deadline(
+        (async () => {
+          const downloadResponse = await fetch(downloadUrl)
+          if (!downloadResponse.ok) return false
+          if (downloadResponse.body) await Filesystem.writeStream(tempPath, downloadResponse.body)
 
-      if (ext === "zip") {
-        const ok = await Archive.extractZip(tempPath, Global.Path.bin)
-          .then(() => true)
-          .catch((error) => {
-            return false
-          })
-        if (!ok) return
-      } else {
-        await run(["tar", "-xf", tempPath], { cwd: Global.Path.bin })
-      }
+          if (ext === "zip") {
+            return Archive.extractZip(tempPath, Global.Path.bin)
+              .then(() => true)
+              .catch((error) => false)
+          }
+          await run(["tar", "-xf", tempPath], { cwd: Global.Path.bin })
+          return true
+        })(),
+      )
+      if (!installed) return
 
       await fs.rm(tempPath, { force: true })
 
@@ -757,6 +783,7 @@ async function installRoslynLanguageServer(disableLspDownload: boolean) {
     stdout: "pipe",
     stderr: "pipe",
     stdin: "pipe",
+    timeout: INSTALL_DEADLINE_MS,
   })
   const exit = await proc.exited
   if (exit !== 0) {
@@ -836,6 +863,7 @@ export const FSharp: Info = {
         stdout: "pipe",
         stderr: "pipe",
         stdin: "pipe",
+        timeout: INSTALL_DEADLINE_MS,
       })
       const exit = await proc.exited
       if (exit !== 0) {
@@ -1015,36 +1043,33 @@ export const Clangd: Info = {
     }
 
     const name = asset.name
-    const downloadResponse = await fetch(asset.browser_download_url)
-    if (!downloadResponse.ok) {
-      return
-    }
-
     const archive = path.join(Global.Path.bin, name)
-    const buf = await downloadResponse.arrayBuffer()
-    if (buf.byteLength === 0) {
-      return
-    }
-    await Filesystem.write(archive, Buffer.from(buf))
+    const installed = await deadline(
+      (async () => {
+        const downloadResponse = await fetch(asset!.browser_download_url!)
+        if (!downloadResponse.ok) return false
 
-    const zip = name.endsWith(".zip")
-    const tar = name.endsWith(".tar.xz")
-    if (!zip && !tar) {
-      return
-    }
+        const buf = await downloadResponse.arrayBuffer()
+        if (buf.byteLength === 0) return false
+        await Filesystem.write(archive, Buffer.from(buf))
 
-    if (zip) {
-      const ok = await Archive.extractZip(archive, Global.Path.bin)
-        .then(() => true)
-        .catch((error) => {
-          return false
-        })
-      if (!ok) return
+        if (name.endsWith(".zip")) {
+          return Archive.extractZip(archive, Global.Path.bin)
+            .then(() => true)
+            .catch(() => false)
+        }
+        if (name.endsWith(".tar.xz")) {
+          await run(["tar", "-xf", archive], { cwd: Global.Path.bin })
+          return true
+        }
+        return false
+      })(),
+    )
+    if (!installed) return
+
+    if (name.endsWith(".zip") || name.endsWith(".tar.xz")) {
+      await fs.rm(archive, { force: true })
     }
-    if (tar) {
-      await run(["tar", "-xf", archive], { cwd: Global.Path.bin })
-    }
-    await fs.rm(archive, { force: true })
 
     const bin = path.join(Global.Path.bin, "clangd_" + tag, "bin", "clangd" + ext)
     if (!(await Filesystem.exists(bin))) {
