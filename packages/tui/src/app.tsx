@@ -1130,22 +1130,22 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
       <Show when={Flag.OPENCODE_SHOW_TTFD}>
         <TimeToFirstDraw />
       </Show>
+      <box flexGrow={1} minHeight={0} flexDirection="column">
+        <Suspense fallback={<box flexGrow={1} minHeight={0} />}>
+          <Switch>
+            <Match when={route.data.type === "home"}>
+              <Home />
+            </Match>
+            <Match when={route.data.type === "session"}>
+              <Show when={route.data.type === "session" ? route.data.sessionID : undefined} keyed>
+                {(_) => <Session />}
+              </Show>
+            </Match>
+          </Switch>
+          {plugin()}
+        </Suspense>
+      </box>
       <Show when={ready()}>
-        <box flexGrow={1} minHeight={0} flexDirection="column">
-          <Suspense fallback={<box flexGrow={1} minHeight={0} />}>
-            <Switch>
-              <Match when={route.data.type === "home"}>
-                <Home />
-              </Match>
-              <Match when={route.data.type === "session"}>
-                <Show when={route.data.type === "session" ? route.data.sessionID : undefined} keyed>
-                  {(_) => <Session />}
-                </Show>
-              </Match>
-            </Switch>
-            {plugin()}
-          </Suspense>
-        </box>
         <box flexShrink={0}>
           <pluginRuntime.Slot name="app_bottom" />
         </box>
