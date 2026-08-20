@@ -219,24 +219,63 @@ test("agent elapsed time renders partially only while the block is expanded", as
     expect(native.full).toHaveLength(0)
     expect(native.partial).toHaveLength(0)
 
-    header.processMouseEvent(mouseUp(header))
+      header.processMouseEvent(mouseUp(header))
+      await harness.app.renderer.idle()
+      await waitForFrame(harness.app, "collapse")
+      requests.clear()
+      native.clear()
+      await Bun.sleep(1050)
+      expect(requests.ordinary).toHaveLength(0)
+      expect(requests.partial).toHaveLength(1)
+      expect(requests.partial[0]).toBeInstanceOf(TextRenderable)
+      await harness.app.renderer.idle()
+      expect(native.full).toHaveLength(0)
+      expect(native.partial).toHaveLength(1)
+    } finally {
+      native.restore()
+      requests.restore()
+      harness.app.renderer.destroy()
+    }
+  }, 8000)
+
+  test("dismissing a done agent row hides it and persists for the parent session", async () => {
+    await using tmp = await tmpdir()
+    const harness = await mountFooter(tmp.path, false, false, true)
+    const now = Date.now()
+    harness.sync.set("session", [
+      session(sessionID, undefined, "Parent", now - 10_000),
+      session("agent", sessionID, "Inspect footer (@explore subagent)", now - 5_000),
+    ])
+    harness.sync.set("session_status", "agent", { type: "idle" })
+    await waitForFrame(harness.app, "0/1 active")
+
+    // hover the row to reveal the dismiss affordance, then click it
+    const row = findText(harness.app.renderer.root, "Inspect footer").parent
+    if (!(row instanceof BoxRenderable)) throw new Error("missing agents row")
+    row.processMouseEvent(mouseOver(row))
     await harness.app.renderer.idle()
-    await waitForFrame(harness.app, "collapse")
-    requests.clear()
-    native.clear()
-    await Bun.sleep(1050)
-    expect(requests.ordinary).toHaveLength(0)
-    expect(requests.partial).toHaveLength(1)
-    expect(requests.partial[0]).toBeInstanceOf(TextRenderable)
+    const affordance = findTextOptional(harness.app.renderer.root, "✕")
+    expect(affordance).toBeInstanceOf(TextRenderable)
+
+    affordance!.processMouseEvent(mouseUp(affordance!))
     await harness.app.renderer.idle()
-    expect(native.full).toHaveLength(0)
-    expect(native.partial).toHaveLength(1)
-  } finally {
-    native.restore()
-    requests.restore()
-    harness.app.renderer.destroy()
-  }
-}, 8000)
+    await wait(() => findTextOptional(harness.app.renderer.root, "collapse") === undefined)
+    expect(findTextOptional(harness.app.renderer.root, "Inspect footer")).toBeUndefined()
+
+    // the dismissal is persisted per parent session and survives a re-open
+    const started = Date.now()
+    let persisted: Record<string, unknown> = {}
+    while (Date.now() - started < 2000) {
+      await Bun.sleep(50)
+      try {
+        persisted = (await Bun.file(`${tmp.path}/kv.json`).json()) as Record<string, unknown>
+        if (persisted[`agentsDismissed:${sessionID}`] !== undefined) break
+      } catch {
+        // file not flushed yet
+      }
+    }
+    expect(persisted[`agentsDismissed:${sessionID}`]).toEqual(["agent"])
+  }, 8000)
 
 test("an open dialog promotes token updates to the safe ordinary path", async () => {
   await using tmp = await tmpdir()
@@ -509,6 +548,16 @@ function session(id: string, parentID: string | undefined, title: string, create
 function mouseUp(target: Renderable) {
   return new MouseEvent(target, {
     type: "up",
+    button: 0,
+    x: target.screenX,
+    y: target.screenY,
+    modifiers: { shift: false, alt: false, ctrl: false },
+  })
+}
+
+function mouseOver(target: Renderable) {
+  return new MouseEvent(target, {
+    type: "over",
     button: 0,
     x: target.screenX,
     y: target.screenY,

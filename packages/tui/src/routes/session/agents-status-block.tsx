@@ -2,13 +2,14 @@ import { Index, Show, createEffect, createMemo, createSignal, onCleanup } from "
 import { useRoute, useRouteData } from "../../context/route"
 import { useSync } from "../../context/sync"
 import { useTheme } from "../../context/theme"
+import { useKV } from "../../context/kv"
 import { SplitBorder } from "../../ui/border"
 import { PartialText } from "../../ui/partial-text"
 import { type AgentRow, deriveAgentRows, formatDuration } from "./agents-status"
 import { Locale } from "../../util/locale"
 import { useTerminalDimensions } from "@opentui/solid"
 
-function AgentStatusRow(props: { row: AgentRow; now: number; onOpen: (id: string) => void }) {
+function AgentStatusRow(props: { row: AgentRow; now: number; onOpen: (id: string) => void; onDismiss?: (id: string) => void }) {
   const { theme } = useTheme()
   const [hover, setHover] = createSignal(false)
 
@@ -73,6 +74,17 @@ function AgentStatusRow(props: { row: AgentRow; now: number; onOpen: (id: string
           {Locale.truncate(props.row.reason ?? "", 60)}
         </text>
       </Show>
+      <Show when={hover() && props.onDismiss}>
+        <text
+          fg={theme.textMuted}
+          onMouseUp={(e: { stopPropagation(): void }) => {
+            e.stopPropagation()
+            props.onDismiss!(props.row.id)
+          }}
+        >
+          ✕
+        </text>
+      </Show>
     </box>
   )
 }
@@ -82,6 +94,23 @@ export function AgentsStatusBlock() {
   const { navigate } = useRoute()
   const sync = useSync()
   const { theme } = useTheme()
+  const kv = useKV()
+
+  const [dismissedAgentIds, setDismissedAgentIds] = createSignal<readonly string[]>([])
+  const dismissedKey = createMemo(() => `agentsDismissed:${route.sessionID}`)
+  // Re-hydrate whenever the parent session (or persisted value) changes, so
+  // dismissals survive session switches and TUI restarts.
+  createEffect(() => {
+    const stored = kv.get(dismissedKey())
+    setDismissedAgentIds(Array.isArray(stored) ? stored : [])
+  })
+  const dismissAgent = (id: string) => {
+    const current = dismissedAgentIds()
+    if (current.includes(id)) return
+    const next = [...current, id]
+    setDismissedAgentIds(next)
+    kv.set(dismissedKey(), next)
+  }
 
   const rows = createMemo(() =>
     deriveAgentRows({
@@ -90,6 +119,7 @@ export function AgentsStatusBlock() {
       status: sync.data.session_status,
       messages: sync.data.message,
       parts: sync.data.part,
+      dismissed: dismissedAgentIds(),
     }),
   )
   const activeCount = createMemo(() => rows().filter((x) => x.state === "running" || x.state === "waiting").length)
@@ -140,7 +170,7 @@ export function AgentsStatusBlock() {
           </box>
           <Show when={expanded()}>
             <box flexDirection="column" gap={0}>
-              <Index each={rows()}>{(row) => <AgentStatusRow row={row()} now={now()} onOpen={open} />}</Index>
+              <Index each={rows()}>{(row) => <AgentStatusRow row={row()} now={now()} onOpen={open} onDismiss={dismissAgent} />}</Index>
             </box>
           </Show>
         </box>
