@@ -567,7 +567,7 @@ const layer = Layer.effect(
         yield* Deferred.succeed(deferred, undefined).pipe(Effect.asVoid)
         return
       }
-      yield* createAndStore(name, mcp).pipe(
+      yield* createAndStore(name, mcp, true).pipe(
         Effect.onExit(() =>
           Effect.sync(() => {
             delete s.inflight[name]
@@ -654,13 +654,25 @@ const layer = Layer.effect(
         }))
     })
 
-    const createAndStore = Effect.fn("MCP.createAndStore")(function* (name: string, mcp: ConfigMCPV1.Info) {
+    const createAndStore = Effect.fn("MCP.createAndStore")(function* (
+      name: string,
+      mcp: ConfigMCPV1.Info,
+      lazy = false,
+    ) {
       const s = yield* InstanceState.get(state)
       const result = yield* create(s, name, mcp)
 
       if (s.disposed) {
         if (result.mcpClient) yield* Effect.tryPromise(() => result.mcpClient!.close()).pipe(Effect.ignore)
         return yield* Effect.interrupt
+      }
+
+      // A lazy (first-use) connect must not commit over an explicit
+      // disconnect/add that ran while it was in flight: discard the result
+      // and keep the current status ("disabled"/"connected") instead.
+      if (lazy && s.status[name] && s.status[name].status !== "connecting") {
+        if (result.mcpClient) yield* Effect.tryPromise(() => result.mcpClient!.close()).pipe(Effect.ignore)
+        return s.status[name]
       }
 
       s.status[name] = result.status

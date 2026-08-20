@@ -643,10 +643,10 @@ it.instance(
       const files = initializationServers.map((name) => path.join(directory, `${name}.started`))
       const release = path.join(directory, "release")
       yield* registerPidCleanup(files, release)
-        const mcp = yield* MCP.Service
-        const loading = yield* Effect.forkScoped(mcp.clients())
+      const mcp = yield* MCP.Service
+      const loading = yield* Effect.forkScoped(mcp.clients())
 
-        const firstWave = yield* pollWithTimeout(
+      const firstWave = yield* pollWithTimeout(
         Effect.promise(async () => {
           const count = (await Promise.all(files.map((file) => Bun.file(file).exists()))).filter(Boolean).length
           return count >= 4 ? count : undefined
@@ -664,10 +664,10 @@ it.instance(
       ).pipe(Effect.timeoutOption("750 millis"))
       expect(overflow._tag).toBe("None")
 
-        yield* Effect.promise(() => Bun.write(release, "release"))
-        const clients = yield* Fiber.join(loading)
-        expect(initializationServers.every((name) => clients[name] !== undefined)).toBe(true)
-      }),
+      yield* Effect.promise(() => Bun.write(release, "release"))
+      const clients = yield* Fiber.join(loading)
+      expect(initializationServers.every((name) => clients[name] !== undefined)).toBe(true)
+    }),
   {
     config: {
       mcp: initializationMcp,
@@ -676,6 +676,58 @@ it.instance(
       Effect.promise(() => Bun.$`mkdir -p ${path.join(directory, initializationBarrier)}`.quiet()).pipe(Effect.asVoid),
   },
   30_000,
+)
+
+it.instance(
+  "status answers from config without establishing a connection",
+  () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const started = path.join(test.directory, initializationBarrier, "barrier-0.started")
+      yield* registerPidCleanup([started])
+      const mcp = yield* MCP.Service
+      expect((yield* mcp.status())["barrier-0"]?.status).toBe("connecting")
+      expect(yield* Effect.promise(() => Bun.file(started).exists())).toBe(false)
+    }),
+  {
+    config: {
+      mcp: initializationMcp,
+    },
+  },
+  20_000,
+)
+
+it.instance(
+  "disconnect during a lazy connect wins over the trailing connect",
+  () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const directory = path.join(test.directory, initializationBarrier)
+      const started = path.join(directory, "barrier-0.started")
+      const release = path.join(directory, "release")
+      yield* registerPidCleanup([started], release)
+      const mcp = yield* MCP.Service
+      const loading = yield* Effect.forkScoped(mcp.clients())
+
+      yield* pollWithTimeout(
+        Effect.promise(() => Bun.file(started).exists()),
+        "server did not reach the initialization barrier",
+      )
+
+      yield* mcp.disconnect("barrier-0")
+      expect((yield* mcp.status())["barrier-0"]?.status).toBe("disabled")
+
+      yield* Effect.promise(() => Bun.write(release, "release"))
+      yield* Fiber.await(loading)
+
+      expect((yield* mcp.status())["barrier-0"]?.status).toBe("disabled")
+    }),
+  {
+    config: { mcp: { "barrier-0": initializationMcp["barrier-0"] } },
+    init: (directory) =>
+      Effect.promise(() => Bun.$`mkdir -p ${path.join(directory, initializationBarrier)}`.quiet()).pipe(Effect.asVoid),
+  },
+  20_000,
 )
 
 it.instance(
@@ -689,9 +741,9 @@ it.instance(
       const readyListed = path.join(directory, "ready.listed")
       const files = [readyPid, ...barrierFiles]
       yield* registerPidCleanup(files)
-        const mcp = yield* MCP.Service
-        const loading = yield* Effect.forkScoped(mcp.tools())
-        const pids = yield* pollWithTimeout(
+      const mcp = yield* MCP.Service
+      const loading = yield* Effect.forkScoped(mcp.tools())
+      const pids = yield* pollWithTimeout(
         Effect.promise(async () => {
           if (!(await Bun.file(readyListed).exists())) return undefined
           const started = await Promise.all(
