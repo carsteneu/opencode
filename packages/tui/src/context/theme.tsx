@@ -222,10 +222,12 @@ export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
       refreshSystemTheme(renderer.themeMode ?? store.mode)
     }
 
-    const handle = (mode: "dark" | "light") => {
-      if (store.lock) return
-      apply(mode)
-    }
+      const handle = (mode: "dark" | "light") => {
+        if (store.lock) return
+        // Remember the terminal's mode so the next boot can paint without the OSC round-trip.
+        kv.set("theme_mode", mode)
+        apply(mode)
+      }
     renderer.on(CliRenderEvents.THEME_MODE, handle)
 
     const handleThemeNotification = (sequence: string) => {

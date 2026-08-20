@@ -5,6 +5,7 @@ import { Deferred, Effect } from "effect"
 import { Global } from "@opencode-ai/core/global"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
+import { readLastKnownThemeMode } from "./util/last-theme-mode"
 import { ClipboardProvider, useClipboard } from "./context/clipboard"
 import { ExitProvider, useExit } from "./context/exit"
 import { EpilogueProvider } from "./context/epilogue"
@@ -236,11 +237,15 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
       renderer.once("destroy", () => Deferred.doneUnsafe(shutdown, Effect.void))
       const pluginRuntime = createPluginRuntime()
 
-      yield* Effect.tryPromise(async () => {
-        // Prewarm palette before ThemeProvider mounts so `system` theme avoids a first-paint fallback flash.
-        void renderer.getPalette({ size: 16 }).catch(() => undefined)
-        const mode = (await renderer.waitForThemeMode(1000)) ?? "dark"
-        if (renderer.isDestroyed) return
+        yield* Effect.tryPromise(async () => {
+          // Prewarm palette before ThemeProvider mounts so `system` theme avoids a first-paint fallback flash.
+          void renderer.getPalette({ size: 16 }).catch(() => undefined)
+          // Start with the last-known theme mode (kv.json) instead of blocking first
+          // paint on the terminal's OSC theme query, which takes the full second on
+          // terminals that never reply. ThemeProvider adopts the real mode reactively
+          // once the reply lands.
+          const mode = (await readLastKnownThemeMode(global.state)) ?? "dark"
+          if (renderer.isDestroyed) return
 
         await render(() => {
           return (

@@ -4,6 +4,7 @@ import path from "node:path"
 import type { TerminalColors } from "@opentui/core"
 import { DEFAULT_THEMES, addTheme, allThemes, hasTheme, resolveTheme, terminalMode } from "../src/theme"
 import { discoverThemes } from "../src/context/theme"
+import { readLastKnownThemeMode, themeModeFromKV } from "../src/util/last-theme-mode"
 import { tmpdir } from "./fixture/fixture"
 
 test("addTheme writes into module theme store", () => {
@@ -78,4 +79,22 @@ test("custom theme precedence follows directory order", async () => {
   await writeFile(path.join(project, "themes", "custom.json"), JSON.stringify({ source: "project" }))
 
   await expect(discoverThemes([global, project])).resolves.toEqual({ custom: { source: "project" } })
+})
+
+test("themeModeFromKV prefers lock over last-known mode", () => {
+  expect(themeModeFromKV({ theme_mode_lock: "light", theme_mode: "dark" })).toBe("light")
+  expect(themeModeFromKV({ theme_mode: "dark" })).toBe("dark")
+  expect(themeModeFromKV({ theme_mode_lock: "system" })).toBeUndefined()
+  expect(themeModeFromKV({})).toBeUndefined()
+})
+
+test("readLastKnownThemeMode reads kv.json from state path", async () => {
+  await using tmp = await tmpdir()
+  await writeFile(path.join(tmp.path, "kv.json"), JSON.stringify({ theme_mode: "dark" }))
+  await expect(readLastKnownThemeMode(tmp.path)).resolves.toBe("dark")
+})
+
+test("readLastKnownThemeMode tolerates missing kv.json", async () => {
+  await using tmp = await tmpdir()
+  await expect(readLastKnownThemeMode(tmp.path)).resolves.toBeUndefined()
 })
