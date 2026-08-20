@@ -34,15 +34,25 @@ const layer = Layer.effect(
       yield* Effect.logInfo("bootstrapping", { directory: ctx.directory })
       // everything depends on config so eager load it for nice traces
       yield* config.get()
-      // Plugin can mutate config so it has to be initialized before anything else.
-      yield* plugin.init()
+      // Plugin hooks can mutate config downstream. Loading no longer blocks the
+      // boot gate: plugin-dependent consumers (provider/tool/auth) await
+      // Plugin.list(), which materializes -- and joins -- the same in-flight
+      // state (InstanceState dedups by directory via ScopedCache), so they get
+      // correct (possibly late) results, never stale ones.
+      yield* Effect.forkDetach(
+        plugin.init().pipe(Effect.catchCause((cause) => Effect.logWarning("plugin init failed", { cause }))),
+      )
       // Each service self-manages its own slow work via Effect.forkScoped against
-      // its per-instance state scope. We just await materialization here.
-      yield* Effect.forEach(
-        [lsp, shareNext, format, vcs, snapshot, project],
-        (s) => s.init().pipe(Effect.catchCause((cause) => Effect.logWarning("init failed", { cause }))),
-        { concurrency: "unbounded", discard: true },
-      ).pipe(Effect.withSpan("InstanceBootstrap.init"))
+      // its per-instance state scope. Materialize them in the background so the
+      // boot gate releases as soon as config-driven answers can be served;
+      // first-use callers join the same state via InstanceState dedup.
+      yield* Effect.forkDetach(
+        Effect.forEach(
+          [lsp, shareNext, format, vcs, snapshot, project],
+          (s) => s.init().pipe(Effect.catchCause((cause) => Effect.logWarning("init failed", { cause }))),
+          { concurrency: "unbounded", discard: true },
+        ).pipe(Effect.withSpan("InstanceBootstrap.init")),
+      )
     }).pipe(Effect.withSpan("InstanceBootstrap"))
 
     return Service.of({ run })

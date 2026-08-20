@@ -60,56 +60,81 @@ const bootstrapFixture = Effect.gen(function* () {
   return { directory: dir, marker }
 })
 
+// Plugin loading no longer blocks the boot gate (bootstrap forks plugin init),
+// so the config-hook marker appears asynchronously after provide returns.
+// Poll instead of asserting a strict ordering guarantee that no longer holds.
+async function waitForMarker(marker: string, timeoutMs = 25_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (existsSync(marker)) return true
+    await Bun.sleep(50)
+  }
+  return existsSync(marker)
+}
+
 function waitDisposed(directory: string) {
   return waitGlobalBusEvent({
     message: "timed out waiting for CLI bootstrap instance disposal",
-    predicate: (event) => event.payload.type === "server.instance.disposed" && event.directory === directory,
+    predicate: (event) =>
+      event.payload.type === "server.instance.disposed" && event.directory === directory,
   })
 }
 
-it.live("InstanceStore.provide runs InstanceBootstrap before effect", () =>
-  Effect.gen(function* () {
-    const tmp = yield* bootstrapFixture
-    const store = yield* InstanceStore.Service
+it.live(
+  "InstanceStore.provide runs InstanceBootstrap before effect",
+  () =>
+    Effect.gen(function* () {
+      const tmp = yield* bootstrapFixture
+      const store = yield* InstanceStore.Service
 
-    yield* store.provide({ directory: tmp.directory }, Effect.succeed("ok"))
+      yield* store.provide({ directory: tmp.directory }, Effect.succeed("ok"))
 
-    expect(existsSync(tmp.marker)).toBe(true)
-  }),
+      expect(yield* Effect.promise(() => waitForMarker(tmp.marker))).toBe(true)
+    }),
+  { timeout: 30_000 },
 )
 
-it.live("CLI bootstrap runs InstanceBootstrap before callback", () =>
-  Effect.gen(function* () {
-    const tmp = yield* bootstrapFixture
+it.live(
+  "CLI bootstrap runs InstanceBootstrap before callback",
+  () =>
+    Effect.gen(function* () {
+      const tmp = yield* bootstrapFixture
 
-    yield* Effect.promise(() => cliBootstrap(tmp.directory, async () => "ok"))
+      yield* Effect.promise(() => cliBootstrap(tmp.directory, async () => "ok"))
 
-    expect(existsSync(tmp.marker)).toBe(true)
-  }),
+      expect(yield* Effect.promise(() => waitForMarker(tmp.marker))).toBe(true)
+    }),
+  { timeout: 30_000 },
 )
 
-it.live("CLI bootstrap disposes the instance when the callback rejects", () =>
-  Effect.gen(function* () {
-    const tmp = yield* bootstrapFixture
-    const disposed = yield* waitDisposed(tmp.directory).pipe(Effect.forkScoped({ startImmediately: true }))
+it.live(
+  "CLI bootstrap disposes the instance when the callback rejects",
+  () =>
+    Effect.gen(function* () {
+      const tmp = yield* bootstrapFixture
+      const disposed = yield* waitDisposed(tmp.directory).pipe(Effect.forkScoped({ startImmediately: true }))
 
-    const exit = yield* Effect.promise(() =>
-      cliBootstrap(tmp.directory, async () => Promise.reject(new Error("boom"))),
-    ).pipe(Effect.exit)
+      const exit = yield* Effect.promise(() =>
+        cliBootstrap(tmp.directory, async () => Promise.reject(new Error("boom"))),
+      ).pipe(Effect.exit)
 
-    expect(Exit.isFailure(exit)).toBe(true)
-    if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toMatchObject({ message: "boom" })
-    yield* Fiber.join(disposed)
-  }),
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toMatchObject({ message: "boom" })
+      yield* Fiber.join(disposed)
+    }),
+  { timeout: 30_000 },
 )
 
-it.live("InstanceStore.reload runs InstanceBootstrap", () =>
-  Effect.gen(function* () {
-    const tmp = yield* bootstrapFixture
-    const store = yield* InstanceStore.Service
+it.live(
+  "InstanceStore.reload runs InstanceBootstrap",
+  () =>
+    Effect.gen(function* () {
+      const tmp = yield* bootstrapFixture
+      const store = yield* InstanceStore.Service
 
-    yield* store.reload({ directory: tmp.directory })
+      yield* store.reload({ directory: tmp.directory })
 
-    expect(existsSync(tmp.marker)).toBe(true)
-  }),
+      expect(yield* Effect.promise(() => waitForMarker(tmp.marker))).toBe(true)
+    }),
+  { timeout: 30_000 },
 )
