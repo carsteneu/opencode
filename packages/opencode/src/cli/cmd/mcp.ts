@@ -147,11 +147,14 @@ export const McpListCommand = effectCmd({
       } else if (status.status === "needs_auth") {
         statusIcon = "⚠"
         statusText = "needs authentication"
-      } else if (status.status === "needs_client_registration") {
-        statusIcon = "✗"
-        statusText = "needs client registration"
-        hint = "\n    " + status.error
-      } else {
+        } else if (status.status === "needs_client_registration") {
+          statusIcon = "✗"
+          statusText = "needs client registration"
+          hint = "\n    " + status.error
+        } else if (status.status === "connecting") {
+          statusIcon = "◐"
+          statusText = "connecting (on first use)"
+        } else {
         statusIcon = "✗"
         statusText = "failed"
         hint = "\n    " + status.error
