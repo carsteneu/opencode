@@ -459,13 +459,24 @@ const layer = Layer.effect(
               )
           deps.push(dep)
 
-          result.command = mergeDeep(result.command ?? {}, yield* Effect.promise(() => ConfigCommand.load(dir)))
-          result.agent = mergeDeep(result.agent ?? {}, yield* Effect.promise(() => ConfigAgent.load(dir)))
-          result.agent = mergeDeep(result.agent ?? {}, yield* Effect.promise(() => ConfigAgent.loadMode(dir)))
-          // Auto-discovered plugins under `.opencode/plugin(s)` are already local files, so ConfigPlugin.load
-          // returns normalized Specs and we only need to attach origin metadata here.
-          const list = yield* Effect.promise(() => ConfigPlugin.load(dir))
-          yield* mergePluginOrigins(dir, list)
+            // Load the per-directory scan groups concurrently — each globs a
+            // disjoint file set (.opencode/{command,commands}, agents, modes)
+            // under `dir`, so the walks can run in parallel.
+            const [command, agent, mode, list] = yield* Effect.all(
+              [
+                Effect.promise(() => ConfigCommand.load(dir)),
+                Effect.promise(() => ConfigAgent.load(dir)),
+                Effect.promise(() => ConfigAgent.loadMode(dir)),
+                Effect.promise(() => ConfigPlugin.load(dir)),
+              ],
+              { concurrency: 4 },
+            )
+            result.command = mergeDeep(result.command ?? {}, command)
+            result.agent = mergeDeep(result.agent ?? {}, agent)
+            result.agent = mergeDeep(result.agent ?? {}, mode)
+            // Auto-discovered plugins under `.opencode/plugin(s)` are already local files, so ConfigPlugin.load
+            // returns normalized Specs and we only need to attach origin metadata here.
+            yield* mergePluginOrigins(dir, list)
         }
 
         if (process.env.OPENCODE_CONFIG_CONTENT) {

@@ -26,7 +26,7 @@ import { McpOAuthCallback } from "./oauth-callback"
 import { McpAuth } from "./auth"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { TuiEvent } from "@/server/tui-event"
-import { Cause, Effect, Exit, Layer, Context, Schema } from "effect"
+import { Cause, Context, Deferred, Effect, Exit, Layer, Schema } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { ChildProcessSpawner } from "effect/unstable/process"
@@ -97,6 +97,9 @@ const StatusNeedsClientRegistration = Schema.Struct({
   status: Schema.Literal("needs_client_registration"),
   error: Schema.String,
 }).annotate({ identifier: "MCPStatusNeedsClientRegistration" })
+const StatusConnecting = Schema.Struct({ status: Schema.Literal("connecting") }).annotate({
+  identifier: "MCPStatusConnecting",
+})
 
 export const Status = Schema.Union([
   StatusConnected,
@@ -104,6 +107,7 @@ export const Status = Schema.Union([
   StatusFailed,
   StatusNeedsAuth,
   StatusNeedsClientRegistration,
+  StatusConnecting,
 ]).annotate({ identifier: "MCPStatus", discriminator: "status" })
 export type Status = Schema.Schema.Type<typeof Status>
 
@@ -148,6 +152,8 @@ interface State {
   defs: Record<string, MCPToolDef[]>
   instructions: Record<string, string>
   localTransports: Set<Transport>
+  /** Single-flight markers for lazily connecting a server on first use. */
+  inflight: Record<string, Deferred.Deferred<void>>
 }
 
 export interface ServerInstructions {
@@ -483,7 +489,6 @@ const layer = Layer.effect(
     const state = yield* InstanceState.make<State>(
       Effect.fn("MCP.state")(function* () {
         const cfg = yield* cfgSvc.get()
-        const bridge = yield* EffectBridge.make()
         const config = cfg.mcp ?? {}
         const s: State = {
           disposed: false,
@@ -493,6 +498,7 @@ const layer = Layer.effect(
           defs: {},
           instructions: {},
           localTransports: new Set(),
+          inflight: {},
         }
 
         yield* Effect.addFinalizer(() =>
@@ -516,39 +522,66 @@ const layer = Layer.effect(
           }),
         )
 
-        yield* Effect.forEach(
-          Object.entries(config),
-          ([key, mcp]) =>
-            Effect.gen(function* () {
-              if (!isMcpConfigured(mcp)) {
-                yield* Effect.logError("Ignoring MCP config entry without type", { key })
-                return
-              }
+        // Lazy connect: register configured servers with status "connecting"
+        // without establishing transports. status() answers instantly from
+        // config; the actual connection happens on first use (tools/clients/
+        // instructions/prompts/resources — see ensureConnected) so a slow or
+        // auth-waiting server never blocks the bootstrap answers.
+        yield* Effect.forEach(Object.entries(config), ([key, mcp]) =>
+          Effect.gen(function* () {
+            if (!isMcpConfigured(mcp)) {
+              yield* Effect.logError("Ignoring MCP config entry without type", { key })
+              return
+            }
 
-              if (mcp.enabled === false) {
-                s.status[key] = { status: "disabled" }
-                return
-              }
+            if (mcp.enabled === false) {
+              s.status[key] = { status: "disabled" }
+              return
+            }
 
-              const result = yield* create(s, key, mcp)
-              if (s.disposed) {
-                if (result.mcpClient) yield* Effect.tryPromise(() => result.mcpClient!.close()).pipe(Effect.ignore)
-                return yield* Effect.interrupt
-              }
-              s.status[key] = result.status
-              if (result.mcpClient) {
-                s.clients[key] = result.mcpClient
-                s.defs[key] = result.defs!
-                if (result.instructions) s.instructions[key] = result.instructions
-                watch(s, key, result.mcpClient, bridge, mcp.timeout)
-              }
-            }),
-          { concurrency: 4 },
+            s.status[key] = { status: "connecting" }
+          }),
         )
 
         return s
       }),
     )
+
+    // Connect a configured server on first use so a slow or auth-waiting server
+    // never blocks the status call the bootstrap tail issues. Single-flight per
+    // server: concurrent callers join the same in-flight Deferred. Servers that
+    // already resolved to a terminal state (connected/disabled/failed/needs_auth)
+    // are left untouched.
+    const ensureConnected = Effect.fnUntraced(function* (name: string) {
+      const s = yield* InstanceState.get(state)
+      if (s.clients[name]) return
+      const resolved = s.status[name]
+      if (resolved && resolved.status !== "connecting") return
+      const existing = s.inflight[name]
+      if (existing) return yield* Deferred.await(existing).pipe(Effect.orElseSucceed(() => undefined))
+      const deferred = Deferred.makeUnsafe<void>()
+      s.inflight[name] = deferred
+      const mcp = yield* getMcpConfig(name)
+      if (!mcp || mcp.enabled === false) {
+        delete s.inflight[name]
+        yield* Deferred.succeed(deferred, undefined).pipe(Effect.asVoid)
+        return
+      }
+      yield* createAndStore(name, mcp, true).pipe(
+        Effect.onExit(() =>
+          Effect.sync(() => {
+            delete s.inflight[name]
+          }).pipe(Effect.andThen(Deferred.succeed(deferred, undefined).pipe(Effect.asVoid))),
+        ),
+      )
+    })
+
+    const ensureAllConfigured = Effect.fnUntraced(function* () {
+      const s = yield* InstanceState.get(state)
+      const cfg = yield* cfgSvc.get()
+      const names = new Set<string>([...Object.keys(s.config), ...Object.keys(cfg.mcp ?? {})])
+      yield* Effect.forEach([...names], ensureConnected, { concurrency: 4, discard: true })
+    })
 
     function closeClient(s: State, name: string) {
       const client = s.clients[name]
@@ -603,11 +636,13 @@ const layer = Layer.effect(
     })
 
     const clients = Effect.fn("MCP.clients")(function* () {
+      yield* ensureAllConfigured()
       const s = yield* InstanceState.get(state)
       return s.clients
     })
 
     const instructions = Effect.fn("MCP.instructions")(function* () {
+      yield* ensureAllConfigured()
       const s = yield* InstanceState.get(state)
       return Object.entries(s.instructions)
         .filter(([name]) => s.status[name]?.status === "connected")
@@ -619,13 +654,25 @@ const layer = Layer.effect(
         }))
     })
 
-    const createAndStore = Effect.fn("MCP.createAndStore")(function* (name: string, mcp: ConfigMCPV1.Info) {
+    const createAndStore = Effect.fn("MCP.createAndStore")(function* (
+      name: string,
+      mcp: ConfigMCPV1.Info,
+      lazy = false,
+    ) {
       const s = yield* InstanceState.get(state)
       const result = yield* create(s, name, mcp)
 
       if (s.disposed) {
         if (result.mcpClient) yield* Effect.tryPromise(() => result.mcpClient!.close()).pipe(Effect.ignore)
         return yield* Effect.interrupt
+      }
+
+      // A lazy (first-use) connect must not commit over an explicit
+      // disconnect/add that ran while it was in flight: discard the result
+      // and keep the current status ("disabled"/"connected") instead.
+      if (lazy && s.status[name] && s.status[name].status !== "connecting") {
+        if (result.mcpClient) yield* Effect.tryPromise(() => result.mcpClient!.close()).pipe(Effect.ignore)
+        return s.status[name]
       }
 
       s.status[name] = result.status
@@ -665,6 +712,7 @@ const layer = Layer.effect(
 
     const tools = Effect.fn("MCP.tools")(function* () {
       const result: Record<string, McpTool> = {}
+      yield* ensureAllConfigured()
       const s = yield* InstanceState.get(state)
 
       const cfg = yield* cfgSvc.get()
@@ -695,6 +743,7 @@ const layer = Layer.effect(
       targetClientName?: string,
     ) {
       return Effect.gen(function* () {
+        yield* ensureAllConfigured()
         const cfg = yield* cfgSvc.get()
         return yield* Effect.forEach(
           Object.entries(s.clients).filter(
@@ -744,6 +793,9 @@ const layer = Layer.effect(
       meta?: Record<string, unknown>,
     ) {
       const s = yield* InstanceState.get(state)
+      if (!s.clients[clientName] && s.status[clientName]?.status === "connecting") {
+        yield* ensureConnected(clientName)
+      }
       const client = s.clients[clientName]
       if (!client) {
         yield* Effect.logWarning(`client not found for ${label}`, { clientName })
