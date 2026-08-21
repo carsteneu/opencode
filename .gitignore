@@ -36,3 +36,6 @@ tsconfig.tsbuildinfo
 
 # python perf tools
 script/perf/__pycache__/
+
+# lokale yesdocs-Projektnotizen (nicht ins Repo/Release)
+yesdocs/
