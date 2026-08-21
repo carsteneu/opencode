@@ -4,15 +4,16 @@ import { randomUUID } from "node:crypto"
 import { cp, realpath, rename, rm } from "node:fs/promises"
 import path from "node:path"
 
-const expectedCommit = "13dc719306083c90040470ff401b3f29bee3dffb"
-const expectedPatchBase = "568db413e7bc3a110981d2e54ddb7ebb8e906075"
-const expectedTag = "v0.5.3"
-const expectedTagCommit = "1500698af07951ea0c1c67c9ad737fc54382ee20"
-const expectedVersion = "0.5.3"
+const expectedCommit = "8cc407d50ad074f01ac1ec62d1c9cb60301bc25c"
+const expectedPatchBase = "cba133957d56348fd81b8a754915a0f373c87c73"
+const expectedTag = "v0.5.6-perf.1"
+const expectedTagCommit = "8cc407d50ad074f01ac1ec62d1c9cb60301bc25c"
+const expectedVersion = "0.5.6-perf.1"
 const expectedHashes = {
-  core: "9df11fb30fbd61e4721db028a0534c04fa9066532f360450314f3fde6bbb3440",
-  solid: "ba9ffd6b55ea9f2785a01cc3b072bd3587116442607f5f19d20b383d75d16179",
-  native: "7d02a2b2af22567c5ed5f625e7791d4343f5d53cfb227aa93e59b0372dc24c97",
+  core: "7868ab5f33b079c58dfc489bc464c2c53780f697fd8b9b1e86fb489729f6c30e",
+  solid: "62c55cd831c2954765e4a2f3cc926debe6c6e9711080e750af0d9c7f76128f3e",
+  keymap: "0d2d841d3ed7403bb174c8bd0f432ab503f0465bad3a48635aadbdbb52e986a7",
+  native: "28e1ea13bbf8bdea0827ae9d454427b94675c2eab79624ad0309a22643689be2",
 }
 const usage = "Usage: bun run script/sync-opentui-overlay.ts --source=<opentui-root> [--check | --apply]"
 const args = process.argv.slice(2)
@@ -69,18 +70,26 @@ const artifacts = [
     target: coreTarget,
     expected: expectedHashes.core,
   },
-  {
-    name: "solid",
-    source: path.join(source, "packages/solid/dist"),
-    target: await realpath(path.join(root, "packages/tui/node_modules/@opentui/solid")),
-    expected: expectedHashes.solid,
-  },
-  {
-    name: "native",
-    source: path.join(source, "packages/core/node_modules/@opentui/core-linux-x64"),
-    target: await realpath(path.join(coreTarget, "..", "core-linux-x64")),
-    expected: expectedHashes.native,
-  },
+    {
+      name: "solid",
+      source: path.join(source, "packages/solid/dist"),
+      target: await realpath(path.join(root, "packages/tui/node_modules/@opentui/solid")),
+      expected: expectedHashes.solid,
+    },
+    {
+      name: "keymap",
+      source: path.join(source, "packages/keymap/dist"),
+      target: await realpath(path.join(root, "packages/tui/node_modules/@opentui/keymap")),
+      expected: expectedHashes.keymap,
+    },
+    {
+      name: "native",
+      source: path.join(source, "packages/core/node_modules/@opentui/core-linux-x64"),
+      // Since the v0.5.5 native pkg move, core no longer optional-depends on
+      // the platform package; the root devDependency link is the store slot.
+      target: await realpath(path.join(root, "node_modules/@opentui/core-linux-x64")),
+      expected: expectedHashes.native,
+    },
 ]
 
 const store = `${await realpath(path.join(root, "node_modules/.bun"))}${path.sep}`
