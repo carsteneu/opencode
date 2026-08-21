@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
-import { chmod, mkdir } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
 import path from "path"
 import { Schema } from "effect"
 import semver from "semver"
@@ -67,6 +68,42 @@ await Bun.write(checksum, `${hash.digest("hex")}  opencode-linux-x64\n`)
 
 const built = (await run([binary, "--version"], packageDir)).trim()
 if (built !== version) throw new Error(`Built ${built}, expected ${version}`)
+
+const ghostty = Bun.which("ghostty")
+if (!ghostty) throw new Error("Ghostty is required for the patched release smoke test")
+const smoke = await mkdtemp(path.join(tmpdir(), "opencode-ghostty-smoke-"))
+const data = path.join(smoke, "data")
+const transcript = path.join(smoke, "transcript.io")
+const launcher = path.join(smoke, "launch.sh")
+await Bun.write(
+  launcher,
+  `#!/bin/sh\nexport XDG_DATA_HOME=${JSON.stringify(data)}\nexport OPENCODE_SHOW_TTFD=1\nexec timeout 20 ${JSON.stringify(binary)}\n`,
+)
+await chmod(launcher, 0o755)
+const ghosttyRun = await spawn(
+  ["timeout", "45", ghostty, "--window-decoration=false", "-e", "script", "-qfec", launcher, transcript],
+  packageDir,
+)
+const rendered = (await Bun.file(transcript).exists()) ? await Bun.file(transcript).text() : ""
+const applicationLog = Bun.file(path.join(data, "opencode/log/opencode.log"))
+const diagnostic = [
+  rendered,
+  ghosttyRun.stdout,
+  ghosttyRun.stderr,
+  (await applicationLog.exists()) ? await applicationLog.text() : "",
+].join("\n")
+if (
+  /opencode crashed|An unexpected error stopped the session|Failed to get TextBuffer from EditBuffer|tui bootstrap failed|AbortError|level=ERROR/i.test(
+    diagnostic,
+  )
+) {
+  throw new Error(`Ghostty smoke test hit a crash; artifacts retained in ${smoke}`)
+}
+const firstDraw = diagnostic.match(/Time to first draw: [0-9.]+/i)?.[0]
+if (!firstDraw) throw new Error(`Ghostty smoke test did not reach first draw; artifacts retained in ${smoke}`)
+await rm(smoke, { recursive: true, force: true })
+console.log(`Ghostty smoke test passed (${firstDraw})`)
+
 if (publish) {
   const builtStatus = (await run(["git", "status", "--short"], root)).trim()
   if (builtStatus) throw new Error(`Build changed the worktree; refusing to publish:\n${builtStatus}`)
