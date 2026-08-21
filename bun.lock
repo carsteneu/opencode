@@ -1104,10 +1104,10 @@
     "@npmcli/arborist": "9.4.0",
     "@octokit/rest": "22.0.0",
     "@openauthjs/openauth": "0.0.0-20250322224806",
-    "@opentui/core": "https://github.com/carsteneu/opentui/releases/download/v0.5.6-perf.2/opentui-core-0.5.6-perf.2.tgz",
-    "@opentui/core-linux-x64": "https://github.com/carsteneu/opentui/releases/download/v0.5.6-perf.2/opentui-core-linux-x64-0.5.6-perf.2.tgz",
-    "@opentui/keymap": "https://github.com/carsteneu/opentui/releases/download/v0.5.6-perf.2/opentui-keymap-0.5.6-perf.2.tgz",
-    "@opentui/solid": "https://github.com/carsteneu/opentui/releases/download/v0.5.6-perf.2/opentui-solid-0.5.6-perf.2.tgz",
+    "@opentui/core": "https://github.com/carsteneu/opentui/releases/download/v0.5.6-perf.3/opentui-core-0.5.6-perf.3.tgz",
+    "@opentui/core-linux-x64": "https://github.com/carsteneu/opentui/releases/download/v0.5.6-perf.3/opentui-core-linux-x64-0.5.6-perf.3.tgz",
+    "@opentui/keymap": "https://github.com/carsteneu/opentui/releases/download/v0.5.6-perf.3/opentui-keymap-0.5.6-perf.3.tgz",
+    "@opentui/solid": "https://github.com/carsteneu/opentui/releases/download/v0.5.6-perf.3/opentui-solid-0.5.6-perf.3.tgz",
     "@pierre/diffs": "1.2.10",
     "@playwright/test": "1.59.1",
     "@sentry/solid": "10.36.0",
@@ -2045,7 +2045,7 @@
 
     "@opentelemetry/semantic-conventions": ["@opentelemetry/semantic-conventions@1.41.1", "", {}, "sha512-/UhIkaZgPutTFmQ7RnIJGgDXZmtEJ7Dvi86xNTFWcnRxVRNk/aotsqDJYeEvDP+FSMB2SdW+pQzNMcWP0rwuNA=="],
 
-    "@opentui/core": ["@opentui/core@https://github.com/carsteneu/opentui/releases/download/v0.5.6-perf.2/opentui-core-0.5.6-perf.2.tgz", { "dependencies": { "bun-ffi-structs": "0.3.1", "diff": "9.0.0", "marked": "17.0.1", "string-width": "7.2.0", "strip-ansi": "7.1.2" }, "optionalDependencies": { "@opentui/core-darwin-arm64": "0.5.6-perf.2", "@opentui/core-darwin-x64": "0.5.6-perf.2", "@opentui/core-linux-arm64": "0.5.6-perf.2", "@opentui/core-linux-arm64-musl": "0.5.6-perf.2", "@opentui/core-linux-x64": "0.5.6-perf.2", "@opentui/core-linux-x64-musl": "0.5.6-perf.2", "@opentui/core-win32-arm64": "0.5.6-perf.2", "@opentui/core-win32-x64": "0.5.6-perf.2" }, "peerDependencies": { "web-tree-sitter": "0.25.10" } }, "sha512-dfI2he2Tw3bWh5Jk6AjCxc6uyumWKI9SusN0kbLETMzrZyH7kcBg7vHLq0QxZs4031vUhwYf1Yh3riivgoHe5Q=="],
+    "@opentui/core": ["@opentui/core@https://github.com/carsteneu/opentui/releases/download/v0.5.6-perf.3/opentui-core-0.5.6-perf.3.tgz", { "dependencies": { "bun-ffi-structs": "0.3.1", "diff": "9.0.0", "marked": "17.0.1", "string-width": "7.2.0", "strip-ansi": "7.1.2" }, "optionalDependencies": { "@opentui/core-darwin-arm64": "0.5.6-perf.3", "@opentui/core-darwin-x64": "0.5.6-perf.3", "@opentui/core-linux-arm64": "0.5.6-perf.3", "@opentui/core-linux-arm64-musl": "0.5.6-perf.3", "@opentui/core-linux-x64": "0.5.6-perf.3", "@opentui/core-linux-x64-musl": "0.5.6-perf.3", "@opentui/core-win32-arm64": "0.5.6-perf.3", "@opentui/core-win32-x64": "0.5.6-perf.3" }, "peerDependencies": { "web-tree-sitter": "0.25.10" } }, "sha512-dfI2he2Tw3bWh5Jk6AjCxc6uyumWKI9SusN0kbLETMzrZyH7kcBg7vHLq0QxZs4031vUhwYf1Yh3riivgoHe5Q=="],
 
     "@opentui/core-darwin-arm64": ["@opentui/core-darwin-arm64@0.5.3", "", { "os": "darwin", "cpu": "arm64" }, "sha512-R39YeUqaMb/rH1h6G4MkB4MLVKIrRaUaXLfVqorZM4xgU5BxnfPetRk1vWR9vuLCvDwskg+kQ589kULw0o6AWA=="],
 
@@ -2055,7 +2055,7 @@
 
     "@opentui/core-linux-arm64-musl": ["@opentui/core-linux-arm64-musl@0.5.3", "", { "os": "linux", "cpu": "arm64" }, "sha512-QOYAxbbWrhYo27Cd6m0ATzpEx9YCAKAq82LgfUn0xu+VKXLNu+Q3hMNSVbG0SepUQQZil5rz228R9o9Cs8995w=="],
 
-    "@opentui/core-linux-x64": ["@opentui/core-linux-x64@https://github.com/carsteneu/opentui/releases/download/v0.5.6-perf.2/opentui-core-linux-x64-0.5.6-perf.2.tgz", {}, "sha512-FZrvRn+dZjqjnNqDwMCwSqJ/OGRIHmQ5QBthlivSHyJIhVkrFLRKRn8QFWMBMgWPWuMm3hOA3j/TS3oeW327kg=="],
+    "@opentui/core-linux-x64": ["@opentui/core-linux-x64@https://github.com/carsteneu/opentui/releases/download/v0.5.6-perf.3/opentui-core-linux-x64-0.5.6-perf.3.tgz", {}, "sha512-FZrvRn+dZjqjnNqDwMCwSqJ/OGRIHmQ5QBthlivSHyJIhVkrFLRKRn8QFWMBMgWPWuMm3hOA3j/TS3oeW327kg=="],
 
     "@opentui/core-linux-x64-musl": ["@opentui/core-linux-x64-musl@0.5.3", "", { "os": "linux", "cpu": "x64" }, "sha512-BkVIiPQ1TOf5/FfmIpf7DQU5rT/FO6ASW5R/o/wonI5Pdul7XiDCu86gzGyk1x5k9Sbh6GLeq1fe8/tPmI7IaA=="],
 
@@ -2063,9 +2063,9 @@
 
     "@opentui/core-win32-x64": ["@opentui/core-win32-x64@0.5.3", "", { "os": "win32", "cpu": "x64" }, "sha512-e3nRlF2nSkLKCUPBF32OL9EDgtQDIh2pBo7tjhumpTyJ3qoNOa3us7DsM290Vw4xnakM6jpk9r9NzRf72CuMVg=="],
 
-    "@opentui/keymap": ["@opentui/keymap@https://github.com/carsteneu/opentui/releases/download/v0.5.6-perf.2/opentui-keymap-0.5.6-perf.2.tgz", { "dependencies": { "@opentui/core": "0.5.6-perf.2" }, "peerDependencies": { "@opentui/react": "0.5.6-perf.2", "@opentui/solid": "0.5.6-perf.2", "react": ">=19.2.0", "solid-js": "1.9.12" }, "optionalPeers": ["@opentui/react", "@opentui/solid", "react", "solid-js"] }, "sha512-Zz5vvsS5LcDk4sbTZnHIiBKzhcmkogDzO8iseSZmMxAOxRGf0YooTmAMHCiCK5I4FX9pWZZJuLf6lWl5X7dWog=="],
+    "@opentui/keymap": ["@opentui/keymap@https://github.com/carsteneu/opentui/releases/download/v0.5.6-perf.3/opentui-keymap-0.5.6-perf.3.tgz", { "dependencies": { "@opentui/core": "0.5.6-perf.3" }, "peerDependencies": { "@opentui/react": "0.5.6-perf.3", "@opentui/solid": "0.5.6-perf.3", "react": ">=19.2.0", "solid-js": "1.9.12" }, "optionalPeers": ["@opentui/react", "@opentui/solid", "react", "solid-js"] }, "sha512-Zz5vvsS5LcDk4sbTZnHIiBKzhcmkogDzO8iseSZmMxAOxRGf0YooTmAMHCiCK5I4FX9pWZZJuLf6lWl5X7dWog=="],
 
-    "@opentui/solid": ["@opentui/solid@https://github.com/carsteneu/opentui/releases/download/v0.5.6-perf.2/opentui-solid-0.5.6-perf.2.tgz", { "dependencies": { "@babel/core": "7.28.0", "@babel/preset-typescript": "7.27.1", "@opentui/core": "0.5.6-perf.2", "babel-plugin-module-resolver": "5.0.2", "babel-preset-solid": "1.9.12", "entities": "7.0.1", "s-js": "^0.4.9" }, "peerDependencies": { "solid-js": "1.9.12" } }, "sha512-39zUoi8bnqzpqpQlKF5NoM1rtcXJTDF/PV0sZJyJyTNdqix7s6oDmy02VPTcmvOdoprywEmzpbEYpxpuyyOpHw=="],
+    "@opentui/solid": ["@opentui/solid@https://github.com/carsteneu/opentui/releases/download/v0.5.6-perf.3/opentui-solid-0.5.6-perf.3.tgz", { "dependencies": { "@babel/core": "7.28.0", "@babel/preset-typescript": "7.27.1", "@opentui/core": "0.5.6-perf.3", "babel-plugin-module-resolver": "5.0.2", "babel-preset-solid": "1.9.12", "entities": "7.0.1", "s-js": "^0.4.9" }, "peerDependencies": { "solid-js": "1.9.12" } }, "sha512-39zUoi8bnqzpqpQlKF5NoM1rtcXJTDF/PV0sZJyJyTNdqix7s6oDmy02VPTcmvOdoprywEmzpbEYpxpuyyOpHw=="],
 
     "@oslojs/asn1": ["@oslojs/asn1@1.0.0", "", { "dependencies": { "@oslojs/binary": "1.0.0" } }, "sha512-zw/wn0sj0j0QKbIXfIlnEcTviaCzYOY3V5rAyjR6YtOByFtJiT574+8p9Wlach0lZH9fddD4yb9laEAIl4vXQA=="],
 
