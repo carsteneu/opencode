@@ -24,8 +24,6 @@ import {
   batch,
   Show,
   on,
-  lazy,
-  Suspense,
 } from "solid-js"
 import { TuiPathsProvider, TuiStartupProvider, TuiTerminalEnvironmentProvider, useTuiStartup } from "./context/runtime"
 import { DialogProvider, useDialog } from "./ui/dialog"
@@ -71,10 +69,8 @@ import { DialogSessionList } from "./component/dialog-session-list"
 import { DialogWorkspaceList } from "./component/dialog-workspace-list"
 import { DialogConsoleOrg } from "./component/dialog-console-org"
 import { ThemeProvider, useTheme } from "./context/theme"
-// Routes mount on demand so the shell paints before the heavy session prompt
-// stack (routes/session ~2950 lines + prompt) is evaluated.
-const Home = lazy(() => import("./routes/home").then((m) => ({ default: m.Home })))
-const Session = lazy(() => import("./routes/session").then((m) => ({ default: m.Session })))
+import { Home } from "./routes/home"
+import { Session } from "./routes/session"
 import { PromptHistoryProvider } from "./component/prompt/history"
 import { FrecencyProvider } from "./component/prompt/frecency"
 import { PromptStashProvider } from "./component/prompt/stash"
@@ -1146,7 +1142,6 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
         <TimeToFirstDraw />
       </Show>
       <box flexGrow={1} minHeight={0} flexDirection="column">
-        <Suspense fallback={<box flexGrow={1} minHeight={0} />}>
           <Switch>
             <Match when={route.data.type === "home"}>
               <Home />
@@ -1158,8 +1153,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
             </Match>
           </Switch>
           {plugin()}
-        </Suspense>
-      </box>
+        </box>
       <Show when={ready()}>
         <box flexShrink={0}>
           <pluginRuntime.Slot name="app_bottom" />
