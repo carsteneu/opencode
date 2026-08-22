@@ -249,11 +249,9 @@ test("agent elapsed time renders partially only while the block is expanded", as
     harness.sync.set("session_status", "agent", { type: "idle" })
     await waitForFrame(harness.app, "0/1 active")
 
-    // hover the row to reveal the dismiss affordance, then click it
+    // the dismiss affordance is always visible (no hover needed) and clickable
     const row = findText(harness.app.renderer.root, "Inspect footer").parent
     if (!(row instanceof BoxRenderable)) throw new Error("missing agents row")
-    row.processMouseEvent(mouseOver(row))
-    await harness.app.renderer.idle()
     const affordance = findTextOptional(harness.app.renderer.root, "✕")
     expect(affordance).toBeInstanceOf(TextRenderable)
 
@@ -548,16 +546,6 @@ function session(id: string, parentID: string | undefined, title: string, create
 function mouseUp(target: Renderable) {
   return new MouseEvent(target, {
     type: "up",
-    button: 0,
-    x: target.screenX,
-    y: target.screenY,
-    modifiers: { shift: false, alt: false, ctrl: false },
-  })
-}
-
-function mouseOver(target: Renderable) {
-  return new MouseEvent(target, {
-    type: "over",
     button: 0,
     x: target.screenX,
     y: target.screenY,

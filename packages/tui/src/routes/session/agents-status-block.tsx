@@ -74,16 +74,18 @@ function AgentStatusRow(props: { row: AgentRow; now: number; onOpen: (id: string
           {Locale.truncate(props.row.reason ?? "", 60)}
         </text>
       </Show>
-      <Show when={hover() && props.onDismiss}>
-        <text
-          fg={theme.textMuted}
+      <Show when={props.onDismiss}>
+        <box
+          paddingLeft={1}
+          paddingRight={1}
+          backgroundColor={hover() ? theme.backgroundElement : undefined}
           onMouseUp={(e: { stopPropagation(): void }) => {
             e.stopPropagation()
             props.onDismiss!(props.row.id)
           }}
         >
-          ✕
-        </text>
+          <text fg={theme.textMuted}>✕</text>
+        </box>
       </Show>
     </box>
   )
