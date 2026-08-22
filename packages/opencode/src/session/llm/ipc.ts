@@ -2,6 +2,18 @@ const binary = "__opencode_uint8array__"
 const error = "__opencode_error__"
 const highWaterMark = 64 * 1024
 
+// bun >=1.4 surfaces EPIPE from writes into a torn-down stdio channel as a
+// fatal 'error' instead of swallowing it (oven-sh/bun#35064). Our worker
+// legitimately races its peer closing the pipe, so treat broken pipe as a
+// nil result at the sink layer (as bun <=1.3/node did).
+function swallowBrokenPipe(error: unknown) {
+  if (typeof error === "object" && error !== null && "code" in error) {
+    if ((error as { code?: unknown }).code === "EPIPE") return true
+  }
+  const message = error instanceof Error ? error.message : String(error)
+  return message.includes("EPIPE") || message.includes("broken pipe") || message.includes("EBADF")
+}
+
 export function stringify(value: unknown) {
   return JSON.stringify(value, function (key, item) {
     // Buffer.toJSON runs before the replacer, so inspect the holder's original
@@ -102,6 +114,7 @@ export function writer(sink: ReturnType<typeof Bun.stdout.writer>) {
     writing = result.then(
       () => undefined,
       (error) => {
+        if (swallowBrokenPipe(error)) return
         writeError = error
       },
     )
@@ -110,10 +123,23 @@ export function writer(sink: ReturnType<typeof Bun.stdout.writer>) {
 
   const write = (value: unknown) =>
     enqueue(async () => {
-      await sink.write(stringify(value) + "\n")
-      await sink.flush()
+      try {
+        await sink.write(stringify(value) + "\n")
+        await sink.flush()
+      } catch (error) {
+        if (swallowBrokenPipe(error)) return
+        throw error
+      }
     })
-  const end = () => enqueue(async () => void (await sink.end()))
+  const end = () =>
+    enqueue(async () => {
+      try {
+        await sink.end()
+      } catch (error) {
+        if (swallowBrokenPipe(error)) return
+        throw error
+      }
+    })
   return { write, end }
 }
 
