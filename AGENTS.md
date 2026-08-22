@@ -7,27 +7,6 @@
 - Prepare a release with `OPENTUI_ROOT=/path/to/pinned/opentui bun run release:patched x.y.z-patched.n`; add `--publish` only from a clean, committed `working` branch. The publisher verifies the pinned OpenTUI overlay, uploads the raw Linux x64 binary and SHA-256 asset to a draft, verifies both, and only then publishes the prerelease.
 - Local `main` ref may not exist. Use `working` for patched release work and `origin/dev` for upstream comparisons.
 
-## Debugging & Performance Analysis
-
-Built-in debug surfaces (use first for any TUI/startup/perf investigation):
-
-- TUI slash commands (package `tui`, `app.tsx` `System` category): `/status` (DialogStatus), `/debug`
-  (DialogDebug), plus the renderer debug panel via `renderer.toggleDebugOverlay()` (`app.debug`
-  command). The debug overlay reports frame timing / renderer state from the OpenTUI layer.
-- Env flags: `OPENCODE_LOG_LEVEL`, `OPENCODE_PRINT_LOGS` (logging), `OPENCODE_CPU_PROFILE`
-  (CPU profile), `OPENCODE_DIRECT_TRACE`, `OPENCODE_ACP_PROFILE` (agent-client-protocol profile),
-  and the `OPENCODE_DISABLE_*` family for isolating subsystems in tests.
-- Local measurement tools in `script/perf/`: `bench_proc.py`, `live_process_sampler.py`,
-  `analyze_live_samples.py`, `boot-timeline.py`, `ab-server-boot.sh`, `ab-ghostty-boot.sh`.
-- Ghostty interaction gate: `/tmp/opencode/gate.ts` (full `/sessions` dialog cycle) and
-  `gate-min.ts` (no-menu variant). Run isolated Ghostty with `--gtk-single-instance=false` to
-  avoid opening windows in the user's running daemon; the gate uses `script(1)`+`tmux` under
-  Ghostty, classifies GOOD/CRASH/HANG/FAIL, and measures `Time to first draw` via
-  `OPENCODE_SHOW_TTFD=1`. Wait 3-5s runs per candidate; keep dialog/exit timeouts >=10s on a
-  loaded host to avoid false HANG verdicts (see `tui-session-dialog-incident-2026-08-21.md`).
-- TTFD/startup perf follows the runbook in `yesdocs/patched-release-verification.md`; per-package
-  test dirs only (never repo root), `bun typecheck` only.
-
 ## Branch Names
 
 Use a short branch name of at most three words, separated by hyphens. Do not use slashes or type prefixes such as `feat/` or `fix/`.
