@@ -30,6 +30,16 @@ export const RETRY_MAX_DELAY_NO_HEADERS = 30_000 // 30 seconds
 export const RETRY_MAX_DELAY = 2_147_483_647 // max 32-bit signed integer for setTimeout
 export const RETRY_MAX_RETRIES = 5
 
+export const RESUME_WINDOW_MS = 5 * 60_000
+
+export function resumeRemaining(deadline: number, now = Date.now()) {
+  return Math.max(0, deadline - now)
+}
+
+export function resumeExpired(deadline: number, now = Date.now()) {
+  return deadline <= now
+}
+
 const RETRYABLE_MESSAGE_PATTERNS = [
   /429|500|502|503|504|524/i,
   /rate increased too quickly|rate limit|rate-limit|rate_limit|too many requests/i,
