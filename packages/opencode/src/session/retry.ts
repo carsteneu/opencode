@@ -36,10 +36,6 @@ export function resumeRemaining(deadline: number, now = Date.now()) {
   return Math.max(0, deadline - now)
 }
 
-export function resumeExpired(deadline: number, now = Date.now()) {
-  return deadline <= now
-}
-
 const RETRYABLE_MESSAGE_PATTERNS = [
   /429|500|502|503|504|524/i,
   /rate increased too quickly|rate limit|rate-limit|rate_limit|too many requests/i,

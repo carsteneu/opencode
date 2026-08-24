@@ -4,7 +4,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { EventV2 } from "@opencode-ai/core/event"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { expect } from "bun:test"
-import { tool, type Tool } from "ai"
+import { APICallError, tool, type Tool } from "ai"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer, Stream } from "effect"
 import path from "path"
 import z from "zod"
@@ -296,7 +296,7 @@ const pluginFailureEvents = Layer.effect(
         return events.publish(definition, data, options)
       }
       failed = true
-      return Effect.die(new Error("service unavailable while publishing final plugin text"))
+        return Effect.die(new Error("plugin text publication failed"))
     }
     return EventV2Bridge.Service.of({ ...events, publish })
   }),
@@ -481,19 +481,25 @@ const toolInputProgressLLM = Layer.succeed(
 const toolInputProgressEnv = LayerNode.compile(root, [...replacements, [LLM.node, toolInputProgressLLM]])
 const itToolInputProgress = testEffect(toolInputProgressEnv)
 
-const retrySafetyCalls = {
-  beforeEvent: 0,
-  timeoutBeforeEvent: 0,
-  timeoutAfterEvent: 0,
-  partial: 0,
-  partialReasoning: 0,
-  buffered: 0,
-  finishedStep: 0,
-  abort: 0,
-  fallbackPrimary: 0,
-  fallback: 0,
-  explicitlyNonRetryable: 0,
-}
+  const retrySafetyCalls = {
+    beforeEvent: 0,
+    timeoutBeforeEvent: 0,
+    timeoutAfterEvent: 0,
+    partial: 0,
+    partialReasoning: 0,
+    buffered: 0,
+    finishedStep: 0,
+    abort: 0,
+    fallbackPrimary: 0,
+    fallback: 0,
+    explicitlyNonRetryable: 0,
+    rewind: 0,
+    keepTool: 0,
+    window: 0,
+    overflow: 0,
+    hang: 0,
+  }
+  const retrySafetyInputs: string[] = []
 
 function completedTextEvents(text: string) {
   return Stream.make(
@@ -517,8 +523,9 @@ function timeoutFailure(phase: "headers" | "chunk") {
 const retrySafetyLLM = Layer.succeed(
   LLM.Service,
   LLM.Service.of({
-    stream: (input) => {
-      const prompt = JSON.stringify(input.messages)
+      stream: (input) => {
+        retrySafetyInputs.push(JSON.stringify(input.messages))
+        const prompt = JSON.stringify(input.messages)
       if (prompt.includes("retry before semantic event")) {
         retrySafetyCalls.beforeEvent += 1
         if (retrySafetyCalls.beforeEvent === 1) {
@@ -601,12 +608,99 @@ const retrySafetyLLM = Layer.succeed(
         }
         return completedTextEvents("fallback recovered")
       }
-      if (prompt.includes("explicit non-retryable provider error")) {
-        retrySafetyCalls.explicitlyNonRetryable += 1
-        if (retrySafetyCalls.explicitlyNonRetryable > 1) return completedTextEvents("duplicate")
-        return Stream.make(LLMEvent.providerError({ message: "service unavailable but final", retryable: false }))
-      }
-      return Stream.fail(new Error(`Unexpected retry safety prompt: ${prompt}`))
+          if (prompt.includes("explicit non-retryable provider error")) {
+            retrySafetyCalls.explicitlyNonRetryable += 1
+            if (retrySafetyCalls.explicitlyNonRetryable > 1) return completedTextEvents("duplicate")
+            return Stream.make(LLMEvent.providerError({ message: "service unavailable but final", retryable: false }))
+          }
+          if (prompt.includes("resume non-retryable on retry")) {
+            if (retrySafetyCalls.explicitlyNonRetryable === 0) {
+              retrySafetyCalls.explicitlyNonRetryable += 1
+              return Stream.make(
+                LLMEvent.stepStart({ index: 0 }),
+                LLMEvent.textStart({ id: "nr-text" }),
+                LLMEvent.textDelta({ id: "nr-text", text: "partial" }),
+                LLMEvent.providerError({ message: "service unavailable" }),
+              )
+            }
+            retrySafetyCalls.explicitlyNonRetryable += 1
+            return Stream.concat(
+              Stream.make(
+                LLMEvent.stepStart({ index: 0 }),
+                LLMEvent.textStart({ id: "nr-retry" }),
+                LLMEvent.textDelta({ id: "nr-retry", text: "more" }),
+              ),
+              Stream.make(LLMEvent.providerError({ message: "still unavailable but final", retryable: false })),
+            )
+          }
+        if (prompt.includes("resume rewind announced tool")) {
+          retrySafetyCalls.rewind += 1
+          if (retrySafetyCalls.rewind > 1) return completedTextEvents("continued after rewind")
+          return Stream.make(
+            LLMEvent.stepStart({ index: 0 }),
+            LLMEvent.textStart({ id: "rewind-text" }),
+            LLMEvent.textDelta({ id: "rewind-text", text: "announcing tool" }),
+            LLMEvent.toolInputStart({ id: "call-rewind", name: "bash" }),
+            LLMEvent.toolCall({ id: "call-rewind", name: "bash", input: { command: "ls" } }),
+            LLMEvent.providerError({ message: "service unavailable" }),
+          )
+        }
+        if (prompt.includes("resume keeps completed tool")) {
+          retrySafetyCalls.keepTool += 1
+          if (retrySafetyCalls.keepTool > 1) return completedTextEvents("continued after result")
+          return Stream.make(
+            LLMEvent.stepStart({ index: 0 }),
+            LLMEvent.textStart({ id: "keep-text" }),
+            LLMEvent.textDelta({ id: "keep-text", text: "checking" }),
+            LLMEvent.textEnd({ id: "keep-text" }),
+            LLMEvent.toolInputStart({ id: "call-keep", name: "bash" }),
+            LLMEvent.toolCall({ id: "call-keep", name: "bash", input: { command: "ls" } }),
+            LLMEvent.toolResult({ id: "call-keep", name: "bash", result: { type: "text", value: "ran" } }),
+            LLMEvent.providerError({ message: "service unavailable" }),
+          )
+        }
+        if (prompt.includes("resume window exhausted test")) {
+          retrySafetyCalls.window += 1
+          return Stream.make(
+            LLMEvent.stepStart({ index: 0 }),
+            LLMEvent.textStart({ id: "win-text" }),
+            LLMEvent.textDelta({ id: "win-text", text: "partial" }),
+            LLMEvent.providerError({ message: "service unavailable" }),
+          )
+        }
+        if (prompt.includes("resume overflow during retry")) {
+          retrySafetyCalls.overflow += 1
+          if (retrySafetyCalls.overflow === 1) {
+            return Stream.make(
+              LLMEvent.stepStart({ index: 0 }),
+              LLMEvent.textStart({ id: "ovf-text" }),
+              LLMEvent.textDelta({ id: "ovf-text", text: "partial" }),
+              LLMEvent.providerError({ message: "service unavailable" }),
+            )
+          }
+          return Stream.fail(
+            new APICallError({
+              message: "Provider rejected request with 413",
+              url: "https://example.com/v1/chat/completions",
+              requestBodyValues: {},
+              statusCode: 413,
+              isRetryable: false,
+            }),
+          )
+        }
+        if (prompt.includes("resume escape")) {
+          retrySafetyCalls.hang += 1
+          if (retrySafetyCalls.hang === 1) {
+            return Stream.make(
+              LLMEvent.stepStart({ index: 0 }),
+              LLMEvent.textStart({ id: "esc-text" }),
+              LLMEvent.textDelta({ id: "esc-text", text: "partial" }),
+              LLMEvent.providerError({ message: "service unavailable" }),
+            )
+          }
+          return Stream.never
+        }
+        return Stream.fail(new Error(`Unexpected retry safety prompt: ${prompt}`))
     },
   }),
 )
@@ -676,20 +770,26 @@ const boot = Effect.fn("test.boot")(function* () {
   return { processors, session, provider }
 })
 
-const runTurn = Effect.fn("test.runTurn")(function* (input: {
-  dir: string
-  prompt: string
-  tools?: Record<string, Tool>
-  request?: LLM.StreamInput["request"]
-  fallbackRequest?: LLM.StreamInput["request"]
-  before?: (handle: SessionProcessor.Handle) => Effect.Effect<void>
-}) {
-  const { processors, session, provider } = yield* boot()
-  const chat = yield* session.create({})
-  const parent = yield* user(chat.id, input.prompt)
-  const msg = yield* assistant(chat.id, parent.id, path.resolve(input.dir))
-  const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
-  const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+  const runTurn = Effect.fn("test.runTurn")(function* (input: {
+    dir: string
+    prompt: string
+    tools?: Record<string, Tool>
+    request?: LLM.StreamInput["request"]
+    fallbackRequest?: LLM.StreamInput["request"]
+    resumeWindowMs?: number
+    before?: (handle: SessionProcessor.Handle) => Effect.Effect<void>
+  }) {
+    const { processors, session, provider } = yield* boot()
+    const chat = yield* session.create({})
+    const parent = yield* user(chat.id, input.prompt)
+    const msg = yield* assistant(chat.id, parent.id, path.resolve(input.dir))
+    const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+    const handle = yield* processors.create({
+      assistantMessage: msg,
+      sessionID: chat.id,
+      model: mdl,
+      resumeWindowMs: input.resumeWindowMs,
+    })
   if (input.before) yield* input.before(handle)
   const streamInput: LLM.StreamInput = {
     user: {
@@ -1372,78 +1472,69 @@ itRetrySafety.live(
   10_000,
 )
 
-itRetrySafety.live("session.processor does not retry a provider chunk timeout after partial text", () =>
-  provideTmpdirInstance(
-    (dir) =>
-      Effect.gen(function* () {
-        retrySafetyCalls.timeoutAfterEvent = 0
-        const result = yield* runTurn({ dir, prompt: "retry timeout after partial text" })
-        const text = result.parts.filter((part): part is SessionV1.TextPart => part.type === "text")
+  itRetrySafety.live("session.processor resumes a provider chunk timeout after partial text", () =>
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          retrySafetyCalls.timeoutAfterEvent = 0
+          const result = yield* runTurn({ dir, prompt: "retry timeout after partial text" })
+          const text = result.parts.filter((part): part is SessionV1.TextPart => part.type === "text")
 
-        expect(result.value).toBe("stop")
-        expect(retrySafetyCalls.timeoutAfterEvent).toBe(1)
-        expect(text).toHaveLength(1)
-        expect(text[0]?.text).toBe("timeout partial")
-        expect(text[0]?.time?.end).toBeDefined()
-        expect(result.handle.message.error).toMatchObject({
-          name: "APIError",
-          data: {
-            isRetryable: true,
-            metadata: { code: "Timeout", phase: "chunk", timeoutMs: "50" },
-          },
-        })
-      }),
-    { config: cfg },
-  ),
-)
+          expect(result.value).toBe("continue")
+          expect(retrySafetyCalls.timeoutAfterEvent).toBe(2)
+          expect(text.map((part) => part.text)).toEqual(["timeout partial", "duplicate"])
+          expect(result.handle.message.error).toBeUndefined()
+        }),
+      { config: cfg },
+    ),
+  )
 
-itRetrySafety.live("session.processor does not retry after partial text and finalizes the single partial part", () =>
-  provideTmpdirInstance(
-    (dir) =>
-      Effect.gen(function* () {
-        retrySafetyCalls.partial = 0
-        const events = yield* EventV2Bridge.Service
-        const retries: number[] = []
-        const off = yield* events.listen((event) => {
-          if (event.type !== SessionStatus.Event.Status.type) return Effect.void
-          const data = event.data as typeof SessionStatus.Event.Status.data.Type
-          if (data.status.type === "retry") retries.push(data.status.attempt)
-          return Effect.void
-        })
-        const result = yield* runTurn({ dir, prompt: "retry after partial text" })
-        yield* off
-        const text = result.parts.filter((part): part is SessionV1.TextPart => part.type === "text")
+  itRetrySafety.live("session.processor resumes after a provider error following partial text", () =>
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          retrySafetyCalls.partial = 0
+          const events = yield* EventV2Bridge.Service
+          const retries: number[] = []
+          const off = yield* events.listen((event) => {
+            if (event.type !== SessionStatus.Event.Status.type) return Effect.void
+            const data = event.data as typeof SessionStatus.Event.Status.data.Type
+            if (data.status.type === "retry") retries.push(data.status.attempt)
+            return Effect.void
+          })
+          const result = yield* runTurn({ dir, prompt: "retry after partial text" })
+          yield* off
+          const text = result.parts.filter((part): part is SessionV1.TextPart => part.type === "text")
 
-        expect(result.value).toBe("stop")
-        expect(retrySafetyCalls.partial).toBe(1)
-        expect(retries).toEqual([])
-        expect(text).toHaveLength(1)
-        expect(text[0]?.text).toBe("kept partial")
-        expect(text[0]?.time?.end).toBeDefined()
-        expect(result.handle.message.error?.name).toBeDefined()
-      }),
-    { config: cfg },
-  ),
-)
+          expect(result.value).toBe("continue")
+          expect(retrySafetyCalls.partial).toBe(2)
+          expect(retries).toEqual([2])
+          expect(text.map((part) => part.text)).toEqual(["kept partial", "duplicate"])
+          expect(result.handle.message.error).toBeUndefined()
+        }),
+      { config: cfg },
+    ),
+  )
 
-itRetrySafety.live("session.processor does not retry after committed reasoning and finalizes the partial part", () =>
-  provideTmpdirInstance(
-    (dir) =>
-      Effect.gen(function* () {
-        retrySafetyCalls.partialReasoning = 0
-        const result = yield* runTurn({ dir, prompt: "retry after partial reasoning" })
-        const reasoning = result.parts.filter((part): part is SessionV1.ReasoningPart => part.type === "reasoning")
+  itRetrySafety.live("session.processor resumes after a provider error following committed reasoning", () =>
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          retrySafetyCalls.partialReasoning = 0
+          const result = yield* runTurn({ dir, prompt: "retry after partial reasoning" })
+          const reasoning = result.parts.filter((part): part is SessionV1.ReasoningPart => part.type === "reasoning")
 
-        expect(result.value).toBe("stop")
-        expect(retrySafetyCalls.partialReasoning).toBe(1)
-        expect(reasoning).toHaveLength(1)
-        expect(reasoning[0]?.text).toBe("kept reasoning")
-        expect(reasoning[0]?.time.end).toBeDefined()
-        expect(result.handle.message.error).toBeDefined()
-      }),
-    { config: cfg },
-  ),
-)
+          expect(result.value).toBe("continue")
+          expect(retrySafetyCalls.partialReasoning).toBe(2)
+          expect(reasoning.map((part) => part.text)).toEqual(["kept reasoning"])
+          expect(result.parts.filter((part): part is SessionV1.TextPart => part.type === "text").map((part) => part.text)).toEqual([
+            "duplicate",
+          ])
+          expect(result.handle.message.error).toBeUndefined()
+        }),
+      { config: cfg },
+    ),
+  )
 
 itRetrySafety.live("session.processor retries buffered transport failure before uncommitted events are replayed", () =>
   provideTmpdirInstance(
@@ -1540,37 +1631,184 @@ itRetrySafety.live("session.processor cancellation during retry backoff prevents
   ),
 )
 
-itRetrySafety.live("session.processor does not duplicate a completed step after a retryable trailing failure", () =>
-  provideTmpdirInstance(
-    (dir) =>
-      Effect.gen(function* () {
-        retrySafetyCalls.finishedStep = 0
-        const result = yield* runTurn({ dir, prompt: "retry after finished step" })
+  itRetrySafety.live("session.processor continues after a retryable failure trailing a completed step", () =>
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          retrySafetyCalls.finishedStep = 0
+          const result = yield* runTurn({ dir, prompt: "retry after finished step" })
 
-        expect(result.value).toBe("stop")
-        expect(retrySafetyCalls.finishedStep).toBe(1)
-        expect(result.parts.filter((part) => part.type === "step-start")).toHaveLength(1)
-        expect(result.parts.filter((part) => part.type === "step-finish")).toHaveLength(1)
-      }),
-    { config: cfg },
-  ),
-)
+          expect(result.value).toBe("continue")
+          expect(retrySafetyCalls.finishedStep).toBe(2)
+          expect(result.handle.message.error).toBeUndefined()
+          expect(result.parts.filter((part) => part.type === "step-start")).toHaveLength(2)
+          expect(result.parts.filter((part) => part.type === "step-finish")).toHaveLength(2)
+        }),
+      { config: cfg },
+    ),
+  )
 
-itRetrySafety.live("session.processor honors an explicitly non-retryable provider error", () =>
-  provideTmpdirInstance(
-    (dir) =>
-      Effect.gen(function* () {
-        retrySafetyCalls.explicitlyNonRetryable = 0
-        const result = yield* runTurn({ dir, prompt: "explicit non-retryable provider error" })
+    itRetrySafety.live("session.processor honors an explicitly non-retryable provider error", () =>
+      provideTmpdirInstance(
+        (dir) =>
+          Effect.gen(function* () {
+            retrySafetyCalls.explicitlyNonRetryable = 0
+            const result = yield* runTurn({ dir, prompt: "explicit non-retryable provider error" })
 
-        expect(result.value).toBe("stop")
-        expect(retrySafetyCalls.explicitlyNonRetryable).toBe(1)
-        expect(result.handle.message.error).toBeDefined()
-        expect(result.parts.filter((part) => part.type === "text")).toHaveLength(0)
-      }),
-    { config: cfg },
-  ),
-)
+            expect(result.value).toBe("stop")
+            expect(retrySafetyCalls.explicitlyNonRetryable).toBe(1)
+            expect(result.handle.message.error).toBeDefined()
+            expect(result.parts.filter((part) => part.type === "text")).toHaveLength(0)
+          }),
+        { config: cfg },
+      ),
+    )
+
+    itRetrySafety.live("session.processor ends the turn when a resume attempt reports a non-retryable provider error", () =>
+      provideTmpdirInstance(
+        (dir) =>
+          Effect.gen(function* () {
+            retrySafetyCalls.explicitlyNonRetryable = 0
+            const result = yield* runTurn({ dir, prompt: "resume non-retryable on retry" })
+
+            expect(retrySafetyCalls.explicitlyNonRetryable).toBe(2)
+            expect(result.value).toBe("stop")
+            expect(result.handle.message.error).toBeDefined()
+          }),
+        { config: cfg },
+      ),
+    )
+
+
+  itRetrySafety.live("session.processor rewinds an announced tool call on resume", () =>
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          retrySafetyCalls.rewind = 0
+          retrySafetyInputs.length = 0
+          const result = yield* runTurn({ dir, prompt: "resume rewind announced tool" })
+
+          expect(result.value).toBe("continue")
+          expect(retrySafetyCalls.rewind).toBe(2)
+          expect(result.handle.message.error).toBeUndefined()
+          const resume = retrySafetyInputs[1]!
+          expect(resume).not.toContain("call-rewind")
+          expect(resume).toContain("announcing tool")
+          expect(resume).toContain("Continue from where it ends")
+        }),
+      { config: cfg },
+    ),
+  )
+
+  itRetrySafety.live("session.processor keeps an executed tool result on resume", () =>
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          retrySafetyCalls.keepTool = 0
+          retrySafetyInputs.length = 0
+          const result = yield* runTurn({ dir, prompt: "resume keeps completed tool" })
+
+          expect(result.value).toBe("continue")
+          expect(retrySafetyCalls.keepTool).toBe(2)
+          expect(result.handle.message.error).toBeUndefined()
+          const resume = retrySafetyInputs[1]!
+          expect(resume).toContain("call-keep")
+          expect(resume).toContain("tool-result")
+          expect(resume).toContain("ran")
+        }),
+      { config: cfg },
+    ),
+  )
+
+  itRetrySafety.live("session.processor ends the turn when the resume window is exhausted", () =>
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          retrySafetyCalls.window = 0
+          const result = yield* runTurn({ dir, prompt: "resume window exhausted test", resumeWindowMs: 120 })
+
+          expect(result.value).toBe("stop")
+          expect(retrySafetyCalls.window).toBeGreaterThanOrEqual(2)
+          expect(result.handle.message.error).toBeDefined()
+          expect(
+            result.parts.some((part): part is SessionV1.TextPart => part.type === "text" && part.text === "partial"),
+          ).toBe(true)
+        }),
+      { config: cfg },
+    ),
+  )
+
+  itRetrySafety.live("session.processor requests compaction instead of resuming after a context overflow", () =>
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          retrySafetyCalls.overflow = 0
+          const result = yield* runTurn({ dir, prompt: "resume overflow during retry" })
+
+          expect(result.value).toBe("compact")
+          expect(retrySafetyCalls.overflow).toBe(2)
+        }),
+      { config: cfg },
+    ),
+  )
+
+  itRetrySafety.live("session.processor aborts immediately when cancelled during resume", () =>
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          retrySafetyCalls.hang = 0
+          const { processors, session, provider } = yield* boot()
+          const status = yield* SessionStatus.Service
+          const chat = yield* session.create({})
+          const parent = yield* user(chat.id, "resume escape")
+          const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+          const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+          const handle = yield* processors.create({
+            assistantMessage: msg,
+            sessionID: chat.id,
+            model: mdl,
+            resumeWindowMs: 300,
+          })
+          const run = yield* handle
+            .process({
+              user: {
+                id: parent.id,
+                sessionID: chat.id,
+                role: "user",
+                time: parent.time,
+                agent: parent.agent,
+                model: { providerID: ref.providerID, modelID: ref.modelID },
+              } satisfies SessionV1.User,
+              sessionID: chat.id,
+              model: mdl,
+              agent: agent(),
+              system: [],
+              messages: [{ role: "user", content: "resume escape" }],
+              tools: {},
+            })
+            .pipe(Effect.forkChild)
+
+          yield* waitFor(
+            status.get(chat.id).pipe(Effect.map((value) => (value.type === "retry" ? value : undefined))),
+            "timed out waiting for resume backoff",
+            2_000,
+          )
+          yield* waitFor(
+            Effect.sync(() => (retrySafetyCalls.hang >= 2 ? true : undefined)),
+            "resume attempt never started",
+            5_000,
+          )
+          yield* Effect.sleep("20 millis") // let the resume stream settle into hanging before interrupting
+          yield* Fiber.interrupt(run)
+          yield* Effect.sleep("50 millis")
+
+          expect(Exit.isFailure(yield* Fiber.await(run))).toBe(true)
+          expect(retrySafetyCalls.hang).toBe(2)
+          expect((yield* status.get(chat.id)).type).toBe("idle")
+        }),
+      { config: cfg },
+    ),
+  )
 
 itSnapshot.live("session.processor skips workspace snapshots for text-only and read-only turns", () =>
   provideTmpdirInstance(

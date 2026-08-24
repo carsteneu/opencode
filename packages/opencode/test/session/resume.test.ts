@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import type { ModelMessage } from "ai"
+import type { SessionV1 } from "@opencode-ai/core/v1/session"
 import { SessionRetry } from "../../src/session/retry"
 import { Resume, RESUME_CONTINUE_NOTICE } from "../../src/session/resume"
 
@@ -12,18 +13,14 @@ describe("session.retry resume window", () => {
     expect(SessionRetry.resumeRemaining(2_000_000, 1_000_000)).toBe(1_000_000)
   })
 
-  test("resumeRemaining clamps to zero past the deadline", () => {
-    expect(SessionRetry.resumeRemaining(1_000_000, 1_500_000)).toBe(0)
-  })
+    test("resumeRemaining clamps to zero past the deadline", () => {
+      expect(SessionRetry.resumeRemaining(1_000_000, 1_500_000)).toBe(0)
+    })
 
-  test("resumeExpired flips exactly at the deadline", () => {
-    expect(SessionRetry.resumeExpired(1_000_000, 999_999)).toBe(false)
-    expect(SessionRetry.resumeExpired(1_000_000, 1_000_000)).toBe(true)
-  })
 })
 
 const text = (value: string) => ({ type: "text" as const, text: value })
-const reasoning = (value: string, metadata?: Record<string, unknown>) => ({
+const reasoning = (value: string, metadata?: Record<string, any>) => ({
   type: "reasoning" as const,
   text: value,
   ...(metadata ? { metadata } : {}),
@@ -31,7 +28,7 @@ const reasoning = (value: string, metadata?: Record<string, unknown>) => ({
 const tool = (
   callID: string,
   name: string,
-  state: unknown,
+  state: SessionV1.ToolState,
 ) => ({ type: "tool" as const, callID, tool: name, state })
 const pendingTool = (callID: string, name: string) =>
   tool(callID, name, { status: "pending" as const, input: {}, raw: "" })
@@ -41,7 +38,7 @@ const runningTool = (callID: string, name: string) =>
     input: { command: "ls" },
     time: { start: 0 },
   })
-const completedTool = (callID: string, name: string, output: string, input: unknown = {}) =>
+const completedTool = (callID: string, name: string, output: string, input: Record<string, any> = {}) =>
   tool(callID, name, {
     status: "completed" as const,
     input,

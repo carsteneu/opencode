@@ -2,7 +2,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Image } from "@/image/image"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { Cause, Deferred, Effect, Exit, Layer, Context, Scope, Schema, Semaphore } from "effect"
+import { Cause, Deferred, Duration, Effect, Exit, Layer, Context, Scope, Schema, Semaphore } from "effect"
 import * as Stream from "effect/Stream"
 import { Agent } from "@/agent/agent"
 import { Config } from "@/config/config"
@@ -16,6 +16,7 @@ import { isOverflow } from "./overflow"
 import { PartID } from "./schema"
 import type { SessionID } from "./schema"
 import { SessionRetry } from "./retry"
+import { Resume } from "./resume"
 import { SessionStatus } from "./status"
 import { SessionSummary } from "./summary"
 import type { Provider } from "@/provider/provider"
@@ -62,6 +63,7 @@ type Input = {
   model: Provider.Model
   initialSnapshot?: string
   summarySnapshot?: string
+  resumeWindowMs?: number
 }
 
 export interface Interface {
@@ -733,7 +735,30 @@ const layer = Layer.effect(
         }
       })
 
-      const cleanup = Effect.fn("SessionProcessor.cleanup")(function* () {
+        // Commits buffered text/reasoning deltas as parts. Shared by cleanup
+        // (final materialization) and the resume loop (before building the next
+        // resume request so partial content becomes history).
+        const flushBufferedContent = Effect.fn("SessionProcessor.flushBufferedContent")(function* () {
+          if (ctx.currentText) {
+            const end = Date.now()
+            ctx.currentText.part.text = ctx.currentText.chunks.join("")
+            ctx.currentText.part.time = { start: ctx.currentText.part.time?.start ?? end, end }
+            yield* session.updatePart({ ...ctx.currentText.part })
+            ctx.currentText = undefined
+          }
+
+          for (const current of Object.values(ctx.reasoningMap)) {
+            const end = Date.now()
+            current.part.text = current.chunks.join("")
+            yield* session.updatePart({
+              ...current.part,
+              time: { start: current.part.time.start ?? end, end },
+            })
+          }
+          ctx.reasoningMap = {}
+        })
+
+        const cleanup = Effect.fn("SessionProcessor.cleanup")(function* () {
         yield* snapshotLock.withPermits(1)(
           Effect.sync(() => {
             ctx.closing = true
@@ -790,25 +815,9 @@ const layer = Layer.effect(
           })
         }
 
-        if (ctx.currentText) {
-          const end = Date.now()
-          ctx.currentText.part.text = ctx.currentText.chunks.join("")
-          ctx.currentText.part.time = { start: ctx.currentText.part.time?.start ?? end, end }
-          yield* session.updatePart({ ...ctx.currentText.part })
-          ctx.currentText = undefined
-        }
+          yield* flushBufferedContent()
 
-        for (const current of Object.values(ctx.reasoningMap)) {
-          const end = Date.now()
-          current.part.text = current.chunks.join("")
-          yield* session.updatePart({
-            ...current.part,
-            time: { start: current.part.time.start ?? end, end },
-          })
-        }
-        ctx.reasoningMap = {}
-
-        yield* Effect.forEach(
+          yield* Effect.forEach(
           Object.values(ctx.toolcalls),
           (call) => Deferred.await(call.done).pipe(Effect.timeout("250 millis"), Effect.ignore),
           { concurrency: "unbounded" },
@@ -895,23 +904,26 @@ const layer = Layer.effect(
         ctx.bufferEvents = streamInput.request?.bufferEvents === true
         ctx.discardAttempt = false
         ctx.shouldBreak = (yield* config.get()).experimental?.continue_loop_on_deny !== true
-        const retry = { safe: true }
-        const disableRetry = () => {
-          retry.safe = false
-        }
+          const retry = { safe: true }
+          let outputProduced = false
+          let resumeBlocked = false
+          const disableRetry = () => {
+            retry.safe = false
+            if (!outputProduced) resumeBlocked = true
+          }
 
-        return yield* Effect.gen(function* () {
-          yield* Effect.gen(function* () {
+          const runCore = (runInput: LLM.StreamInput) =>
+            Effect.gen(function* () {
             ctx.currentText = undefined
             ctx.reasoningMap = {}
             yield* status.set(ctx.sessionID, { type: "busy" })
-            const stream = llm.stream({
-              ...streamInput,
-              request: {
-                ...streamInput.request,
-                retry: { disable: disableRetry },
-              },
-            })
+              const stream = llm.stream({
+                ...runInput,
+                request: {
+                  ...runInput.request,
+                  retry: { disable: disableRetry },
+                },
+              })
             const source = ctx.bufferEvents
               ? yield* Effect.gen(function* () {
                   const buffered = [...(yield* Stream.runCollect(stream))]
@@ -934,11 +946,15 @@ const layer = Layer.effect(
               : stream
 
             yield* source.pipe(
-              Stream.tap((event) =>
-                Effect.sync(() => {
-                  if (event.type !== "provider-error" || event.retryable === false) disableRetry()
-                }).pipe(Effect.andThen(handleEvent(event))),
-              ),
+                Stream.tap((event) =>
+                  Effect.sync(() => {
+                    if (event.type !== "provider-error" || event.retryable === false) {
+                      outputProduced = true
+                      retry.safe = false
+                      if (event.type === "provider-error") resumeBlocked = true
+                    }
+                  }).pipe(Effect.andThen(handleEvent(event))),
+                ),
               Stream.takeUntil(() => ctx.needsCompaction),
               Stream.runDrain,
             )
@@ -947,29 +963,115 @@ const layer = Layer.effect(
               (cause) => !Cause.hasInterruptsOnly(cause),
               (cause) => Effect.fail(Cause.squash(cause)),
             ),
-            Effect.retry(
-              SessionRetry.policy({
-                provider: input.model.providerID,
-                parse,
-                canRetry: () => retry.safe,
-                set: (info) => {
-                  return status.set(ctx.sessionID, {
-                    type: "retry",
-                    attempt: info.attempt,
-                    message: info.message,
-                    action: info.action,
-                    next: info.next,
-                  })
-                },
-              }),
-            ),
-            Effect.catch(halt),
-          )
+              Effect.retry(
+                SessionRetry.policy({
+                  provider: input.model.providerID,
+                  parse,
+                  canRetry: () => retry.safe,
+                  set: (info) => {
+                    return status.set(ctx.sessionID, {
+                      type: "retry",
+                      attempt: info.attempt,
+                      message: info.message,
+                      action: info.action,
+                      next: info.next,
+                    })
+                  },
+                }),
+              ),
+            )
 
-          if (ctx.needsCompaction) return "compact"
-          if (ctx.discardAttempt || ctx.blocked || ctx.assistantMessage.error) return "stop"
-          return "continue"
-        })
+            const resumable = (error: SessionRetry.Err) => {
+              if (
+                error === undefined ||
+                !outputProduced ||
+                resumeBlocked ||
+                ctx.assistantMessage.summary ||
+                ctx.bufferEvents ||
+                streamInput.request?.replay
+              )
+                return false
+              const retryable = SessionRetry.retryable(error, input.model.providerID)
+              return retryable !== undefined && !retryable.action
+            }
+
+            const buildResumeInput = Effect.fnUntraced(function* () {
+              const parts = yield* MessageV2.parts(ctx.assistantMessage.id).pipe(
+                Effect.provideService(Database.Service, database),
+              )
+              return {
+                ...streamInput,
+                messages: [...streamInput.messages, ...Resume.buildResumeMessages(parts)],
+                request: {},
+              }
+            })
+
+          const resumeLoop = Effect.fnUntraced(function* (error: SessionRetry.Err, cause: unknown) {
+            const deadline = Date.now() + (input.resumeWindowMs ?? SessionRetry.RESUME_WINDOW_MS)
+            let lastError = error
+            let lastCause = cause
+            let attempts = 0
+            while (true) {
+              attempts += 1
+              const remaining = SessionRetry.resumeRemaining(deadline, Date.now())
+              if (remaining <= 0) {
+                yield* Effect.logWarning("resume window exhausted; ending turn", {
+                  "session.id": ctx.sessionID,
+                  messageID: input.assistantMessage.id,
+                  attempts: attempts - 1,
+                })
+                return yield* halt(lastCause)
+              }
+              // The pristine run counts as attempt 1, so a resume attempt reports
+              // attempts + 1. Every resume attempt backs off with the same policy
+              // as the pristine path (Retry-After respected), capped to what the
+              // resume window still allows.
+                const wait = Math.max(
+                  250,
+                  Math.min(
+                    SessionRetry.delay(
+                      attempts,
+                      SessionV1.APIError.isInstance(lastError) ? lastError : undefined,
+                    ),
+                    remaining,
+                  ),
+                )
+              const message =
+                SessionRetry.retryable(lastError, input.model.providerID)?.message ?? errorMessage(lastCause)
+              yield* status.set(ctx.sessionID, {
+                type: "retry",
+                attempt: attempts + 1,
+                message,
+                next: Date.now() + wait,
+              })
+              if (wait > 0) yield* Effect.sleep(Duration.millis(wait))
+              yield* flushBufferedContent()
+              const resumeInput = yield* buildResumeInput()
+              const exited = yield* runCore(resumeInput).pipe(Effect.exit)
+              if (Exit.isSuccess(exited)) return
+              if (Cause.hasInterruptsOnly(exited.cause)) return yield* Effect.interrupt
+              const failure = Cause.squash(exited.cause)
+              const parsed = parse(failure)
+                const retryable = SessionRetry.retryable(parsed, input.model.providerID)
+                if (!retryable || retryable.action || resumeBlocked || ctx.needsCompaction)
+                  return yield* halt(failure)
+              lastError = parsed
+              lastCause = failure
+            }
+          })
+
+          const failed = Effect.fnUntraced(function* (cause: unknown) {
+            const error = parse(cause)
+            if (resumable(error)) return yield* resumeLoop(error, cause)
+            return yield* halt(cause)
+          })
+
+          return yield* Effect.gen(function* () {
+            yield* runCore(streamInput).pipe(Effect.catch(failed))
+            if (ctx.needsCompaction) return "compact"
+            if (ctx.discardAttempt || ctx.blocked || ctx.assistantMessage.error) return "stop"
+            return "continue"
+          })
       })
 
       const process = Effect.fn("SessionProcessor.process")(function* (
