@@ -211,6 +211,9 @@ test("session prompt handles boundary keys and app.exit prints the epilogue", as
     expect(trace()).toEqual([["binding-execute", "session.last"]])
 
     api?.keymap.dispatchCommand("app.exit")
+    const guarded = await Promise.race([task.then(() => false), Bun.sleep(100).then(() => true)])
+    expect(guarded).toBe(true)
+    api?.keymap.dispatchCommand("app.exit")
     await task
 
     expect(stdout).toContain("Demo session")
@@ -372,9 +375,12 @@ test("pasted local documents become independently counted data URL attachments",
       ],
     })
 
-    api?.keymap.dispatchCommand("app.exit")
-    await task
-  } finally {
+      api?.keymap.dispatchCommand("app.exit")
+      const guarded = await Promise.race([task.then(() => false), Bun.sleep(100).then(() => true)])
+      expect(guarded).toBe(true)
+      api?.keymap.dispatchCommand("app.exit")
+      await task
+    } finally {
     process.stdout.write = originalWrite
     if (!setup.renderer.isDestroyed) setup.renderer.destroy()
     mock.restore()

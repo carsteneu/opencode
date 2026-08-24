@@ -8,6 +8,7 @@ import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { readLastKnownThemeMode } from "./util/last-theme-mode"
 import { ClipboardProvider, useClipboard } from "./context/clipboard"
 import { ExitProvider, useExit } from "./context/exit"
+import { createExitGuard } from "./util/exit-guard"
 import { EpilogueProvider } from "./context/epilogue"
 import * as Selection from "./util/selection"
 import { createCliRenderer, MouseButton } from "@opentui/core"
@@ -214,6 +215,8 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
               targetFps: 30,
               gatherStats: false,
               exitOnCtrlC: false,
+              // SIGINT is handled by the app's two-press exit guard instead.
+              exitSignals: ["SIGTERM", "SIGQUIT", "SIGABRT", "SIGHUP", "SIGPIPE", "SIGBREAK", "SIGBUS"],
               useKittyKeyboard: {},
               autoFocus: false,
               openConsoleOnError: false,
@@ -402,6 +405,23 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
   const sync = useSync()
   const project = useProject()
   const exit = useExit()
+  const exitGuard = createExitGuard({ windowMs: 2000 })
+  const requestExit = () => {
+    if (exitGuard.press() === "fire") {
+      exit()
+      return
+    }
+    toast.show({
+      title: "Press ctrl+c again to exit",
+      message: "",
+      variant: "info",
+      duration: 2000,
+    })
+  }
+  // Terminals without the kitty keyboard protocol deliver Ctrl+C as SIGINT
+  // rather than a key event; route it through the same two-press guard.
+  process.on("SIGINT", requestExit)
+  onCleanup(() => process.off("SIGINT", requestExit))
   const promptRef = usePromptRef()
   const pluginRuntime = usePluginRuntime()
   const attention = createTuiAttention({ renderer, config: tuiConfig, kv })
@@ -846,14 +866,14 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
         },
         category: "System",
       },
-      {
-        name: "app.exit",
-        title: "Exit the app",
-        slashName: "exit",
-        slashAliases: ["quit", "q"],
-        run: () => exit(),
-        category: "System",
-      },
+        {
+          name: "app.exit",
+          title: "Exit the app",
+          slashName: "exit",
+          slashAliases: ["quit", "q"],
+          run: () => requestExit(),
+          category: "System",
+        },
       {
         name: "app.debug",
         title: "Toggle debug panel",
