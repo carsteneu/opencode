@@ -6,6 +6,22 @@ import type { GlobalEvent } from "@opencode-ai/sdk/v2"
 import { ServerAuth } from "@/server/auth"
 import type { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { TuiPayload } from "@/server/shared/tui-payload"
+import { createWriteStream } from "node:fs"
+import { join } from "node:path"
+import { homedir } from "node:os"
+
+// Server diagnostics — including bun's own internal stderr prints (e.g. EPIPE
+// surfaced from torn-down stdio channels, oven-sh/bun#35064) — must never leak
+// into the user's terminal. The child's stderr is pumped into this sidecar log
+// instead of inheriting the TUI's tty.
+function serverStderrSink() {
+  const dir = join(
+    process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"),
+    "opencode",
+    "log",
+  )
+  return createWriteStream(join(dir, "tui-server.log"), { flags: "a" })
+}
 
 type Network = { port: number; hostname: string; mdns?: boolean; cors?: string[] }
 type ChildInput = Network & { ipcEvents?: boolean }
@@ -106,7 +122,7 @@ export async function startTuiServerProcess(input: {
       },
       stdin: "ignore",
       stdout: "ignore",
-      stderr: "inherit",
+      stderr: "pipe",
       ipc(message) {
         if (!message || typeof message !== "object" || !("type" in message)) return
         const value = message as ChildMessage
@@ -131,6 +147,28 @@ export async function startTuiServerProcess(input: {
       },
     },
   )
+
+  // Pump the child's stderr into a sidecar log so internal runtime prints
+  // never surface in the user's terminal.
+  if (child.stderr) {
+    const log = serverStderrSink()
+    const reader = child.stderr.getReader()
+    const decoder = new TextDecoder()
+    void (async () => {
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          log.write(decoder.decode(value, { stream: true }))
+        }
+      } catch {
+        // stream ends when the child exits or the pipe breaks
+      } finally {
+        reader.releaseLock()
+        log.end()
+      }
+    })()
+  }
 
   void child.exited.then((code) => {
     const error = new Error(`TUI server process exited with code ${code}`)
