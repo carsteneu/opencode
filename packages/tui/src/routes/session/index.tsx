@@ -1929,6 +1929,7 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
     // OpenRouter encrypts some reasoning blocks; drop the placeholder.
     return props.part.text.replace("[REDACTED]", "").trim()
   })
+  const opaque = createMemo(() => !content() && Boolean(props.part.metadata))
   // Reasoning is finalized when the server sets `time.end` (see processor.ts).
   // Flips independently of the parent message completing.
   const isDone = createMemo(() => props.part.time.end !== undefined)
@@ -1940,7 +1941,7 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
   const syntax = createSyntaxStyleMemo(() => generateSubtleSyntax(theme))
 
   return (
-    <Show when={content()}>
+    <Show when={content() || opaque()}>
       <box
         ref={(el: BoxRenderable) => alwaysSeparate.add(el)}
         paddingLeft={3}
@@ -1953,9 +1954,10 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
             done={isDone()}
             title={summary().title}
             duration={isDone() ? Locale.duration(duration()) : undefined}
+            encrypted={opaque()}
           />
         </box>
-        <Show when={summary().body}>
+        <Show when={!opaque() && summary().body}>
           <box marginTop={1}>
             <code
               filetype="markdown"
@@ -1973,9 +1975,14 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
   )
 }
 
-function ReasoningHeader(props: { done: boolean; title: string | null; duration?: string }) {
+function ReasoningHeader(props: { done: boolean; title: string | null; duration?: string; encrypted?: boolean }) {
   const { theme } = useTheme()
   const fg = () => RGBA.fromValues(theme.warning.r, theme.warning.g, theme.warning.b, theme.thinkingOpacity)
+  const completed = () => {
+    if (props.encrypted) return `Thought${props.duration ? ` · ${props.duration}` : ""}`
+    const detail = [props.title, props.duration].filter(Boolean).join(" · ")
+    return `Thought${detail ? `: ${detail}` : ""}`
+  }
 
   return (
     <Switch>
@@ -1986,19 +1993,7 @@ function ReasoningHeader(props: { done: boolean; title: string | null; duration?
       </Match>
       <Match when={true}>
         <text fg={fg()} wrapMode="none">
-          <span>Thought</span>
-          <Show when={props.title || props.duration}>
-            <span>: </span>
-          </Show>
-          <Show when={props.title}>
-            <span>{props.title}</span>
-          </Show>
-          <Show when={props.duration}>
-            <span>
-              {props.title ? " · " : ""}
-              {props.duration}
-            </span>
-          </Show>
+          {completed()}
         </text>
       </Match>
     </Switch>

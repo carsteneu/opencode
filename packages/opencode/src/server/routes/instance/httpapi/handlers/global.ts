@@ -19,20 +19,20 @@ import { sseDisconnectSignal } from "../sse-disconnect"
 // semantics so a stuck SSE client cannot grow heap unboundedly.
 const SSE_QUEUE_CAPACITY = 8192
 
+function parseBody(body: string) {
+  try {
+    return JSON.parse(body || "{}") as unknown
+  } catch {
+    return undefined
+  }
+}
+
 function eventData(data: unknown): Sse.Event {
   return {
     _tag: "Event",
     event: "message",
     id: undefined,
     data: JSON.stringify(data),
-  }
-}
-
-function parseBody(body: string) {
-  try {
-    return JSON.parse(body || "{}") as unknown
-  } catch {
-    return undefined
   }
 }
 
@@ -123,31 +123,28 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
     const upgrade = Effect.fn("GlobalHttpApi.upgrade")(function* (ctx: { payload: typeof GlobalUpgradeInput.Type }) {
       const method = yield* installation.method()
       if (method === "unknown") {
-        return {
-          status: 400,
-          body: { success: false as const, error: "Unknown installation method" },
-        }
+        return HttpServerResponse.jsonUnsafe(
+          { success: false as const, error: "Unknown installation method" },
+          { status: 400 },
+        )
       }
       const target = ctx.payload.target || (yield* installation.latest(method, true))
       if (Installation.isPatched() && !Installation.isNewer(InstallationVersion, target)) {
-        return {
-          status: 400,
-          body: { success: false as const, error: `Target must be newer than ${InstallationVersion}` },
-        }
+        return HttpServerResponse.jsonUnsafe(
+          { success: false as const, error: `Target must be newer than ${InstallationVersion}` },
+          { status: 400 },
+        )
       }
       const result = yield* installation.upgrade(method, target).pipe(
-        Effect.as({ status: 200, body: { success: true as const, version: target } }),
+        Effect.as({ success: true as const, version: target }),
         Effect.catch((err) =>
           Effect.succeed({
-            status: 500,
-            body: {
-              success: false as const,
-              error: err instanceof Error ? err.message : String(err),
-            },
+            success: false as const,
+            error: err instanceof Error ? err.message : String(err),
           }),
         ),
       )
-      if (!result.body.success) return result
+      if (!result.success) return HttpServerResponse.jsonUnsafe(result, { status: 500 })
       GlobalBus.emit("event", {
         directory: "global",
         payload: {
@@ -155,7 +152,7 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
           properties: { version: target },
         },
       })
-      return result
+      return HttpServerResponse.jsonUnsafe(result)
     })
 
     const upgradeRaw = Effect.fn("GlobalHttpApi.upgradeRaw")(function* (ctx: {
@@ -173,8 +170,7 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
       if (!payload.valid) {
         return HttpServerResponse.jsonUnsafe({ success: false, error: "Invalid request body" }, { status: 400 })
       }
-      const result = yield* upgrade({ payload: payload.payload })
-      return HttpServerResponse.jsonUnsafe(result.body, { status: result.status })
+      return yield* upgrade({ payload: payload.payload })
     })
 
     return handlers
