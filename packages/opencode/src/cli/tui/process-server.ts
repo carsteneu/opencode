@@ -6,7 +6,7 @@ import type { GlobalEvent } from "@opencode-ai/sdk/v2"
 import { ServerAuth } from "@/server/auth"
 import type { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { TuiPayload } from "@/server/shared/tui-payload"
-import { createWriteStream } from "node:fs"
+import { createWriteStream, mkdirSync } from "node:fs"
 import { join } from "node:path"
 import { homedir } from "node:os"
 
@@ -20,6 +20,9 @@ function serverStderrSink() {
     "opencode",
     "log",
   )
+  // The log directory may not exist yet on first boot — the child needs its
+  // stderr sink before the main process has created anything.
+  mkdirSync(dir, { recursive: true })
   return createWriteStream(join(dir, "tui-server.log"), { flags: "a" })
 }
 
