@@ -86,8 +86,8 @@ jobs:
     needs: opentui-natives
     runs-on: ubuntu-24.04
     env:
-      OPENCODE_VERSION: ${{ inputs.version }}
-      OPENCODE_TARGETS: ${{ inputs.targets }}
+      OPENCODE_VERSION: ${{ inputs.version || '1.18.22-patched.163' }}
+      OPENCODE_TARGETS: ${{ inputs.targets || 'linux-x64,darwin-x64,darwin-arm64,win32-x64,win32-arm64' }}
     steps:
       - name: Checkout OpenCode fork
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
