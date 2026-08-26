@@ -27,7 +27,11 @@ on:
         default: false
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: build-patched-matrix-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   opentui-natives:
@@ -85,6 +89,8 @@ jobs:
     name: Build patched OpenCode (matrix targets)
     needs: opentui-natives
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     env:
       OPENCODE_VERSION: ${{ inputs.version || '1.18.22-patched.163' }}
       OPENCODE_TARGETS: ${{ inputs.targets || 'linux-x64,darwin-x64,darwin-arm64,win32-x64,win32-arm64' }}
@@ -146,22 +152,29 @@ jobs:
             test -f "$file" || { echo "MISSING: $file"; exit 1; }
             echo "ok: $file ($(du -h "$file" | cut -f1))"
           done
+          # The Linux binary executes on this runner: assert the embedded version.
+          version_out="$(./dist/opencode-linux-x64/bin/opencode --version)"
+          case "$version_out" in
+            *"$OPENCODE_VERSION"*) echo "version ok: $version_out" ;;
+            *) echo "version mismatch: '$version_out' != $OPENCODE_VERSION"; exit 1 ;;
+          esac
 
       - name: Stage binaries and checksums
         working-directory: packages/opencode
         run: |
           set -euo pipefail
-          mkdir -p dist/patched-release
+          rm -rf dist/patched-release && mkdir -p dist/patched-release
           for target in ${OPENCODE_TARGETS//,/ }; do
             os=${target%%-*}
             arch=${target##*-}
             dirname="opencode-$([ "$os" = "win32" ] && echo windows || echo $os)-$arch"
-            if [ "$os" = "win32" ]; then file="dist/$dirname/bin/opencode.exe"; else file="dist/$dirname/bin/opencode"; fi
-            out="dist/patched-release/$dirname"
-            mkdir -p "$out"
-            cp "$file" "$out/opencode"
-            (cd "$out" && shasum -a 256 opencode > "opencode.sha256")
-            echo "staged: $out"
+            suffix=$([ "$os" = "win32" ] && echo .exe || true)
+            stem="$dirname$suffix"
+            file="dist/$dirname/bin/opencode$suffix"
+            test -f "$file" || { echo "MISSING: $file"; exit 1; }
+            cp "$file" "dist/patched-release/$stem"
+            (cd dist/patched-release && shasum -a 256 "$stem" > "$stem.sha256")
+            echo "staged: $stem"
           done
           find dist/patched-release -type f | sort
 
@@ -189,5 +202,12 @@ jobs:
               --prerelease --draft
           fi
           gh release upload "$version" --repo carsteneu/opencode --clobber \
-            */opencode */opencode.sha256
+            opencode-linux-* opencode-darwin-* opencode-windows-*.exe opencode-*.sha256
+          # Round-trip: re-download the uploaded checksums and confirm they match locally.
+          tmpdir="$(mktemp -d)"
+          gh release download "$version" --repo carsteneu/opencode --pattern '*.sha256' --dir "$tmpdir"
+          for f in *.sha256; do
+            cmp -s "$f" "$tmpdir/$f" || { echo "checksum mismatch for $f"; exit 1; }
+          done
+          echo "checksum round-trip ok"
           echo "uploaded draft release $version"
