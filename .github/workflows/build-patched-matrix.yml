@@ -201,8 +201,10 @@ jobs:
               --notes "Patched fork multi-platform build (GitHub Actions)." \
               --prerelease --draft
           fi
-          gh release upload "$version" --repo carsteneu/opencode --clobber \
-            opencode-linux-* opencode-darwin-* opencode-windows-*.exe opencode-*.sha256
+          # Build a de-duplicated asset list: the platform globs would otherwise
+          # match the .sha256 files too, and gh rejects duplicate names (HTTP 422).
+          mapfile -t assets < <( { compgen -G 'opencode-*' | grep -v '\.sha256$'; compgen -G 'opencode-*.sha256'; } | sort -u )
+          gh release upload "$version" --repo carsteneu/opencode --clobber "${assets[@]}"
           # Round-trip: re-download the uploaded checksums and confirm they match locally.
           tmpdir="$(mktemp -d)"
           gh release download "$version" --repo carsteneu/opencode --pattern '*.sha256' --dir "$tmpdir"
