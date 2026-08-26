@@ -1,6 +1,9 @@
 name: build-patched-matrix
 
 on:
+  push:
+    branches:
+      - "yesloop/multi-platform-build"
   workflow_dispatch:
     inputs:
       version:
