@@ -14,15 +14,16 @@ import {
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Cause, Effect, Exit, Fiber } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber } from "effect"
 import type { MCP as MCPNS } from "../../src/mcp/index"
+import { EventV2Bridge } from "../../src/event-v2-bridge"
 import { MCP } from "../../src/mcp/index"
 import { McpOAuthCallback } from "../../src/mcp/oauth-callback"
 import { InstanceStore } from "../../src/project/instance-store"
 import { TestInstance } from "../fixture/fixture"
-import { pollWithTimeout, testEffect } from "../lib/effect"
+import { pollWithTimeout, testEffect, awaitWithTimeout } from "../lib/effect"
 
-const it = testEffect(LayerNode.compile(MCP.node))
+const it = testEffect(LayerNode.compile(LayerNode.group([MCP.node, EventV2Bridge.node])))
 const stdioFixture = path.join(import.meta.dir, "../fixture/mcp-lifecycle-stdio.ts")
 
 type Page<T> = { items: T[]; nextCursor?: string }
@@ -440,6 +441,27 @@ it.instance("one failed server does not affect another connected server", () =>
     expect((yield* mcp.status())["good-server"]?.status).toBe("connected")
     expect((yield* mcp.status())["bad-server"]?.status).toBe("failed")
     expect(Object.keys(yield* mcp.tools())).toEqual(["good-server_good_tool"])
+  }),
+)
+
+it.instance("connect publishes a tools changed event", () =>
+  Effect.gen(function* () {
+    const server = yield* lifecycleServer()
+    const events = yield* EventV2Bridge.Service
+    const changed = yield* Deferred.make<{ server: string }>()
+    const unsubscribe = yield* events.listen((evt) => {
+      if (evt.type === MCP.ToolsChanged.type)
+        Deferred.doneUnsafe(changed, Effect.succeed(evt.data as { server: string }))
+      return Effect.void
+    })
+    yield* Effect.addFinalizer(() => unsubscribe)
+
+    const mcp = yield* MCP.Service
+    yield* mcp.add("event-server", remote(server.url))
+
+    const event = yield* awaitWithTimeout(Deferred.await(changed), "connect did not publish a tools changed event")
+    expect(event.server).toBe("event-server")
+    expect((yield* mcp.status())["event-server"]?.status).toBe("connected")
   }),
 )
 

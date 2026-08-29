@@ -1,7 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import { describe, expect, test } from "bun:test"
 import { tmpdir } from "../../../fixture/fixture"
-import { mount, wait } from "./sync-fixture"
+import { json, mount, wait } from "./sync-fixture"
 import type { GlobalEvent } from "@opencode-ai/sdk/v2"
 
 function branchEvent(branch: string, workspace?: string): GlobalEvent {
@@ -13,6 +13,18 @@ function branchEvent(branch: string, workspace?: string): GlobalEvent {
       id: `evt_vcs_${branch}`,
       type: "vcs.branch.updated",
       properties: { branch },
+    },
+  }
+}
+
+function mcpToolsChangedEvent(server: string): GlobalEvent {
+  return {
+    directory: "/tmp/other",
+    project: "proj_test",
+    payload: {
+      id: `evt_mcp_${server}`,
+      type: "mcp.tools.changed",
+      properties: { server },
     },
   }
 }
@@ -58,6 +70,28 @@ describe("tui sync", () => {
       await wait(() => sync.data.vcs?.branch === "feature")
 
       expect(sync.data.vcs?.branch).toBe("feature")
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+
+  test("mcp.tools.changed refreshes mcp status", async () => {
+    await using tmp = await tmpdir()
+    await Bun.write(`${tmp.path}/kv.json`, "{}")
+    let statusCalls = 0
+    const { app, emit, sync } = await mount((url) => {
+      if (url.pathname !== "/mcp") return undefined
+      const status = statusCalls++ === 0 ? "disabled" : "connected"
+      return json({ "lazy-server": { status } })
+    })
+
+    try {
+      expect(sync.data.mcp["lazy-server"]?.status).toBe("disabled")
+
+      emit(mcpToolsChangedEvent("lazy-server"))
+      await wait(() => sync.data.mcp["lazy-server"]?.status === "connected")
+
+      expect(sync.data.mcp["lazy-server"]?.status).toBe("connected")
     } finally {
       app.renderer.destroy()
     }

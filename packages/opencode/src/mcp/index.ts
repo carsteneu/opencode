@@ -613,6 +613,7 @@ const layer = Layer.effect(
       else delete s.instructions[name]
       watch(s, name, client, bridge, timeout)
       if (previous) yield* Effect.tryPromise(() => previous.close()).pipe(Effect.ignore)
+      yield* events.publish(ToolsChanged, { server: name }).pipe(Effect.ignore)
       return s.status[name]
     })
 
