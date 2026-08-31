@@ -5,7 +5,27 @@
 - The canonical branch for local patches, builds, deployments, tags, and GitHub prereleases is `working`, normally checked out at `.worktrees/working`.
 - Build fork prereleases from `packages/opencode` with `OPENCODE_VERSION=x.y.z-patched.n bun run build:patched --single --skip-install`. This keeps the normal `latest` data channel while pinning self-updates to patched prereleases from `carsteneu/opencode`.
 - Prepare a release with `OPENTUI_ROOT=/path/to/pinned/opentui bun run release:patched x.y.z-patched.n`; add `--publish` only from a clean, committed `working` branch. The publisher verifies the pinned OpenTUI overlay, uploads the raw Linux x64 binary and SHA-256 asset to a draft, verifies both, and only then publishes the prerelease.
+- Treat an OpenTUI pin update as one atomic change: update the four root catalog URLs, regenerate `bun.lock`, and update the commit, tag, version, and directory hashes in `script/sync-opentui-overlay.ts`. Verify the tagged source with `--check` and keep `--skip-install`; an install can replace the verified overlay.
+- `release:patched` requires `ghostty`, `script`, and `timeout`. Its fresh-data Ghostty smoke test must reach first draw without a crash before upload; failures retain their temporary artifacts, and the manual candidate is `packages/opencode/dist/patched-release/opencode-linux-x64`.
 - Local `main` ref may not exist. Use `working` for patched release work and `origin/dev` for upstream comparisons.
+
+## Debugging & Performance Analysis
+
+Built-in debug surfaces to use first for any TUI/startup/perf investigation:
+
+- TUI slash commands (`tui`, `app.tsx` `System` category): `/status` (DialogStatus), `/debug`
+  (DialogDebug), and the renderer debug panel via `renderer.toggleDebugOverlay()` (`app.debug`)
+  which reports frame timing / renderer state from the OpenTUI layer.
+- Env flags: `OPENCODE_LOG_LEVEL`, `OPENCODE_PRINT_LOGS` (logging), `OPENCODE_CPU_PROFILE`
+  (CPU profile), `OPENCODE_DIRECT_TRACE`, `OPENCODE_ACP_PROFILE` (agent-client-protocol profile),
+  and the `OPENCODE_DISABLE_*` family for isolating subsystems in tests.
+- Measurement tools in `script/perf/`: `bench_proc.py`, `live_process_sampler.py`,
+  `analyze_live_samples.py`, `boot-timeline.py`, `ab-server-boot.sh`, `ab-ghostty-boot.sh`.
+- Ghostty interaction gates in `script/perf/` (`gate.ts`, `gate-min.ts`) boot the candidate in an
+  isolated Ghostty (`--gtk-single-instance=false`, `script(1)`+`tmux`) and classify
+  GOOD/CRASH/HANG/FAIL while measuring `Time to first draw` (`OPENCODE_SHOW_TTFD=1`).
+- Perf/startup verifications follow `yesdocs/patched-release-verification.md`. Tests run from
+  package directories only (never repo root); use `bun typecheck`.
 
 ## Branch Names
 

@@ -39,3 +39,7 @@ script/perf/__pycache__/
 
 # lokale yesdocs-Projektnotizen (nicht ins Repo/Release)
 yesdocs/
+
+# lokale AGENTS.md-Notizen (Debug-Tools, Perf-Hinweise) — nicht committen
+/AGENTS.md
+/script/perf/AGENTS.md
