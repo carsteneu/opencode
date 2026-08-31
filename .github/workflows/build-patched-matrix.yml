@@ -1,0 +1,215 @@
+name: build-patched-matrix
+
+on:
+  push:
+    branches:
+      - "yesloop/multi-platform-build"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Patched version to build (x.y.z-patched.n)"
+        required: true
+        type: string
+      targets:
+        description: "Comma-separated OPENCODE_TARGETS (os-arch, canonical variants only)"
+        required: false
+        type: string
+        default: "linux-x64,darwin-x64,darwin-arm64,win32-x64,win32-arm64"
+      opentui_ref:
+        description: "OpenTUI fork commit to build natives from (pinned overlay source)"
+        required: false
+        type: string
+        default: "225e532fe0caf0fe6db3b94cb5fe1510e3341e61"
+      publish:
+        description: "Upload binaries + checksums to a draft GitHub release (false = action artifacts only)"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-patched-matrix-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  opentui-natives:
+    name: Build OpenTUI natives (all targets)
+    runs-on: macos-15
+    env:
+      ZIG_VERSION: 0.16.0
+    steps:
+      - name: Checkout pinned OpenTUI fork
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          repository: carsteneu/opentui
+          ref: ${{ inputs.opentui_ref || '225e532fe0caf0fe6db3b94cb5fe1510e3341e61' }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: package.json
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build native libraries (cross-compile all platforms)
+        working-directory: packages/core
+        run: bun run build:native --all
+
+      - name: Verify native packages
+        run: |
+          for pkg in core-darwin-x64 core-darwin-arm64 core-linux-x64 core-win32-x64 core-win32-arm64; do
+            test -f "packages/core/node_modules/@opentui/$pkg/package.json" || { echo "missing $pkg"; exit 1; }
+            echo "ok: $pkg"
+          done
+
+      - name: Package native packages
+        run: |
+          mkdir -p dist-native-packages
+          for pkg in core-darwin-x64 core-darwin-arm64 core-linux-x64 core-linux-arm64 core-linux-x64-musl core-win32-x64 core-win32-arm64; do
+            cp -r "packages/core/node_modules/@opentui/$pkg" "dist-native-packages/"
+          done
+          ls -la dist-native-packages/
+
+      - name: Upload native packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: opentui-native-packages
+          path: dist-native-packages/
+          if-no-files-found: error
+
+  build-patched:
+    name: Build patched OpenCode (matrix targets)
+    needs: opentui-natives
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      OPENCODE_VERSION: ${{ inputs.version || '1.18.22-patched.163' }}
+      OPENCODE_TARGETS: ${{ inputs.targets || 'linux-x64,darwin-x64,darwin-arm64,win32-x64,win32-arm64' }}
+    steps:
+      - name: Checkout OpenCode fork
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - name: Download OpenTUI natives
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: opentui-native-packages
+          path: opentui-natives
+
+      - name: Install stock natives for all platform targets
+        # build.ts fetches these only when not --skip-install; the darwin/win32
+        # variants are published to npm, so install them explicitly to make the
+        # cross-compile targets resolve their native bindings.
+        working-directory: packages/opencode
+        run: |
+          bun install --os="*" --cpu="*" @parcel/watcher@2.5.1
+          bun install --os="*" --cpu="*" @ff-labs/fff-bun@0.9.4
+
+      - name: Inject non-Linux OpenTUI natives
+        run: |
+          set -euo pipefail
+          # The Linux x64 native slot is installed from the fork release asset via
+          # the root catalog; the other platform slots are not published to npm, so
+          # place the cross-compiled packages into node_modules/@opentui directly.
+          mkdir -p node_modules/@opentui
+          for pkg in opentui-natives/core-darwin-x64 opentui-natives/core-darwin-arm64 \
+                     opentui-natives/core-win32-x64 opentui-natives/core-win32-arm64; do
+            name=$(basename "$pkg")
+            rm -rf "node_modules/@opentui/$name"
+            cp -r "$pkg" "node_modules/@opentui/$name"
+            test -f "node_modules/@opentui/$name/package.json" || { echo "inject failed: $name"; exit 1; }
+            echo "injected: $name"
+          done
+
+      - name: Build patched binaries (cross-compile)
+        working-directory: packages/opencode
+        run: |
+          bun run build:patched --skip-install 2>&1
+          echo "--- dist contents ---"
+          ls -la dist/
+
+      - name: Verify binaries
+        working-directory: packages/opencode
+        run: |
+          set -euo pipefail
+          for target in ${OPENCODE_TARGETS//,/ }; do
+            os=${target%%-*}
+            arch=${target##*-}
+            # build.ts maps win32 -> "windows" in the dist folder name
+            dirname="opencode-$([ "$os" = "win32" ] && echo windows || echo $os)-$arch"
+            if [ "$os" = "win32" ]; then file="dist/$dirname/bin/opencode.exe"; else file="dist/$dirname/bin/opencode"; fi
+            test -f "$file" || { echo "MISSING: $file"; exit 1; }
+            echo "ok: $file ($(du -h "$file" | cut -f1))"
+          done
+          # The Linux binary executes on this runner: assert the embedded version.
+          version_out="$(./dist/opencode-linux-x64/bin/opencode --version)"
+          case "$version_out" in
+            *"$OPENCODE_VERSION"*) echo "version ok: $version_out" ;;
+            *) echo "version mismatch: '$version_out' != $OPENCODE_VERSION"; exit 1 ;;
+          esac
+
+      - name: Stage binaries and checksums
+        working-directory: packages/opencode
+        run: |
+          set -euo pipefail
+          rm -rf dist/patched-release && mkdir -p dist/patched-release
+          for target in ${OPENCODE_TARGETS//,/ }; do
+            os=${target%%-*}
+            arch=${target##*-}
+            dirname="opencode-$([ "$os" = "win32" ] && echo windows || echo $os)-$arch"
+            suffix=$([ "$os" = "win32" ] && echo .exe || true)
+            stem="$dirname$suffix"
+            file="dist/$dirname/bin/opencode$suffix"
+            test -f "$file" || { echo "MISSING: $file"; exit 1; }
+            cp "$file" "dist/patched-release/$stem"
+            (cd dist/patched-release && shasum -a 256 "$stem" > "$stem.sha256")
+            echo "staged: $stem"
+          done
+          find dist/patched-release -type f | sort
+
+      - name: Upload patched binaries
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: patched-binaries-${{ inputs.version || '1.18.22-patched.163' }}
+          path: packages/opencode/dist/patched-release/
+          if-no-files-found: error
+
+      - name: Create draft release
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        working-directory: packages/opencode/dist/patched-release
+        run: |
+          set -euo pipefail
+          version="${{ inputs.version }}"
+          if ! gh release view "$version" --repo carsteneu/opencode >/dev/null 2>&1; then
+            gh release create "$version" \
+              --repo carsteneu/opencode \
+              --target "${{ github.sha }}" \
+              --title "OpenCode $version" \
+              --notes "Patched fork multi-platform build (GitHub Actions)." \
+              --prerelease --draft
+          fi
+          # Build a de-duplicated asset list: the platform globs would otherwise
+          # match the .sha256 files too, and gh rejects duplicate names (HTTP 422).
+          mapfile -t assets < <( { compgen -G 'opencode-*' | grep -v '\.sha256$'; compgen -G 'opencode-*.sha256'; } | sort -u )
+          gh release upload "$version" --repo carsteneu/opencode --clobber "${assets[@]}"
+          # Round-trip: re-download the uploaded checksums and confirm they match locally.
+          tmpdir="$(mktemp -d)"
+          gh release download "$version" --repo carsteneu/opencode --pattern '*.sha256' --dir "$tmpdir"
+          for f in *.sha256; do
+            cmp -s "$f" "$tmpdir/$f" || { echo "checksum mismatch for $f"; exit 1; }
+          done
+          echo "checksum round-trip ok"
+          echo "uploaded draft release $version"
