@@ -116,16 +116,17 @@ jobs:
           bun install --os="*" --cpu="*" @parcel/watcher@2.5.1
           bun install --os="*" --cpu="*" @ff-labs/fff-bun@0.9.4
 
-      - name: Inject non-Linux OpenTUI natives
+      - name: Inject OpenTUI natives for cross-compile targets
         run: |
           set -euo pipefail
           # The Linux x64 native slot is installed from the fork release asset via
-          # the root catalog; the other platform slots are not published to npm, so
-          # place the cross-compiled packages into node_modules/@opentui directly.
+          # the root catalog; every other platform package comes from the natives
+          # job (npm does not carry the pinned fork versions). Inject whatever was
+          # built, excluding the catalog-provided linux-x64 slot.
           mkdir -p node_modules/@opentui
-          for pkg in opentui-natives/core-darwin-x64 opentui-natives/core-darwin-arm64 \
-                     opentui-natives/core-win32-x64 opentui-natives/core-win32-arm64; do
+          for pkg in opentui-natives/core-*; do
             name=$(basename "$pkg")
+            if [ "$name" = "core-linux-x64" ]; then continue; fi
             rm -rf "node_modules/@opentui/$name"
             cp -r "$pkg" "node_modules/@opentui/$name"
             test -f "node_modules/@opentui/$name/package.json" || { echo "inject failed: $name"; exit 1; }
