@@ -677,13 +677,13 @@ const layer = Layer.effect(
               return
             }
             const wait = reconnectJitter(delay)
-            if (attempt > 1 && reconnectDelay(attempt - 1) !== delay) {
-              yield* Effect.logWarning("MCP reconnect slowed down", {
-                server: name,
-                nextAttempt: attempt,
-                every: formatDelay(wait),
-              })
-            }
+          if (attempt > 1 && reconnectDelay(attempt - 1) !== delay) {
+            yield* Effect.logWarning("MCP reconnect slowed down", {
+              server: name,
+              nextAttempt: attempt,
+              every: formatDelay(delay),
+            })
+          }
             if (s.status[name]?.status === "failed") {
               s.status[name] = {
                 status: "failed",
@@ -696,11 +696,17 @@ const layer = Layer.effect(
             const mcpConfig = yield* getMcpConfig(name)
             if (!mcpConfig || mcpConfig.enabled === false || s.disposed) {
               delete s.retries[name]
+              const status = s.status[name]
+              if (!s.disposed && status?.status === "failed") {
+                s.status[name] = { status: "failed", error: episode.error }
+              }
               return
             }
             const result = yield* createAndStore(name, mcpConfig, false)
+            // The episode may have been replaced by a fresh one if the server
+            // flapped (connected then closed) during our connect attempt.
             const current = s.retries[name]
-            if (!current || s.disposed) return
+            if (current !== episode || s.disposed || result.status === "connected") return
             if (result.status !== "failed") {
               delete s.retries[name]
               return
