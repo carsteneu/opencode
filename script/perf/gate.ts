@@ -133,6 +133,9 @@ try {
   }
 
   await send("C-c")
+  // TUI quit confirm: a second Ctrl-C is required when the first only arms the exit
+  await Bun.sleep(300)
+  if (ghosttyChild.exitCode === null) await send("C-c")
   await waitFor(async () => (ghosttyChild.exitCode === null ? undefined : true), 10_000, "no exit on Ctrl-C")
   const output = [await diagnostic(), await ghosttyStdout, await ghosttyStderr].join("\n")
   if (crashPattern.test(output)) throw new Error("crash at end")
