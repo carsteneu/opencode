@@ -1,4 +1,5 @@
 import { expect } from "bun:test"
+import path from "node:path"
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js"
 import { ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js"
@@ -7,9 +8,11 @@ import * as TestClock from "effect/testing/TestClock"
 import { Effect } from "effect"
 import { EventV2Bridge } from "../../src/event-v2-bridge"
 import { MCP } from "../../src/mcp/index"
+import { TestInstance, withTmpdirInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
 const it = testEffect(LayerNode.compile(LayerNode.group([MCP.node, EventV2Bridge.node])))
+const stdioFixture = path.join(import.meta.dir, "../fixture/mcp-lifecycle-stdio.ts")
 
 const remote = (url: string, timeout?: number) => ({ type: "remote" as const, url, oauth: false as const, timeout })
 
@@ -47,10 +50,11 @@ function retryServer() {
   return { url: `http://127.0.0.1:${port}`, start, close }
 }
 
-const hint = (status: MCP.Status | undefined) => (status?.status === "failed" ? /retry \d+\/100/.test(status.error) : false)
+const retryHint = (status: MCP.Status | undefined) =>
+  status?.status === "failed" ? /retry \d+\/100/.test(status.error) : false
 
 function waitForStatus(
-  mcp: MCP.Service,
+  mcp: MCP.Interface,
   name: string,
   predicate: (status: MCP.Status | undefined) => boolean,
   message: string,
@@ -66,7 +70,7 @@ function waitForStatus(
   })
 }
 
-it.instance(
+it.effect(
   "reconnects automatically once a failed server becomes reachable",
   () =>
     Effect.gen(function* () {
@@ -76,7 +80,7 @@ it.instance(
       yield* waitForStatus(
         mcp,
         "retry-server",
-        (status) => status?.status === "failed" && hint(status),
+        (status) => status?.status === "failed" && retryHint(status),
         "failed status with retry hint expected",
       )
 
@@ -86,90 +90,97 @@ it.instance(
       expect(status?.status).toBe("connected")
       expect(Object.keys(yield* mcp.tools())).toEqual(["retry-server_retry_tool"])
       yield* mcp.disconnect("retry-server")
-    }),
+    }).pipe(withTmpdirInstance()),
 )
 
-it.instance(
+it.effect(
   "schedules a reconnect episode when a connection closes",
   () =>
     Effect.gen(function* () {
-      const server = retryServer()
+      const instance = yield* TestInstance
+      const pidFile = path.join(instance.directory, "stdio-server.pid")
       const mcp = yield* MCP.Service
-      yield* Effect.promise(server.start)
-      yield* mcp.add("close-server", remote(server.url))
-      yield* Effect.promise(server.close)
+      yield* mcp.add("close-server", {
+        type: "local" as const,
+        command: [process.execPath, stdioFixture],
+        environment: { MCP_LIFECYCLE_PID_FILE: pidFile },
+      })
+      yield* waitForStatus(mcp, "close-server", (s) => s?.status === "connected", "expected connected stdio server")
+
+      yield* Effect.promise(async () => process.kill(Number(await Bun.file(pidFile).text()), "SIGKILL"))
       yield* waitForStatus(
         mcp,
         "close-server",
-        (status) => status?.status === "failed" && hint(status),
+        (status) => status?.status === "failed" && retryHint(status),
         "reconnect episode should be scheduled after close",
       )
 
       yield* TestClock.adjust("12 seconds")
-      const status = yield* waitForStatus(
-        mcp,
-        "close-server",
-        (s) => s?.status === "failed" && /retry 2\/100/.test(s.error),
-        "second reconnect attempt should be scheduled",
-      )
-      expect(status?.status).toBe("failed")
+      const status = yield* waitForStatus(mcp, "close-server", (s) => s?.status === "connected", "server did not reconnect")
+      expect(status?.status).toBe("connected")
+      expect(Object.keys(yield* mcp.tools())).toEqual(["close-server_current_directory"])
       yield* mcp.disconnect("close-server")
-    }),
+    }).pipe(withTmpdirInstance()),
 )
 
-it.instance("gives up after 100 reconnect attempts", () =>
-  Effect.gen(function* () {
-    const server = retryServer()
-    const mcp = yield* MCP.Service
-    yield* mcp.add("giveup-server", remote(server.url))
-    yield* waitForStatus(
-      mcp,
-      "giveup-server",
-      (status) => status?.status === "failed" && hint(status),
-      "reconnect episode should be scheduled",
-    )
+it.effect(
+  "gives up after 100 reconnect attempts",
+  () =>
+    Effect.gen(function* () {
+      const server = retryServer()
+      const mcp = yield* MCP.Service
+      yield* mcp.add("giveup-server", remote(server.url))
+      yield* waitForStatus(
+        mcp,
+        "giveup-server",
+        (status) => status?.status === "failed" && retryHint(status),
+        "reconnect episode should be scheduled",
+      )
 
-    let gaveUp = false
-    for (let round = 0; round < 300; round++) {
-      const status = (yield* mcp.status())["giveup-server"]
-      const attempt = status?.status === "failed" ? /retry (\d+)\/100/.exec(status.error)?.[1] : undefined
-      if (attempt === undefined) {
-        gaveUp = true
-        break
+      let gaveUp = false
+      for (let round = 0; round < 300; round++) {
+        const status = (yield* mcp.status())["giveup-server"]
+        const attempt = status?.status === "failed" ? /retry (\d+)\/100/.exec(status.error)?.[1] : undefined
+        if (attempt === undefined) {
+          gaveUp = true
+          break
+        }
+        yield* TestClock.adjust(retryBand(Number(attempt)) * 1.2)
       }
-      yield* TestClock.adjust(retryBand(Number(attempt)) * 1.2)
-    }
-    expect(gaveUp).toBe(true)
-    yield* waitForStatus(
-      mcp,
-      "giveup-server",
-      (status) => status?.status === "failed" && !hint(status),
-      "final status should be plain failed without retry hint",
-    )
-  }),
+      expect(gaveUp).toBe(true)
+      yield* waitForStatus(
+        mcp,
+        "giveup-server",
+        (status) => status?.status === "failed" && !retryHint(status),
+        "final status should be plain failed without retry hint",
+      )
+      yield* mcp.disconnect("giveup-server")
+    }).pipe(withTmpdirInstance()),
 )
 
-it.instance("disconnect cancels the reconnect episode", () =>
-  Effect.gen(function* () {
-    const server = retryServer()
-    const mcp = yield* MCP.Service
-    yield* mcp.add("cancelled-server", remote(server.url))
-    yield* waitForStatus(
-      mcp,
-      "cancelled-server",
-      (status) => status?.status === "failed" && hint(status),
-      "reconnect episode should be scheduled",
-    )
+it.effect(
+  "disconnect cancels the reconnect episode",
+  () =>
+    Effect.gen(function* () {
+      const server = retryServer()
+      const mcp = yield* MCP.Service
+      yield* mcp.add("cancelled-server", remote(server.url))
+      yield* waitForStatus(
+        mcp,
+        "cancelled-server",
+        (status) => status?.status === "failed" && retryHint(status),
+        "reconnect episode should be scheduled",
+      )
 
-    yield* mcp.disconnect("cancelled-server")
-    yield* TestClock.adjust("12 seconds")
-    yield* waitForStatus(
-      mcp,
-      "cancelled-server",
-      (status) => status?.status === "disabled",
-      "status should stay disabled after disconnect",
-    )
-    yield* TestClock.adjust("12 seconds")
-    expect((yield* mcp.status())["cancelled-server"]?.status).toBe("disabled")
-  }),
+      yield* mcp.disconnect("cancelled-server")
+      yield* TestClock.adjust("12 seconds")
+      yield* waitForStatus(
+        mcp,
+        "cancelled-server",
+        (status) => status?.status === "disabled",
+        "status should stay disabled after disconnect",
+      )
+      yield* TestClock.adjust("12 seconds")
+      expect((yield* mcp.status())["cancelled-server"]?.status).toBe("disabled")
+    }).pipe(withTmpdirInstance()),
 )
