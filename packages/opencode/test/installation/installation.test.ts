@@ -157,6 +157,18 @@ describe("installation", () => {
     })
   })
 
+  describe("upgrade target guard", () => {
+    test("patched builds refuse non-patched targets from the stable channel", () => {
+      expect(Installation.canUpgradeToTarget("1.18.25-patched.166", "1.18.25")).toBe(false)
+      expect(Installation.canUpgradeToTarget("1.18.25-patched.166", "v1.18.25")).toBe(false)
+      expect(Installation.canUpgradeToTarget("1.18.25-patched.166", "1.18.25-patched.167")).toBe(true)
+      expect(Installation.canUpgradeToTarget("1.18.25-patched.166", "v1.18.25-patched.167")).toBe(true)
+      expect(Installation.canUpgradeToTarget("1.18.25", "1.18.26")).toBe(true)
+      expect(Installation.canUpgradeToTarget("1.18.25", "1.18.25-patched.167")).toBe(true)
+      expect(Installation.canUpgradeToTarget("local", "1.18.25")).toBe(true)
+    })
+  })
+
   describe("latest", () => {
     testEffect(testLayer(() => jsonResponse({ tag_name: "v1.2.3" }))).effect(
       "reads release version from GitHub releases",

@@ -124,6 +124,16 @@ function normalizePatchedVersion(tag: string) {
   return tag.match(PATCHED_RELEASE)?.[1] ?? tag.replace(/^v/, "")
 }
 
+/**
+ * A patched build must only ever move to another patched fork release — the
+ * stable channel must not replace a fork install (e.g. an official release
+ * whose semver outranks the patched base version).
+ */
+export function canUpgradeToTarget(current: string, target: string): boolean {
+  if (!current.includes("-patched.")) return true
+  return PATCHED_RELEASE.test(target) || PATCHED_RELEASE.test(`v${target}`)
+}
+
 function patchedAssetName() {
   if (process.platform !== "linux" || process.arch !== "x64") return undefined
   return "opencode-linux-x64"
@@ -552,6 +562,11 @@ const layer: Layer.Layer<Service, never, HttpClient.HttpClient | AppProcess.Serv
           return data.tag_name.replace(/^v/, "")
         }, Effect.orDie),
         upgrade: Effect.fn("Installation.upgrade")(function* (m: Method, target: string) {
+          if (!canUpgradeToTarget(InstallationVersion, target)) {
+            return yield* new UpgradeFailedError({
+              stderr: `Refusing upgrade from patched build ${InstallationVersion} to non-patched target ${target} — patched builds only upgrade to fork prereleases`,
+            })
+          }
           yield* InstallationUpdateChannel === "patched" ? upgradePatched(target) : upgradeStandard(m, target)
         }),
       }
