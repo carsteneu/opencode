@@ -100,6 +100,33 @@ python3 script/perf/boot-timeline.py /tmp/ab-server A B
 - Metrics per run (boot-timeline.py): TTFD (`OPENCODE_SHOW_TTFD=1`), boot->wb, init_gap, mcp_gap (loc->unav); medians per tag
 - Safety: only its own tmux sessions (`abm-*`) and temp dirs are touched; no broad process kills (see process-kill rule from Learning #85668)
 
+### `ab-server-boot-sampled.sh` + `ab_cpu.py` — A/B mit CPU-Normalisierung (Standard für Boot-Vergleiche)
+
+Jeder Boot-A/B-Lauf bekommt eine parallele Host-CPU/Load-Serie; die Auswertung
+korreliert TTFD gegen die CPU%-Fenster und normalisiert die Medians linear.
+Grund: Hintergrundlast verschiebt TTFD um hunderte ms (beobachtet: +667ms
+Artefakt beim Backup-Tail, Load 49→6), obwohl der echte Hebel im
+Rauschen lag (−39ms raw, r=0.21).
+
+```sh
+script/perf/ab-server-boot-sampled.sh <variantA> <variantB> /tmp/ab-sampled 5
+# schreibt samples.csv + runs/ und druckt die Analyse;
+# Analyse allein (z. B. nachträglich):
+python3 script/perf/ab_cpu.py analyze /tmp/ab-sampled/runs A B /tmp/ab-sampled/samples.csv
+```
+
+- Sampler: 0,4-s-Bins aus `/proc/stat` + `loadavg` (epoch, busy %, load1)
+- Pro Run: 20-s-Fenster am `.frame`-mtime → mittlere CPU%/Load; TTFD aus
+  boot-timeline.py; Pearson r, Steigung (ms je CPU-%), rohe und normalisierte
+  Median-Deltas
+- **Verdict-Regeln**: Deltas |Δ| < Run-Streuung (~±200 ms bei n=5) = Parität;
+  r ≥ 0.5 heißt Last dominiert — dann Fenster vergrößern oder Ruhe abwarten;
+  normalisierter Delta ersetzt den raw-Delta als Primärkennzahl
+- **Power-Profil** vor/nach dem Lauf konstant halten (`powerprofilesctl get`),
+  sonst sind absolute Vergleiche disqualifiziert (B-Protokoll-Regel)
+- Primärkennzahl ist immer das Delta A↔B, nie der Absolutwert — die Kiste
+  idled bei Load ≥ 5 durch Services, absolute TTFD je nach Umgebung
+
 ### `ab-ghostty-boot.sh` — A/B im echten Terminal (Ghostty)
 
 Misst TTFD so, wie der Nutzer es sieht — inkl. OSC-10/11-Theme-Detection, die der tmux-Harness stummschaltet.
