@@ -113,8 +113,21 @@ const allTargets: {
   },
 ]
 
+// OPENCODE_TARGETS: optional comma-separated canonical os-arch list
+// (e.g. "linux-x64,darwin-arm64") that filters allTargets for CI matrix
+// builds; unknown entries fail fast instead of silently building everything.
+function parseTargetList(value: string | undefined) {
+  if (!value) return undefined
+  return value
+    .split(",")
+    .map((token) => token.trim())
+    .filter(Boolean)
+}
+
+const requestedTargets = parseTargetList(process.env.OPENCODE_TARGETS)
+
 const targets = singleFlag
-  ? allTargets.filter((item) => {
+  ? allTargets.filter(item => {
       if (item.os !== process.platform || item.arch !== process.arch) {
         return false
       }
@@ -132,7 +145,13 @@ const targets = singleFlag
 
       return true
     })
-  : allTargets
+  : requestedTargets
+    ? allTargets.filter(item => requestedTargets.includes(`${item.os}-${item.arch}`))
+    : allTargets
+
+if (requestedTargets && targets.length === 0) {
+  throw new Error(`No build targets matched OPENCODE_TARGETS: ${process.env.OPENCODE_TARGETS}`)
+}
 
 await $`rm -rf dist`
 
