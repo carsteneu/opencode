@@ -211,12 +211,11 @@ export const prepareHeaders = Effect.fn("LLMRequestPrep.prepareHeaders")(functio
       : {
           "x-session-affinity": input.sessionID,
           "X-Session-Id": input.sessionID,
-          ...(input.parentSessionID ? { "x-parent-session-id": input.parentSessionID } : {}),
           "User-Agent": USER_AGENT,
         }),
+    ...(input.parentSessionID ? { "x-parent-session-id": input.parentSessionID } : {}),
     ...input.model.headers,
-    ...output.headers,
-  }
+    ...output.headers,  }
 })
 
 function resolveTools(input: Pick<PrepareInput, "tools" | "agent" | "permission" | "user">) {
