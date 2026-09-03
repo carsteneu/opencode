@@ -44,7 +44,7 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           repository: carsteneu/opentui
-          ref: ${{ inputs.opentui_ref || '225e532fe0caf0fe6db3b94cb5fe1510e3341e61' }}
+          ref: ${{ inputs.opentui_ref || 'fe315be4becac0ff49d3347b787ff46a81b3bc1a' }}
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0

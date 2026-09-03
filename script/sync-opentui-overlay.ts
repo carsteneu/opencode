@@ -4,16 +4,16 @@ import { randomUUID } from "node:crypto"
 import { cp, realpath, rename, rm } from "node:fs/promises"
 import path from "node:path"
 
-const expectedCommit = "225e532fe0caf0fe6db3b94cb5fe1510e3341e61"
+const expectedCommit = "fe315be4becac0ff49d3347b787ff46a81b3bc1a"
 const expectedPatchBase = "3bf81461724d2261b51ec48900e86c89f8ce5e58"
-const expectedTag = "v0.5.6-perf.6"
-const expectedTagCommit = "225e532fe0caf0fe6db3b94cb5fe1510e3341e61"
-const expectedVersion = "0.5.6-perf.6"
+const expectedTag = "v0.5.6-perf.7"
+const expectedTagCommit = "fe315be4becac0ff49d3347b787ff46a81b3bc1a"
+const expectedVersion = "0.5.6-perf.7"
 const expectedHashes = {
-  core: "6363db3a01902d8f1f913d9f3f77c194d642d892c1936841da7314fe8df4b358",
-  solid: "e2048bc99864f41c85dee9851a0203690c017c20e00383b272a32d8717aa224f",
-  keymap: "c8bea2c5bbc1c8634f2ae5fd4adfd3b2380e9fc2aeca7add53934f0f39562a9e",
-  native: "1a4e405c42642bacd32665029ff4ed0cf5be8655fe1d858d88f1f3416a5627d8",
+  core: "828728eeaadf941fd1878c0ebd5c75d99270a03199abbc3f5c206960d60b84dd",
+  solid: "f112207ede333a6e21d51e6adeed15148bf7babf68f9b20d580785783760f3f6",
+  keymap: "0683597cc00a629241d57349b74b01e03f8a651c2f662a0fd7919ae1705597de",
+  native: "0ffd13ad9e3bded7301edcc4b4d3c8f19c8b6d2cba7711f190dfe38315ccbeb9",
 }
 const usage = "Usage: bun run script/sync-opentui-overlay.ts --source=<opentui-root> [--check | --apply]"
 const args = process.argv.slice(2)
