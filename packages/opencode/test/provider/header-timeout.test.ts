@@ -97,7 +97,48 @@ it.live(
   15_000,
 )
 
-it.live("chunkTimeout raises a response stream error when SSE body stalls", () =>
+for (const timeout of ["chunkTimeout", "headerTimeout"] as const) {
+  it.live(`default ${timeout} is applied at fetch without changing provider options`, () =>
+    Effect.gen(function* () {
+      const server = yield* Effect.acquireRelease(
+        Effect.promise(() => delayedBodyServer(250)),
+        (server) => Effect.sync(() => server.server.close()),
+      )
+
+      yield* provideTmpdirInstance(
+        () =>
+          Effect.gen(function* () {
+            const provider = yield* Provider.Service
+            const configured = yield* provider.getProvider(ProviderV2.ID.make("test"))
+            const signals: (AbortSignal | null | undefined)[] = []
+            configured.options.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+              signals.push(init?.signal)
+              return fetch(input, init)
+            }
+            const model = yield* provider.getModel(ProviderV2.ID.make("test"), ModelV2.ID.make("test-model"))
+            const language = yield* provider.getLanguage(model)
+            yield* Effect.acquireRelease(
+              Effect.promise(() =>
+                language.doStream({ prompt: [{ role: "user", content: [{ type: "text", text: "hello" }] }] }),
+              ),
+              (result) => Effect.promise(() => result.stream.cancel()),
+            )
+
+            expect(signals).toHaveLength(1)
+            expect(signals[0]).toBeInstanceOf(AbortSignal)
+            expect(configured.options[timeout]).toBeUndefined()
+          }),
+        {
+          config: providerConfig(server.url, {
+            [timeout === "chunkTimeout" ? "headerTimeout" : "chunkTimeout"]: false,
+          }),
+        },
+      )
+    }),
+  )
+}
+
+it.live("configured chunkTimeout raises a retryable response stream error when SSE body stalls", () =>
   Effect.gen(function* () {
     const server = yield* Effect.acquireRelease(
       Effect.promise(() => delayedBodyServer(250)),
@@ -125,6 +166,9 @@ it.live("chunkTimeout raises a response stream error when SSE body stalls", () =
             }
           })
           expect(error).toBeInstanceOf(ProviderError.ResponseStreamError)
+          expect(
+            SessionRetry.retryable(MessageV2.fromError(error, { providerID: model.providerID }), model.providerID),
+          ).toEqual({ message: "SSE read timed out" })
         }),
       { config: providerConfig(server.url, { chunkTimeout: 50 }) },
     )
@@ -227,7 +271,7 @@ it.live("provider transport timeouts default to five minutes", () =>
           expect(info.options.chunkTimeout).toBe(300_000)
           expect(yield* Effect.promise(() => result.text)).toBe("ok")
         }),
-      { config: providerConfig(server.url) },
+      { config: providerConfig(server.url, { headerTimeout: false }) },
     )
   }),
 )
