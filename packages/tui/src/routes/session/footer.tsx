@@ -11,7 +11,7 @@ import { fg, t } from "@opentui/core"
 import { PartialText } from "../../ui/partial-text"
 
 const TOKEN_RATE_REFRESH_MS = 1000
-const TOKEN_RATE_WINDOW_MS = 3000
+const TOKEN_RATE_WINDOW_MS = 1000
 
 function TokenRate() {
   const { theme } = useTheme()

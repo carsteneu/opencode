@@ -98,6 +98,9 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
               </span>{" "}
               <span>{InstallationVersion}</span>
             </text>
+            <text fg={theme.textMuted}>
+              <span style={{ fg: theme.success }}>•</span> <span>{props.sessionID}</span>
+            </text>
           </pluginRuntime.Slot>
         </box>
       </box>
