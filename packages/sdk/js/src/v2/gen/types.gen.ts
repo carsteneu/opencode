@@ -48,6 +48,8 @@ export type Event =
   | EventSessionNextRevertStaged
   | EventSessionNextRevertCleared
   | EventSessionNextRevertCommitted
+  | EventMessageDiffUpdated
+  | EventMessageDiffInvalidated
   | EventMessagePartDelta
   | EventSessionDiff
   | EventSessionError
@@ -247,7 +249,7 @@ export type UserMessage = {
   summary?: {
     title?: string
     body?: string
-    diffs: Array<SnapshotFileDiff>
+    diffs?: Array<SnapshotFileDiff>
   }
   agent: string
   model: {
@@ -480,6 +482,7 @@ export type ToolStatePending = {
     [key: string]: unknown
   }
   raw: string
+  received?: number
 }
 
 export type ToolStateRunning = {
@@ -1186,6 +1189,22 @@ export type GlobalEvent = {
         type: "session.next.revert.committed"
         properties: {
           timestamp: number
+          sessionID: string
+          messageID: string
+        }
+      }
+    | {
+        id: string
+        type: "message.diff.updated"
+        properties: {
+          sessionID: string
+          messageID: string
+        }
+      }
+    | {
+        id: string
+        type: "message.diff.invalidated"
+        properties: {
           sessionID: string
           messageID: string
         }
@@ -1936,6 +1955,7 @@ export type Config = {
   small_model?: string
   default_agent?: string
   subagent_depth?: number
+  subagent_timeout?: number
   username?: string
   mode?: {
     build?: AgentConfig
@@ -1976,6 +1996,7 @@ export type Config = {
             [key: string]: string
           }
           extensions?: Array<string>
+          timeout?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
         }
       }
   /**
@@ -2407,12 +2428,17 @@ export type McpStatusNeedsClientRegistration = {
   error: string
 }
 
+export type McpStatusConnecting = {
+  status: "connecting"
+}
+
 export type McpStatus =
   | McpStatusConnected
   | McpStatusDisabled
   | McpStatusFailed
   | McpStatusNeedsAuth
   | McpStatusNeedsClientRegistration
+  | McpStatusConnecting
 
 export type McpUnsupportedOAuthError = {
   error: string
@@ -2899,6 +2925,8 @@ export type V2Event =
   | SessionNextRevertStaged
   | SessionNextRevertCleared
   | SessionNextRevertCommitted
+  | MessageDiffUpdated
+  | MessageDiffInvalidated
   | MessagePartDelta
   | SessionDiff
   | SessionError
@@ -5303,6 +5331,42 @@ export type SessionNextCompactionDelta = {
   }
 }
 
+export type MessageDiffUpdated = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "message.diff.updated"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    sessionID: string
+    messageID: string
+  }
+}
+
+export type MessageDiffInvalidated = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "message.diff.invalidated"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    sessionID: string
+    messageID: string
+  }
+}
+
 export type MessagePartDelta = {
   id: string
   metadata?: {
@@ -6650,6 +6714,24 @@ export type EventSessionNextRevertCommitted = {
   type: "session.next.revert.committed"
   properties: {
     timestamp: number
+    sessionID: string
+    messageID: string
+  }
+}
+
+export type EventMessageDiffUpdated = {
+  id: string
+  type: "message.diff.updated"
+  properties: {
+    sessionID: string
+    messageID: string
+  }
+}
+
+export type EventMessageDiffInvalidated = {
+  id: string
+  type: "message.diff.invalidated"
+  properties: {
     sessionID: string
     messageID: string
   }
@@ -10519,6 +10601,17 @@ export type SyncReplayData = {
         [key: string]: unknown
       }
     }>
+    messageDiffs?: {
+      sessionID: string
+      messageIDs?: Array<string>
+      rows: Array<{
+        messageID: string
+        revision: string
+        fromSnapshot?: string
+        toSnapshot?: string
+        diffs: Array<SnapshotFileDiff>
+      }>
+    }
   }
   path?: never
   query?: {
@@ -10617,6 +10710,186 @@ export type SyncHistoryListResponses = {
 }
 
 export type SyncHistoryListResponse = SyncHistoryListResponses[keyof SyncHistoryListResponses]
+
+export type SyncHistoryPageData = {
+  body?:
+    | {
+        type: "manifest"
+        state: {
+          [key: string]: number
+        }
+      }
+    | {
+        type: "page"
+        aggregateID: string
+        head: number
+        after?: number
+      }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/sync/history/v2"
+}
+
+export type SyncHistoryPageErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+}
+
+export type SyncHistoryPageError = SyncHistoryPageErrors[keyof SyncHistoryPageErrors]
+
+export type SyncHistoryPageResponses = {
+  /**
+   * Paged sync history
+   */
+  200:
+    | {
+        type: "manifest"
+        aggregates: Array<{
+          aggregateID: string
+          head: number
+          after?: number
+        }>
+      }
+    | {
+        type: "page"
+        aggregateID: string
+        events: Array<{
+          id: string
+          aggregate_id: string
+          seq: number
+          type: string
+          data: {
+            [key: string]: unknown
+          }
+        }>
+        next?: number
+      }
+}
+
+export type SyncHistoryPageResponse = SyncHistoryPageResponses[keyof SyncHistoryPageResponses]
+
+export type SyncMessageDiffsListData = {
+  body?: Array<{
+    sessionID: string
+    messageIDs?: Array<string>
+  }>
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/sync/message-diffs"
+}
+
+export type SyncMessageDiffsListErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type SyncMessageDiffsListError = SyncMessageDiffsListErrors[keyof SyncMessageDiffsListErrors]
+
+export type SyncMessageDiffsListResponses = {
+  /**
+   * Message diff snapshots
+   */
+  200: Array<{
+    sessionID: string
+    messageIDs?: Array<string>
+    rows: Array<{
+      messageID: string
+      revision: string
+      fromSnapshot?: string
+      toSnapshot?: string
+      diffs: Array<SnapshotFileDiff>
+    }>
+  }>
+}
+
+export type SyncMessageDiffsListResponse = SyncMessageDiffsListResponses[keyof SyncMessageDiffsListResponses]
+
+export type SyncMessageDiffsManifestData = {
+  body?: Array<string>
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/sync/message-diffs/manifest"
+}
+
+export type SyncMessageDiffsManifestErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type SyncMessageDiffsManifestError = SyncMessageDiffsManifestErrors[keyof SyncMessageDiffsManifestErrors]
+
+export type SyncMessageDiffsManifestResponses = {
+  /**
+   * Message diff manifest
+   */
+  200: Array<{
+    sessionID: string
+    rows: Array<{
+      messageID: string
+      revision: string
+    }>
+  }>
+}
+
+export type SyncMessageDiffsManifestResponse =
+  SyncMessageDiffsManifestResponses[keyof SyncMessageDiffsManifestResponses]
+
+export type SyncMessageDiffsMaterializeData = {
+  body?: {
+    sessionID: string
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/sync/message-diffs/materialize"
+}
+
+export type SyncMessageDiffsMaterializeErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+}
+
+export type SyncMessageDiffsMaterializeError =
+  SyncMessageDiffsMaterializeErrors[keyof SyncMessageDiffsMaterializeErrors]
+
+export type SyncMessageDiffsMaterializeResponses = {
+  /**
+   * Materialized message diff snapshot
+   */
+  200: {
+    sessionID: string
+    messageIDs?: Array<string>
+    rows: Array<{
+      messageID: string
+      revision: string
+      fromSnapshot?: string
+      toSnapshot?: string
+      diffs: Array<SnapshotFileDiff>
+    }>
+  }
+}
+
+export type SyncMessageDiffsMaterializeResponse =
+  SyncMessageDiffsMaterializeResponses[keyof SyncMessageDiffsMaterializeResponses]
 
 export type TuiAppendPromptData = {
   body?: {

@@ -14,6 +14,8 @@ import { Plugin } from "@/plugin"
 import { Provider } from "@/provider/provider"
 import { ProviderError } from "@/provider/error"
 import { applyRuntimeFetch } from "@/provider/runtime-fetch"
+import { MessageV2 } from "@/session/message-v2"
+import { SessionRetry } from "@/session/retry"
 
 afterEach(async () => {
   await disposeAllInstances()
@@ -98,7 +100,7 @@ it.live(
 )
 
 for (const timeout of ["chunkTimeout", "headerTimeout"] as const) {
-  it.live(`default ${timeout} is applied at fetch without changing provider options`, () =>
+  it.live(`default ${timeout} is applied at fetch`, () =>
     Effect.gen(function* () {
       const server = yield* Effect.acquireRelease(
         Effect.promise(() => delayedBodyServer(250)),
@@ -126,7 +128,7 @@ for (const timeout of ["chunkTimeout", "headerTimeout"] as const) {
 
             expect(signals).toHaveLength(1)
             expect(signals[0]).toBeInstanceOf(AbortSignal)
-            expect(configured.options[timeout]).toBeUndefined()
+            expect(configured.options[timeout]).toBe(300_000) // fork: llm schema bakes defaults into options
           }),
         {
           config: providerConfig(server.url, {
@@ -271,7 +273,7 @@ it.live("provider transport timeouts default to five minutes", () =>
           expect(info.options.chunkTimeout).toBe(300_000)
           expect(yield* Effect.promise(() => result.text)).toBe("ok")
         }),
-      { config: providerConfig(server.url, { headerTimeout: false }) },
+      { config: providerConfig(server.url) },
     )
   }),
 )
