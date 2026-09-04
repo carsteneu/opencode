@@ -105,7 +105,8 @@ export const loadMcpQuery = (
   >({
     queryKey: [scope, directory, "mcp"] as const,
     queryFn: async () => {
-      if ((await protocol) === "v1" && legacy) return (await legacy.mcp.status()).data ?? {}
+      if ((await protocol) === "v1" && legacy)
+        return ((await legacy.mcp.status()).data ?? {}) as Record<string, McpServer["status"]>
       return api
         .list({ location: { directory } })
         .then((result) => Object.fromEntries(result.data.map((server) => [server.name, server.status])))
