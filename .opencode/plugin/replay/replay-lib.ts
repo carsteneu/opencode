@@ -31,6 +31,20 @@ export type RawMessage = {
 
 const EDIT_TOOLS = new Set(["edit", "write", "apply_patch"])
 
+// Session content is untrusted: strip ANSI/OSC sequences and C0 control
+// characters so nothing renders beyond plain text (opentui draws verbatim).
+const CONTROL_PATTERN = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g
+
+export function sanitizeText(value: string): string {
+  return value.replace(CONTROL_PATTERN, "")
+}
+
+export function clampPatchLines(patch: string, maxLines = 200): string {
+  const lines = patch.split("\n")
+  if (lines.length <= maxLines) return patch
+  return lines.slice(0, maxLines).join("\n") + "\n… (truncated)"
+}
+
 export function recordValue(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined
 }
@@ -59,13 +73,17 @@ export function buildReplaySteps(messages: readonly RawMessage[]): ReplayStep[] 
         index: steps.length + 1,
         messageID: message.info.id,
         tool: part.tool,
-        filePath: inputFilePath(part),
-        patch: stepPatch(part),
+        filePath: sanitizeText(inputFilePath(part)),
+        patch: sanitizePatch(stepPatch(part)),
         time: message.info.time?.created,
       })
     }
   }
   return steps
+}
+
+function sanitizePatch(patch: string | undefined): string | undefined {
+  return patch === undefined ? undefined : sanitizeText(patch)
 }
 
 export function buildTranscriptRows(messages: readonly RawMessage[]): TranscriptRow[] {
@@ -77,13 +95,13 @@ export function buildTranscriptRows(messages: readonly RawMessage[]): Transcript
         rows.push({
           kind: message.info.role === "user" ? "user" : "assistant",
           messageID: message.info.id,
-          text,
+          text: sanitizeText(text),
         })
         continue
       }
       if (part.type === "tool" && part.tool) {
         if (isStepPart(part)) continue
-        rows.push({ kind: "tool", messageID: message.info.id, tool: part.tool, summary: inputFilePath(part) })
+        rows.push({ kind: "tool", messageID: message.info.id, tool: part.tool, summary: sanitizeText(inputFilePath(part)) })
       }
     }
   }

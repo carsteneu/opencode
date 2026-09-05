@@ -1,7 +1,7 @@
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
 import type { BoxRenderable, ScrollBoxRenderable } from "@opentui/core"
 import { createEffect, createMemo, createResource, createSignal, For, Show, onCleanup, onMount } from "solid-js"
-import { buildReplaySteps, buildTranscriptRows, timeLabel, type RawMessage } from "./replay/replay-lib"
+import { buildReplaySteps, buildTranscriptRows, clampPatchLines, timeLabel, type RawMessage } from "./replay/replay-lib"
 
 const STEPS_W = 62 // % width for the steps pane; transcript takes the rest
 
@@ -148,7 +148,7 @@ function ReplayViewer(props: { api: TuiPluginApi }) {
                 content={`Step ${step.index}/${steps().length} · ${step.tool} ${step.filePath} · ${timeLabel(step.time)}`}
               />
               <Show when={step.patch !== undefined} fallback={<text fg={theme().textMuted}>(no diff payload)</text>}>
-                <For each={(step.patch ?? "").split("\n")}>
+                <For each={clampPatchLines(step.patch ?? "").split("\n")}>
                   {(line) => (
                     <text
                       fg={line.startsWith("+") ? theme().diffAdded : line.startsWith("-") ? theme().diffRemoved : theme().textMuted}

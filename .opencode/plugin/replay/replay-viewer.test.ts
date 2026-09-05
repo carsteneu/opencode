@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { buildReplaySteps, buildTranscriptRows, timeLabel, type RawMessage } from "./replay-lib"
+import { buildReplaySteps, buildTranscriptRows, clampPatchLines, sanitizeText, timeLabel, type RawMessage } from "./replay-lib"
 
 function msg(id: string, role: string, parts: RawMessage["parts"]): RawMessage {
   return { info: { id, role, time: { created: 1700000000000 } }, parts }
@@ -92,5 +92,28 @@ describe("timeLabel", () => {
   test("renders a time or an empty string when missing", () => {
     expect(timeLabel(1700000000000)).toContain(":")
     expect(timeLabel(undefined)).toBe("")
+  })
+})
+
+describe("sanitizeText", () => {
+  test("strips ANSI escapes and control characters", () => {
+    expect(sanitizeText("\x1b[31mred\x1b[0m")).toBe("red")
+    expect(sanitizeText("ok\x07bell\x00null")).toBe("okbellnull")
+    expect(sanitizeText("keep\nnewlines")).toBe("keep\nnewlines")
+  })
+
+  test("step filePath and patch payloads are sanitized", () => {
+    const message = msg("m1", "assistant", [
+      { type: "tool", tool: "write", state: { status: "completed", input: { filePath: "a\x1b[1m.ts" }, metadata: { filediff: { patch: "+\x1b[32mgreen" } } } },
+    ])
+    const steps = buildReplaySteps([message])
+    expect(steps[0]?.filePath).toBe("a.ts")
+    expect(steps[0]?.patch).toBe("+green")
+  })
+
+  test("clampPatchLines truncates with a marker", () => {
+    const clamped = clampPatchLines("+1\n+2\n+3", 2)
+    expect(clamped).toBe("+1\n+2\n… (truncated)")
+    expect(clampPatchLines("+1", 2)).toBe("+1")
   })
 })
