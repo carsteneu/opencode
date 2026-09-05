@@ -39,8 +39,14 @@ function ReplayViewer(props: { api: TuiPluginApi }) {
   // Route-local key isolation: this layer is registered on mount and disposed
   // on unmount, mirroring the TUI-internal useBindings hook of diff-viewer.
   onMount(() => {
+    const close = () => {
+      const returnRoute = params()?.returnRoute as { name: string; params?: unknown } | undefined
+      props.api.ui.dialog.clear()
+      props.api.route.navigate(returnRoute?.name ?? "home", returnRoute?.params)
+    }
     const dispose = props.api.keymap.registerLayer({
       commands: [
+        { name: "replay.close", title: "Close replay viewer", run: () => close() },
         { name: "replay.next_step", title: "Next replay step", run: () => next() },
         { name: "replay.prev_step", title: "Previous replay step", run: () => prev() },
         {
@@ -62,6 +68,7 @@ function ReplayViewer(props: { api: TuiPluginApi }) {
         { name: "replay.switch_pane", title: "Switch replay pane focus", run: () => setFocusTranscript((f) => !f) },
       ],
       bindings: [
+        { key: "escape", cmd: "replay.close", desc: "Close replay viewer" },
         { key: "n,alt+down", cmd: "replay.next_step", desc: "Next replay step" },
         { key: "p,alt+up", cmd: "replay.prev_step", desc: "Previous replay step" },
         { key: "j,down", cmd: "replay.down", desc: "Move replay down" },
