@@ -13,7 +13,6 @@
     },
   },
   "mcp": {},
-  "plugin": ["./plugin/replay-viewer.tsx"],
   "tools": {
     "github-triage": false,
     "github-pr-search": false,

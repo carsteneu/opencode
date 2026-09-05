@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { buildReplaySteps, buildTranscriptRows, type RawMessage } from "./replay-lib"
+import { buildReplaySteps, buildTranscriptRows, timeLabel, type RawMessage } from "./replay-lib"
 
 function msg(id: string, role: string, parts: RawMessage["parts"]): RawMessage {
   return { info: { id, role, time: { created: 1700000000000 } }, parts }
@@ -56,6 +56,21 @@ describe("buildReplaySteps", () => {
   test("empty input yields empty steps", () => {
     expect(buildReplaySteps([])).toEqual([])
   })
+
+  test("completed edit without payload becomes a step with undefined patch", () => {
+    const steps = buildReplaySteps([msg("m1", "assistant", [editPart("src/d.ts")])])
+    expect(steps).toHaveLength(1)
+    expect(steps[0]?.patch).toBeUndefined()
+  })
+
+  test("write tool and file_path fallback are handled", () => {
+    const message = msg("m1", "assistant", [
+      { type: "tool", tool: "write", state: { status: "completed", input: { file_path: "src/e.ts" }, metadata: { filediff: { patch: "+x" } } } },
+    ])
+    const steps = buildReplaySteps([message])
+    expect(steps[0]?.tool).toBe("write")
+    expect(steps[0]?.filePath).toBe("src/e.ts")
+  })
 })
 
 describe("buildTranscriptRows", () => {
@@ -70,5 +85,12 @@ describe("buildTranscriptRows", () => {
     const rows = buildTranscriptRows(FIXTURE)
     const toolRows = rows.filter((r) => r.kind === "tool")
     expect(toolRows.map((r) => r.messageID)).toEqual(["m2", "m2", "m3"])
+  })
+})
+
+describe("timeLabel", () => {
+  test("renders a time or an empty string when missing", () => {
+    expect(timeLabel(1700000000000)).toContain(":")
+    expect(timeLabel(undefined)).toBe("")
   })
 })

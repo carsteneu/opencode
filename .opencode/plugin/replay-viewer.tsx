@@ -11,11 +11,20 @@ function ReplayViewer(props: { api: TuiPluginApi }) {
       | { sessionID?: string; returnRoute?: unknown }
       | undefined
 
+  const theme = () => props.api.theme.current
+
+  const [loadError, setLoadError] = createSignal(false)
   const [messages] = createResource(
     () => params()?.sessionID,
     async (sessionID) => {
-      const response = await props.api.client.session.messages({ sessionID, limit: 100 }, { throwOnError: true })
-      return (response.data ?? []) as RawMessage[]
+      try {
+        const response = await props.api.client.session.messages({ sessionID, limit: 100 }, { throwOnError: true })
+        setLoadError(false)
+        return (response.data ?? []) as RawMessage[]
+      } catch (error) {
+        setLoadError(true)
+        return []
+      }
     },
   )
 
@@ -28,8 +37,14 @@ function ReplayViewer(props: { api: TuiPluginApi }) {
     return list[Math.min(active(), Math.max(list.length - 1, 0))]
   }
 
-  const next = () => setActive((i) => Math.min(i + 1, steps().length - 1))
-  const prev = () => setActive((i) => Math.max(i - 1, 0))
+  const next = () => {
+    if (steps().length === 0) return
+    setActive((i) => Math.min(i + 1, steps().length - 1))
+  }
+  const prev = () => {
+    if (steps().length === 0) return
+    setActive((i) => Math.max(i - 1, 0))
+  }
 
   const scrollFocused = (dir: number) => {
     const sc = focusTranscript() ? scrollTranscript : scrollSteps
@@ -84,16 +99,29 @@ function ReplayViewer(props: { api: TuiPluginApi }) {
   const stepBoxes = new Map<number, BoxRenderable>()
   const transcriptBoxes = new Map<string, BoxRenderable>()
 
+  // Stale ref maps from the previous session invalidate on session switch.
+  createEffect(() => {
+    if (params()?.sessionID !== undefined) {
+      stepBoxes.clear()
+      transcriptBoxes.clear()
+    }
+  })
+
   // Scroll-follow: on step change bring the active step card and its origin
-  // message to the top of each pane (node.y pattern from diff-viewer.tsx:238).
+  // message to the top of each pane (node.y pattern from diff-viewer.tsx:238,
+  // rAF-wrapped so initial layout settles before the first no-op lookup).
   createEffect(() => {
     const step = current()
     if (!step) return
     const left = stepBoxes.get(step.index)
-    if (left && scrollSteps) scrollSteps.scrollTo(scrollSteps.scrollTop + left.y - scrollSteps.viewport.y)
     const right = transcriptBoxes.get(step.messageID)
-    if (right && scrollTranscript)
-      scrollTranscript.scrollTo(scrollTranscript.scrollTop + right.y - scrollTranscript.viewport.y)
+    requestAnimationFrame(() => {
+      const l = left ?? stepBoxes.get(step.index)
+      if (l && scrollSteps) scrollSteps.scrollTo(scrollSteps.scrollTop + l.y - scrollSteps.viewport.y)
+      const r = right ?? transcriptBoxes.get(step.messageID)
+      if (r && scrollTranscript)
+        scrollTranscript.scrollTo(scrollTranscript.scrollTop + r.y - scrollTranscript.viewport.y)
+    })
   })
 
   return (
@@ -112,18 +140,18 @@ function ReplayViewer(props: { api: TuiPluginApi }) {
               marginBottom={1}
               ref={(el: BoxRenderable) => stepBoxes.set(step.index, el)}
               border={step.index === current()?.index ? ["left"] : []}
-              borderColor="#5f87af"
+              borderColor={theme().border}
               paddingLeft={1}
             >
               <text
-                fg={step.index === current()?.index ? "#ffffff" : "#888888"}
+                fg={step.index === current()?.index ? theme().text : theme().textMuted}
                 content={`Step ${step.index}/${steps().length} · ${step.tool} ${step.filePath} · ${timeLabel(step.time)}`}
               />
-              <Show when={step.patch !== undefined} fallback={<text fg="#666666">(no diff payload)</text>}>
+              <Show when={step.patch !== undefined} fallback={<text fg={theme().textMuted}>(no diff payload)</text>}>
                 <For each={(step.patch ?? "").split("\n")}>
                   {(line) => (
                     <text
-                      fg={line.startsWith("+") ? "#87af87" : line.startsWith("-") ? "#af8787" : "#888888"}
+                      fg={line.startsWith("+") ? theme().diffAdded : line.startsWith("-") ? theme().diffRemoved : theme().textMuted}
                       content={line}
                     />
                   )}
@@ -132,37 +160,42 @@ function ReplayViewer(props: { api: TuiPluginApi }) {
             </box>
           )}
         </For>
-        <Show when={steps().length === 0 && !messages.loading}>
-          <text fg="#888888">no edits in this session</text>
+        <Show when={steps().length === 0 && !messages.loading && !loadError()}>
+          <text fg={theme().textMuted}>no edits in this session</text>
+        </Show>
+        <Show when={loadError()}>
+          <text fg={theme().error}>failed to load session</text>
         </Show>
       </scrollbox>
       <scrollbox
         ref={(el: ScrollBoxRenderable) => (scrollTranscript = el)}
         width={`${100 - STEPS_W}%`}
         border={["left"]}
-        borderColor="#444444"
+        borderColor={theme().border}
         paddingLeft={1}
       >
         <For each={rows()}>
           {(row) => (
             <box
-              ref={(el: BoxRenderable) => transcriptBoxes.set(row.messageID, el)}
+              ref={(el: BoxRenderable) => {
+                if (!transcriptBoxes.has(row.messageID)) transcriptBoxes.set(row.messageID, el)
+              }}
               border={row.messageID === current()?.messageID ? ["left"] : []}
-              borderColor="#5f87af"
+              borderColor={theme().border}
               paddingLeft={1}
             >
               <Show when={row.kind === "user"}>
-                <text fg="#ffffff" bold content="❯ " />
+                <text fg={theme().text} bold content="❯ " />
               </Show>
               <text
-                fg={row.kind === "user" ? "#ffffff" : row.kind === "tool" ? "#666666" : "#aaaaaa"}
+                fg={row.kind === "user" ? theme().text : row.kind === "tool" ? theme().textMuted : theme().textMuted}
                 content={row.kind === "tool" ? `· ${row.tool} ${row.summary}` : row.text}
               />
             </box>
           )}
         </For>
         <Show when={messages.loading}>
-          <text fg="#888888">loading session…</text>
+          <text fg={theme().textMuted}>loading session…</text>
         </Show>
       </scrollbox>
     </box>
