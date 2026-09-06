@@ -1691,13 +1691,13 @@ export function Session() {
                 <Footer />
               </box>
             </Show>
-              <Toast />
-            </box>
-            <Show when={replayVisible()}>
-              <pluginRuntime.Slot name="session_replay" session_id={route.sessionID} />
-            </Show>
-            <Show when={sidebarVisible()}>
-              <Switch>
+            <Toast />
+          </box>
+          <Show when={replayVisible()}>
+            <pluginRuntime.Slot name="session_replay" session_id={route.sessionID} />
+          </Show>
+          <Show when={sidebarVisible()}>
+            <Switch>
               <Match when={wide()}>
                 <Sidebar sessionID={route.sessionID} />
               </Match>
