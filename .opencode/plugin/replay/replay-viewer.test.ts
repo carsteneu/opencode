@@ -278,6 +278,13 @@ describe("compactPatch", () => {
     const uncounted = "@@ -3 +3 @@\n a\n b\n-old\n+new\n c\n d"
     expect(compactPatch(uncounted, 1)).toBe("@@ -4,3 +4,3 @@\n b\n-old\n+new\n c")
   })
+
+  test("no-newline markers and empty lines are not change anchors", () => {
+    const patch = "@@ -1,4 +1,4 @@\n-a\n+b\n\\ No newline at end of file\n ctx1\n ctx2\n ctx3\n ctx4\n+end"
+    expect(compactPatch(patch, 2)).toBe(
+      "@@ -1,2 +1,2 @@\n-a\n+b\n\\ No newline at end of file\n ctx1\n@@ -4,2 +4,3 @@\n ctx3\n ctx4\n+end",
+    )
+  })
 })
 
 describe("replayPaneDragWidth", () => {

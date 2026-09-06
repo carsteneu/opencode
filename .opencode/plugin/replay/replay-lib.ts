@@ -313,10 +313,15 @@ export function compactPatch(patch: string, context = 2): string {
 }
 
 function compactHunk(headerLine: string, header: RegExpMatchArray, body: string[], context: number): string[] {
-  const changeIndices = body.flatMap((line, k) => (line.startsWith(" ") ? [] : [k]))
-  const withinBudget = (k: number) => changeIndices.some((c) => Math.abs(k - c) <= context)
-  if (context < 0 || changeIndices.length === 0 || body.every((_, k) => withinBudget(k))) {
-    return [headerLine, ...body]
+  // "" (split artifact of a trailing newline) and "\ No newline" markers count
+  // as neither change nor context for anchoring purposes.
+  const isChange = (line: string) => line !== "" && !line.startsWith(" ") && !line.startsWith("\\")
+  const changeIndices = body.flatMap((line, k) => (isChange(line) ? [k] : []))
+  const kept = new Array<boolean>(body.length).fill(false)
+  for (const change of changeIndices) {
+    for (let k = Math.max(0, change - context); k <= Math.min(body.length - 1, change + context); k++) {
+      kept[k] = true
+    }
   }
 
   const oldInc = body.map((line) => (line.startsWith(" ") || line.startsWith("-") ? 1 : 0))
@@ -325,7 +330,9 @@ function compactHunk(headerLine: string, header: RegExpMatchArray, body: string[
   const prefixNew = runningSum(newInc)
   const oldStart = Number(header[1])
   const newStart = Number(header[3])
-  const kept = body.map((_, k) => withinBudget(k))
+  if (context < 0 || changeIndices.length === 0 || kept.every(Boolean)) {
+    return [headerLine, ...body]
+  }
 
   const result: string[] = []
   let k = 0

@@ -137,10 +137,17 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
     props.api.kv.set("replay_pane_width", next)
   }
 
-  // Scroll-follow for the active step (same node.y pattern as the fullscreen viewer).
+  // Scroll-follow for the active step (same node.y pattern as the fullscreen
+  // viewer), but only when the active step actually moved or grew — refetches
+  // must not yank the user back while a session streams.
+  let anchoredIndex = -1
+  let anchoredCount = -1
   createEffect(() => {
     const step = current()
-    if (!step) return
+    const count = steps().length
+    if (!step || (step.index === anchoredIndex && count === anchoredCount)) return
+    anchoredIndex = step.index
+    anchoredCount = count
     const left = stepBoxes.get(step.index)
     requestAnimationFrame(() => {
       const l = left ?? stepBoxes.get(step.index)
@@ -155,8 +162,6 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
       minHeight={0}
       border={["left", "right"]}
       borderColor={theme().border}
-      onMouseDrag={(e) => applyDrag(e.x)}
-      onMouseDragEnd={() => endDrag()}
     >
       <box
         width={1}
@@ -166,6 +171,11 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
         onMouseDown={(e) => {
           dragStartX = e.x
           dragStartWidth = parseReplayPaneWidth(paneWidth())
+        }}
+        onMouseDrag={(e) => applyDrag(e.x)}
+        onMouseDragEnd={() => endDrag()}
+        onMouseUp={() => {
+          dragStartX = undefined
         }}
       />
       <box flexDirection="column" flexGrow={1} minWidth={0} minHeight={0}>
@@ -345,9 +355,15 @@ function ReplayViewer(props: { api: TuiPluginApi }) {
   // Scroll-follow: on step change bring the active step card and its origin
   // message to the top of each pane (node.y pattern from diff-viewer.tsx:238,
   // rAF-wrapped so initial layout settles before the first no-op lookup).
+  // Refetch-only updates (same step, same count) keep the scroll position.
+  let anchoredIndex = -1
+  let anchoredCount = -1
   createEffect(() => {
     const step = current()
-    if (!step) return
+    const count = steps().length
+    if (!step || (step.index === anchoredIndex && count === anchoredCount)) return
+    anchoredIndex = step.index
+    anchoredCount = count
     const left = stepBoxes.get(step.index)
     const right = transcriptBoxes.get(step.messageID)
     requestAnimationFrame(() => {
@@ -506,7 +522,7 @@ export default {
               run() {
                 const patch = activePatch()
                 if (patch === undefined) {
-                  api.ui.toast({ message: "No active replay step", variant: "warning" })
+                  api.ui.toast({ message: "No replay patch to copy", variant: "warning" })
                   return
                 }
                 const ok = api.renderer.copyToClipboardOSC52(patch)
