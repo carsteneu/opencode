@@ -4,6 +4,86 @@ import { createEffect, createMemo, createResource, createSignal, For, Show, onCl
 import { buildReplaySteps, buildTranscriptRows, clampPatchLines, timeLabel, type RawMessage } from "./replay/replay-lib"
 
 const STEPS_W = 62 // % width for the steps pane; transcript takes the rest
+const PANE_W = 36 // fixed column width of the session-view replay pane
+
+function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
+  const theme = () => props.api.theme.current
+  const [loadError, setLoadError] = createSignal(false)
+  const [messages] = createResource(
+    () => props.sessionID,
+    async (sessionID) => {
+      try {
+        const response = await props.api.client.session.messages({ sessionID, limit: 100 }, { throwOnError: true })
+        setLoadError(false)
+        return (response.data ?? []) as RawMessage[]
+      } catch (error) {
+        setLoadError(true)
+        return []
+      }
+    },
+  )
+  const steps = createMemo(() => buildReplaySteps(messages() ?? []))
+  const [active, setActive] = createSignal(0)
+  const current = () => {
+    const list = steps()
+    return list[Math.min(active(), Math.max(list.length - 1, 0))]
+  }
+
+  let scrollSteps: ScrollBoxRenderable | undefined
+  const stepBoxes = new Map<number, BoxRenderable>()
+
+  // Scroll-follow for the active step (same node.y pattern as the fullscreen viewer).
+  createEffect(() => {
+    const step = current()
+    if (!step) return
+    const left = stepBoxes.get(step.index)
+    requestAnimationFrame(() => {
+      const l = left ?? stepBoxes.get(step.index)
+      if (l && scrollSteps) scrollSteps.scrollTo(scrollSteps.scrollTop + l.y - scrollSteps.viewport.y)
+    })
+  })
+
+  return (
+    <box flexDirection="column" width={PANE_W} minHeight={0} border={["left", "right"]} borderColor={theme().border}>
+      <scrollbox ref={(el: ScrollBoxRenderable) => (scrollSteps = el)} flexGrow={1} minWidth={0} minHeight={0}>
+        <For each={steps()}>
+          {(step) => (
+            <box
+              ref={(el: BoxRenderable) => stepBoxes.set(step.index, el)}
+              onMouseDown={() => setActive(step.index - 1)}
+              border={step.index === current()?.index ? ["left"] : []}
+              borderColor={theme().text}
+              paddingLeft={1}
+            >
+              <text
+                fg={step.index === current()?.index ? theme().text : theme().textMuted}
+                content={`Step ${step.index}/${steps().length} · ${step.tool} ${step.filePath}`}
+              />
+              <Show when={step.index === current()?.index}>
+                <Show when={step.patch !== undefined} fallback={<text fg={theme().textMuted}>(no diff payload)</text>}>
+                  <For each={clampPatchLines(step.patch ?? "").split("\n")}>
+                    {(line) => (
+                      <text
+                        fg={line.startsWith("+") ? theme().diffAdded : line.startsWith("-") ? theme().diffRemoved : theme().textMuted}
+                        content={line}
+                      />
+                    )}
+                  </For>
+                </Show>
+              </Show>
+            </box>
+          )}
+        </For>
+        <Show when={steps().length === 0 && !messages.loading && !loadError()}>
+          <text fg={theme().textMuted}>no edits in this session</text>
+        </Show>
+        <Show when={loadError()}>
+          <text fg={theme().error}>failed to load session</text>
+        </Show>
+      </scrollbox>
+    </box>
+  )
+}
 
 function ReplayViewer(props: { api: TuiPluginApi }) {
   const params = () =>
@@ -208,6 +288,15 @@ export default {
     api.route.register([
       { name: "replay", render: () => <ReplayViewer api={api} /> },
     ])
+    api.slots.register({
+      order: 50,
+      slots: {
+        session_replay(_ctx, props) {
+          const slotProps = props as { session_id?: string }
+          return <ReplayPane api={api} sessionID={slotProps.session_id ?? ""} />
+        },
+      },
+    })
     api.keymap.registerLayer({
       commands: [
         {
