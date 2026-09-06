@@ -178,14 +178,23 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
   })
 
   return (
-    <box
-      flexDirection="row"
-      width={parseReplayPaneWidth(paneWidth())}
-      minHeight={0}
-      border={["left", "right"]}
-      borderColor={theme().border}
-    >
       <box
+        flexDirection="row"
+        width={parseReplayPaneWidth(paneWidth())}
+        minHeight={0}
+        border={["left", "right"]}
+        borderColor={theme().border}
+        onMouseDrag={(e) => {
+          if (dragStartX === undefined) return
+          dragMoved = true
+          applyDrag(e.x)
+        }}
+        onMouseUp={() => {
+          endDrag()
+          setSplitterDrag(false)
+        }}
+      >
+        <box
         width={REPLAY_SPLITTER_HIT_WIDTH}
         flexShrink={0}
         selectable={false}
@@ -230,7 +239,7 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
       <box flexDirection="column" flexGrow={1} minWidth={0} minHeight={0}>
       <box flexShrink={0} paddingLeft={1}>
         <text fg={theme().text} bold content={`REPLAY · ${steps().length} steps`} />
-        <text fg={theme().textMuted} content="ctrl+y hide · drag left border to resize · /replay fullscreen" />
+          <text fg={theme().textMuted} content="ctrl+y hide · resize: ctrl+p → replay pane · /replay fullscreen" />
       </box>
       <scrollbox ref={(el: ScrollBoxRenderable) => (scrollSteps = el)} flexGrow={1} minWidth={0} minHeight={0}>
         <For each={steps()}>
