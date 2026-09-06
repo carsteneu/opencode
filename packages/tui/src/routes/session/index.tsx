@@ -341,8 +341,8 @@ const sessionBindingCommands = [
   "session.unshare",
   "session.undo",
   "session.redo",
-    "session.sidebar.toggle",
-    "session.replay.toggle",
+  "session.sidebar.toggle",
+  "session.replay.toggle",
   "session.toggle.conceal",
   "session.toggle.timestamps",
   "session.toggle.thinking",
@@ -586,19 +586,19 @@ export function Session() {
   const [showScrollbar, setShowScrollbar] = kv.signal("scrollbar_visible", false)
   const [diffWrapMode] = kv.signal<"word" | "none">("diff_wrap_mode", "word")
   const [_animationsEnabled, _setAnimationsEnabled] = kv.signal("animations_enabled", true)
-    const [showGenericToolOutput, setShowGenericToolOutput] = kv.signal("generic_tool_output_visibility", false)
-    const [replayPane, setReplayPane] = kv.signal<"off" | "on">("replay_pane", "off")
+  const [showGenericToolOutput, setShowGenericToolOutput] = kv.signal("generic_tool_output_visibility", false)
+  const [replayPane, setReplayPane] = kv.signal<"off" | "on">("replay_pane", "off")
 
-    const wide = createMemo(() => dimensions().width > 120)
-    const sidebarVisible = createMemo(() => {
-      if (session()?.parentID) return false
-      if (sidebarOpen()) return true
-      if (sidebar() === "auto" && wide()) return true
-      return false
-    })
-    const replayVisible = createMemo(() => replayPane() === "on" && wide())
-    const showTimestamps = createMemo(() => timestamps() === "show")
-    const contentWidth = createMemo(() => dimensions().width - (sidebarVisible() ? 42 : 0) - (replayVisible() ? 36 : 0) - 4)
+  const wide = createMemo(() => dimensions().width > 120)
+  const sidebarVisible = createMemo(() => {
+    if (session()?.parentID) return false
+    if (sidebarOpen()) return true
+    if (sidebar() === "auto" && wide()) return true
+    return false
+  })
+  const replayVisible = createMemo(() => replayPane() === "on" && wide())
+  const showTimestamps = createMemo(() => timestamps() === "show")
+  const contentWidth = createMemo(() => dimensions().width - (sidebarVisible() ? 42 : 0) - (replayVisible() ? 36 : 0) - 4)
   const providers = createMemo(() => Model.index(sync.data.provider))
 
   const scrollAcceleration = createMemo(() => getScrollAcceleration(tuiConfig))
@@ -1697,7 +1697,7 @@ export function Session() {
               <pluginRuntime.Slot name="session_replay" session_id={route.sessionID} />
             </Show>
             <Show when={sidebarVisible()}>
-            <Switch>
+              <Switch>
               <Match when={wide()}>
                 <Sidebar sessionID={route.sessionID} />
               </Match>
