@@ -10,7 +10,7 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
   const theme = () => props.api.theme.current
   const [loadError, setLoadError] = createSignal(false)
   const [messages] = createResource(
-    () => props.sessionID,
+    () => props.sessionID || undefined,
     async (sessionID) => {
       try {
         const response = await props.api.client.session.messages({ sessionID, limit: 100 }, { throwOnError: true })
@@ -23,14 +23,23 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
     },
   )
   const steps = createMemo(() => buildReplaySteps(messages() ?? []))
+  const stepBoxes = new Map<number, BoxRenderable>()
   const [active, setActive] = createSignal(0)
+  // Reset selection and stale refs (fullscreen viewer clears the same map on
+  // session switch) so scroll-follow never targets detached nodes.
+  createEffect(() => {
+    props.sessionID
+    onCleanup(() => {
+      stepBoxes.clear()
+      setActive(0)
+    })
+  })
   const current = () => {
     const list = steps()
     return list[Math.min(active(), Math.max(list.length - 1, 0))]
   }
 
   let scrollSteps: ScrollBoxRenderable | undefined
-  const stepBoxes = new Map<number, BoxRenderable>()
 
   // Scroll-follow for the active step (same node.y pattern as the fullscreen viewer).
   createEffect(() => {
