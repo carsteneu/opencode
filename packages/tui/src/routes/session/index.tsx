@@ -587,8 +587,8 @@ export function Session() {
   const [diffWrapMode] = kv.signal<"word" | "none">("diff_wrap_mode", "word")
   const [_animationsEnabled, _setAnimationsEnabled] = kv.signal("animations_enabled", true)
   const [showGenericToolOutput, setShowGenericToolOutput] = kv.signal("generic_tool_output_visibility", false)
-    const [replayPane, setReplayPane] = kv.signal<"off" | "on">("replay_pane", "off")
-    const [replayPaneWidth] = kv.signal<number>("replay_pane_width", 36)
+  const [replayPane, setReplayPane] = kv.signal<"off" | "on">("replay_pane", "off")
+  const [replayPaneWidth] = kv.signal<number>("replay_pane_width", 36)
 
   const wide = createMemo(() => dimensions().width > 120)
   const sidebarVisible = createMemo(() => {
@@ -597,14 +597,16 @@ export function Session() {
     if (sidebar() === "auto" && wide()) return true
     return false
   })
-    const replayVisible = createMemo(() => replayPane() === "on" && wide())
-    // Defensive re-validation of the plugin-written kv value (24-60 clamp).
-    const replayPaneWidthValue = () => {
-      const value = replayPaneWidth()
-      return typeof value === "number" && Number.isFinite(value) ? Math.min(60, Math.max(24, Math.round(value))) : 36
-    }
-    const showTimestamps = createMemo(() => timestamps() === "show")
-    const contentWidth = createMemo(() => dimensions().width - (sidebarVisible() ? 42 : 0) - (replayVisible() ? replayPaneWidthValue() : 0) - 4)
+  const replayVisible = createMemo(() => replayPane() === "on" && wide())
+  // Defensive re-validation of the plugin-written kv value (clamp 24-60,
+  // default 36 — mirrors clampReplayPaneWidth in .opencode/plugin/replay/replay-lib.ts).
+  const replayPaneWidthValue = () => {
+    const value = replayPaneWidth()
+    const numeric = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : Number.NaN
+    return Number.isFinite(numeric) ? Math.min(60, Math.max(24, Math.round(numeric))) : 36
+  }
+  const showTimestamps = createMemo(() => timestamps() === "show")
+  const contentWidth = createMemo(() => dimensions().width - (sidebarVisible() ? 42 : 0) - (replayVisible() ? replayPaneWidthValue() : 0) - 4)
   const providers = createMemo(() => Model.index(sync.data.provider))
 
   const scrollAcceleration = createMemo(() => getScrollAcceleration(tuiConfig))
