@@ -54,6 +54,10 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
 
   return (
     <box flexDirection="column" width={PANE_W} minHeight={0} border={["left", "right"]} borderColor={theme().border}>
+      <box flexShrink={0} paddingLeft={1}>
+        <text fg={theme().text} bold content={`REPLAY · ${steps().length} steps`} />
+        <text fg={theme().textMuted} content="ctrl+y hide · /replay fullscreen" />
+      </box>
       <scrollbox ref={(el: ScrollBoxRenderable) => (scrollSteps = el)} flexGrow={1} minWidth={0} minHeight={0}>
         <For each={steps()}>
           {(step) => (
