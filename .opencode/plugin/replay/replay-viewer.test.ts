@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test"
-import { buildReplaySteps, buildTranscriptRows, clampPatchLines, sanitizeText, timeLabel, type RawMessage } from "./replay-lib"
+import {
+  buildReplaySteps,
+  buildTranscriptRows,
+  clampPatchLines,
+  clampReplayPaneWidth,
+  parseReplayPaneWidth,
+  sanitizeText,
+  timeLabel,
+  type RawMessage,
+} from "./replay-lib"
 
 function msg(id: string, role: string, parts: RawMessage["parts"]): RawMessage {
   return { info: { id, role, time: { created: 1700000000000 } }, parts }
@@ -115,5 +124,40 @@ describe("sanitizeText", () => {
     const clamped = clampPatchLines("+1\n+2\n+3", 2)
     expect(clamped).toBe("+1\n+2\n… (truncated)")
     expect(clampPatchLines("+1", 2)).toBe("+1")
+  })
+})
+
+describe("parseReplayPaneWidth", () => {
+  test("passes through finite numbers within bounds", () => {
+    expect(parseReplayPaneWidth(36)).toBe(36)
+    expect(parseReplayPaneWidth(24)).toBe(24)
+    expect(parseReplayPaneWidth(60)).toBe(60)
+  })
+
+  test("clamps out-of-bounds numbers", () => {
+    expect(parseReplayPaneWidth(0)).toBe(24)
+    expect(parseReplayPaneWidth(-5)).toBe(24)
+    expect(parseReplayPaneWidth(100)).toBe(60)
+  })
+
+  test("returns the default for missing or non-numeric values", () => {
+    expect(parseReplayPaneWidth(undefined)).toBe(36)
+    expect(parseReplayPaneWidth(null)).toBe(36)
+    expect(parseReplayPaneWidth("")).toBe(36)
+    expect(parseReplayPaneWidth("abc")).toBe(36)
+    expect(parseReplayPaneWidth({})).toBe(36)
+  })
+
+  test("accepts numeric strings and rounds floats", () => {
+    expect(parseReplayPaneWidth("44")).toBe(44)
+    expect(parseReplayPaneWidth("12")).toBe(24)
+    expect(parseReplayPaneWidth(48.7)).toBe(49)
+  })
+})
+
+describe("clampReplayPaneWidth", () => {
+  test("rounds and clamps to the 24-60 range", () => {
+    expect(clampReplayPaneWidth(30.2)).toBe(30)
+    expect(clampReplayPaneWidth(Number.NaN)).toBe(36)
   })
 })

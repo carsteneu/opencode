@@ -1,10 +1,20 @@
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
 import type { BoxRenderable, ScrollBoxRenderable } from "@opentui/core"
 import { createEffect, createMemo, createResource, createSignal, For, Show, onCleanup, onMount } from "solid-js"
-import { buildReplaySteps, buildTranscriptRows, clampPatchLines, timeLabel, type RawMessage } from "./replay/replay-lib"
+import {
+  buildReplaySteps,
+  buildTranscriptRows,
+  clampPatchLines,
+  clampReplayPaneWidth,
+  parseReplayPaneWidth,
+  timeLabel,
+  type RawMessage,
+  REPLAY_PANE_WIDTH_DEFAULT,
+} from "./replay/replay-lib"
 
 const STEPS_W = 62 // % width for the steps pane; transcript takes the rest
-const PANE_W = 36 // fixed column width of the session-view replay pane
+
+const [paneWidth, setPaneWidth] = createSignal(REPLAY_PANE_WIDTH_DEFAULT)
 
 function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
   const theme = () => props.api.theme.current
@@ -22,9 +32,13 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
       }
     },
   )
-  const steps = createMemo(() => buildReplaySteps(messages() ?? []))
-  const stepBoxes = new Map<number, BoxRenderable>()
-  const [active, setActive] = createSignal(0)
+    const steps = createMemo(() => buildReplaySteps(messages() ?? []))
+    const stepBoxes = new Map<number, BoxRenderable>()
+    // kv loads asynchronously after boot, so re-sync once the store is ready.
+    createEffect(() => {
+      if (props.api.kv.ready) setPaneWidth(parseReplayPaneWidth(props.api.kv.get("replay_pane_width")))
+    })
+    const [active, setActive] = createSignal(0)
   // Reset selection and stale refs (fullscreen viewer clears the same map on
   // session switch) so scroll-follow never targets detached nodes.
   createEffect(() => {
@@ -53,7 +67,7 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
   })
 
   return (
-    <box flexDirection="column" width={PANE_W} minHeight={0} border={["left", "right"]} borderColor={theme().border}>
+    <box flexDirection="column" width={parseReplayPaneWidth(paneWidth())} minHeight={0} border={["left", "right"]} borderColor={theme().border}>
       <box flexShrink={0} paddingLeft={1}>
         <text fg={theme().text} bold content={`REPLAY · ${steps().length} steps`} />
         <text fg={theme().textMuted} content="ctrl+y hide · /replay fullscreen" />
@@ -310,22 +324,43 @@ export default {
         },
       },
     })
-    api.keymap.registerLayer({
-      commands: [
-        {
-          name: "replay.open",
-          title: "Open replay viewer",
-          slashName: "replay",
-          category: "VCS",
-          namespace: "palette",
-          run() {
-            const current = api.route.current
-            const sessionID = "params" in current ? current.params?.sessionID : undefined
-            api.route.navigate("replay", { sessionID, returnRoute: current })
-            api.ui.dialog.clear()
+      const adjustPaneWidth = (delta: number) => {
+        const next = clampReplayPaneWidth(parseReplayPaneWidth(paneWidth()) + delta)
+        setPaneWidth(next)
+        api.kv.set("replay_pane_width", next)
+      }
+      api.keymap.registerLayer({
+        commands: [
+          {
+            name: "replay.open",
+            title: "Open replay viewer",
+            slashName: "replay",
+            category: "VCS",
+            namespace: "palette",
+            run() {
+              const current = api.route.current
+              const sessionID = "params" in current ? current.params?.sessionID : undefined
+              api.route.navigate("replay", { sessionID, returnRoute: current })
+              api.ui.dialog.clear()
+            },
           },
-        },
-      ],
-    })
+          {
+            name: "replay.pane.wider",
+            title: "Widen replay pane",
+            namespace: "palette",
+            run() {
+              adjustPaneWidth(4)
+            },
+          },
+          {
+            name: "replay.pane.narrower",
+            title: "Narrow replay pane",
+            namespace: "palette",
+            run() {
+              adjustPaneWidth(-4)
+            },
+          },
+        ],
+      })
   },
 }

@@ -124,3 +124,24 @@ export function timeLabel(time: number | undefined): string {
   const pad = (n: number) => String(n).padStart(2, "0")
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }
+
+export const REPLAY_PANE_WIDTH_DEFAULT = 36
+export const REPLAY_PANE_WIDTH_MIN = 24
+export const REPLAY_PANE_WIDTH_MAX = 60
+
+export function clampReplayPaneWidth(value: number): number {
+  const width = Math.round(Number(value))
+  if (!Number.isFinite(width)) return REPLAY_PANE_WIDTH_DEFAULT
+  return Math.min(REPLAY_PANE_WIDTH_MAX, Math.max(REPLAY_PANE_WIDTH_MIN, width))
+}
+
+// kv.json is user-writable state, so every read re-validates instead of
+// trusting stored shapes.
+export function parseReplayPaneWidth(value: unknown): number {
+  if (typeof value === "number") return clampReplayPaneWidth(value)
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) return clampReplayPaneWidth(parsed)
+  }
+  return REPLAY_PANE_WIDTH_DEFAULT
+}
