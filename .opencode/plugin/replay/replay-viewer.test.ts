@@ -6,11 +6,13 @@ import {
   clampReplayPaneWidth,
   compactPatch,
   filetypeFromPath,
+  isDragIntent,
   parseReplayPaneWidth,
   REPLAY_SPLITTER_HIT_WIDTH,
   replayPaneDragWidth,
   sanitizeText,
   splitterFeedback,
+  stepIndexAtY,
   timeLabel,
   type RawMessage,
 } from "./replay-lib"
@@ -326,5 +328,62 @@ describe("splitterFeedback", () => {
   test("drag wins over hover", () => {
     expect(splitterFeedback(false, true)).toBe("drag")
     expect(splitterFeedback(true, true)).toBe("drag")
+  })
+})
+
+describe("isDragIntent", () => {
+  test("movement below the threshold is a click", () => {
+    expect(isDragIntent(40, 41)).toBe(false)
+    expect(isDragIntent(40, 39)).toBe(false)
+  })
+
+  test("movement at the threshold is a drag", () => {
+    expect(isDragIntent(40, 42)).toBe(true)
+    expect(isDragIntent(40, 38)).toBe(true)
+  })
+
+  test("no movement is a click", () => {
+    expect(isDragIntent(40, 40)).toBe(false)
+  })
+
+  test("custom threshold", () => {
+    expect(isDragIntent(40, 43, 3)).toBe(true)
+    expect(isDragIntent(40, 42, 3)).toBe(false)
+  })
+})
+
+describe("stepIndexAtY", () => {
+  const boxes = [
+    { index: 1, screenY: 10, height: 5 },
+    { index: 2, screenY: 15, height: 3 },
+    { index: 3, screenY: 20, height: 4 },
+  ]
+
+  test("click inside a box selects that step", () => {
+    expect(stepIndexAtY(boxes, 10)).toBe(1)
+    expect(stepIndexAtY(boxes, 14)).toBe(1)
+    expect(stepIndexAtY(boxes, 15)).toBe(2)
+    expect(stepIndexAtY(boxes, 17)).toBe(2)
+    expect(stepIndexAtY(boxes, 20)).toBe(3)
+    expect(stepIndexAtY(boxes, 23)).toBe(3)
+  })
+
+  test("click in the gap between boxes is no hit", () => {
+    expect(stepIndexAtY(boxes, 18)).toBe(null)
+    expect(stepIndexAtY(boxes, 19)).toBe(null)
+  })
+
+  test("click outside all boxes is no hit", () => {
+    expect(stepIndexAtY(boxes, 9)).toBe(null)
+    expect(stepIndexAtY(boxes, 24)).toBe(null)
+  })
+
+  test("no boxes means no hit", () => {
+    expect(stepIndexAtY([], 10)).toBe(null)
+  })
+
+  test("boxes given out of order still resolve by position", () => {
+    const shuffled = [boxes[2], boxes[0], boxes[1]]
+    expect(stepIndexAtY(shuffled, 16)).toBe(2)
   })
 })

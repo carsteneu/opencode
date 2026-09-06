@@ -8,10 +8,12 @@ import {
   clampReplayPaneWidth,
   compactPatch,
   filetypeFromPath,
+  isDragIntent,
   parseReplayPaneWidth,
   REPLAY_SPLITTER_HIT_WIDTH,
   replayPaneDragWidth,
   splitterFeedback,
+  stepIndexAtY,
   timeLabel,
   type RawMessage,
   REPLAY_PANE_WIDTH_DEFAULT,
@@ -122,22 +124,35 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
 
   let scrollSteps: ScrollBoxRenderable | undefined
 
-  // Mouse-drag resize: the 4-col grip strip anchors the drag, drags bubble
-  // from it (or any pane child) up to this root. kv persists on
-  // drag-end only, so live drags don't spam the store.
-  let dragStartX: number | undefined
-  let dragStartWidth = REPLAY_PANE_WIDTH_DEFAULT
-  const applyDrag = (x: number) => {
-    if (dragStartX === undefined) return
-    setPaneWidth(replayPaneDragWidth(dragStartWidth, dragStartX, x))
-  }
-  const endDrag = () => {
-    if (dragStartX === undefined) return
-    dragStartX = undefined
-    const next = clampReplayPaneWidth(parseReplayPaneWidth(paneWidth()))
-    setPaneWidth(next)
-    props.api.kv.set("replay_pane_width", next)
-  }
+    // Mouse-drag resize: the 4-col grip strip anchors the drag, drags bubble
+    // from it (or any pane child) up to this root. kv persists on
+    // drag-end only, so live drags don't spam the store.
+    let dragStartX: number | undefined
+    let dragStartWidth = REPLAY_PANE_WIDTH_DEFAULT
+    let dragMoved = false
+    const applyDrag = (x: number) => {
+      if (dragStartX === undefined) return
+      setPaneWidth(replayPaneDragWidth(dragStartWidth, dragStartX, x))
+    }
+    const endDrag = () => {
+      if (dragStartX === undefined) return
+      dragStartX = undefined
+      const next = clampReplayPaneWidth(parseReplayPaneWidth(paneWidth()))
+      setPaneWidth(next)
+      props.api.kv.set("replay_pane_width", next)
+    }
+    // Click-vs-drag on the grip (GUI convention): a press that stays within
+    // REPLAY_DRAG_THRESHOLD columns selects the step card under the cursor, so
+    // the pane's first columns stay clickable. Once the threshold trips, the
+    // gesture stays a drag until release, mirroring native sliders.
+    const selectStep = (index: number) => setActive(index - 1)
+    const selectStepAt = (y: number) => {
+      const hits = [...stepBoxes.entries()]
+        .filter(([, box]) => !box.isDestroyed)
+        .map(([index, box]) => ({ index, screenY: box.screenY, height: box.height }))
+      const index = stepIndexAtY(hits, y)
+      if (index !== null) selectStep(index)
+    }
   // Wide invisible grip zone on the strip; hover/drag flip its look so the
   // user sees when a drag will catch.
   const [splitterHover, setSplitterHover] = createSignal(false)
@@ -177,9 +192,12 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
         onMouseDown={(e) => {
           dragStartX = e.x
           dragStartWidth = parseReplayPaneWidth(paneWidth())
+          dragMoved = false
         }}
         onMouseDrag={(e) => {
           if (dragStartX === undefined) return
+          if (!dragMoved && !isDragIntent(dragStartX, e.x)) return
+          dragMoved = true
           setSplitterDrag(true)
           applyDrag(e.x)
         }}
@@ -188,7 +206,8 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
           setSplitterDrag(false)
           setSplitterHover(false)
         }}
-        onMouseUp={() => {
+        onMouseUp={(e) => {
+          if (dragStartX !== undefined && !dragMoved) selectStepAt(e.y)
           dragStartX = undefined
           setSplitterDrag(false)
           setSplitterHover(false)
@@ -217,8 +236,8 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
         <For each={steps()}>
           {(step) => (
             <box
-              ref={(el: BoxRenderable) => stepBoxes.set(step.index, el)}
-              onMouseDown={() => setActive(step.index - 1)}
+                ref={(el: BoxRenderable) => stepBoxes.set(step.index, el)}
+                onMouseDown={() => selectStep(step.index)}
               border={step.index === current()?.index ? ["left"] : []}
               borderColor={theme().text}
               paddingLeft={1}

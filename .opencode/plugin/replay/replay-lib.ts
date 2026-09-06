@@ -299,6 +299,29 @@ export function splitterFeedback(hover: boolean, dragging: boolean): SplitterFee
   return "idle"
 }
 
+// Columns of horizontal movement before a press counts as a drag, not a click.
+export const REPLAY_DRAG_THRESHOLD = 2
+
+// GUI-convention splitter: a press that stays within the threshold is a click
+// (forwarded to the pane content), larger movement is a resize drag.
+export function isDragIntent(startX: number, currentX: number, threshold = REPLAY_DRAG_THRESHOLD): boolean {
+  return Math.abs(currentX - startX) >= threshold
+}
+
+export type StepHitTestEntry = { index: number; screenY: number; height: number }
+
+// Resolves the step card under a grip click. screenY values are opaque to the
+// hit test — they come from the renderable and already include its scroll
+// translation. Lower bound inclusive, upper exclusive; later cards win ties.
+export function stepIndexAtY(boxes: StepHitTestEntry[], clickY: number): number | null {
+  let hit: number | null = null
+  for (const box of [...boxes].sort((a, b) => a.screenY - b.screenY)) {
+    if (clickY < box.screenY || clickY >= box.screenY + box.height) continue
+    hit = box.index
+  }
+  return hit
+}
+
 const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/
 
 // Unified-diff-aware context trimming: keeps at most `context` lines beside
