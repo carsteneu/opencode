@@ -4,8 +4,10 @@ import {
   buildTranscriptRows,
   clampPatchLines,
   clampReplayPaneWidth,
+  compactPatch,
   filetypeFromPath,
   parseReplayPaneWidth,
+  replayPaneDragWidth,
   sanitizeText,
   timeLabel,
   type RawMessage,
@@ -181,5 +183,118 @@ describe("filetypeFromPath", () => {
     expect(filetypeFromPath("data.unknownext")).toBeUndefined()
     expect(filetypeFromPath("")).toBe("none")
     expect(filetypeFromPath(undefined)).toBe("none")
+  })
+})
+
+describe("compactPatch", () => {
+  const patch = [
+    "--- a/demo.md",
+    "+++ b/demo.md",
+    "@@ -1,9 +1,9 @@",
+    " one",
+    " two",
+    " three",
+    " four",
+    " five",
+    "-old",
+    "+new",
+    " six",
+    " seven",
+    " eight",
+  ].join("\n")
+
+  test("trims edge context to the budget and recomputes hunk header counts", () => {
+    expect(compactPatch(patch, 2)).toBe(
+      [
+        "--- a/demo.md",
+        "+++ b/demo.md",
+        "@@ -4,5 +4,5 @@",
+        " four",
+        " five",
+        "-old",
+        "+new",
+        " six",
+        " seven",
+      ].join("\n"),
+    )
+  })
+
+  test("hunks within the context budget are returned unchanged", () => {
+    const small = ["--- a/f", "+++ b/f", "@@ -1,5 +1,5 @@", " a", " b", "-c", "+d", " e"].join("\n")
+    expect(compactPatch(small, 2)).toBe(small)
+  })
+
+  test("patches without hunk headers are returned unchanged", () => {
+    expect(compactPatch("+fixed\n-old")).toBe("+fixed\n-old")
+  })
+
+  test("multiple hunks are compacted independently", () => {
+    const two = [
+      "--- a/m",
+      "+++ b/m",
+      "@@ -1,8 +1,8 @@",
+      " c1",
+      " c2",
+      " c3",
+      " c4",
+      "-c5",
+      "+c6",
+      " c7",
+      " c8",
+      "@@ -10,3 +10,3 @@",
+      " c9",
+      "-x10",
+      "+x11",
+      " c12",
+    ].join("\n")
+    expect(compactPatch(two, 2)).toBe(
+      [
+        "--- a/m",
+        "+++ b/m",
+        "@@ -3,5 +3,5 @@",
+        " c3",
+        " c4",
+        "-c5",
+        "+c6",
+        " c7",
+        " c8",
+        "@@ -10,3 +10,3 @@",
+        " c9",
+        "-x10",
+        "+x11",
+        " c12",
+      ].join("\n"),
+    )
+  })
+
+  test("interior context beyond the budget splits hunks with recomputed headers", () => {
+    const interior = "@@ -1,9 +1,9 @@\n a\n-b\n+c\n d\n e\n f\n g\n h\n-i\n+j\n k"
+    expect(compactPatch(interior, 2)).toBe(
+      "@@ -1,4 +1,4 @@\n a\n-b\n+c\n d\n e\n@@ -6,4 +6,4 @@\n g\n h\n-i\n+j\n k",
+    )
+  })
+
+  test("tolerates hunk headers without line counts", () => {
+    const uncounted = "@@ -3 +3 @@\n a\n b\n-old\n+new\n c\n d"
+    expect(compactPatch(uncounted, 1)).toBe("@@ -4,3 +4,3 @@\n b\n-old\n+new\n c")
+  })
+})
+
+describe("replayPaneDragWidth", () => {
+  test("dragging the left border left widens the pane", () => {
+    expect(replayPaneDragWidth(36, 40, 34)).toBe(42)
+  })
+
+  test("dragging right narrows the pane", () => {
+    expect(replayPaneDragWidth(36, 40, 46)).toBe(30)
+  })
+
+  test("clamps to the 24-60 window", () => {
+    expect(replayPaneDragWidth(58, 30, 10)).toBe(60)
+    expect(replayPaneDragWidth(26, 10, 30)).toBe(24)
+  })
+
+  test("no movement keeps the start width", () => {
+    expect(replayPaneDragWidth(36, 40, 40)).toBe(36)
   })
 })

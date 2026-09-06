@@ -279,3 +279,76 @@ export function filetypeFromPath(input?: string): string | undefined {
   if (["typescriptreact", "javascriptreact", "javascript"].includes(language)) return "typescript"
   return language
 }
+
+// Mouse-drag on the pane's left border: moving the border left (negative
+// mouse delta) widens the pane, mirroring GUI splitters.
+export function replayPaneDragWidth(startWidth: number, startX: number, currentX: number): number {
+  return clampReplayPaneWidth(startWidth + startX - currentX)
+}
+
+const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/
+
+// Unified-diff-aware context trimming: keeps at most `context` lines beside
+// every change (git -U semantics). Trimmed hunks get their @@ headers
+// recomputed so old/new numbering stays truthful for the <diff> renderer;
+// hunks without changes or already within budget pass through verbatim.
+export function compactPatch(patch: string, context = 2): string {
+  const lines = patch.split("\n")
+  const out: string[] = []
+  let i = 0
+  while (i < lines.length) {
+    const header = lines[i]?.match(HUNK_HEADER)
+    if (!header) {
+      out.push(lines[i] ?? "")
+      i++
+      continue
+    }
+    let end = i + 1
+    while (end < lines.length && !HUNK_HEADER.test(lines[end] ?? "")) end++
+    const body = lines.slice(i + 1, end)
+    out.push(...compactHunk(lines[i] ?? "", header, body, context))
+    i = end
+  }
+  return out.join("\n")
+}
+
+function compactHunk(headerLine: string, header: RegExpMatchArray, body: string[], context: number): string[] {
+  const changeIndices = body.flatMap((line, k) => (line.startsWith(" ") ? [] : [k]))
+  const withinBudget = (k: number) => changeIndices.some((c) => Math.abs(k - c) <= context)
+  if (context < 0 || changeIndices.length === 0 || body.every((_, k) => withinBudget(k))) {
+    return [headerLine, ...body]
+  }
+
+  const oldInc = body.map((line) => (line.startsWith(" ") || line.startsWith("-") ? 1 : 0))
+  const newInc = body.map((line) => (line.startsWith(" ") || line.startsWith("+") ? 1 : 0))
+  const prefixOld = runningSum(oldInc)
+  const prefixNew = runningSum(newInc)
+  const oldStart = Number(header[1])
+  const newStart = Number(header[3])
+  const kept = body.map((_, k) => withinBudget(k))
+
+  const result: string[] = []
+  let k = 0
+  while (k < kept.length) {
+    if (!kept[k]) {
+      k++
+      continue
+    }
+    let runEnd = k
+    while (runEnd + 1 < kept.length && kept[runEnd + 1]) runEnd++
+    const runOld = oldStart + (prefixOld[k] ?? 0)
+    const runNew = newStart + (prefixNew[k] ?? 0)
+    const countOld = (prefixOld[runEnd + 1] ?? 0) - (prefixOld[k] ?? 0)
+    const countNew = (prefixNew[runEnd + 1] ?? 0) - (prefixNew[k] ?? 0)
+    result.push(`@@ -${runOld},${countOld} +${runNew},${countNew} @@`)
+    for (let m = k; m <= runEnd; m++) result.push(body[m] ?? "")
+    k = runEnd + 1
+  }
+  return result
+}
+
+function runningSum(inc: number[]): number[] {
+  const sums = [0]
+  for (const value of inc) sums.push((sums[sums.length - 1] ?? 0) + value)
+  return sums
+}
