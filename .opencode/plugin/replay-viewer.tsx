@@ -6,8 +6,10 @@ import {
   buildTranscriptRows,
   clampPatchLines,
   clampReplayPaneWidth,
+  compactPatch,
   filetypeFromPath,
   parseReplayPaneWidth,
+  replayPaneDragWidth,
   timeLabel,
   type RawMessage,
   REPLAY_PANE_WIDTH_DEFAULT,
@@ -16,6 +18,33 @@ import {
 const STEPS_W = 62 // % width for the steps pane; transcript takes the rest
 
 const [paneWidth, setPaneWidth] = createSignal(REPLAY_PANE_WIDTH_DEFAULT)
+// Patch of the step the user is currently looking at (pane and fullscreen
+// viewer keep it in sync); consumed by the copy command.
+const [activePatch, setActivePatch] = createSignal<string | undefined>(undefined)
+
+// Live-refresh: edit-part events arrive in streaming bursts, coalesce them
+// into one debounced refetch so the pane follows a running session.
+function subscribeSessionRefresh(api: TuiPluginApi, sessionID: () => string | undefined, refetch: () => unknown) {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const schedule = () => {
+    if (timer) return
+    timer = setTimeout(() => {
+      timer = undefined
+      void refetch()
+    }, 400)
+  }
+  const offPart = api.event.on("message.part.updated", (event) => {
+    if (event.properties.sessionID === sessionID()) schedule()
+  })
+  const offMessage = api.event.on("message.updated", (event) => {
+    if (event.properties.sessionID === sessionID()) schedule()
+  })
+  onCleanup(() => {
+    clearTimeout(timer)
+    offPart()
+    offMessage()
+  })
+}
 
 // Theme-derived syntax colors for <diff>. Compact subset of the TUI-internal
 // getSyntaxRules (packages/tui/src/theme/index.ts) covering the visually
@@ -52,7 +81,7 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
     requestAnimationFrame(() => style?.destroy())
   })
   const [loadError, setLoadError] = createSignal(false)
-  const [messages] = createResource(
+  const [messages, { refetch }] = createResource(
     () => props.sessionID || undefined,
     async (sessionID) => {
       try {
@@ -65,6 +94,9 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
       }
     },
   )
+  subscribeSessionRefresh(props.api, () => props.sessionID, refetch)
+  createEffect(() => setActivePatch(current()?.patch))
+  onCleanup(() => setActivePatch(undefined))
     const steps = createMemo(() => buildReplaySteps(messages() ?? []))
     const stepBoxes = new Map<number, BoxRenderable>()
     // kv loads asynchronously after boot, so re-sync once the store is ready.
@@ -88,6 +120,23 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
 
   let scrollSteps: ScrollBoxRenderable | undefined
 
+  // Mouse-drag resize: the 1-col splitter strip anchors the drag, drags
+  // bubble from it (or any pane child) up to this root. kv persists on
+  // drag-end only, so live drags don't spam the store.
+  let dragStartX: number | undefined
+  let dragStartWidth = REPLAY_PANE_WIDTH_DEFAULT
+  const applyDrag = (x: number) => {
+    if (dragStartX === undefined) return
+    setPaneWidth(replayPaneDragWidth(dragStartWidth, dragStartX, x))
+  }
+  const endDrag = () => {
+    if (dragStartX === undefined) return
+    dragStartX = undefined
+    const next = clampReplayPaneWidth(parseReplayPaneWidth(paneWidth()))
+    setPaneWidth(next)
+    props.api.kv.set("replay_pane_width", next)
+  }
+
   // Scroll-follow for the active step (same node.y pattern as the fullscreen viewer).
   createEffect(() => {
     const step = current()
@@ -100,10 +149,29 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
   })
 
   return (
-    <box flexDirection="column" width={parseReplayPaneWidth(paneWidth())} minHeight={0} border={["left", "right"]} borderColor={theme().border}>
+    <box
+      flexDirection="row"
+      width={parseReplayPaneWidth(paneWidth())}
+      minHeight={0}
+      border={["left", "right"]}
+      borderColor={theme().border}
+      onMouseDrag={(e) => applyDrag(e.x)}
+      onMouseDragEnd={() => endDrag()}
+    >
+      <box
+        width={1}
+        flexShrink={0}
+        backgroundColor={theme().border}
+        selectable={false}
+        onMouseDown={(e) => {
+          dragStartX = e.x
+          dragStartWidth = parseReplayPaneWidth(paneWidth())
+        }}
+      />
+      <box flexDirection="column" flexGrow={1} minWidth={0} minHeight={0}>
       <box flexShrink={0} paddingLeft={1}>
         <text fg={theme().text} bold content={`REPLAY · ${steps().length} steps`} />
-        <text fg={theme().textMuted} content="ctrl+y hide · /replay fullscreen" />
+        <text fg={theme().textMuted} content="ctrl+y hide · drag left border to resize · /replay fullscreen" />
       </box>
       <scrollbox ref={(el: ScrollBoxRenderable) => (scrollSteps = el)} flexGrow={1} minWidth={0} minHeight={0}>
         <For each={steps()}>
@@ -122,11 +190,11 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
                 <Show when={step.index === current()?.index}>
                   <Show when={step.patch !== undefined} fallback={<text fg={theme().textMuted}>(no diff payload)</text>}>
                     <diff
-                      diff={clampPatchLines(step.patch ?? "")}
+                      diff={clampPatchLines(compactPatch(step.patch ?? ""))}
                       view="unified"
                       filetype={filetypeFromPath(step.filePath)}
                       syntaxStyle={syntaxStyle()}
-                      showLineNumbers={false}
+                      showLineNumbers={true}
                       width="100%"
                       wrapMode="char"
                       fg={theme().text}
@@ -134,22 +202,26 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
                       removedBg={theme().diffRemovedBg}
                       addedSignColor={theme().diffHighlightAdded}
                       removedSignColor={theme().diffHighlightRemoved}
+                      lineNumberFg={theme().diffLineNumber}
+                      addedLineNumberBg={theme().diffAddedLineNumberBg}
+                      removedLineNumberBg={theme().diffRemovedLineNumberBg}
                     />
                   </Show>
                 </Show>
-            </box>
-          )}
-        </For>
-        <Show when={steps().length === 0 && !messages.loading && !loadError()}>
-          <text fg={theme().textMuted}>no edits in this session</text>
-        </Show>
-        <Show when={loadError()}>
-          <text fg={theme().error}>failed to load session</text>
-        </Show>
-      </scrollbox>
+              </box>
+            )}
+          </For>
+          <Show when={steps().length === 0 && !messages.loading && !loadError()}>
+            <text fg={theme().textMuted}>no edits in this session</text>
+          </Show>
+          <Show when={loadError()}>
+            <text fg={theme().error}>failed to load session</text>
+          </Show>
+        </scrollbox>
+      </box>
     </box>
-  )
-}
+    )
+  }
 
 function ReplayViewer(props: { api: TuiPluginApi }) {
   const params = () =>
@@ -174,7 +246,7 @@ function ReplayViewer(props: { api: TuiPluginApi }) {
   })
 
   const [loadError, setLoadError] = createSignal(false)
-  const [messages] = createResource(
+  const [messages, { refetch }] = createResource(
     () => params()?.sessionID,
     async (sessionID) => {
       try {
@@ -187,6 +259,9 @@ function ReplayViewer(props: { api: TuiPluginApi }) {
       }
     },
   )
+  subscribeSessionRefresh(props.api, () => params()?.sessionID, refetch)
+  createEffect(() => setActivePatch(current()?.patch))
+  onCleanup(() => setActivePatch(undefined))
 
   const steps = createMemo(() => buildReplaySteps(messages() ?? []))
   const rows = createMemo(() => buildTranscriptRows(messages() ?? []))
@@ -310,7 +385,7 @@ function ReplayViewer(props: { api: TuiPluginApi }) {
                 <Show when={step.index === current()?.index}>
                   <Show when={step.patch !== undefined} fallback={<text fg={theme().textMuted}>(no diff payload)</text>}>
                     <diff
-                      diff={clampPatchLines(step.patch ?? "")}
+                      diff={clampPatchLines(compactPatch(step.patch ?? ""))}
                       view="unified"
                       filetype={filetypeFromPath(step.filePath)}
                       syntaxStyle={syntaxStyle()}
@@ -416,14 +491,31 @@ export default {
               adjustPaneWidth(4)
             },
           },
-          {
-            name: "replay.pane.narrower",
-            title: "Narrow replay pane",
-            namespace: "palette",
-            run() {
-              adjustPaneWidth(-4)
+            {
+              name: "replay.pane.narrower",
+              title: "Narrow replay pane",
+              namespace: "palette",
+              run() {
+                adjustPaneWidth(-4)
+              },
             },
-          },
+            {
+              name: "replay.copy_patch",
+              title: "Copy replay patch",
+              namespace: "palette",
+              run() {
+                const patch = activePatch()
+                if (patch === undefined) {
+                  api.ui.toast({ message: "No active replay step", variant: "warning" })
+                  return
+                }
+                const ok = api.renderer.copyToClipboardOSC52(patch)
+                api.ui.toast({
+                  message: ok ? "Replay patch copied to clipboard!" : "Failed to copy patch",
+                  variant: ok ? "success" : "error",
+                })
+              },
+            },
         ],
       })
   },
