@@ -122,8 +122,8 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
 
   let scrollSteps: ScrollBoxRenderable | undefined
 
-  // Mouse-drag resize: the 1-col splitter strip anchors the drag, drags
-  // bubble from it (or any pane child) up to this root. kv persists on
+  // Mouse-drag resize: the 4-col grip strip anchors the drag, drags bubble
+  // from it (or any pane child) up to this root. kv persists on
   // drag-end only, so live drags don't spam the store.
   let dragStartX: number | undefined
   let dragStartWidth = REPLAY_PANE_WIDTH_DEFAULT
@@ -177,16 +177,21 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
         onMouseDown={(e) => {
           dragStartX = e.x
           dragStartWidth = parseReplayPaneWidth(paneWidth())
-          setSplitterDrag(true)
         }}
-        onMouseDrag={(e) => applyDrag(e.x)}
+        onMouseDrag={(e) => {
+          if (dragStartX === undefined) return
+          setSplitterDrag(true)
+          applyDrag(e.x)
+        }}
         onMouseDragEnd={() => {
           endDrag()
           setSplitterDrag(false)
+          setSplitterHover(false)
         }}
         onMouseUp={() => {
           dragStartX = undefined
           setSplitterDrag(false)
+          setSplitterHover(false)
         }}
         onMouseOver={() => setSplitterHover(true)}
         onMouseOut={() => setSplitterHover(false)}

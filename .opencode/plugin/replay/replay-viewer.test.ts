@@ -309,8 +309,8 @@ describe("replayPaneDragWidth", () => {
 })
 
 describe("REPLAY_SPLITTER_HIT_WIDTH", () => {
-  test("gives the splitter a grip zone of at least 3 columns", () => {
-    expect(REPLAY_SPLITTER_HIT_WIDTH).toBeGreaterThanOrEqual(3)
+  test("pins the grip zone at 4 columns", () => {
+    expect(REPLAY_SPLITTER_HIT_WIDTH).toBe(4)
   })
 })
 
