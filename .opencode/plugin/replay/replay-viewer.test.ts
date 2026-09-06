@@ -4,6 +4,7 @@ import {
   buildTranscriptRows,
   clampPatchLines,
   clampReplayPaneWidth,
+  filetypeFromPath,
   parseReplayPaneWidth,
   sanitizeText,
   timeLabel,
@@ -159,5 +160,26 @@ describe("clampReplayPaneWidth", () => {
   test("rounds and clamps to the 24-60 range", () => {
     expect(clampReplayPaneWidth(30.2)).toBe(30)
     expect(clampReplayPaneWidth(Number.NaN)).toBe(36)
+  })
+})
+
+describe("filetypeFromPath", () => {
+  test("maps common extensions to tree-sitter languages", () => {
+    expect(filetypeFromPath("src/app.py")).toBe("python")
+    expect(filetypeFromPath("src/lib.go")).toBe("go")
+    expect(filetypeFromPath("src/main.rs")).toBe("rust")
+    expect(filetypeFromPath("styles.css")).toBe("css")
+  })
+
+  test("normalizes react/javascript languages to typescript like the diff viewer", () => {
+    expect(filetypeFromPath("src/App.tsx")).toBe("typescript")
+    expect(filetypeFromPath("src/App.jsx")).toBe("typescript")
+    expect(filetypeFromPath("src/util.mjs")).toBe("typescript")
+  })
+
+  test("returns undefined for unknown extensions and none for missing paths", () => {
+    expect(filetypeFromPath("data.unknownext")).toBeUndefined()
+    expect(filetypeFromPath("")).toBe("none")
+    expect(filetypeFromPath(undefined)).toBe("none")
   })
 })

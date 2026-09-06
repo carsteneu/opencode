@@ -1,11 +1,12 @@
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
-import type { BoxRenderable, ScrollBoxRenderable } from "@opentui/core"
+import type { TuiPluginApi, TuiThemeCurrent } from "@opencode-ai/plugin/tui"
+import { SyntaxStyle, type BoxRenderable, type ScrollBoxRenderable } from "@opentui/core"
 import { createEffect, createMemo, createResource, createSignal, For, Show, onCleanup, onMount } from "solid-js"
 import {
   buildReplaySteps,
   buildTranscriptRows,
   clampPatchLines,
   clampReplayPaneWidth,
+  filetypeFromPath,
   parseReplayPaneWidth,
   timeLabel,
   type RawMessage,
@@ -16,8 +17,27 @@ const STEPS_W = 62 // % width for the steps pane; transcript takes the rest
 
 const [paneWidth, setPaneWidth] = createSignal(REPLAY_PANE_WIDTH_DEFAULT)
 
+// Theme-derived syntax colors for <diff>. Compact subset of the TUI-internal
+// getSyntaxRules (packages/tui/src/theme/index.ts) covering the visually
+// dominant scopes; kept here because the TUI module is not importable from
+// external plugins.
+function syntaxStyleFor(theme: TuiThemeCurrent): SyntaxStyle {
+  return SyntaxStyle.fromTheme([
+    { scope: ["default"], style: { foreground: theme.text } },
+    { scope: ["string", "symbol"], style: { foreground: theme.syntaxString } },
+    { scope: ["number", "boolean", "constant"], style: { foreground: theme.syntaxNumber } },
+    { scope: ["comment"], style: { foreground: theme.syntaxComment, italic: true } },
+    { scope: ["keyword"], style: { foreground: theme.syntaxKeyword, italic: true } },
+    { scope: ["keyword.function", "function.method", "function.call"], style: { foreground: theme.syntaxFunction } },
+    { scope: ["keyword.type", "type"], style: { foreground: theme.syntaxType, bold: true } },
+    { scope: ["operator", "keyword.operator", "punctuation.delimiter"], style: { foreground: theme.syntaxOperator } },
+    { scope: ["variable"], style: { foreground: theme.syntaxVariable } },
+  ])
+}
+
 function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
   const theme = () => props.api.theme.current
+  const syntaxStyle = createMemo(() => syntaxStyleFor(theme()))
   const [loadError, setLoadError] = createSignal(false)
   const [messages] = createResource(
     () => props.sessionID || undefined,
@@ -86,18 +106,24 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
                 fg={step.index === current()?.index ? theme().text : theme().textMuted}
                 content={`Step ${step.index}/${steps().length} · ${step.tool} ${step.filePath}`}
               />
-              <Show when={step.index === current()?.index}>
-                <Show when={step.patch !== undefined} fallback={<text fg={theme().textMuted}>(no diff payload)</text>}>
-                  <For each={clampPatchLines(step.patch ?? "").split("\n")}>
-                    {(line) => (
-                      <text
-                        fg={line.startsWith("+") ? theme().diffAdded : line.startsWith("-") ? theme().diffRemoved : theme().textMuted}
-                        content={line}
-                      />
-                    )}
-                  </For>
+                <Show when={step.index === current()?.index}>
+                  <Show when={step.patch !== undefined} fallback={<text fg={theme().textMuted}>(no diff payload)</text>}>
+                    <diff
+                      diff={clampPatchLines(step.patch ?? "")}
+                      view="unified"
+                      filetype={filetypeFromPath(step.filePath)}
+                      syntaxStyle={syntaxStyle()}
+                      showLineNumbers={false}
+                      width="100%"
+                      wrapMode="char"
+                      fg={theme().text}
+                      addedBg={theme().diffAddedBg}
+                      removedBg={theme().diffRemovedBg}
+                      addedSignColor={theme().diffHighlightAdded}
+                      removedSignColor={theme().diffHighlightRemoved}
+                    />
+                  </Show>
                 </Show>
-              </Show>
             </box>
           )}
         </For>
@@ -119,6 +145,7 @@ function ReplayViewer(props: { api: TuiPluginApi }) {
       | undefined
 
   const theme = () => props.api.theme.current
+  const syntaxStyle = createMemo(() => syntaxStyleFor(theme()))
 
   const [loadError, setLoadError] = createSignal(false)
   const [messages] = createResource(
@@ -254,16 +281,25 @@ function ReplayViewer(props: { api: TuiPluginApi }) {
                 fg={step.index === current()?.index ? theme().text : theme().textMuted}
                 content={`Step ${step.index}/${steps().length} · ${step.tool} ${step.filePath} · ${timeLabel(step.time)}`}
               />
-              <Show when={step.patch !== undefined} fallback={<text fg={theme().textMuted}>(no diff payload)</text>}>
-                <For each={clampPatchLines(step.patch ?? "").split("\n")}>
-                  {(line) => (
-                    <text
-                      fg={line.startsWith("+") ? theme().diffAdded : line.startsWith("-") ? theme().diffRemoved : theme().textMuted}
-                      content={line}
-                    />
-                  )}
-                </For>
-              </Show>
+                <Show when={step.patch !== undefined} fallback={<text fg={theme().textMuted}>(no diff payload)</text>}>
+                  <diff
+                    diff={clampPatchLines(step.patch ?? "")}
+                    view="unified"
+                    filetype={filetypeFromPath(step.filePath)}
+                    syntaxStyle={syntaxStyle()}
+                    showLineNumbers={true}
+                    width="100%"
+                    wrapMode="char"
+                    fg={theme().text}
+                    addedBg={theme().diffAddedBg}
+                    removedBg={theme().diffRemovedBg}
+                    addedSignColor={theme().diffHighlightAdded}
+                    removedSignColor={theme().diffHighlightRemoved}
+                    lineNumberFg={theme().diffLineNumber}
+                    addedLineNumberBg={theme().diffAddedLineNumberBg}
+                    removedLineNumberBg={theme().diffRemovedLineNumberBg}
+                  />
+                </Show>
             </box>
           )}
         </For>
