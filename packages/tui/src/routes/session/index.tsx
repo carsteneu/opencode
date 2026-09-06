@@ -1014,11 +1014,11 @@ export function Session() {
       },
     },
     {
-      title: replayVisible() ? "Hide replay pane" : "Show replay pane",
+      title: replayPane() === "on" ? "Hide replay pane" : "Show replay pane",
       value: "session.replay.toggle",
       category: "Session",
       run: () => {
-        if (!wide()) {
+        if (!wide() && replayPane() === "off") {
           toast.show({
             message: "Terminal too narrow for replay pane",
             variant: "warning",
