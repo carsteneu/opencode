@@ -37,7 +37,20 @@ function syntaxStyleFor(theme: TuiThemeCurrent): SyntaxStyle {
 
 function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
   const theme = () => props.api.theme.current
-  const syntaxStyle = createMemo(() => syntaxStyleFor(theme()))
+  // SyntaxStyle is a native resource: replaced instances are destroyed one
+  // frame after swap, the current one on unmount.
+  let previousStyle: SyntaxStyle | undefined
+  const syntaxStyle = createMemo(() => {
+    const next = syntaxStyleFor(theme())
+    const stale = previousStyle
+    previousStyle = next
+    if (stale && stale !== next) requestAnimationFrame(() => stale.destroy())
+    return next
+  })
+  onCleanup(() => {
+    const style = previousStyle
+    requestAnimationFrame(() => style?.destroy())
+  })
   const [loadError, setLoadError] = createSignal(false)
   const [messages] = createResource(
     () => props.sessionID || undefined,
@@ -145,7 +158,20 @@ function ReplayViewer(props: { api: TuiPluginApi }) {
       | undefined
 
   const theme = () => props.api.theme.current
-  const syntaxStyle = createMemo(() => syntaxStyleFor(theme()))
+  // Same native-resource discipline as ReplayPane: destroy replaced styles
+  // one frame after swap, the current one on unmount.
+  let previousStyle: SyntaxStyle | undefined
+  const syntaxStyle = createMemo(() => {
+    const next = syntaxStyleFor(theme())
+    const stale = previousStyle
+    previousStyle = next
+    if (stale && stale !== next) requestAnimationFrame(() => stale.destroy())
+    return next
+  })
+  onCleanup(() => {
+    const style = previousStyle
+    requestAnimationFrame(() => style?.destroy())
+  })
 
   const [loadError, setLoadError] = createSignal(false)
   const [messages] = createResource(
@@ -281,24 +307,26 @@ function ReplayViewer(props: { api: TuiPluginApi }) {
                 fg={step.index === current()?.index ? theme().text : theme().textMuted}
                 content={`Step ${step.index}/${steps().length} · ${step.tool} ${step.filePath} · ${timeLabel(step.time)}`}
               />
-                <Show when={step.patch !== undefined} fallback={<text fg={theme().textMuted}>(no diff payload)</text>}>
-                  <diff
-                    diff={clampPatchLines(step.patch ?? "")}
-                    view="unified"
-                    filetype={filetypeFromPath(step.filePath)}
-                    syntaxStyle={syntaxStyle()}
-                    showLineNumbers={true}
-                    width="100%"
-                    wrapMode="char"
-                    fg={theme().text}
-                    addedBg={theme().diffAddedBg}
-                    removedBg={theme().diffRemovedBg}
-                    addedSignColor={theme().diffHighlightAdded}
-                    removedSignColor={theme().diffHighlightRemoved}
-                    lineNumberFg={theme().diffLineNumber}
-                    addedLineNumberBg={theme().diffAddedLineNumberBg}
-                    removedLineNumberBg={theme().diffRemovedLineNumberBg}
-                  />
+                <Show when={step.index === current()?.index}>
+                  <Show when={step.patch !== undefined} fallback={<text fg={theme().textMuted}>(no diff payload)</text>}>
+                    <diff
+                      diff={clampPatchLines(step.patch ?? "")}
+                      view="unified"
+                      filetype={filetypeFromPath(step.filePath)}
+                      syntaxStyle={syntaxStyle()}
+                      showLineNumbers={true}
+                      width="100%"
+                      wrapMode="char"
+                      fg={theme().text}
+                      addedBg={theme().diffAddedBg}
+                      removedBg={theme().diffRemovedBg}
+                      addedSignColor={theme().diffHighlightAdded}
+                      removedSignColor={theme().diffHighlightRemoved}
+                      lineNumberFg={theme().diffLineNumber}
+                      addedLineNumberBg={theme().diffAddedLineNumberBg}
+                      removedLineNumberBg={theme().diffRemovedLineNumberBg}
+                    />
+                  </Show>
                 </Show>
             </box>
           )}
