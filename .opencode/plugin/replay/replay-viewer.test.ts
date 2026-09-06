@@ -7,8 +7,10 @@ import {
   compactPatch,
   filetypeFromPath,
   parseReplayPaneWidth,
+  REPLAY_SPLITTER_HIT_WIDTH,
   replayPaneDragWidth,
   sanitizeText,
+  splitterFeedback,
   timeLabel,
   type RawMessage,
 } from "./replay-lib"
@@ -303,5 +305,26 @@ describe("replayPaneDragWidth", () => {
 
   test("no movement keeps the start width", () => {
     expect(replayPaneDragWidth(36, 40, 40)).toBe(36)
+  })
+})
+
+describe("REPLAY_SPLITTER_HIT_WIDTH", () => {
+  test("gives the splitter a grip zone of at least 3 columns", () => {
+    expect(REPLAY_SPLITTER_HIT_WIDTH).toBeGreaterThanOrEqual(3)
+  })
+})
+
+describe("splitterFeedback", () => {
+  test("idle when neither hovered nor dragged", () => {
+    expect(splitterFeedback(false, false)).toBe("idle")
+  })
+
+  test("hover when only hovered", () => {
+    expect(splitterFeedback(true, false)).toBe("hover")
+  })
+
+  test("drag wins over hover", () => {
+    expect(splitterFeedback(false, true)).toBe("drag")
+    expect(splitterFeedback(true, true)).toBe("drag")
   })
 })

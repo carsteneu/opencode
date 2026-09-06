@@ -286,6 +286,19 @@ export function replayPaneDragWidth(startWidth: number, startX: number, currentX
   return clampReplayPaneWidth(startWidth + startX - currentX)
 }
 
+// Invisible grip zone (columns) around the splitter's visible border line.
+export const REPLAY_SPLITTER_HIT_WIDTH = 4
+
+export type SplitterFeedback = "idle" | "hover" | "drag"
+
+// Drag beats hover: opentui suppresses out-events on a captured renderable,
+// so the active look must be driven by the drag flag, not the cursor.
+export function splitterFeedback(hover: boolean, dragging: boolean): SplitterFeedback {
+  if (dragging) return "drag"
+  if (hover) return "hover"
+  return "idle"
+}
+
 const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/
 
 // Unified-diff-aware context trimming: keeps at most `context` lines beside

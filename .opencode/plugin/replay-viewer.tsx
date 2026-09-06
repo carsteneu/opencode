@@ -9,7 +9,9 @@ import {
   compactPatch,
   filetypeFromPath,
   parseReplayPaneWidth,
+  REPLAY_SPLITTER_HIT_WIDTH,
   replayPaneDragWidth,
+  splitterFeedback,
   timeLabel,
   type RawMessage,
   REPLAY_PANE_WIDTH_DEFAULT,
@@ -136,6 +138,11 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
     setPaneWidth(next)
     props.api.kv.set("replay_pane_width", next)
   }
+  // Wide invisible grip zone on the strip; hover/drag flip its look so the
+  // user sees when a drag will catch.
+  const [splitterHover, setSplitterHover] = createSignal(false)
+  const [splitterDrag, setSplitterDrag] = createSignal(false)
+  const splitterState = () => splitterFeedback(splitterHover(), splitterDrag())
 
   // Scroll-follow for the active step (same node.y pattern as the fullscreen
   // viewer), but only when the active step actually moved or grew — refetches
@@ -164,20 +171,38 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
       borderColor={theme().border}
     >
       <box
-        width={1}
+        width={REPLAY_SPLITTER_HIT_WIDTH}
         flexShrink={0}
-        backgroundColor={theme().border}
         selectable={false}
         onMouseDown={(e) => {
           dragStartX = e.x
           dragStartWidth = parseReplayPaneWidth(paneWidth())
+          setSplitterDrag(true)
         }}
         onMouseDrag={(e) => applyDrag(e.x)}
-        onMouseDragEnd={() => endDrag()}
+        onMouseDragEnd={() => {
+          endDrag()
+          setSplitterDrag(false)
+        }}
         onMouseUp={() => {
           dragStartX = undefined
+          setSplitterDrag(false)
         }}
-      />
+        onMouseOver={() => setSplitterHover(true)}
+        onMouseOut={() => setSplitterHover(false)}
+      >
+        <box
+          width={1}
+          flexShrink={0}
+          backgroundColor={splitterState() === "idle" ? theme().border : theme().text}
+          selectable={false}
+        />
+        <Show when={splitterState() !== "idle"}>
+          <box width={1} flexShrink={0} selectable={false}>
+            <text fg={theme().text} content="◆" selectable={false} />
+          </box>
+        </Show>
+      </box>
       <box flexDirection="column" flexGrow={1} minWidth={0} minHeight={0}>
       <box flexShrink={0} paddingLeft={1}>
         <text fg={theme().text} bold content={`REPLAY · ${steps().length} steps`} />
