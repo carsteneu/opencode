@@ -314,6 +314,7 @@ export type StepHitTestEntry = { index: number; screenY: number; height: number 
 // hit test — they come from the renderable and already include its scroll
 // translation. Lower bound inclusive, upper exclusive; later cards win ties.
 export function stepIndexAtY(boxes: StepHitTestEntry[], clickY: number): number | null {
+  if (!Number.isFinite(clickY)) return null
   let hit: number | null = null
   for (const box of [...boxes].sort((a, b) => a.screenY - b.screenY)) {
     if (clickY < box.screenY || clickY >= box.screenY + box.height) continue

@@ -386,4 +386,17 @@ describe("stepIndexAtY", () => {
     const shuffled = [boxes[2], boxes[0], boxes[1]]
     expect(stepIndexAtY(shuffled, 16)).toBe(2)
   })
+
+  test("overlapping boxes: the later card wins the tie", () => {
+    const overlapping = [
+      { index: 1, screenY: 10, height: 10 },
+      { index: 2, screenY: 15, height: 5 },
+    ]
+    expect(stepIndexAtY(overlapping, 16)).toBe(2)
+  })
+
+  test("non-finite click coordinates never hit", () => {
+    expect(stepIndexAtY(boxes, Number.NaN)).toBe(null)
+    expect(stepIndexAtY(boxes, Number.POSITIVE_INFINITY)).toBe(null)
+  })
 })
