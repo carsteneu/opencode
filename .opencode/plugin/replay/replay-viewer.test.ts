@@ -6,6 +6,8 @@ import {
   clampReplayPaneWidth,
   compactPatch,
   createDragTracker,
+  dateLabel,
+  fileBaseName,
   filetypeFromPath,
   isDragIntent,
   parseReplayPaneWidth,
@@ -87,6 +89,20 @@ describe("buildReplaySteps", () => {
     expect(steps[0]?.tool).toBe("write")
     expect(steps[0]?.filePath).toBe("src/e.ts")
   })
+
+  test("write without filediff synthesizes a real full-add hunk the diff renderer accepts", () => {
+    const message = msg("m1", "assistant", [
+      { type: "tool", tool: "write", state: { status: "completed", input: { filePath: "a.md", content: "# hi\n\nbody" } } },
+    ])
+    const steps = buildReplaySteps([message])
+    const patch = steps[0]?.patch ?? ""
+    const lines = patch.split("\n")
+    const header = lines[0]?.match(/^@@ -0,0 \+1,(\d+) @@$/)
+    expect(header).not.toBeNull()
+    const declared = Number(header?.[1])
+    expect(declared).toBe(lines.length - 1)
+    expect(lines.slice(1).every((l) => l.startsWith("+"))).toBe(true)
+  })
 })
 
 describe("buildTranscriptRows", () => {
@@ -111,6 +127,20 @@ describe("timeLabel", () => {
   })
 })
 
+describe("dateLabel", () => {
+  test("renders a dd.mm. date or an empty string when missing", () => {
+    expect(dateLabel(1700000000000)).toMatch(/^\d{2}\.\d{2}\.$/)
+    expect(dateLabel(undefined)).toBe("")
+  })
+})
+
+describe("fileBaseName", () => {
+  test("strips directories from a path", () => {
+    expect(fileBaseName("/home/u/proj/src/deep/file.ts")).toBe("file.ts")
+    expect(fileBaseName("README.md")).toBe("README.md")
+    expect(fileBaseName("")).toBe("")
+  })
+})
 describe("sanitizeText", () => {
   test("strips ANSI escapes and control characters", () => {
     expect(sanitizeText("\x1b[31mred\x1b[0m")).toBe("red")
@@ -129,8 +159,45 @@ describe("sanitizeText", () => {
 
   test("clampPatchLines truncates with a marker", () => {
     const clamped = clampPatchLines("+1\n+2\n+3", 2)
-    expect(clamped).toBe("+1\n+2\n… (truncated)")
+    expect(clamped).toBe("+1\n… (truncated)")
     expect(clampPatchLines("+1", 2)).toBe("+1")
+  })
+
+  test("clampPatchLines truncation keeps the patch parser-valid (notice is a context line, counts rewritten)", () => {
+    const big = "@@ -0,0 +1,500 @@\n" + Array.from({ length: 500 }, (_, i) => `+line${i}`).join("\n")
+    const out = clampPatchLines(big)
+    const lines = out.split("\n")
+    const header = lines[0]?.match(/^@@ -(\d+),(\d+) \+(\d+),(\d+) @@$/)
+    expect(header).not.toBeNull()
+    const body = lines.slice(1)
+    expect(body[body.length - 1]).toBe(" … (truncated)")
+    expect(body.every((l) => /^[ +'\\-]/.test(l))).toBe(true)
+    const oldCount = body.filter((l) => l.startsWith(" ") || l.startsWith("-")).length
+    const newCount = body.filter((l) => l.startsWith(" ") || l.startsWith("+")).length
+    expect(Number(header?.[2])).toBe(oldCount)
+    expect(Number(header?.[4])).toBe(newCount)
+  })
+
+  test("clampPatchLines truncation inside the second hunk rewrites only that hunk", () => {
+    const first = ["@@ -1,2 +1,2 @@", " ctx", "-old", "+new"]
+    const second = ["@@ -10,300 +10,300 @@", ...Array.from({ length: 300 }, (_, i) => `+s${i}`)]
+    const out = clampPatchLines([...first, ...second].join("\n"))
+    const lines = out.split("\n")
+    expect(lines[0]).toBe("@@ -1,2 +1,2 @@")
+    const secondHeader = lines[4]?.match(/^@@ -10,(\d+) \+10,(\d+) @@$/)
+    expect(secondHeader).not.toBeNull()
+    const body = lines.slice(5)
+    expect(body[body.length - 1]).toBe(" … (truncated)")
+    const oldCount = body.filter((l) => l.startsWith(" ") || l.startsWith("-")).length
+    const newCount = body.filter((l) => l.startsWith(" ") || l.startsWith("+")).length
+    expect(Number(secondHeader?.[1])).toBe(oldCount)
+    expect(Number(secondHeader?.[2])).toBe(newCount)
+  })
+
+  test("clampPatchLines truncation inside the preamble appends a bare notice", () => {
+    const big = ["diff --git a/f b/f", "--- a/f", "+++ b/f", "@@ -0,0 +1,500 @@", ...Array.from({ length: 500 }, (_, i) => `+l${i}`)].join("\n")
+    const out = clampPatchLines(big, 3)
+    expect(out).toBe("diff --git a/f b/f\n--- a/f\n… (truncated)")
   })
 })
 

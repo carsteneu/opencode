@@ -44,7 +44,36 @@ export function sanitizeText(value: string): string {
 export function clampPatchLines(patch: string, maxLines = 200): string {
   const lines = patch.split("\n")
   if (lines.length <= maxLines) return patch
-  return lines.slice(0, maxLines).join("\n") + "\n… (truncated)"
+
+  let h = -1
+  for (let i = Math.min(maxLines - 1, lines.length - 1); i >= 0; i--) {
+    if (HUNK_HEADER.test(lines[i] ?? "")) {
+      h = i
+      break
+    }
+  }
+
+  const kept = lines.slice(0, maxLines - 1)
+  if (h === -1) return [...kept, "… (truncated)"].join("\n")
+
+  // The cut may land inside a hunk body. jsdiff's parsePatch validates hunk
+  // line counts strictly and rejects unknown lines, so the truncated hunk gets
+  // its counts rewritten and the notice becomes a context line inside it.
+  const header = (lines[h] ?? "").match(HUNK_HEADER)!
+  const body = lines.slice(h + 1, maxLines - 1)
+  const oldKept = body.filter((l) => l.startsWith(" ") || l.startsWith("-")).length
+  const newKept = body.filter((l) => l.startsWith(" ") || l.startsWith("+")).length
+  const oldDeclared = Number(header[2] ?? 1)
+  const newDeclared = Number(header[4] ?? 1)
+  const complete = oldKept === oldDeclared && newKept === newDeclared
+  if (complete) return [...kept, "… (truncated)"].join("\n")
+
+  const truncHunk = [
+    `@@ -${header[1]},${oldKept + 1} +${header[3]},${newKept + 1} @@`,
+    ...body,
+    " … (truncated)",
+  ]
+  return [...lines.slice(0, h), ...truncHunk].join("\n")
 }
 
 export function recordValue(value: unknown): Record<string, unknown> | undefined {
@@ -59,15 +88,15 @@ export function stringValue(value: unknown): string | undefined {
     const metadata = part.state?.metadata ?? {}
     const patch = stringValue(recordValue(metadata.filediff)?.patch) ?? stringValue(metadata.diff)
     if (patch !== undefined) return patch
-    // File-creation: opencode's write tool stores no diff in metadata, but the
-    // whole content is in the input — synthesize a full-add patch from it.
-    const content = stringValue(part.state?.input?.content)
-    if (content !== undefined) {
-      return content
-        .split("\n")
-        .map((line) => "+" + line)
-        .join("\n")
-    }
+  // File-creation: opencode's write tool stores no diff in metadata, but the
+  // whole content is in the input — synthesize a full-add patch from it. The
+  // hunk header is required: jsdiff's parsePatch (opentui <diff>) yields zero
+  // hunks without it and the renderer draws nothing.
+  const content = stringValue(part.state?.input?.content)
+  if (content !== undefined) {
+    const lines = content.split("\n")
+    return `@@ -0,0 +1,${lines.length} @@\n${lines.map((line) => "+" + line).join("\n")}`
+  }
     return undefined
   }
 
@@ -136,6 +165,18 @@ export function timeLabel(time: number | undefined): string {
   const d = new Date(time)
   const pad = (n: number) => String(n).padStart(2, "0")
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+export function dateLabel(time: number | undefined): string {
+  if (time === undefined) return ""
+  const d = new Date(time)
+  const pad = (n: number) => String(n).padStart(2, "0")
+  return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.`
+}
+
+export function fileBaseName(filePath: string): string {
+  if (filePath === "") return ""
+  return path.basename(filePath)
 }
 
 export const REPLAY_PANE_WIDTH_DEFAULT = 36
