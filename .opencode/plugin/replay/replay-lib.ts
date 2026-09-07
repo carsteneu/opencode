@@ -129,12 +129,11 @@ export function timeLabel(time: number | undefined): string {
 
 export const REPLAY_PANE_WIDTH_DEFAULT = 36
 export const REPLAY_PANE_WIDTH_MIN = 24
-export const REPLAY_PANE_WIDTH_MAX = 60
 
 export function clampReplayPaneWidth(value: number): number {
   const width = Math.round(Number(value))
   if (!Number.isFinite(width)) return REPLAY_PANE_WIDTH_DEFAULT
-  return Math.min(REPLAY_PANE_WIDTH_MAX, Math.max(REPLAY_PANE_WIDTH_MIN, width))
+  return Math.max(REPLAY_PANE_WIDTH_MIN, width)
 }
 
 // kv.json is user-writable state, so every read re-validates instead of
@@ -280,12 +279,6 @@ export function filetypeFromPath(input?: string): string | undefined {
   return language
 }
 
-// Mouse-drag on the pane's left border: moving the border left (negative
-// mouse delta) widens the pane, mirroring GUI splitters.
-export function replayPaneDragWidth(startWidth: number, startX: number, currentX: number): number {
-  return clampReplayPaneWidth(startWidth + startX - currentX)
-}
-
 // Invisible grip zone (columns) around the splitter's visible border line.
 export const REPLAY_SPLITTER_HIT_WIDTH = 4
 
@@ -306,6 +299,35 @@ export const REPLAY_DRAG_THRESHOLD = 2
 // (forwarded to the pane content), larger movement is a resize drag.
 export function isDragIntent(startX: number, currentX: number, threshold = REPLAY_DRAG_THRESHOLD): boolean {
   return Math.abs(currentX - startX) >= threshold
+}
+
+export type ReplayDragTracker = {
+  move: (x: number) => void
+  readonly moved: boolean
+  readonly width: number
+}
+
+// Incremental drag tracking: every move contributes its signed delta, so the
+// width stays correct even while the pane resize shifts the strip under the
+// cursor. Motion past REPLAY_DRAG_THRESHOLD from the press point latches the
+// gesture into a drag.
+export function createDragTracker(startWidth: number, startX: number): ReplayDragTracker {
+  let prevX = startX
+  let width = clampReplayPaneWidth(startWidth)
+  let moved = false
+  return {
+    move(x: number) {
+      moved = moved || isDragIntent(startX, x)
+      width = clampReplayPaneWidth(width + (prevX - x))
+      prevX = x
+    },
+    get moved() {
+      return moved
+    },
+    get width() {
+      return width
+    },
+  }
 }
 
 export type StepHitTestEntry = { index: number; screenY: number; height: number }
