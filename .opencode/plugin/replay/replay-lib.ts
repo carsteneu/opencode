@@ -280,12 +280,6 @@ export function filetypeFromPath(input?: string): string | undefined {
   return language
 }
 
-// Mouse-drag on the pane's left border: moving the border left (negative
-// mouse delta) widens the pane, mirroring GUI splitters.
-export function replayPaneDragWidth(startWidth: number, startX: number, currentX: number): number {
-  return clampReplayPaneWidth(startWidth + startX - currentX)
-}
-
 // Invisible grip zone (columns) around the splitter's visible border line.
 export const REPLAY_SPLITTER_HIT_WIDTH = 4
 

@@ -10,7 +10,6 @@ import {
   isDragIntent,
   parseReplayPaneWidth,
   REPLAY_SPLITTER_HIT_WIDTH,
-  replayPaneDragWidth,
   sanitizeText,
   splitterFeedback,
   stepIndexAtY,
@@ -289,25 +288,6 @@ describe("compactPatch", () => {
     expect(compactPatch(patch, 2)).toBe(
       "@@ -1,2 +1,2 @@\n-a\n+b\n\\ No newline at end of file\n ctx1\n@@ -4,2 +4,3 @@\n ctx3\n ctx4\n+end",
     )
-  })
-})
-
-describe("replayPaneDragWidth", () => {
-  test("dragging the left border left widens the pane", () => {
-    expect(replayPaneDragWidth(36, 40, 34)).toBe(42)
-  })
-
-  test("dragging right narrows the pane", () => {
-    expect(replayPaneDragWidth(36, 40, 46)).toBe(30)
-  })
-
-  test("clamps to the 24-60 window", () => {
-    expect(replayPaneDragWidth(58, 30, 10)).toBe(60)
-    expect(replayPaneDragWidth(26, 10, 30)).toBe(24)
-  })
-
-  test("no movement keeps the start width", () => {
-    expect(replayPaneDragWidth(36, 40, 40)).toBe(36)
   })
 })
 
