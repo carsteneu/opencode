@@ -10,6 +10,7 @@ import {
   createDragTracker,
   filetypeFromPath,
   parseReplayPaneWidth,
+  REPLAY_PANE_WIDTH_MIN,
   REPLAY_SPLITTER_HIT_WIDTH,
   splitterFeedback,
   stepIndexAtY,
@@ -104,9 +105,12 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
     const steps = createMemo(() => buildReplaySteps(messages() ?? []))
     const stepBoxes = new Map<number, BoxRenderable>()
     // kv loads asynchronously after boot, so re-sync once the store is ready.
-    createEffect(() => {
-      if (props.api.kv.ready) setPaneWidth(parseReplayPaneWidth(props.api.kv.get("replay_pane_width")))
-    })
+      createEffect(() => {
+        if (props.api.kv.ready) setPaneWidth(parseReplayPaneWidth(props.api.kv.get("replay_pane_width")))
+      })
+      // No artificial max width — the pane may grow to the full terminal
+      // width, but the transcript keeps a sliver so the layout stays usable.
+      const boundWidth = (w: number) => Math.max(REPLAY_PANE_WIDTH_MIN, Math.min(w, props.api.renderer.width - 8))
     const [active, setActive] = createSignal(0)
   // Reset selection and stale refs (fullscreen viewer clears the same map on
   // session switch) so scroll-follow never targets detached nodes.
@@ -164,23 +168,25 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
         tracker.move(e.x)
         if (tracker.moved) {
           setSplitterDrag(true)
-          setPaneWidth(tracker.width)
+          setPaneWidth(boundWidth(tracker.width))
         }
       }
       root.onMouseDragEnd = () => {
         if (!tracker) return
         if (tracker.moved) {
-          const width = clampReplayPaneWidth(tracker.width)
+          const width = boundWidth(tracker.width)
           setPaneWidth(width)
           props.api.kv.set("replay_pane_width", width)
         }
         setSplitterDrag(false)
         setSplitterHover(false)
+        props.api.renderer.setMousePointer("default")
       }
       root.onMouseUp = (e: TuiMouseEvent) => {
         if (!tracker) return
         if (!tracker.moved) selectStepAt(e.y)
         release()
+        props.api.renderer.setMousePointer("default")
       }
     onCleanup(() => {
       root.onMouseDrag = undefined
@@ -210,7 +216,7 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
   return (
     <box
       flexDirection="row"
-      width={parseReplayPaneWidth(paneWidth())}
+        width={boundWidth(parseReplayPaneWidth(paneWidth()))}
       minHeight={0}
       border={["left", "right"]}
       borderColor={theme().border}
@@ -220,7 +226,7 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
         flexShrink={0}
         selectable={false}
         onMouseDown={(e) => {
-          tracker = createDragTracker(parseReplayPaneWidth(paneWidth()), e.x)
+          tracker = createDragTracker(boundWidth(parseReplayPaneWidth(paneWidth())), e.x)
         }}
         onMouseUp={(e) => {
           if (tracker && !tracker.moved) selectStepAt(e.y)
@@ -228,8 +234,14 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
           setSplitterDrag(false)
           setSplitterHover(false)
         }}
-        onMouseOver={() => setSplitterHover(true)}
-        onMouseOut={() => setSplitterHover(false)}
+        onMouseOver={() => {
+          setSplitterHover(true)
+          props.api.renderer.setMousePointer("move")
+        }}
+        onMouseOut={() => {
+          setSplitterHover(false)
+          props.api.renderer.setMousePointer("default")
+        }}
       >
         <box
           width={1}

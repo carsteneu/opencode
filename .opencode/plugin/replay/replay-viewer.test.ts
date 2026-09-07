@@ -141,11 +141,11 @@ describe("parseReplayPaneWidth", () => {
     expect(parseReplayPaneWidth(60)).toBe(60)
   })
 
-  test("clamps out-of-bounds numbers", () => {
-    expect(parseReplayPaneWidth(0)).toBe(24)
-    expect(parseReplayPaneWidth(-5)).toBe(24)
-    expect(parseReplayPaneWidth(100)).toBe(60)
-  })
+    test("clamps out-of-bounds numbers", () => {
+      expect(parseReplayPaneWidth(0)).toBe(24)
+      expect(parseReplayPaneWidth(-5)).toBe(24)
+      expect(parseReplayPaneWidth(100)).toBe(100)
+    })
 
   test("returns the default for missing or non-numeric values", () => {
     expect(parseReplayPaneWidth(undefined)).toBe(36)
@@ -163,9 +163,10 @@ describe("parseReplayPaneWidth", () => {
 })
 
 describe("clampReplayPaneWidth", () => {
-  test("rounds and clamps to the 24-60 range", () => {
+  test("rounds and keeps the 24 floor", () => {
     expect(clampReplayPaneWidth(30.2)).toBe(30)
     expect(clampReplayPaneWidth(Number.NaN)).toBe(36)
+    expect(clampReplayPaneWidth(100)).toBe(100)
   })
 })
 
@@ -362,10 +363,10 @@ describe("createDragTracker", () => {
     expect(tracker.width).toBe(33)
   })
 
-  test("clamps the width to the 24-60 window on every move", () => {
+  test("clamps at the 24 floor on every move", () => {
     const tracker = createDragTracker(58, 10)
     tracker.move(1)
-    expect(tracker.width).toBe(60)
+    expect(tracker.width).toBe(67)
     tracker.move(99)
     expect(tracker.width).toBe(24)
   })

@@ -129,12 +129,11 @@ export function timeLabel(time: number | undefined): string {
 
 export const REPLAY_PANE_WIDTH_DEFAULT = 36
 export const REPLAY_PANE_WIDTH_MIN = 24
-export const REPLAY_PANE_WIDTH_MAX = 60
 
 export function clampReplayPaneWidth(value: number): number {
   const width = Math.round(Number(value))
   if (!Number.isFinite(width)) return REPLAY_PANE_WIDTH_DEFAULT
-  return Math.min(REPLAY_PANE_WIDTH_MAX, Math.max(REPLAY_PANE_WIDTH_MIN, width))
+  return Math.max(REPLAY_PANE_WIDTH_MIN, width)
 }
 
 // kv.json is user-writable state, so every read re-validates instead of
