@@ -55,10 +55,21 @@ export function stringValue(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined
 }
 
-export function stepPatch(part: RawPart): string | undefined {
-  const metadata = part.state?.metadata ?? {}
-  return stringValue(recordValue(metadata.filediff)?.patch) ?? stringValue(metadata.diff)
-}
+  export function stepPatch(part: RawPart): string | undefined {
+    const metadata = part.state?.metadata ?? {}
+    const patch = stringValue(recordValue(metadata.filediff)?.patch) ?? stringValue(metadata.diff)
+    if (patch !== undefined) return patch
+    // File-creation: opencode's write tool stores no diff in metadata, but the
+    // whole content is in the input — synthesize a full-add patch from it.
+    const content = stringValue(part.state?.input?.content)
+    if (content !== undefined) {
+      return content
+        .split("\n")
+        .map((line) => "+" + line)
+        .join("\n")
+    }
+    return undefined
+  }
 
 export function inputFilePath(part: RawPart): string {
   return stringValue(part.state?.input?.filePath) ?? stringValue(part.state?.input?.file_path) ?? ""
