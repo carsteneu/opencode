@@ -8,6 +8,8 @@ import {
   clampReplayPaneWidth,
   compactPatch,
   createDragTracker,
+  dateLabel,
+  fileBaseName,
   filetypeFromPath,
   parseReplayPaneWidth,
   REPLAY_PANE_WIDTH_MIN,
@@ -17,10 +19,16 @@ import {
   timeLabel,
   type RawMessage,
   type ReplayDragTracker,
+  type ReplayStep,
   REPLAY_PANE_WIDTH_DEFAULT,
 } from "./replay/replay-lib"
 
 const STEPS_W = 62 // % width for the steps pane; transcript takes the rest
+
+function stepHeaderText(step: ReplayStep, total: number): string {
+  const when = [dateLabel(step.time), timeLabel(step.time)].filter(Boolean).join(" ")
+  return [`Step ${step.index}/${total}`, step.tool, fileBaseName(step.filePath), when].filter(Boolean).join(" · ")
+}
 
 const [paneWidth, setPaneWidth] = createSignal(REPLAY_PANE_WIDTH_DEFAULT)
 // Patch of the step the user is currently looking at (pane and fullscreen
@@ -261,43 +269,42 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
         <text fg={theme().textMuted} content="ctrl+y hide · drag left border to resize · /replay fullscreen" />
       </box>
       <scrollbox ref={(el: ScrollBoxRenderable) => (scrollSteps = el)} flexGrow={1} minWidth={0} minHeight={0}>
-        <For each={steps()}>
-          {(step) => (
-            <box
-                ref={(el: BoxRenderable) => stepBoxes.set(step.index, el)}
-                onMouseDown={() => selectStep(step.index)}
-              border={step.index === current()?.index ? ["left"] : []}
-              borderColor={theme().text}
-              paddingLeft={1}
-            >
-              <text
-                fg={step.index === current()?.index ? theme().text : theme().textMuted}
-                content={`Step ${step.index}/${steps().length} · ${step.tool} ${step.filePath}`}
-              />
-                <Show when={step.index === current()?.index}>
+          <For each={steps()}>
+            {(step) => (
+              <box
+                  ref={(el: BoxRenderable) => stepBoxes.set(step.index, el)}
+                  onMouseDown={() => selectStep(step.index)}
+                  marginBottom={1}
+                border={step.index === current()?.index ? ["left"] : []}
+                borderColor={theme().text}
+                paddingLeft={1}
+              >
+                <text
+                  fg={step.index === current()?.index ? theme().text : theme().textMuted}
+                  content={stepHeaderText(step, steps().length)}
+                />
                   <Show when={step.patch !== undefined} fallback={<text fg={theme().textMuted}>(no diff payload)</text>}>
-                    <diff
-                      diff={clampPatchLines(compactPatch(step.patch ?? ""))}
-                      view="unified"
-                      filetype={filetypeFromPath(step.filePath)}
-                      syntaxStyle={syntaxStyle()}
-                      showLineNumbers={true}
-                      width="100%"
-                      wrapMode="char"
-                      fg={theme().text}
-                      addedBg={theme().diffAddedBg}
-                      removedBg={theme().diffRemovedBg}
-                      addedSignColor={theme().diffHighlightAdded}
-                      removedSignColor={theme().diffHighlightRemoved}
-                      lineNumberFg={theme().diffLineNumber}
-                      addedLineNumberBg={theme().diffAddedLineNumberBg}
-                      removedLineNumberBg={theme().diffRemovedLineNumberBg}
-                    />
+                      <diff
+                        diff={clampPatchLines(compactPatch(step.patch ?? ""))}
+                        view="unified"
+                        filetype={filetypeFromPath(step.filePath)}
+                        syntaxStyle={syntaxStyle()}
+                        showLineNumbers={true}
+                        width="100%"
+                        wrapMode="char"
+                        fg={theme().text}
+                        addedBg={theme().diffAddedBg}
+                        removedBg={theme().diffRemovedBg}
+                        addedSignColor={theme().diffHighlightAdded}
+                        removedSignColor={theme().diffHighlightRemoved}
+                        lineNumberFg={theme().diffLineNumber}
+                        addedLineNumberBg={theme().diffAddedLineNumberBg}
+                        removedLineNumberBg={theme().diffRemovedLineNumberBg}
+                      />
                   </Show>
-                </Show>
-              </box>
-            )}
-          </For>
+                </box>
+              )}
+            </For>
           <Show when={steps().length === 0 && !messages.loading && !loadError()}>
             <text fg={theme().textMuted}>no edits in this session</text>
           </Show>
@@ -462,43 +469,41 @@ function ReplayViewer(props: { api: TuiPluginApi }) {
         borderTop
         borderLeft
       >
-        <For each={steps()}>
-          {(step) => (
-            <box
-              marginBottom={1}
-              ref={(el: BoxRenderable) => stepBoxes.set(step.index, el)}
-              border={step.index === current()?.index ? ["left"] : []}
-              borderColor={theme().border}
-              paddingLeft={1}
-            >
-              <text
-                fg={step.index === current()?.index ? theme().text : theme().textMuted}
-                content={`Step ${step.index}/${steps().length} · ${step.tool} ${step.filePath} · ${timeLabel(step.time)}`}
-              />
-                <Show when={step.index === current()?.index}>
+          <For each={steps()}>
+            {(step) => (
+              <box
+                marginBottom={1}
+                ref={(el: BoxRenderable) => stepBoxes.set(step.index, el)}
+                border={step.index === current()?.index ? ["left"] : []}
+                borderColor={theme().border}
+                paddingLeft={1}
+              >
+                <text
+                  fg={step.index === current()?.index ? theme().text : theme().textMuted}
+                  content={stepHeaderText(step, steps().length)}
+                />
                   <Show when={step.patch !== undefined} fallback={<text fg={theme().textMuted}>(no diff payload)</text>}>
-                    <diff
-                      diff={clampPatchLines(compactPatch(step.patch ?? ""))}
-                      view="unified"
-                      filetype={filetypeFromPath(step.filePath)}
-                      syntaxStyle={syntaxStyle()}
-                      showLineNumbers={true}
-                      width="100%"
-                      wrapMode="char"
-                      fg={theme().text}
-                      addedBg={theme().diffAddedBg}
-                      removedBg={theme().diffRemovedBg}
-                      addedSignColor={theme().diffHighlightAdded}
-                      removedSignColor={theme().diffHighlightRemoved}
-                      lineNumberFg={theme().diffLineNumber}
-                      addedLineNumberBg={theme().diffAddedLineNumberBg}
-                      removedLineNumberBg={theme().diffRemovedLineNumberBg}
-                    />
+                      <diff
+                        diff={clampPatchLines(compactPatch(step.patch ?? ""))}
+                        view="unified"
+                        filetype={filetypeFromPath(step.filePath)}
+                        syntaxStyle={syntaxStyle()}
+                        showLineNumbers={true}
+                        width="100%"
+                        wrapMode="char"
+                        fg={theme().text}
+                        addedBg={theme().diffAddedBg}
+                        removedBg={theme().diffRemovedBg}
+                        addedSignColor={theme().diffHighlightAdded}
+                        removedSignColor={theme().diffHighlightRemoved}
+                        lineNumberFg={theme().diffLineNumber}
+                        addedLineNumberBg={theme().diffAddedLineNumberBg}
+                        removedLineNumberBg={theme().diffRemovedLineNumberBg}
+                      />
                   </Show>
-                </Show>
-            </box>
-          )}
-        </For>
+              </box>
+            )}
+          </For>
         <Show when={steps().length === 0 && !messages.loading && !loadError()}>
           <text fg={theme().textMuted}>no edits in this session</text>
         </Show>
