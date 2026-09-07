@@ -5,6 +5,7 @@ import {
   clampPatchLines,
   clampReplayPaneWidth,
   compactPatch,
+  createDragTracker,
   filetypeFromPath,
   isDragIntent,
   parseReplayPaneWidth,
@@ -349,6 +350,59 @@ describe("isDragIntent", () => {
   test("custom threshold", () => {
     expect(isDragIntent(40, 43, 3)).toBe(true)
     expect(isDragIntent(40, 42, 3)).toBe(false)
+  })
+})
+
+describe("createDragTracker", () => {
+  test("starts as a click at the start width", () => {
+    const tracker = createDragTracker(36, 40)
+    expect(tracker.moved).toBe(false)
+    expect(tracker.width).toBe(36)
+  })
+
+  test("a single leftward motion past the threshold widens the pane", () => {
+    const tracker = createDragTracker(36, 40)
+    tracker.move(27)
+    expect(tracker.moved).toBe(true)
+    expect(tracker.width).toBe(49)
+  })
+
+  test("accumulates incremental deltas regardless of element shifts", () => {
+    const tracker = createDragTracker(36, 40)
+    tracker.move(37)
+    tracker.move(35)
+    tracker.move(34)
+    expect(tracker.moved).toBe(true)
+    expect(tracker.width).toBe(42)
+  })
+
+  test("rightward motion narrows the pane", () => {
+    const tracker = createDragTracker(36, 40)
+    tracker.move(43)
+    expect(tracker.width).toBe(33)
+  })
+
+  test("clamps the width to the 24-60 window on every move", () => {
+    const tracker = createDragTracker(58, 10)
+    tracker.move(1)
+    expect(tracker.width).toBe(60)
+    tracker.move(99)
+    expect(tracker.width).toBe(24)
+  })
+
+  test("stays a click while movement is below the threshold", () => {
+    const tracker = createDragTracker(36, 40)
+    tracker.move(41)
+    expect(tracker.moved).toBe(false)
+    expect(tracker.width).toBe(35)
+  })
+
+  test("once the threshold trips, the latch holds on net-zero jitters", () => {
+    const tracker = createDragTracker(36, 40)
+    tracker.move(38)
+    tracker.move(40)
+    expect(tracker.moved).toBe(true)
+    expect(tracker.width).toBe(36)
   })
 })
 

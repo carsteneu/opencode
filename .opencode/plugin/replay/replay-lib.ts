@@ -308,6 +308,35 @@ export function isDragIntent(startX: number, currentX: number, threshold = REPLA
   return Math.abs(currentX - startX) >= threshold
 }
 
+export type ReplayDragTracker = {
+  move: (x: number) => void
+  readonly moved: boolean
+  readonly width: number
+}
+
+// Incremental drag tracking: every move contributes its signed delta, so the
+// width stays correct even while the pane resize shifts the strip under the
+// cursor. Motion past REPLAY_DRAG_THRESHOLD from the press point latches the
+// gesture into a drag.
+export function createDragTracker(startWidth: number, startX: number): ReplayDragTracker {
+  let prevX = startX
+  let width = clampReplayPaneWidth(startWidth)
+  let moved = false
+  return {
+    move(x: number) {
+      moved = moved || isDragIntent(startX, x)
+      width = clampReplayPaneWidth(width + (prevX - x))
+      prevX = x
+    },
+    get moved() {
+      return moved
+    },
+    get width() {
+      return width
+    },
+  }
+}
+
 export type StepHitTestEntry = { index: number; screenY: number; height: number }
 
 // Resolves the step card under a grip click. screenY values are opaque to the
