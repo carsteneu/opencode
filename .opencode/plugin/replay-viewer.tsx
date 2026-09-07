@@ -1,21 +1,21 @@
 import type { TuiPluginApi, TuiThemeCurrent } from "@opencode-ai/plugin/tui"
-import { SyntaxStyle, type BoxRenderable, type ScrollBoxRenderable } from "@opentui/core"
-import { createEffect, createMemo, createResource, createSignal, For, Show, onCleanup, onMount } from "solid-js"
+import { SyntaxStyle, type BoxRenderable, type MouseEvent as TuiMouseEvent, type ScrollBoxRenderable } from "@opentui/core"
+import { createEffect, createMemo, createResource, createSignal, For, onCleanup, onMount, Show } from "solid-js"
 import {
   buildReplaySteps,
   buildTranscriptRows,
   clampPatchLines,
   clampReplayPaneWidth,
   compactPatch,
+  createDragTracker,
   filetypeFromPath,
-  isDragIntent,
   parseReplayPaneWidth,
   REPLAY_SPLITTER_HIT_WIDTH,
-  replayPaneDragWidth,
   splitterFeedback,
   stepIndexAtY,
   timeLabel,
   type RawMessage,
+  type ReplayDragTracker,
   REPLAY_PANE_WIDTH_DEFAULT,
 } from "./replay/replay-lib"
 
@@ -124,23 +124,13 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
 
   let scrollSteps: ScrollBoxRenderable | undefined
 
-  // Mouse-drag resize: the 4-col grip strip anchors the drag, drags bubble
-  // from it (or any pane child) up to this root. kv persists on
-  // drag-end only, so live drags don't spam the store.
-  let dragStartX: number | undefined
-  let dragStartWidth = REPLAY_PANE_WIDTH_DEFAULT
-  let dragMoved = false
-  const applyDrag = (x: number) => {
-    if (dragStartX === undefined) return
-    setPaneWidth(replayPaneDragWidth(dragStartWidth, dragStartX, x))
-  }
-  const endDrag = () => {
-    if (dragStartX === undefined) return
-    dragStartX = undefined
-    const next = clampReplayPaneWidth(parseReplayPaneWidth(paneWidth()))
-    setPaneWidth(next)
-    props.api.kv.set("replay_pane_width", next)
-  }
+  // Mouse-drag resize: the press arms on the grip strip, but tracking runs on
+  // the renderable tree root. opentui captures the drag on the element under
+  // the cursor at the first motion report — a fast drag spends most of its
+  // life outside the strip's subtree, so strip-level handlers starve. The
+  // root sees every event via bubbling, wherever the capture lands.
+  let tracker: ReplayDragTracker | undefined
+
   // Click-vs-drag on the grip (GUI convention): a press that stays within
   // REPLAY_DRAG_THRESHOLD columns selects the step card under the cursor, so
   // the pane's first columns stay clickable. Once the threshold trips, the
@@ -158,6 +148,46 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
   const [splitterHover, setSplitterHover] = createSignal(false)
   const [splitterDrag, setSplitterDrag] = createSignal(false)
   const splitterState = () => splitterFeedback(splitterHover(), splitterDrag())
+
+  onMount(() => {
+    // The splitter gestures need terminal mouse events and the pane is their
+    // only consumer, so keep tracking on while the pane is mounted.
+    props.api.renderer.useMouse = true
+    const root = props.api.renderer.root
+    const release = () => {
+      tracker = undefined
+      setSplitterDrag(false)
+      setSplitterHover(false)
+    }
+      root.onMouseDrag = (e: TuiMouseEvent) => {
+        if (!tracker) return
+        tracker.move(e.x)
+        if (tracker.moved) {
+          setSplitterDrag(true)
+          setPaneWidth(tracker.width)
+        }
+      }
+      root.onMouseDragEnd = () => {
+        if (!tracker) return
+        if (tracker.moved) {
+          const width = clampReplayPaneWidth(tracker.width)
+          setPaneWidth(width)
+          props.api.kv.set("replay_pane_width", width)
+        }
+        setSplitterDrag(false)
+        setSplitterHover(false)
+      }
+      root.onMouseUp = (e: TuiMouseEvent) => {
+        if (!tracker) return
+        if (!tracker.moved) selectStepAt(e.y)
+        release()
+      }
+    onCleanup(() => {
+      root.onMouseDrag = undefined
+      root.onMouseDragEnd = undefined
+      root.onMouseUp = undefined
+    })
+  })
 
   // Scroll-follow for the active step (same node.y pattern as the fullscreen
   // viewer), but only when the active step actually moved or grew — refetches
@@ -190,25 +220,11 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
         flexShrink={0}
         selectable={false}
         onMouseDown={(e) => {
-          dragStartX = e.x
-          dragStartWidth = parseReplayPaneWidth(paneWidth())
-          dragMoved = false
-        }}
-        onMouseDrag={(e) => {
-          if (dragStartX === undefined) return
-          if (!dragMoved && !isDragIntent(dragStartX, e.x)) return
-          dragMoved = true
-          setSplitterDrag(true)
-          applyDrag(e.x)
-        }}
-        onMouseDragEnd={() => {
-          endDrag()
-          setSplitterDrag(false)
-          setSplitterHover(false)
+          tracker = createDragTracker(parseReplayPaneWidth(paneWidth()), e.x)
         }}
         onMouseUp={(e) => {
-          if (dragStartX !== undefined && !dragMoved) selectStepAt(e.y)
-          dragStartX = undefined
+          if (tracker && !tracker.moved) selectStepAt(e.y)
+          tracker = undefined
           setSplitterDrag(false)
           setSplitterHover(false)
         }}
