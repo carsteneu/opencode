@@ -18,6 +18,7 @@ import {
   stepIndexAtY,
   timeLabel,
   topStepIndexAtY,
+  encodeMessageCursor,
   type RawMessage,
 } from "./replay-lib"
 
@@ -550,5 +551,21 @@ describe("shouldSyncScroll", () => {
 
   test("unknown anchor message never syncs", () => {
     expect(shouldSyncScroll({ ...base, now: 1200, messageID: undefined })).toBe(false)
+  })
+})
+
+describe("encodeMessageCursor", () => {
+  const messageWithTime = (created: number | undefined, id = "msg-a"): RawMessage => ({
+    info: { id, role: "user", time: created === undefined ? undefined : { created } },
+    parts: [],
+  })
+
+  test("encodes id and created as base64url json", () => {
+    const decoded = JSON.parse(Buffer.from(encodeMessageCursor(messageWithTime(1700000000000))!, "base64url").toString())
+    expect(decoded).toEqual({ id: "msg-a", time: 1700000000000 })
+  })
+
+  test("messages without a timestamp cannot be paginated past", () => {
+    expect(encodeMessageCursor(messageWithTime(undefined))).toBeUndefined()
   })
 })

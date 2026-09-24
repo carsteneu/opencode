@@ -14,6 +14,7 @@ import {
   compactPatch,
   createDragTracker,
   dateLabel,
+  encodeMessageCursor,
   fileBaseName,
   filetypeFromPath,
   parseReplayPaneWidth,
@@ -103,13 +104,29 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
     requestAnimationFrame(() => style?.destroy())
   })
   const [loadError, setLoadError] = createSignal(false)
+  let openedAtEnd = false
   const [messages, { refetch }] = createResource(
     () => props.sessionID || undefined,
     async (sessionID) => {
       try {
-        const response = await props.api.client.session.messages({ sessionID, limit: 100 }, { throwOnError: true })
+        // Full history: page back through encodeMessageCursor pages (100 per
+        // request) so the ledger reflects every edit, not just the newest
+        // window. 50 pages is a generous hard stop against runaway loops.
+        let all: RawMessage[] = []
+        let cursor: string | undefined
+        for (let page = 0; page < 50; page++) {
+          const response = await props.api.client.session.messages(
+            cursor ? { sessionID, limit: 100, before: cursor } : { sessionID, limit: 100 },
+            { throwOnError: true },
+          )
+          const items = (response.data ?? []) as RawMessage[]
+          all = [...all, ...items]
+          if (items.length < 100) break
+          cursor = encodeMessageCursor(items.at(-1))
+          if (!cursor) break
+        }
         setLoadError(false)
-        return (response.data ?? []) as RawMessage[]
+        return all
       } catch (error) {
         setLoadError(true)
         return []
@@ -142,6 +159,7 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
         suppressLedgerUntil = 0
         lastLedgerMessageID = undefined
         lastTranscriptMessageID = undefined
+        openedAtEnd = false
       })
     })
   const current = () => {
@@ -288,8 +306,7 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
   // Scroll-follow for the active step (same node.y pattern as the fullscreen
   // viewer), but only when the active step actually moved or grew — refetches
   // must not yank the user back while a session streams.
-  let anchoredIndex = -1
-  let anchoredCount = -1
+  let anchoredIndex = -1  let anchoredCount = -1
   createEffect(() => {
     const step = current()
     const count = steps().length
@@ -301,6 +318,17 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
       const l = left ?? stepBoxes.get(step.index)
       if (l && scrollSteps) scrollSteps.scrollTo(scrollSteps.scrollTop + l.y - scrollSteps.viewport.y)
     })
+  })
+
+  // Open at the end: the newest edit is the interesting one, so once the
+  // session's full history has loaded, select the last card and pin the
+  // ledger to the bottom rather than showing the oldest card at the top.
+  createEffect(() => {
+    const list = steps()
+    if (openedAtEnd || list.length === 0) return
+    openedAtEnd = true
+    selectStep(list[list.length - 1].index)
+    requestAnimationFrame(() => scrollSteps?.scrollTo(scrollSteps.scrollHeight))
   })
 
   return (

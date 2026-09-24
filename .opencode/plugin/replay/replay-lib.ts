@@ -500,3 +500,13 @@ export function shouldSyncScroll(input: {
   if (!input.messageID) return false
   return input.messageID !== input.lastMessageID
 }
+
+// Mirrors core MessageV2.cursor.encode: { id, time.created } as base64url.
+// Undefined when the message carries no timestamp — such pages cannot be
+// paginated past.
+export function encodeMessageCursor(message: RawMessage | undefined): string | undefined {
+  const id = message?.info.id
+  const created = message?.info.time?.created
+  if (!id || created === undefined) return undefined
+  return Buffer.from(JSON.stringify({ id, time: created })).toString("base64url")
+}
