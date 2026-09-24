@@ -622,9 +622,11 @@ function pluginApi(runtime: RuntimeState, plugin: PluginEntry, scope: PluginScop
     get client() {
       return api.client
     },
-    event,
-    renderer: api.renderer,
-    slots,
+      event,
+      renderer: api.renderer,
+      slots,
+      scrollToMessage: api.scrollToMessage,
+      onMessageVisible: api.onMessageVisible,
     plugins: {
       list() {
         return listPluginStatus(runtime)
