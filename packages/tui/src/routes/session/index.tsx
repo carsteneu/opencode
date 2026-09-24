@@ -17,10 +17,11 @@ import {
 import path from "node:path"
 import { mkdir, writeFile } from "node:fs/promises"
 import { useRoute, useRouteData } from "../../context/route"
-import { useProject } from "../../context/project"
-import { useSync } from "../../context/sync"
-import { useEvent } from "../../context/event"
-import { SplitBorder } from "../../ui/border"
+  import { useProject } from "../../context/project"
+  import { useSync } from "../../context/sync"
+  import { useEvent } from "../../context/event"
+  import { SplitBorder } from "../../ui/border"
+import { notifyMessageVisible, registerMessageAnchors } from "../../plugin/message-scroll"
 import { useTuiPaths, useTuiTerminalEnvironment } from "../../context/runtime"
 import { Spinner } from "../../component/spinner"
 import { createSyntaxStyleMemo, generateSubtleSyntax, selectedForeground, useTheme } from "../../context/theme"
@@ -572,9 +573,86 @@ export function Session() {
     if (windowSize() !== WINDOW_LADDER[0] && scroll.scrollTop >= scroll.scrollHeight - scroll.height - 1) {
       setWindowSize(WINDOW_LADDER[0])
     }
+    notifyVisibleMessage()
   }
 
-  const [sidebar, setSidebar] = kv.signal<"auto" | "hide">("sidebar", "auto")
+  // Transcript anchors for plugin panes (replay ledger): messageID → its
+  // rendered box. The map only holds window-mounted messages; jump requests
+  // for anything else grow the window / load older pages until it appears.
+  const anchorBoxes = new Map<string, BoxRenderable>()
+
+  const scrollToAnchor = (box: BoxRenderable) => {
+    if (!scroll || scroll.isDestroyed) return
+    scroll.scrollTo(scroll.scrollTop + box.y)
+  }
+
+  let jumpBusy = false
+  const jumpToMessage = async (messageID: string) => {
+    if (jumpBusy) return
+    jumpBusy = true
+    const requestSessionID = route.sessionID
+    try {
+      for (let hop = 0; hop < 40; hop++) {
+        if (route.sessionID !== requestSessionID) return
+        const box = anchorBoxes.get(messageID)
+        if (box && !box.isDestroyed) {
+          scrollToAnchor(box)
+          return
+        }
+        if (hiddenMessages() > 0) {
+          expandRenderWindow()
+        } else {
+          const loaded = await sync.session.loadOlder(route.sessionID)
+          if (!loaded) return
+        }
+        await new Promise((resolve) => setTimeout(resolve, 90))
+      }
+    } finally {
+      jumpBusy = false
+    }
+  }
+
+  let lastVisibleNotifyAt = 0
+  let lastVisibleMessageID: string | undefined
+  const notifyVisibleMessage = () => {
+    if (!scroll || scroll.isDestroyed) return
+    const now = Date.now()
+    if (now - lastVisibleNotifyAt < 150) return
+    // Topmost message whose body crosses the viewport's top edge.
+    let top: { id: string; y: number } | undefined
+    for (const [id, box] of anchorBoxes) {
+      if (box.isDestroyed) continue
+      if (box.y + box.height <= scroll.scrollTop) continue
+      if (!top || box.y < top.y) top = { id, y: box.y }
+    }
+    lastVisibleNotifyAt = now
+    if (top?.id === lastVisibleMessageID) return
+    lastVisibleMessageID = top?.id
+    notifyMessageVisible(top?.id)
+  }
+
+  createEffect(() => {
+    const sessionID = route.sessionID
+    const unregister = registerMessageAnchors(sessionID, {
+      anchors: anchorBoxes,
+      scroll: () => scroll,
+      scrollIntoView(messageID) {
+        const box = anchorBoxes.get(messageID)
+        if (box && !box.isDestroyed) {
+          scrollToAnchor(box)
+          return true
+        }
+        void jumpToMessage(messageID)
+        return true
+      },
+    })
+    onCleanup(() => {
+      unregister()
+      anchorBoxes.clear()
+    })
+  })
+
+    const [sidebar, setSidebar] = kv.signal<"auto" | "hide">("sidebar", "auto")
   const [sidebarOpen, setSidebarOpen] = createSignal(false)
   const [conceal, setConceal] = createSignal(true)
   const thinking = useThinkingMode()
@@ -1563,9 +1641,14 @@ export function Session() {
                 scrollAcceleration={scrollAcceleration()}
               >
                 <box height={1} />
-                <For each={visibleMessages()}>
-                  {(message, index) => (
-                    <Switch>
+                  <For each={visibleMessages()}>
+                    {(message, index) => (
+                      <box
+                        ref={(el: BoxRenderable) => {
+                          if (el) anchorBoxes.set(message.id, el)
+                        }}
+                      >
+                      <Switch>
                       <Match when={message.id === revert()?.messageID}>
                         {(function () {
                           const redoShortcut = useCommandShortcut("session.redo")
@@ -1651,10 +1734,11 @@ export function Session() {
                           parts={sync.data.part[message.id] ?? []}
                         />
                       </Match>
-                    </Switch>
-                  )}
-                </For>
-              </scrollbox>
+                      </Switch>
+                      </box>
+                    )}
+                  </For>
+                </scrollbox>
               <box flexShrink={0}>
                 <Show when={permissions().length > 0}>
                   <PermissionPrompt

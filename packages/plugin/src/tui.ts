@@ -616,9 +616,16 @@ export type TuiPluginApi = {
   theme: TuiTheme
   client: OpencodeClient
   event: TuiEventBus
-  renderer: CliRenderer
-  slots: TuiSlots
-  plugins: {
+    renderer: CliRenderer
+    slots: TuiSlots
+    /**
+     * Scroll bridge between the session transcript and plugin panes. Only
+     * provided when the host renders message anchors for the active session
+     * (the session route registers itself on mount).
+     */
+    scrollToMessage?: (input: { sessionID: string; messageID: string }) => boolean
+    onMessageVisible?: (sessionID: string, callback: (messageID: string | undefined) => void) => () => void
+    plugins: {
     list: () => ReadonlyArray<TuiPluginStatus>
     activate: (id: string) => Promise<boolean>
     deactivate: (id: string) => Promise<boolean>

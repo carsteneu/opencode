@@ -13,9 +13,11 @@ import {
   parseReplayPaneWidth,
   REPLAY_SPLITTER_HIT_WIDTH,
   sanitizeText,
+  shouldSyncScroll,
   splitterFeedback,
   stepIndexAtY,
   timeLabel,
+  topStepIndexAtY,
   type RawMessage,
 } from "./replay-lib"
 
@@ -500,5 +502,53 @@ describe("stepIndexAtY", () => {
   test("non-finite click coordinates never hit", () => {
     expect(stepIndexAtY(boxes, Number.NaN)).toBe(null)
     expect(stepIndexAtY(boxes, Number.POSITIVE_INFINITY)).toBe(null)
+  })
+})
+
+describe("topStepIndexAtY", () => {
+  const cards = [
+    { index: 0, y: 0, height: 10 },
+    { index: 1, y: 12, height: 10 },
+    { index: 2, y: 30, height: 10 },
+  ]
+
+  test("pick the first card intersecting the viewport", () => {
+    expect(topStepIndexAtY(cards, 0, 20)).toBe(0)
+    expect(topStepIndexAtY(cards, 12, 10)).toBe(1)
+  })
+
+  test("cards partially visible at the top edge win", () => {
+    expect(topStepIndexAtY(cards, 8, 6)).toBe(0)
+    expect(topStepIndexAtY(cards, 20, 12)).toBe(1)
+  })
+
+  test("scroll position past every card is no hit", () => {
+    expect(topStepIndexAtY(cards, 41, 10)).toBe(null)
+  })
+
+  test("degenerate inputs are no hit", () => {
+    expect(topStepIndexAtY(cards, Number.NaN, 10)).toBe(null)
+    expect(topStepIndexAtY(cards, 0, 0)).toBe(null)
+    expect(topStepIndexAtY([], 0, 10)).toBe(null)
+  })
+})
+
+describe("shouldSyncScroll", () => {
+  const base = { now: 1000, suppressUntil: 1100, messageID: "msg_1", lastMessageID: "msg_0" }
+
+  test("suppressed within the settling window", () => {
+    expect(shouldSyncScroll({ ...base, now: 1099 })).toBe(false)
+  })
+
+  test("fires after the suppression window", () => {
+    expect(shouldSyncScroll({ ...base, now: 1100 })).toBe(true)
+  })
+
+  test("same anchor message needs no sync", () => {
+    expect(shouldSyncScroll({ ...base, now: 1200, lastMessageID: "msg_1" })).toBe(false)
+  })
+
+  test("unknown anchor message never syncs", () => {
+    expect(shouldSyncScroll({ ...base, now: 1200, messageID: undefined })).toBe(false)
   })
 })

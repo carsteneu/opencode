@@ -8,6 +8,7 @@ import type { useTheme } from "../context/theme"
 import { Dialog as DialogUI, type useDialog } from "../ui/dialog"
 import type { useOpencodeKeymap } from "../keymap"
 import type { useKV } from "../context/kv"
+import { onMessageVisible, scrollToMessage } from "./message-scroll"
 import { DialogAlert } from "../ui/dialog-alert"
 import { DialogConfirm } from "../ui/dialog-confirm"
 import { DialogPrompt } from "../ui/dialog-prompt"
@@ -301,9 +302,15 @@ export function createTuiApiAdapters(input: Input): Omit<TuiPluginApi, "lifecycl
     get client() {
       return input.sdk.client
     },
-    event: input.event,
-    renderer: input.renderer,
-    slots: {
+      event: input.event,
+      renderer: input.renderer,
+      scrollToMessage(input) {
+        return scrollToMessage(input.sessionID, input.messageID)
+      },
+      onMessageVisible(sessionID, callback) {
+        return onMessageVisible(sessionID, callback)
+      },
+      slots: {
       register() {
         throw new Error("slots.register is only available in plugin context")
       },

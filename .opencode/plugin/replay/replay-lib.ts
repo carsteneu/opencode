@@ -470,3 +470,33 @@ function runningSum(inc: number[]): number[] {
   for (const value of inc) sums.push((sums[sums.length - 1] ?? 0) + value)
   return sums
 }
+
+export type StepCardEntry = { index: number; y: number; height: number }
+
+// The sync anchor is the first card that intersects the ledger viewport
+// (content coordinates, top edge = scrollTop). Cards are sorted so callers
+// can hand them over in render order.
+export function topStepIndexAtY(cards: StepCardEntry[], scrollTop: number, viewportHeight: number): number | null {
+  if (!Number.isFinite(scrollTop) || !Number.isFinite(viewportHeight) || viewportHeight <= 0) return null
+  for (const card of [...cards].sort((a, b) => a.y - b.y)) {
+    if (card.y + card.height <= scrollTop) continue
+    if (card.y >= scrollTop + viewportHeight) break
+    return card.index
+  }
+  return null
+}
+
+// Gate for each sync direction (ledger scroll drives the transcript, transcript
+// scroll drives the ledger): skip while a programmatic scroll we just started
+// is still settling (suppression window), and skip when the anchor step has not
+// changed since the last jump in this direction.
+export function shouldSyncScroll(input: {
+  now: number
+  suppressUntil: number
+  messageID: string | undefined
+  lastMessageID: string | undefined
+}): boolean {
+  if (input.now < input.suppressUntil) return false
+  if (!input.messageID) return false
+  return input.messageID !== input.lastMessageID
+}

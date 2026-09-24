@@ -19,15 +19,19 @@ import {
   parseReplayPaneWidth,
   REPLAY_PANE_WIDTH_MIN,
   REPLAY_SPLITTER_HIT_WIDTH,
+  shouldSyncScroll,
   splitterFeedback,
   stepIndexAtY,
   timeLabel,
+  topStepIndexAtY,
   type RawMessage,
   type ReplayDragTracker,
   type ReplayStep,
+  type StepCardEntry,
   REPLAY_PANE_WIDTH_DEFAULT,
 } from "./replay/replay-lib"
 
+const SYNC_SUPPRESS_MS = 180
 const STEPS_W = 62 // % width for the steps pane; transcript takes the rest
 
 function stepHeaderText(step: ReplayStep, total: number): string {
@@ -127,21 +131,66 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
   const [active, setActive] = createSignal(0)
   // Reset selection and stale refs (fullscreen viewer clears the same map on
   // session switch) so scroll-follow never targets detached nodes.
-  createEffect(() => {
-    props.sessionID
-    onCleanup(() => {
-      stepBoxes.clear()
-      setActive(0)
-      setSplitterHover(false)
-      setSplitterDrag(false)
+    createEffect(() => {
+      props.sessionID
+      onCleanup(() => {
+        stepBoxes.clear()
+        setActive(0)
+        setSplitterHover(false)
+        setSplitterDrag(false)
+        suppressTranscriptUntil = 0
+        suppressLedgerUntil = 0
+        lastLedgerMessageID = undefined
+        lastTranscriptMessageID = undefined
+      })
     })
-  })
   const current = () => {
     const list = steps()
     return list[Math.min(active(), Math.max(list.length - 1, 0))]
   }
 
   let scrollSteps: ScrollBoxRenderable | undefined
+
+  // Bidirectional scroll sync (ledger ↔ transcript). Each direction carries a
+  // suppression window so the programmatic scroll it triggers cannot echo back
+  // into a loop. Disable with kv: replay_pane_sync_scroll=false.
+  const syncScrollEnabled = () => props.api.kv.get("replay_pane_sync_scroll") !== false
+  let suppressTranscriptUntil = 0
+  let suppressLedgerUntil = 0
+  let lastLedgerMessageID: string | undefined
+  let lastTranscriptMessageID: string | undefined
+
+  const jumpToStepMessage = (step: ReplayStep) => {
+    lastLedgerMessageID = step.messageID
+    suppressTranscriptUntil = Date.now() + SYNC_SUPPRESS_MS
+    props.api.scrollToMessage?.({ sessionID: props.sessionID, messageID: step.messageID })
+  }
+
+  const onLedgerScroll = () => {
+    if (!syncScrollEnabled()) return
+    if (!scrollSteps || scrollSteps.isDestroyed) return
+    const cards: StepCardEntry[] = []
+    for (const [index, box] of stepBoxes) {
+      if (box.isDestroyed) continue
+      cards.push({ index, y: box.y, height: box.height })
+    }
+    const top = topStepIndexAtY(cards, scrollSteps.scrollTop, scrollSteps.height)
+    if (top === null) return
+    const step = steps().find((candidate) => candidate.index === top)
+    if (!step) return
+    if (
+      !shouldSyncScroll({
+        now: Date.now(),
+        suppressUntil: suppressTranscriptUntil,
+        messageID: step.messageID,
+        lastMessageID: lastLedgerMessageID,
+      })
+    )
+      return
+    lastLedgerMessageID = step.messageID
+    suppressLedgerUntil = Date.now() + SYNC_SUPPRESS_MS
+    props.api.scrollToMessage?.({ sessionID: props.sessionID, messageID: step.messageID })
+  }
 
   // Mouse-drag resize: the press arms on the grip strip, but tracking runs on
   // the renderable tree root. opentui captures the drag on the element under
@@ -167,6 +216,32 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
   const [splitterHover, setSplitterHover] = createSignal(false)
   const [splitterDrag, setSplitterDrag] = createSignal(false)
   const splitterState = () => splitterFeedback(splitterHover(), splitterDrag())
+
+  // Transcript drives the ledger: the route reports the topmost visible
+  // message, we activate the last edit step of that message (the existing
+  // scroll-follow then keeps the ledger anchored on it).
+  const offMessageVisible = props.api.onMessageVisible?.(props.sessionID, (messageID) => {
+    if (!syncScrollEnabled()) return
+    if (
+      !shouldSyncScroll({
+        now: Date.now(),
+        suppressUntil: suppressLedgerUntil,
+        messageID,
+        lastMessageID: lastTranscriptMessageID,
+      })
+    )
+      return
+    lastTranscriptMessageID = messageID ?? undefined
+    suppressTranscriptUntil = Date.now() + SYNC_SUPPRESS_MS
+    let lastIndex: number | undefined
+    for (const candidate of steps()) {
+      if (candidate.messageID === messageID) lastIndex = candidate.index
+    }
+    if (lastIndex === undefined) return
+    lastLedgerMessageID = messageID ?? undefined
+    selectStep(lastIndex)
+  })
+  if (offMessageVisible) onCleanup(offMessageVisible)
 
   onMount(() => {
     // The splitter gestures need terminal mouse events and the pane is their
@@ -275,21 +350,41 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
           <text fg={theme().text} bold content={`REPLAY · ${steps().length} steps`} />
           <text fg={theme().textMuted} content="ctrl+y hide · drag left border to resize · /replay fullscreen" />
         </box>
-        <scrollbox ref={(el: ScrollBoxRenderable) => (scrollSteps = el)} flexGrow={1} minWidth={0} minHeight={0}>
+          <scrollbox
+            ref={(el: ScrollBoxRenderable) => (scrollSteps = el)}
+            verticalScrollbarOptions={{
+              visible: true,
+              onChange: onLedgerScroll,
+              trackOptions: {
+                backgroundColor: theme().backgroundElement,
+                foregroundColor: theme().border,
+              },
+            }}
+            flexGrow={1}
+            minWidth={0}
+            minHeight={0}
+          >
           <For each={steps()}>
-            {(step) => (
-              <box
-                ref={(el: BoxRenderable) => stepBoxes.set(step.index, el)}
-                onMouseDown={() => selectStep(step.index)}
-                marginBottom={1}
-                border={step.index === current()?.index ? ["left"] : []}
-                borderColor={theme().text}
-                paddingLeft={1}
-              >
-                <text
-                  fg={step.index === current()?.index ? theme().text : theme().textMuted}
-                  content={stepHeaderText(step, steps().length)}
-                />
+              {(step) => (
+                <box
+                  ref={(el: BoxRenderable) => stepBoxes.set(step.index, el)}
+                  onMouseDown={() => {
+                    selectStep(step.index)
+                    jumpToStepMessage(step)
+                  }}
+                  marginBottom={1}
+                  border={["left", "right", "top", "bottom"]}
+                  borderColor={step.index === current()?.index ? theme().text : theme().border}
+                  paddingLeft={1}
+                  paddingRight={1}
+                  backgroundColor={step.index === current()?.index ? theme().backgroundPanel : undefined}
+                >
+                  <box backgroundColor={theme().backgroundElement}>
+                    <text
+                      fg={step.index === current()?.index ? theme().text : theme().textMuted}
+                      content={stepHeaderText(step, steps().length)}
+                    />
+                  </box>
                 <Show when={step.patch !== undefined} fallback={<text fg={theme().textMuted}>(no diff payload)</text>}>
                   <diff
                     diff={clampPatchLines(compactPatch(step.patch ?? ""))}
