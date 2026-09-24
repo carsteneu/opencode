@@ -306,7 +306,8 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
   // Scroll-follow for the active step (same node.y pattern as the fullscreen
   // viewer), but only when the active step actually moved or grew — refetches
   // must not yank the user back while a session streams.
-  let anchoredIndex = -1  let anchoredCount = -1
+  let anchoredIndex = -1
+  let anchoredCount = -1
   createEffect(() => {
     const step = current()
     const count = steps().length
@@ -375,7 +376,7 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
       </box>
       <box flexDirection="column" flexGrow={1} minWidth={0} minHeight={0}>
         <box flexShrink={0} paddingLeft={1}>
-          <text fg={theme().text} bold content={`REPLAY · ${steps().length} steps`} />
+            <text fg={theme().text} bold content={`REPLAY · ${steps().length} steps · sync`} />
           <text fg={theme().textMuted} content="ctrl+y hide · drag left border to resize · /replay fullscreen" />
         </box>
           <scrollbox
@@ -679,6 +680,7 @@ function ReplayViewer(props: { api: TuiPluginApi }) {
 export default {
   id: "replay-viewer",
   tui(api: TuiPluginApi) {
+    api.ui.toast({ message: "replay-viewer (sync) geladen — ctrl+y in einer Session", variant: "info", duration: 6000 })
     api.route.register([{ name: "replay", render: () => <ReplayViewer api={api} /> }])
     api.slots.register({
       order: 50,
