@@ -1,5 +1,10 @@
 import type { TuiPluginApi, TuiThemeCurrent } from "@opencode-ai/plugin/tui"
-import { SyntaxStyle, type BoxRenderable, type MouseEvent as TuiMouseEvent, type ScrollBoxRenderable } from "@opentui/core"
+import {
+  SyntaxStyle,
+  type BoxRenderable,
+  type MouseEvent as TuiMouseEvent,
+  type ScrollBoxRenderable,
+} from "@opentui/core"
 import { createEffect, createMemo, createResource, createSignal, For, onCleanup, onMount, Show } from "solid-js"
 import {
   buildReplaySteps,
@@ -110,16 +115,16 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
   subscribeSessionRefresh(props.api, () => props.sessionID, refetch)
   createEffect(() => setActivePatch(current()?.patch))
   onCleanup(() => setActivePatch(undefined))
-    const steps = createMemo(() => buildReplaySteps(messages() ?? []))
-    const stepBoxes = new Map<number, BoxRenderable>()
-    // kv loads asynchronously after boot, so re-sync once the store is ready.
-      createEffect(() => {
-        if (props.api.kv.ready) setPaneWidth(parseReplayPaneWidth(props.api.kv.get("replay_pane_width")))
-      })
-      // No artificial max width — the pane may grow to the full terminal
-      // width, but the transcript keeps a sliver so the layout stays usable.
-      const boundWidth = (w: number) => Math.max(REPLAY_PANE_WIDTH_MIN, Math.min(w, props.api.renderer.width - 8))
-    const [active, setActive] = createSignal(0)
+  const steps = createMemo(() => buildReplaySteps(messages() ?? []))
+  const stepBoxes = new Map<number, BoxRenderable>()
+  // kv loads asynchronously after boot, so re-sync once the store is ready.
+  createEffect(() => {
+    if (props.api.kv.ready) setPaneWidth(parseReplayPaneWidth(props.api.kv.get("replay_pane_width")))
+  })
+  // No artificial max width — the pane may grow to the full terminal
+  // width, but the transcript keeps a sliver so the layout stays usable.
+  const boundWidth = (w: number) => Math.max(REPLAY_PANE_WIDTH_MIN, Math.min(w, props.api.renderer.width - 8))
+  const [active, setActive] = createSignal(0)
   // Reset selection and stale refs (fullscreen viewer clears the same map on
   // session switch) so scroll-follow never targets detached nodes.
   createEffect(() => {
@@ -127,6 +132,8 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
     onCleanup(() => {
       stepBoxes.clear()
       setActive(0)
+      setSplitterHover(false)
+      setSplitterDrag(false)
     })
   })
   const current = () => {
@@ -171,31 +178,31 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
       setSplitterDrag(false)
       setSplitterHover(false)
     }
-      root.onMouseDrag = (e: TuiMouseEvent) => {
-        if (!tracker) return
-        tracker.move(e.x)
-        if (tracker.moved) {
-          setSplitterDrag(true)
-          setPaneWidth(boundWidth(tracker.width))
-        }
+    root.onMouseDrag = (e: TuiMouseEvent) => {
+      if (!tracker) return
+      tracker.move(e.x)
+      if (tracker.moved) {
+        setSplitterDrag(true)
+        setPaneWidth(boundWidth(tracker.width))
       }
-      root.onMouseDragEnd = () => {
-        if (!tracker) return
-        if (tracker.moved) {
-          const width = boundWidth(tracker.width)
-          setPaneWidth(width)
-          props.api.kv.set("replay_pane_width", width)
-        }
-        setSplitterDrag(false)
-        setSplitterHover(false)
-        props.api.renderer.setMousePointer("default")
+    }
+    root.onMouseDragEnd = () => {
+      if (!tracker) return
+      if (tracker.moved) {
+        const width = boundWidth(tracker.width)
+        setPaneWidth(width)
+        props.api.kv.set("replay_pane_width", width)
       }
-      root.onMouseUp = (e: TuiMouseEvent) => {
-        if (!tracker) return
-        if (!tracker.moved) selectStepAt(e.y)
-        release()
-        props.api.renderer.setMousePointer("default")
-      }
+      setSplitterDrag(false)
+      setSplitterHover(false)
+      props.api.renderer.setMousePointer("default")
+    }
+    root.onMouseUp = (e: TuiMouseEvent) => {
+      if (!tracker) return
+      if (!tracker.moved) selectStepAt(e.y)
+      release()
+      props.api.renderer.setMousePointer("default")
+    }
     onCleanup(() => {
       root.onMouseDrag = undefined
       root.onMouseDragEnd = undefined
@@ -224,7 +231,7 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
   return (
     <box
       flexDirection="row"
-        width={boundWidth(parseReplayPaneWidth(paneWidth()))}
+      width={boundWidth(parseReplayPaneWidth(paneWidth()))}
       minHeight={0}
       border={["left", "right"]}
       borderColor={theme().border}
@@ -264,17 +271,17 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
         </Show>
       </box>
       <box flexDirection="column" flexGrow={1} minWidth={0} minHeight={0}>
-      <box flexShrink={0} paddingLeft={1}>
-        <text fg={theme().text} bold content={`REPLAY · ${steps().length} steps`} />
-        <text fg={theme().textMuted} content="ctrl+y hide · drag left border to resize · /replay fullscreen" />
-      </box>
-      <scrollbox ref={(el: ScrollBoxRenderable) => (scrollSteps = el)} flexGrow={1} minWidth={0} minHeight={0}>
+        <box flexShrink={0} paddingLeft={1}>
+          <text fg={theme().text} bold content={`REPLAY · ${steps().length} steps`} />
+          <text fg={theme().textMuted} content="ctrl+y hide · drag left border to resize · /replay fullscreen" />
+        </box>
+        <scrollbox ref={(el: ScrollBoxRenderable) => (scrollSteps = el)} flexGrow={1} minWidth={0} minHeight={0}>
           <For each={steps()}>
             {(step) => (
               <box
-                  ref={(el: BoxRenderable) => stepBoxes.set(step.index, el)}
-                  onMouseDown={() => selectStep(step.index)}
-                  marginBottom={1}
+                ref={(el: BoxRenderable) => stepBoxes.set(step.index, el)}
+                onMouseDown={() => selectStep(step.index)}
+                marginBottom={1}
                 border={step.index === current()?.index ? ["left"] : []}
                 borderColor={theme().text}
                 paddingLeft={1}
@@ -283,28 +290,28 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
                   fg={step.index === current()?.index ? theme().text : theme().textMuted}
                   content={stepHeaderText(step, steps().length)}
                 />
-                  <Show when={step.patch !== undefined} fallback={<text fg={theme().textMuted}>(no diff payload)</text>}>
-                      <diff
-                        diff={clampPatchLines(compactPatch(step.patch ?? ""))}
-                        view="unified"
-                        filetype={filetypeFromPath(step.filePath)}
-                        syntaxStyle={syntaxStyle()}
-                        showLineNumbers={true}
-                        width="100%"
-                        wrapMode="char"
-                        fg={theme().text}
-                        addedBg={theme().diffAddedBg}
-                        removedBg={theme().diffRemovedBg}
-                        addedSignColor={theme().diffHighlightAdded}
-                        removedSignColor={theme().diffHighlightRemoved}
-                        lineNumberFg={theme().diffLineNumber}
-                        addedLineNumberBg={theme().diffAddedLineNumberBg}
-                        removedLineNumberBg={theme().diffRemovedLineNumberBg}
-                      />
-                  </Show>
-                </box>
-              )}
-            </For>
+                <Show when={step.patch !== undefined} fallback={<text fg={theme().textMuted}>(no diff payload)</text>}>
+                  <diff
+                    diff={clampPatchLines(compactPatch(step.patch ?? ""))}
+                    view="unified"
+                    filetype={filetypeFromPath(step.filePath)}
+                    syntaxStyle={syntaxStyle()}
+                    showLineNumbers={true}
+                    width="100%"
+                    wrapMode="char"
+                    fg={theme().text}
+                    addedBg={theme().diffAddedBg}
+                    removedBg={theme().diffRemovedBg}
+                    addedSignColor={theme().diffHighlightAdded}
+                    removedSignColor={theme().diffHighlightRemoved}
+                    lineNumberFg={theme().diffLineNumber}
+                    addedLineNumberBg={theme().diffAddedLineNumberBg}
+                    removedLineNumberBg={theme().diffRemovedLineNumberBg}
+                  />
+                </Show>
+              </box>
+            )}
+          </For>
           <Show when={steps().length === 0 && !messages.loading && !loadError()}>
             <text fg={theme().textMuted}>no edits in this session</text>
           </Show>
@@ -314,8 +321,8 @@ function ReplayPane(props: { api: TuiPluginApi; sessionID: string }) {
         </scrollbox>
       </box>
     </box>
-    )
-  }
+  )
+}
 
 function ReplayViewer(props: { api: TuiPluginApi }) {
   const params = () =>
@@ -469,41 +476,41 @@ function ReplayViewer(props: { api: TuiPluginApi }) {
         borderTop
         borderLeft
       >
-          <For each={steps()}>
-            {(step) => (
-              <box
-                marginBottom={1}
-                ref={(el: BoxRenderable) => stepBoxes.set(step.index, el)}
-                border={step.index === current()?.index ? ["left"] : []}
-                borderColor={theme().border}
-                paddingLeft={1}
-              >
-                <text
-                  fg={step.index === current()?.index ? theme().text : theme().textMuted}
-                  content={stepHeaderText(step, steps().length)}
+        <For each={steps()}>
+          {(step) => (
+            <box
+              marginBottom={1}
+              ref={(el: BoxRenderable) => stepBoxes.set(step.index, el)}
+              border={step.index === current()?.index ? ["left"] : []}
+              borderColor={theme().border}
+              paddingLeft={1}
+            >
+              <text
+                fg={step.index === current()?.index ? theme().text : theme().textMuted}
+                content={stepHeaderText(step, steps().length)}
+              />
+              <Show when={step.patch !== undefined} fallback={<text fg={theme().textMuted}>(no diff payload)</text>}>
+                <diff
+                  diff={clampPatchLines(compactPatch(step.patch ?? ""))}
+                  view="unified"
+                  filetype={filetypeFromPath(step.filePath)}
+                  syntaxStyle={syntaxStyle()}
+                  showLineNumbers={true}
+                  width="100%"
+                  wrapMode="char"
+                  fg={theme().text}
+                  addedBg={theme().diffAddedBg}
+                  removedBg={theme().diffRemovedBg}
+                  addedSignColor={theme().diffHighlightAdded}
+                  removedSignColor={theme().diffHighlightRemoved}
+                  lineNumberFg={theme().diffLineNumber}
+                  addedLineNumberBg={theme().diffAddedLineNumberBg}
+                  removedLineNumberBg={theme().diffRemovedLineNumberBg}
                 />
-                  <Show when={step.patch !== undefined} fallback={<text fg={theme().textMuted}>(no diff payload)</text>}>
-                      <diff
-                        diff={clampPatchLines(compactPatch(step.patch ?? ""))}
-                        view="unified"
-                        filetype={filetypeFromPath(step.filePath)}
-                        syntaxStyle={syntaxStyle()}
-                        showLineNumbers={true}
-                        width="100%"
-                        wrapMode="char"
-                        fg={theme().text}
-                        addedBg={theme().diffAddedBg}
-                        removedBg={theme().diffRemovedBg}
-                        addedSignColor={theme().diffHighlightAdded}
-                        removedSignColor={theme().diffHighlightRemoved}
-                        lineNumberFg={theme().diffLineNumber}
-                        addedLineNumberBg={theme().diffAddedLineNumberBg}
-                        removedLineNumberBg={theme().diffRemovedLineNumberBg}
-                      />
-                  </Show>
-              </box>
-            )}
-          </For>
+              </Show>
+            </box>
+          )}
+        </For>
         <Show when={steps().length === 0 && !messages.loading && !loadError()}>
           <text fg={theme().textMuted}>no edits in this session</text>
         </Show>
@@ -549,9 +556,7 @@ function ReplayViewer(props: { api: TuiPluginApi }) {
 export default {
   id: "replay-viewer",
   tui(api: TuiPluginApi) {
-    api.route.register([
-      { name: "replay", render: () => <ReplayViewer api={api} /> },
-    ])
+    api.route.register([{ name: "replay", render: () => <ReplayViewer api={api} /> }])
     api.slots.register({
       order: 50,
       slots: {
@@ -561,60 +566,60 @@ export default {
         },
       },
     })
-      const adjustPaneWidth = (delta: number) => {
-        const next = clampReplayPaneWidth(parseReplayPaneWidth(paneWidth()) + delta)
-        setPaneWidth(next)
-        api.kv.set("replay_pane_width", next)
-      }
-      api.keymap.registerLayer({
-        commands: [
-          {
-            name: "replay.open",
-            title: "Open replay viewer",
-            slashName: "replay",
-            category: "VCS",
-            namespace: "palette",
-            run() {
-              const current = api.route.current
-              const sessionID = "params" in current ? current.params?.sessionID : undefined
-              api.route.navigate("replay", { sessionID, returnRoute: current })
-              api.ui.dialog.clear()
-            },
+    const adjustPaneWidth = (delta: number) => {
+      const next = clampReplayPaneWidth(parseReplayPaneWidth(paneWidth()) + delta)
+      setPaneWidth(next)
+      api.kv.set("replay_pane_width", next)
+    }
+    api.keymap.registerLayer({
+      commands: [
+        {
+          name: "replay.open",
+          title: "Open replay viewer",
+          slashName: "replay",
+          category: "VCS",
+          namespace: "palette",
+          run() {
+            const current = api.route.current
+            const sessionID = "params" in current ? current.params?.sessionID : undefined
+            api.route.navigate("replay", { sessionID, returnRoute: current })
+            api.ui.dialog.clear()
           },
-          {
-            name: "replay.pane.wider",
-            title: "Widen replay pane",
-            namespace: "palette",
-            run() {
-              adjustPaneWidth(4)
-            },
+        },
+        {
+          name: "replay.pane.wider",
+          title: "Widen replay pane",
+          namespace: "palette",
+          run() {
+            adjustPaneWidth(4)
           },
-            {
-              name: "replay.pane.narrower",
-              title: "Narrow replay pane",
-              namespace: "palette",
-              run() {
-                adjustPaneWidth(-4)
-              },
-            },
-            {
-              name: "replay.copy_patch",
-              title: "Copy replay patch",
-              namespace: "palette",
-              run() {
-                const patch = activePatch()
-                if (patch === undefined) {
-                  api.ui.toast({ message: "No replay patch to copy", variant: "warning" })
-                  return
-                }
-                const ok = api.renderer.copyToClipboardOSC52(patch)
-                api.ui.toast({
-                  message: ok ? "Replay patch copied to clipboard!" : "Failed to copy patch",
-                  variant: ok ? "success" : "error",
-                })
-              },
-            },
-        ],
-      })
+        },
+        {
+          name: "replay.pane.narrower",
+          title: "Narrow replay pane",
+          namespace: "palette",
+          run() {
+            adjustPaneWidth(-4)
+          },
+        },
+        {
+          name: "replay.copy_patch",
+          title: "Copy replay patch",
+          namespace: "palette",
+          run() {
+            const patch = activePatch()
+            if (patch === undefined) {
+              api.ui.toast({ message: "No replay patch to copy", variant: "warning" })
+              return
+            }
+            const ok = api.renderer.copyToClipboardOSC52(patch)
+            api.ui.toast({
+              message: ok ? "Replay patch copied to clipboard!" : "Failed to copy patch",
+              variant: ok ? "success" : "error",
+            })
+          },
+        },
+      ],
+    })
   },
 }
