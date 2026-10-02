@@ -19,7 +19,7 @@ on:
         description: "OpenTUI fork commit to build natives from (pinned overlay source)"
         required: false
         type: string
-        default: "225e532fe0caf0fe6db3b94cb5fe1510e3341e61"
+        default: "fe315be4becac0ff49d3347b787ff46a81b3bc1a"
       publish:
         description: "Upload binaries + checksums to a draft GitHub release (false = action artifacts only)"
         required: false
