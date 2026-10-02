@@ -194,12 +194,8 @@ export const prepareHeaders = Effect.fn("LLMRequestPrep.prepareHeaders")(functio
     : undefined
 
   return {
-    ...(input.parentSessionID
-      ? {
-          "X-Opencode-Agent-Type": "subagent",
-          "X-Opencode-Parent-Session": input.parentSessionID,
-        }
-      : {}),
+    "x-opencode-session-id": input.sessionID,
+    ...(input.parentSessionID ? { "x-opencode-parent-session-id": input.parentSessionID } : {}),
     ...(input.model.providerID.startsWith("opencode")
       ? {
           ...(opencodeProjectID ? { "x-opencode-project": opencodeProjectID } : {}),
@@ -215,7 +211,8 @@ export const prepareHeaders = Effect.fn("LLMRequestPrep.prepareHeaders")(functio
         }),
     ...(input.parentSessionID ? { "x-parent-session-id": input.parentSessionID } : {}),
     ...input.model.headers,
-    ...output.headers,  }
+    ...output.headers,
+  }
 })
 
 function resolveTools(input: Pick<PrepareInput, "tools" | "agent" | "permission" | "user">) {

@@ -30,7 +30,7 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ModelStatus } from "./model-status"
 import { RuntimeFlags } from "@/effect/runtime-flags"
-import { applyRuntimeFetch } from "./runtime-fetch"
+import { applyRuntimeFetch, runtimeFetch } from "./runtime-fetch"
 import { CHUNK_TIMEOUT_DEFAULT, HEADER_TIMEOUT_DEFAULT } from "@opencode-ai/llm"
 
 function googleVertexAnthropicBaseURL(project: string | undefined, location: string | undefined) {
@@ -752,7 +752,7 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         )
       }
 
-      const { createAiGateway } = yield* Effect.promise(() => import("ai-gateway-provider"))
+      const { createAiGateway, parseAiGatewayOptions } = yield* Effect.promise(() => import("ai-gateway-provider"))
       const { createUnified } = yield* Effect.promise(() => import("ai-gateway-provider/providers/unified"))
       const { createOpenAI } = yield* Effect.promise(() => import("ai-gateway-provider/providers/openai"))
       const { createAnthropic } = yield* Effect.promise(() => import("ai-gateway-provider/providers/anthropic"))
@@ -777,15 +777,34 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         },
       }
 
-      const aigateway = createAiGateway({
-        accountId,
-        gateway,
-        apiKey: apiToken,
-        ...(Object.values(opts).some((v) => v !== undefined) ? { options: opts } : {}),
-      })
       return {
         autoload: true,
-        async getModel(_sdk: any, modelID: string, _options?: Record<string, any>) {
+        async getModel(_sdk: any, modelID: string, options?: Record<string, any>) {
+          // This loader builds its own clients instead of using the SDK from resolveSDK, so the
+          // timeout options have to be applied to the requests it makes explicitly.
+          const gatewayFetch = runtimeFetch({
+            chunkTimeout: CHUNK_TIMEOUT_DEFAULT,
+            headerTimeout: HEADER_TIMEOUT_DEFAULT,
+            ...(options ?? {}),
+          })
+          // ai-gateway-provider's REST path always calls the global fetch. Its binding path hands
+          // the request to `run`, so send the same request the REST path would (options as
+          // request-level cf-aig-* headers) through the timeout-aware fetch instead.
+          const aigateway = createAiGateway({
+            binding: {
+              run(body, init) {
+                const headers = parseAiGatewayOptions(opts)
+                headers.set("Content-Type", "application/json")
+                headers.set("cf-aig-authorization", `Bearer ${apiToken}`)
+                return gatewayFetch(`https://gateway.ai.cloudflare.com/v1/${accountId}/${gateway}`, {
+                  body: JSON.stringify(body),
+                  headers,
+                  method: "POST",
+                  signal: init?.signal,
+                })
+              },
+            },
+          })
           // Model IDs use Unified API format: provider/model (e.g., "anthropic/claude-sonnet-4-5").
           // OpenAI and Anthropic ride their native passthrough routes so agents get the Responses
           // and Messages APIs; new OpenAI models reject tools+reasoning_effort on chat completions.
@@ -819,6 +838,7 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
             baseURL: `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1`,
             apiKey: apiToken,
             headers: { "cf-aig-gateway-id": gateway },
+            fetch: gatewayFetch as typeof fetch,
           })(modelID)
         },
         options: {},

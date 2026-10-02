@@ -42,6 +42,12 @@ export function applyRuntimeFetch(options: Record<string, unknown>) {
   return options
 }
 
+// For call sites that build their own SDK clients (custom loaders) and need the timeout-aware
+// fetch itself instead of a mutated options object.
+export function runtimeFetch(options: Record<string, unknown>) {
+  return applyRuntimeFetch({ ...options })["fetch"] as typeof fetch
+}
+
 function wrapBody(
   res: Response,
   ms: number,
