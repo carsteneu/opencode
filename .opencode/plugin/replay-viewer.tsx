@@ -680,7 +680,8 @@ function ReplayViewer(props: { api: TuiPluginApi }) {
 export default {
   id: "replay-viewer",
   tui(api: TuiPluginApi) {
-    api.ui.toast({ message: "replay-viewer (sync) geladen — ctrl+y in einer Session", variant: "info", duration: 6000 })
+    // startup toast intentionally off — it fires on every launch
+    // api.ui.toast({ message: "replay-viewer (sync) geladen — ctrl+y in einer Session", variant: "info", duration: 6000 })
     api.route.register([{ name: "replay", render: () => <ReplayViewer api={api} /> }])
     api.slots.register({
       order: 50,
