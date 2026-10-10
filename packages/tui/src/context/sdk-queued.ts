@@ -13,14 +13,20 @@ export function createQueuedClient<C extends object>(input: {
   let url = Promise.resolve(input.url)
   let real: C | undefined
   let connectionError: unknown
+  let generation = 0
   const [connected, setConnected] = createSignal(false)
   const bind = (pending: Promise<string>) => {
+    // Only the latest bind may install a client: a URL promise that settles after
+    // a retarget must not point the client back at the server it just left.
+    const mine = ++generation
     pending.then(
       (baseUrl) => {
+        if (mine !== generation) return
         real = input.create(baseUrl)
         setConnected(true)
       },
       (error) => {
+        if (mine !== generation) return
         connectionError = error
         setConnected(true)
       },

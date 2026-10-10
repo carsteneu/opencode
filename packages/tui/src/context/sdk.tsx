@@ -175,6 +175,9 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
       sse = ctrl
       ;(async () => {
         let attempt = 0
+        // A throw out of the event handler is a client-side defect, not a dead
+        // server; it must end the loop rather than rediscover once per second.
+        let handlerFailure = false
         while (true) {
           if (abort.signal.aborted || ctrl.signal.aborted) break
 
@@ -196,13 +199,18 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
 
             for await (const event of events.stream) {
               if (ctrl.signal.aborted) break
-              handleEvent(event)
+              try {
+                handleEvent(event)
+              } catch (error) {
+                handlerFailure = true
+                throw error
+              }
             }
           } catch (error) {
             if (abort.signal.aborted || ctrl.signal.aborted) break
             // Without a resolver there is nowhere else to go — the error ends
             // the loop, exactly as before.
-            if (!props.rediscover) throw error
+            if (handlerFailure || !props.rediscover) throw error
           }
 
           if (timer) clearTimeout(timer)
@@ -211,7 +219,11 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
 
           // The stream ended — cleanly or not. Rediscover before retrying so a
           // dead shared server does not leave this window permanently dark.
-          if (await redial().catch(() => false)) attempt = 0
+          const previous = await serverUrl
+          const recovered = await redial().catch(() => false)
+          // Only a *different* server earns a fresh backoff. If discovery keeps
+          // handing back the same address that keeps dropping, escalate.
+          if (recovered && (await serverUrl) !== previous) attempt = 0
 
           attempt += 1
           // Exponential backoff

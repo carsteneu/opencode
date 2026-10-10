@@ -182,14 +182,16 @@ export const TuiThreadCommand = cmd({
       // The window re-runs discovery when its stream dies, so a shared server
       // that crashed is replaced instead of leaving this window dark forever
       // (spec §9). Fresh credentials, because the replacement publishes its own
-      // password.
-      const rediscover = discovery
-        ? async () => {
-            const next = await discovery.findOrStartSharedServer().catch(() => undefined)
-            if (!next) return undefined
-            return { url: next.url, headers: ServerAuth.headers({ password: next.password }) }
-          }
-        : undefined
+      // password. Only a window that actually attached to the shared server gets
+      // this — an IPC child has nothing to rediscover.
+      const rediscover =
+        shared && discovery
+          ? async () => {
+              const next = await discovery.findOrStartSharedServer().catch(() => undefined)
+              if (!next) return undefined
+              return { url: next.url, headers: ServerAuth.headers({ password: next.password }) }
+            }
+          : undefined
 
       // The profiling bootstrap owns SIGUSR2 as its stop signal. Registering
       // reload at the same time would abort the profiled provider turn. Reload
