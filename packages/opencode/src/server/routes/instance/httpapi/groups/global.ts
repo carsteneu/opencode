@@ -54,6 +54,15 @@ export const GlobalUpgradeInput = Schema.Struct({
   ),
 })
 
+// Opt-in isolation: a subscriber declares which directory and which root
+// sessions it currently shows. Without a declaration the event stream is
+// unchanged, so other consumers (run, ACP, app, control-plane) are untouched.
+export const GlobalScopeInput = Schema.Struct({
+  clientID: Schema.String,
+  directory: Schema.optional(Schema.String),
+  sessions: Schema.Array(Schema.String),
+})
+
 const GlobalUpgradeResult = Schema.Union([
   Schema.Struct({
     success: Schema.Literal(true),
@@ -68,6 +77,7 @@ const GlobalUpgradeResult = Schema.Union([
 export const GlobalPaths = {
   health: "/global/health",
   event: "/global/event",
+  scope: "/global/scope",
   config: "/global/config",
   dispose: "/global/dispose",
   upgrade: "/global/upgrade",
@@ -92,6 +102,17 @@ export const GlobalApi = HttpApi.make("global").add(
           identifier: "global.event",
           summary: "Get global events",
           description: "Subscribe to global events from the OpenCode system using server-sent events.",
+        }),
+      ),
+      HttpApiEndpoint.post("scope", GlobalPaths.scope, {
+        payload: GlobalScopeInput,
+        success: described(Schema.Boolean, "Scope accepted"),
+      }).annotateMerge(
+        OpenApi.annotations({
+          identifier: "global.scope",
+          summary: "Declare an event scope",
+          description:
+            "Opt in to isolated global events for this client id. Without a declaration the stream is unfiltered.",
         }),
       ),
       HttpApiEndpoint.get("configGet", GlobalPaths.config, {

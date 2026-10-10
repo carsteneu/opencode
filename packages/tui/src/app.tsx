@@ -519,7 +519,27 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
     }
   })
 
+  // Declare this window's event scope: the root of the session it currently
+  // shows. The server expands it over the parentID tree so subagents count.
+  // Opt-in: an empty declaration still enables filtering, so no foreign session
+  // content arrives. Only re-declares when the root actually changes.
+  let lastScope: string | undefined
+  createEffect(() => {
+    const current = route.data.type === "session" ? route.data.sessionID : undefined
+    let root = current
+    for (let hop = 0; root && hop < 32; hop++) {
+      const parent = sync.session.get(root)?.parentID
+      if (!parent) break
+      root = parent
+    }
+    const next = root ?? ""
+    if (next === lastScope) return
+    lastScope = next
+    void sdk.scope(root ? [root] : [])
+  })
+
   const args = useArgs()
+
   onMount(() => {
     batch(() => {
       if (args.agent) local.agent.set(args.agent)

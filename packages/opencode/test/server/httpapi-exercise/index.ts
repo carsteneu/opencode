@@ -115,6 +115,17 @@ const scenarios: Scenario[] = [
       },
       "status",
     ),
+  http.protected
+    .post("/global/scope", "global.scope")
+    .global()
+    .at(() => ({ path: "/global/scope", body: { clientID: "httpapi-global", sessions: [] } }))
+    .json(
+      200,
+      (body) => {
+        check(body === true, "global scope should return true")
+      },
+      "status",
+    ),
   http.protected.get("/path", "path.get").json(200, (body, ctx) => {
     object(body)
     check(body.directory === ctx.directory, "directory should resolve from x-opencode-directory")

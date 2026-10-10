@@ -1060,6 +1060,10 @@ export function Prompt(props: PromptProps) {
       }
 
       sessionID = res.data.id
+      // Declare the new session as ours before the prompt is dispatched: the
+      // route only learns the id ~50ms later, and until then the server would
+      // treat this session's events as foreign.
+      void sdk.scope([sessionID])
     }
 
     const inputText = expandTrackedPastedText(

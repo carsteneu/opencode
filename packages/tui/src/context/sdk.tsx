@@ -20,6 +20,24 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
   }) => {
     const abort = new AbortController()
     let sse: AbortController | undefined
+    // Identity for the opt-in event scope. The server only filters the global
+    // stream for a client id that declared a scope, so carrying this header is
+    // what makes this window opt in — every other subscriber stays unfiltered.
+    const clientId = `tui_${Bun.randomUUIDv7()}`
+    const headers = { ...Object.fromEntries(new Headers(props.headers as HeadersInit | undefined).entries()) }
+    headers["x-opencode-client-id"] = clientId
+    let declared: string[] | undefined
+    const declare = async () => {
+      if (declared === undefined) return
+      try {
+        const base = await props.url
+        await (props.fetch ?? fetch)(new URL("/global/scope", base), {
+          method: "POST",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({ clientID: clientId, directory: props.directory, sessions: declared }),
+        })
+      } catch {}
+    }
     // The server URL only resolves once the child process reports ready. The
     // queued client lets the shell draw immediately; nothing blocks on the
     // server finishing its boot.
@@ -31,7 +49,7 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
           signal: abort.signal,
           directory: props.directory,
           fetch: props.fetch,
-          headers: props.headers,
+          headers,
         }),
     })
     const { client, connected } = sdk
@@ -101,6 +119,10 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
             sseMaxRetryAttempts: 0,
           })
 
+          // Re-assert the scope on every (re)connect so a reconnect cannot
+          // silently widen what this window receives.
+          void declare()
+
           if (Flag.OPENCODE_EXPERIMENTAL_WORKSPACES) {
             // Start syncing workspaces, it's important to do this after
             // we've started listening to events
@@ -155,6 +177,10 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
       event: emitter,
       fetch: props.fetch ?? fetch,
       url: props.url,
+      scope(sessions: string[]) {
+        declared = [...sessions]
+        return declare()
+      },
     }
   },
 })

@@ -11,9 +11,10 @@ import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import * as Sse from "effect/unstable/encoding/Sse"
 import { RootHttpApi } from "../api"
-import { GlobalUpgradeInput } from "../groups/global"
+import { GlobalScopeInput, GlobalUpgradeInput } from "../groups/global"
 import { sseConnect, sseDisconnect } from "../sse-counters"
 import { sseDisconnectSignal } from "../sse-disconnect"
+import { allows, getScope, installScopeTracking, setScope } from "@/server/shared/scope"
 
 // See event.ts for rationale. Same bounded-buffer + terminate-on-overflow
 // semantics so a stuck SSE client cannot grow heap unboundedly.
@@ -36,13 +37,20 @@ function eventData(data: unknown): Sse.Event {
   }
 }
 
-function eventResponse() {
+function eventResponse(clientID?: string) {
   return Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest
     const disconnect = yield* sseDisconnectSignal(request)
     const queue = yield* Queue.bounded<GlobalBusEvent>(SSE_QUEUE_CAPACITY)
       const overflow = yield* Deferred.make<void>()
       const handler = (event: GlobalBusEvent) => {
+        // Opt-in isolation: only a client that declared a scope is filtered.
+        // The scope is looked up per event so a declaration that arrives after
+        // the stream opened still takes effect without a reconnect.
+        if (clientID) {
+          const scope = getScope(clientID)
+          if (scope && !allows(event, scope)) return
+        }
         if (!Queue.offerUnsafe(queue, event)) {
           Effect.runPromise(Deferred.succeed(overflow, undefined).pipe(Effect.ignore))
         }
@@ -96,13 +104,20 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
     const config = yield* Config.Service
     const installation = yield* Installation.Service
     const bridge = yield* EffectBridge.make()
+    yield* Effect.sync(() => installScopeTracking())
 
     const health = Effect.fn("GlobalHttpApi.health")(function* () {
       return { healthy: true as const, version: InstallationVersion }
     })
 
     const event = Effect.fn("GlobalHttpApi.event")(function* () {
-      return yield* eventResponse()
+      const request = yield* HttpServerRequest.HttpServerRequest
+      return yield* eventResponse(request.headers["x-opencode-client-id"])
+    })
+
+    const scopeUpdate = Effect.fn("GlobalHttpApi.scope")(function* (ctx: { payload: typeof GlobalScopeInput.Type }) {
+      setScope(ctx.payload.clientID, { directory: ctx.payload.directory, sessions: ctx.payload.sessions })
+      return true
     })
 
     const configGet = Effect.fn("GlobalHttpApi.configGet")(function* () {
@@ -176,6 +191,7 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
     return handlers
       .handle("health", health)
       .handleRaw("event", event)
+      .handle("scope", scopeUpdate)
       .handle("configGet", configGet)
       .handle("configUpdate", configUpdate)
       .handle("dispose", dispose)
