@@ -1,7 +1,7 @@
 import { InstanceStore } from "@/project/instance-store"
 import { makeGlobalNode } from "@opencode-ai/core/effect/app-node"
 import { Context, Duration, Effect, Layer, Schedule } from "effect"
-import { claimIdle, graceMsFromEnv, instanceTracking } from "./instances"
+import { attached, claimIdle, graceMsFromEnv, rearm } from "./instances"
 
 // Unloads the instance of a project directory once no client holds it any more,
 // so a long-lived shared server does not accumulate one instance per project that
@@ -14,9 +14,7 @@ import { claimIdle, graceMsFromEnv, instanceTracking } from "./instances"
 // The service exists to carry the background fiber's scope; the work itself is the
 // layer's build.
 
-export interface Interface {
-  readonly tracking: () => Effect.Effect<ReturnType<typeof instanceTracking>>
-}
+export interface Interface {}
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SharedUnload") {}
 
@@ -31,15 +29,26 @@ const layer: Layer.Layer<Service, never, InstanceStore.Service> = Layer.effect(
       yield* Effect.repeat(
         Effect.gen(function* () {
           for (const directory of claimIdle(graceMs)) {
-            yield* store
-              .disposeDirectory(directory)
-              .pipe(Effect.catchCause((cause) => Effect.logWarning("instance unload failed", { directory, cause })))
+            // The claim happens before the dispose, and the dispose awaits the
+            // store, so a window can re-attach in between. Re-check before
+            // tearing anything down — a returning client must keep its instance.
+            if (attached(directory)) continue
+            yield* store.disposeDirectory(directory).pipe(
+              Effect.catchCause((cause) =>
+                Effect.gen(function* () {
+                  yield* Effect.logWarning("instance unload failed", { directory, cause })
+                  // claimIdle already dropped the directory; without re-arming a
+                  // transient failure would keep the instance resident forever.
+                  rearm(directory)
+                }),
+              ),
+            )
           }
         }),
         Schedule.spaced(POLL),
       ).pipe(Effect.forkScoped)
     }
-    return Service.of({ tracking: () => Effect.sync(instanceTracking) })
+    return Service.of({})
   }),
 )
 

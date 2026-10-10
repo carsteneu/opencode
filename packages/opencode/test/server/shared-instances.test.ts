@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import {
+  attached,
   claimIdle,
   graceMsFromEnv,
   instanceTracking,
+  rearm,
   release,
   resetInstanceTracking,
   retain,
@@ -95,5 +97,42 @@ describe("shared-server instance unloading", () => {
     expect(graceMsFromEnv()).toBe(0)
     process.env.OPENCODE_SHARED_SERVER_INSTANCE_IDLE_MS = "nonsense"
     expect(graceMsFromEnv()).toBe(60_000)
+  })
+
+  test("reports a directory as attached exactly while a client holds it", () => {
+    expect(attached("/a")).toBe(false)
+    retain("/a")
+    expect(attached("/a")).toBe(true)
+    release("/a", 1_000)
+    expect(attached("/a")).toBe(false)
+  })
+
+  // The sweep claims a directory and only then disposes it, which awaits the
+  // store — a window can re-attach in that window and must not have its
+  // instance torn down underneath it.
+  test("a re-attach between claim and dispose is observable", () => {
+    retain("/a")
+    release("/a", 1_000)
+    expect(claimIdle(GRACE, 2_100)).toEqual(["/a"])
+    retain("/a")
+    expect(attached("/a")).toBe(true)
+  })
+
+  test("re-arms a failed unload so the next sweep retries it", () => {
+    retain("/a")
+    release("/a", 1_000)
+    expect(claimIdle(GRACE, 2_100)).toEqual(["/a"])
+    rearm("/a", 2_200)
+    expect(claimIdle(GRACE, 2_300)).toEqual([])
+    expect(claimIdle(GRACE, 3_200)).toEqual(["/a"])
+  })
+
+  test("re-arm keeps quiet for a directory that has a client again", () => {
+    retain("/a")
+    release("/a", 1_000)
+    expect(claimIdle(GRACE, 2_100)).toEqual(["/a"])
+    retain("/a")
+    rearm("/a", 2_200)
+    expect(claimIdle(GRACE, 9_999)).toEqual([])
   })
 })

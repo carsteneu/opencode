@@ -88,6 +88,13 @@ export function setScope(clientID: string, input: ScopeInput) {
   // directory, so the refcount has to follow the window: release the directory it
   // left, retain the one it declares now. Unguarded retains would leak a client
   // per declaration and keep the instance alive forever.
+  //
+  // A declaration that lands after this client's last stream was torn down
+  // re-creates the entry — and its retain — with nothing left to clear it, so the
+  // directory can stay resident until that window declares again or the server
+  // exits. Closing that window needs this registry to know the stream lifetime;
+  // it is not done here because a client may legitimately declare before its
+  // stream opens.
   if (previous && previous.directory !== directory) releaseInstance(previous.directory)
   if (previous?.directory !== directory) retainInstance(directory)
   const entry: Entry = {

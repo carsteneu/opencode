@@ -13,6 +13,13 @@
 // This module owns only the bookkeeping: it is framework-free and takes the
 // current time as an argument, so the decision is testable without timers. The
 // caller that owns the store runs the unload (see server/shared/unload.ts).
+//
+// Only scope-declaring clients are counted. A subscriber that reads the global
+// stream without declaring a scope (`opencode run`, ACP, the app, the
+// control-plane) is not traced to a directory and therefore does not protect
+// one. Today the shared server's lockfile is read by the TUI finder only, so
+// every client of a shared server declares; widening this refcount belongs with
+// the first consumer that attaches without declaring.
 
 const DEFAULT_GRACE_MS = 60_000
 
@@ -62,6 +69,21 @@ export function claimIdle(graceMs: number, at: number = Date.now()): string[] {
 
 export function instanceTracking() {
   return { attached: Object.fromEntries(clients), idle: Object.fromEntries(idleSince) }
+}
+
+/** True while at least one scope-declaring client holds the directory. */
+export function attached(directory: string): boolean {
+  return (clients.get(directory) ?? 0) > 0
+}
+
+/**
+ * Puts a directory that failed to unload back on the clock so the next sweep
+ * retries it. `claimIdle` removed it, and without re-arming a transient dispose
+ * error would leave the instance resident forever — the opposite of the point.
+ */
+export function rearm(directory: string, at: number = Date.now()) {
+  if (!directory || attached(directory)) return
+  idleSince.set(directory, at)
 }
 
 export function resetInstanceTracking() {
