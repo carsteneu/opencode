@@ -84,10 +84,17 @@ describe("event scope filter", () => {
     expect(allows({ directory: B, payload: { id: "x", type: "brand.new", properties: {} } }, own)).toBe(true)
   })
 
-  test("plugin.added and vcs.branch.updated stay delivered", () => {
+  // Spec §7 asked for these two to be classified before implementation. Both
+  // carry no session id and are emitted per instance, so they are location-bound
+  // like catalog.updated — the hard rule "never data from a foreign project" wins
+  // over the (otherwise correct) "in doubt, deliver" default. Measured: 45
+  // plugin.added frames from dir A reached a window scoped to dir B before this.
+  test("plugin.added and vcs.branch.updated are directory-bound (R1)", () => {
     const own = scope(A, [])
-    expect(allows(live("plugin.added", undefined, B), own)).toBe(true)
-    expect(allows(live("vcs.branch.updated", undefined, B), own)).toBe(true)
+    expect(allows(live("plugin.added", undefined, A), own)).toBe(true)
+    expect(allows(live("plugin.added", undefined, B), own)).toBe(false)
+    expect(allows(live("vcs.branch.updated", undefined, A), own)).toBe(true)
+    expect(allows(live("vcs.branch.updated", undefined, B), own)).toBe(false)
   })
 })
 

@@ -60,6 +60,8 @@ const DIRECTORY_BOUND = new Set([
   "file.edited",
   "file.watcher.updated",
   "project.directories.updated",
+  "plugin.added",
+  "vcs.branch.updated",
   "pty.created",
   "pty.updated",
   "pty.deleted",
