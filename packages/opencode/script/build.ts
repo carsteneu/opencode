@@ -182,7 +182,9 @@ for (const item of targets) {
     conditions: ["bun", "node"],
     tsconfig: "./tsconfig.json",
     plugins: [plugin],
-    external: ["node-gyp"],
+    // typescript is only a fallback for runtimes without Bun.Transpiler (see the CodeMode
+    // interpreter); leaving it external keeps the compiler out of the compiled bundle.
+    external: ["node-gyp", "typescript"],
     format: "esm",
     minify: process.env.OPENCODE_PROFILE_BUILD !== "1",
     sourcemap: sourcemapsFlag ? "linked" : "none",

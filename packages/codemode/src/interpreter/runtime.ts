@@ -1,6 +1,5 @@
 import { parse } from "acorn"
 import { Cause, Effect, Exit, Fiber, Semaphore } from "effect"
-import { DiagnosticCategory, ModuleKind, ScriptTarget, flattenDiagnosticMessageText, transpileModule } from "typescript"
 import {
   copyIn,
   copyOut,
@@ -112,27 +111,47 @@ import {
   SandboxURLSearchParams,
 } from "../values.js"
 
-const parseProgram = (code: string): ProgramNode => {
-  const transpiled = transpileModule(`async function __codemode__() {\n${code}\n}`, {
+/**
+ * Bun's own transpiler: where this runs on Bun (the CLI, and the compiled binary) it
+ * strips the types without the TypeScript compiler in the bundle.
+ */
+const bunTranspiler =
+  typeof Bun === "undefined" || typeof Bun.Transpiler !== "function" ? undefined : new Bun.Transpiler({ loader: "ts" })
+
+// Only a runtime without Bun.Transpiler (Node, the desktop build) loads the compiler.
+const typescript = bunTranspiler ? undefined : await import("typescript")
+
+const parseError = (message: string): InterpreterRuntimeError =>
+  new InterpreterRuntimeError(`Failed to parse TypeScript: ${message}`, undefined, "ParseError")
+
+const transpile = (code: string): string => {
+  const source = `async function __codemode__() {\n${code}\n}`
+  if (bunTranspiler) {
+    try {
+      return bunTranspiler.transformSync(source)
+    } catch (error) {
+      throw parseError(error instanceof Error ? error.message : String(error))
+    }
+  }
+  const transpiled = typescript!.transpileModule(source, {
     reportDiagnostics: true,
     compilerOptions: {
-      target: ScriptTarget.ESNext,
-      module: ModuleKind.ESNext,
+      target: typescript!.ScriptTarget.ESNext,
+      module: typescript!.ModuleKind.ESNext,
     },
   })
-  const diagnostic = transpiled.diagnostics?.find((item) => item.category === DiagnosticCategory.Error)
+  const diagnostic = transpiled.diagnostics?.find((item) => item.category === typescript!.DiagnosticCategory.Error)
+  if (diagnostic) throw parseError(typescript!.flattenDiagnosticMessageText(diagnostic.messageText, "\n"))
+  return transpiled.outputText
+}
 
-  if (diagnostic) {
-    throw new InterpreterRuntimeError(
-      `Failed to parse TypeScript: ${flattenDiagnosticMessageText(diagnostic.messageText, "\n")}`,
-      undefined,
-      "ParseError",
-    )
-  }
-
-  const bodyStart = transpiled.outputText.indexOf("{") + 1
-  const bodyEnd = transpiled.outputText.lastIndexOf("}")
-  const executableCode = transpiled.outputText.slice(bodyStart, bodyEnd)
+const parseProgram = (code: string): ProgramNode => {
+  const outputText = transpile(code)
+  // A transpiler may hoist helpers above the wrapper, so the body is the wrapper's braces.
+  const wrapper = outputText.indexOf("async function __codemode__")
+  const bodyStart = outputText.indexOf("{", wrapper === -1 ? 0 : wrapper) + 1
+  const bodyEnd = outputText.lastIndexOf("}")
+  const executableCode = outputText.slice(bodyStart, bodyEnd)
   const parsed = parse(executableCode, {
     ecmaVersion: "latest",
     sourceType: "script",

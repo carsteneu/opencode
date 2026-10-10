@@ -66,7 +66,9 @@ for (const item of targets) {
     entrypoints: ["./src/index.ts"],
     tsconfig: "./tsconfig.json",
     plugins: [plugin],
-    external: ["node-gyp"],
+    // typescript is only a fallback for runtimes without Bun.Transpiler (see the CodeMode
+    // interpreter); leaving it external keeps the compiler out of the compiled bundle.
+    external: ["node-gyp", "typescript"],
     format: "esm",
     minify: true,
     sourcemap: sourcemapsFlag ? "linked" : "none",
