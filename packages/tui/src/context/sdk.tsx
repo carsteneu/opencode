@@ -27,16 +27,34 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
     const headers = { ...Object.fromEntries(new Headers(props.headers as HeadersInit | undefined).entries()) }
     headers["x-opencode-client-id"] = clientId
     let declared: string[] | undefined
+    let declaring = false
+    const post = async () => {
+      const base = await props.url
+      const response = await (props.fetch ?? fetch)(new URL("/global/scope", base), {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ clientID: clientId, directory: props.directory, sessions: declared ?? [] }),
+      })
+      if (!response.ok) throw new Error(`scope declaration rejected: ${response.status}`)
+    }
+    // A client that presents the client-id header is filtered from the first
+    // frame, so a lost declaration would silently starve this window of its own
+    // content. Retry with backoff instead of swallowing the failure.
     const declare = async () => {
-      if (declared === undefined) return
+      if (declared === undefined || declaring) return
+      declaring = true
       try {
-        const base = await props.url
-        await (props.fetch ?? fetch)(new URL("/global/scope", base), {
-          method: "POST",
-          headers: { ...headers, "content-type": "application/json" },
-          body: JSON.stringify({ clientID: clientId, directory: props.directory, sessions: declared }),
-        })
-      } catch {}
+        for (let attempt = 0; attempt < 5; attempt++) {
+          try {
+            await post()
+            return
+          } catch {
+            await Bun.sleep(200 * (attempt + 1))
+          }
+        }
+      } finally {
+        declaring = false
+      }
     }
     // The server URL only resolves once the child process reports ready. The
     // queued client lets the shell draw immediately; nothing blocks on the

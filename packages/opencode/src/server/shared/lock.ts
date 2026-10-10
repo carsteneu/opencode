@@ -2,6 +2,7 @@ import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import os from "node:os"
 import fs from "node:fs"
 import path from "node:path"
+import { randomUUID } from "node:crypto"
 
 // Discovery record for the global shared server. One file per binary version so
 // an upgrade never contends with a running older server: the new version finds
@@ -106,8 +107,10 @@ export async function writeLock(lock: Lock): Promise<boolean> {
   const file = lockPath(lock.version)
   fs.mkdirSync(serversDir(), { recursive: true })
   for (let attempt = 0; attempt < 3; attempt++) {
-    const tmp = `${file}.${process.pid}.${Date.now()}.tmp`
-    fs.writeFileSync(tmp, JSON.stringify(lock, null, 2), { mode: 0o600 })
+    // Random name + O_EXCL ("wx"): a pre-created symlink at a guessable temp
+    // path can neither be followed nor clobbered with lock (password) content.
+    const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`
+    fs.writeFileSync(tmp, JSON.stringify(lock, null, 2), { mode: 0o600, flag: "wx" })
     try {
       fs.linkSync(tmp, file)
       fs.rmSync(tmp, { force: true })

@@ -97,6 +97,26 @@ export function getScope(clientID: string): Scope | undefined {
   return { directory: entry.directory, sessions: entry.visible }
 }
 
+// An empty scope: location-less and project-wide session status still pass (R2,
+// R4), everything foreign is dropped. Used as the fail-closed fallback below.
+const EMPTY: Scope = { directory: "", sessions: new Set() }
+
+/**
+ * Decision for a subscriber identified by the opt-in `x-opencode-client-id`
+ * header. A subscriber that did NOT present the header is not opting in and gets
+ * the full stream (run, ACP, app, control-plane). A subscriber that DID present
+ * it has opted in, so it is filtered from the very first frame — the scope POST
+ * that carries the directory/sessions is a few milliseconds behind the stream,
+ * and until it lands the client is treated as showing nothing rather than
+ * everything. Without this the window would see foreign project data during that
+ * gap, which is exactly what §7 forbids.
+ */
+export function allowsForClient(clientID: string | undefined, event: GlobalBusEvent): boolean {
+  if (!clientID) return true
+  const entry = entries.get(clientID)
+  return allows(event, entry ? { directory: entry.directory, sessions: entry.visible } : EMPTY)
+}
+
 /** Pure decision function: may this event be delivered to a scoped client? */
 export function allows(event: GlobalBusEvent, scope: Scope): boolean {
   const directory = event.directory

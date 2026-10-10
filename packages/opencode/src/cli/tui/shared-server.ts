@@ -56,8 +56,12 @@ function spawnSharedServer() {
   // Carry global flags that change what the server loads, so `opencode --pure`
   // does not quietly start a plugin-loading server.
   const passthrough = process.argv.includes("--pure") ? ["--pure"] : []
+  // Pin to loopback: `serve` resolves its network options with the global config,
+  // which can set server.hostname/mdns. The finder deliberately ignores config,
+  // so without this a config file could make this detached, machine-wide server
+  // reachable beyond 127.0.0.1 (spec §3.4).
   const child = Bun.spawn(
-    [process.execPath, ...(developmentEntry ? [developmentEntry] : []), "serve", "--shared", ...passthrough],
+    [process.execPath, ...(developmentEntry ? [developmentEntry] : []), "serve", "--shared", "--hostname", "127.0.0.1", ...passthrough],
     {
     cwd: process.cwd(),
     detached: process.platform !== "win32",

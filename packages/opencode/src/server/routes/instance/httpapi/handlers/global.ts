@@ -14,7 +14,12 @@ import { RootHttpApi } from "../api"
 import { GlobalScopeInput, GlobalUpgradeInput } from "../groups/global"
 import { sseConnect, sseDisconnect } from "../sse-counters"
 import { sseDisconnectSignal } from "../sse-disconnect"
-import { allows, getScope, installScopeTracking, setScope } from "@/server/shared/scope"
+import { allowsForClient, clearScope, installScopeTracking, setScope } from "@/server/shared/scope"
+
+// Open /global/event streams per client id. A client id normally has exactly one
+// stream; the count makes eviction safe when a reconnect opens the new stream
+// before the old one's finalizer runs.
+const streams = new Map<string, number>()
 
 // See event.ts for rationale. Same bounded-buffer + terminate-on-overflow
 // semantics so a stuck SSE client cannot grow heap unboundedly.
@@ -44,13 +49,12 @@ function eventResponse(clientID?: string) {
     const queue = yield* Queue.bounded<GlobalBusEvent>(SSE_QUEUE_CAPACITY)
       const overflow = yield* Deferred.make<void>()
       const handler = (event: GlobalBusEvent) => {
-        // Opt-in isolation: only a client that declared a scope is filtered.
-        // The scope is looked up per event so a declaration that arrives after
-        // the stream opened still takes effect without a reconnect.
-        if (clientID) {
-          const scope = getScope(clientID)
-          if (scope && !allows(event, scope)) return
-        }
+        // Opt-in isolation: a client that presented the client-id header is
+        // filtered from its very first frame. The scope POST that carries the
+        // directory/sessions arrives a few ms behind the stream, so until it
+        // lands the client is treated as showing nothing — never as showing
+        // everything. Subscribers without the header are untouched.
+        if (!allowsForClient(clientID, event)) return
         if (!Queue.offerUnsafe(queue, event)) {
           Effect.runPromise(Deferred.succeed(overflow, undefined).pipe(Effect.ignore))
         }
@@ -69,11 +73,23 @@ function eventResponse(clientID?: string) {
     )
 
     const connectStats = yield* sseConnect()
+    if (clientID) streams.set(clientID, (streams.get(clientID) ?? 0) + 1)
     yield* Effect.logInfo(
       `global event connected (active=${connectStats.active}, busListeners=${connectStats.listeners})`,
     )
     yield* Effect.addFinalizer(() =>
       Effect.gen(function* () {
+        // Drop the scope once the client's last stream is gone so a long-lived
+        // shared server does not accumulate one entry per window that ever ran.
+        if (clientID) {
+          const remaining = (streams.get(clientID) ?? 1) - 1
+          if (remaining <= 0) {
+            streams.delete(clientID)
+            clearScope(clientID)
+          } else {
+            streams.set(clientID, remaining)
+          }
+        }
         const stats = yield* sseDisconnect()
         yield* Effect.logInfo(
           `global event disconnected (active=${stats.active}, busListeners=${stats.listeners})`,
@@ -116,7 +132,13 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
     })
 
     const scopeUpdate = Effect.fn("GlobalHttpApi.scope")(function* (ctx: { payload: typeof GlobalScopeInput.Type }) {
-      setScope(ctx.payload.clientID, { directory: ctx.payload.directory, sessions: ctx.payload.sessions })
+      // Bound the client-supplied key and session list so this endpoint cannot
+      // grow the shared server's scope maps without limit.
+      if (ctx.payload.clientID.length === 0 || ctx.payload.clientID.length > 200) return false
+      setScope(ctx.payload.clientID, {
+        directory: ctx.payload.directory,
+        sessions: ctx.payload.sessions.slice(0, 1000),
+      })
       return true
     })
 

@@ -53,7 +53,7 @@ export async function installSharedLifecycle(options: InstallOptions): Promise<I
     stopped = true
     clearInterval(timer)
     removeLockIfOwned()
-    void options.onIdle()
+    void Promise.resolve(options.onIdle()).catch(() => process.exit(1))
   }, pollMs)
   timer.unref?.()
 

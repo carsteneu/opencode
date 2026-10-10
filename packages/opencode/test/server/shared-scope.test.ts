@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { GlobalBus } from "../../src/bus/global"
-import { allows, clearScope, getScope, installScopeTracking, setScope, type Scope } from "../../src/server/shared/scope"
+import { allows, allowsForClient, clearScope, getScope, installScopeTracking, setScope, type Scope } from "../../src/server/shared/scope"
 
 const A = "/work/a"
 const B = "/work/b"
@@ -105,6 +105,18 @@ describe("event scope registry", () => {
 
   test("a client without a declaration has no scope (stream is unfiltered)", () => {
     expect(getScope("tui_reg")).toBeUndefined()
+  })
+
+  // A subscriber that presented x-opencode-client-id has opted in, so it must be
+  // filtered even before its scope POST lands — otherwise it would see foreign
+  // project data during the startup gap (§7).
+  test("a subscriber with the client-id header but no declaration is fail-closed", () => {
+    expect(allowsForClient("tui_pending", live("catalog.updated", undefined, B))).toBe(false)
+    expect(allowsForClient("tui_pending", live("session.next.text.delta", "ses_x", B))).toBe(false)
+    expect(allowsForClient("tui_pending", live("session.created", "ses_x", B))).toBe(true)
+    expect(allowsForClient("tui_pending", live("project.updated", undefined, "global"))).toBe(true)
+    // No header at all = not opted in = untouched (run, ACP, app, control-plane).
+    expect(allowsForClient(undefined, live("catalog.updated", undefined, B))).toBe(true)
   })
 
   test("the visible set includes subagents that appear after declaration", () => {

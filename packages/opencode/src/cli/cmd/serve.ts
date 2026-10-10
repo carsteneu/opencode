@@ -18,7 +18,14 @@ export const ServeCommand = effectCmd({
   instance: false,
   handler: Effect.fn("Cli.serve")(function* (args) {
     const { Server } = yield* Effect.promise(() => import("../../server/server"))
-    if (!Flag.OPENCODE_SERVER_PASSWORD) {
+    if (!process.env.OPENCODE_SERVER_PASSWORD) {
+      // A shared server is auto-discovered and auto-attached by every window, so
+      // it must never be published unauthenticated (spec §3.4). The TUI's spawn
+      // always sets a random password; a manual `serve --shared` must too.
+      if (args.shared) {
+        console.error("[serve --shared] OPENCODE_SERVER_PASSWORD is required; refusing to publish an unsecured shared server.")
+        process.exit(1)
+      }
       console.log("Warning: OPENCODE_SERVER_PASSWORD is not set; server is unsecured.")
     }
     const opts = yield* resolveNetworkOptions(args)
