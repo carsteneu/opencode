@@ -70,11 +70,22 @@ describe("event scope filter", () => {
     expect(allows(sync("session.next.step.started", "session.next.step.started.1", "ses_b", A), own)).toBe(false)
   })
 
-  test("R4: session status/list stays project-wide", () => {
+  test("R4: session status/list is project-wide only inside our own directory", () => {
     const own = scope(A, ["ses_a"])
     for (const type of ["session.created", "session.updated", "session.deleted", "session.status", "session.idle"]) {
+      // Own directory: every session of the project is delivered, as before.
       expect(allows(live(type, "ses_b", A), own)).toBe(true)
-      expect(allows(sync(type, `${type}.1`, "ses_b", B), own)).toBe(true)
+      expect(allows(sync(type, `${type}.1`, "ses_b", A), own)).toBe(true)
+      // Foreign directory: not delivered at all. Natively each window had its own
+      // single-project server, so cross-project session metadata never existed;
+      // delivering it here shares SessionInfo (title, directory, cost, tokens,
+      // share url) of a foreign project.
+      expect(allows(live(type, "ses_b", B), own)).toBe(false)
+      expect(allows(sync(type, `${type}.1`, "ses_b", B), own)).toBe(false)
+      // Foreign directory but one of our own sessions (a /move-ed session): the
+      // live status must still arrive or the session list shows it as dark.
+      expect(allows(live(type, "ses_a", B), own)).toBe(true)
+      expect(allows(sync(type, `${type}.1`, "ses_a", B), own)).toBe(true)
     }
   })
 
@@ -113,7 +124,11 @@ describe("event scope registry", () => {
   test("a subscriber with the client-id header but no declaration is fail-closed", () => {
     expect(allowsForClient("tui_pending", live("catalog.updated", undefined, B))).toBe(false)
     expect(allowsForClient("tui_pending", live("session.next.text.delta", "ses_x", B))).toBe(false)
-    expect(allowsForClient("tui_pending", live("session.created", "ses_x", B))).toBe(true)
+    // Foreign directory AND a session outside the (empty) visible set: dropped
+    // even for status frames — that is the whole point of the fail-closed window.
+    expect(allowsForClient("tui_pending", live("session.created", "ses_x", B))).toBe(false)
+    // Location-less frames carry no project and stay delivered (R2).
+    expect(allowsForClient("tui_pending", live("session.created", "ses_x"))).toBe(true)
     expect(allowsForClient("tui_pending", live("project.updated", undefined, "global"))).toBe(true)
     // No header at all = not opted in = untouched (run, ACP, app, control-plane).
     expect(allowsForClient(undefined, live("catalog.updated", undefined, B))).toBe(true)

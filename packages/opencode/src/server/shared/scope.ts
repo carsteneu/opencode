@@ -34,9 +34,12 @@ const entries = new Map<string, Entry>()
 const childrenOf = new Map<string, Set<string>>()
 let observing = false
 
-// Session list/status events stay project-wide (R4): the session list renders
-// the live status of every listed session and the agent block reads the whole
-// status map, so these must reach every window regardless of the displayed one.
+// Session list/status events (R4): the session list renders the live status of
+// every listed session and the agent block reads the whole status map, so these
+// reach every window of the same project. They are NOT shared across projects —
+// natively each window had its own server with exactly one project, so a foreign
+// project's SessionInfo (title, directory, cost, tokens, share url) never crossed
+// a window boundary and must not now.
 const SESSION_STATUS = new Set([
   "session.created",
   "session.updated",
@@ -140,8 +143,15 @@ export function allows(event: GlobalBusEvent, scope: Scope): boolean {
   // R1: location-bound non-session events only for the own directory.
   if (DIRECTORY_BOUND.has(frame.type)) return directory === scope.directory
 
-  // R4: session status/list stays project-wide.
-  if (SESSION_STATUS.has(frame.type)) return true
+  // R4: session status/list reaches the whole project for the window's own
+  // directory — the session list renders the live status of every listed session
+  // and the agent block reads the whole status map. A foreign directory is only
+  // delivered for sessions the window actually shows, so a /move-ed session (its
+  // directory is no longer the cwd) keeps its live status without re-opening the
+  // foreign-project metadata channel.
+  if (SESSION_STATUS.has(frame.type)) {
+    return directory === scope.directory || (frame.sessionID !== undefined && scope.sessions.has(frame.sessionID))
+  }
 
   // R3: session content only for the own session tree.
   if (frame.sessionID) return scope.sessions.has(frame.sessionID)
