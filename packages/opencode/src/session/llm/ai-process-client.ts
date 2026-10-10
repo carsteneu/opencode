@@ -103,7 +103,10 @@ export type PoolStats = {
 
 const stderrLimit = 64 * 1024
 const killGraceMs = 1_000
-const poolMax = 2
+// The shared server hosts the LLM worker pool for every attached window, so its
+// concurrency cap is raised (OPENCODE_LLM_POOL_MAX=6 in the shared-server spawn).
+// Idle cost is unchanged: workers are spawned on demand and retired after 30s.
+const poolMax = Number(process.env.OPENCODE_LLM_POOL_MAX) || 2
 const poolIdleMs = 30_000
 const poolMaxUses = 16
 const poolMaxRssBytes = 256 * 1024 * 1024

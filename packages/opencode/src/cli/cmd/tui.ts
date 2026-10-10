@@ -160,28 +160,48 @@ export const TuiThreadCommand = cmd({
       const cwd = Filesystem.resolve(process.cwd())
       const network = resolveNetworkOptionsNoConfig(args)
       const external = hasArg("--port") || hasArg("--hostname") || network.mdns === true
-      const { startTuiServerProcess } = await import("../tui/process-server")
-      await using server = await startTuiServerProcess({ directory: cwd, network, private: !external })
-      // The profiling bootstrap owns SIGUSR2 as its stop signal. Registering
-      // reload at the same time would abort the profiled provider turn.
-      const reload = process.env.OPENCODE_CPU_PROFILE
+
+      // Shared mode: find or start the one global server and attach to it over
+      // HTTP/SSE, exactly like `attach`. Disabled by the escape hatch, for
+      // external servers (--port/--hostname/mdns), and whenever discovery fails
+      // — then the private IPC child is used unchanged.
+      const shared =
+        external || process.env.OPENCODE_SHARED_SERVER === "0"
+          ? undefined
+          : await (await import("../tui/shared-server")).findOrStartSharedServer().catch(() => undefined)
+
+      const ipc = shared
         ? undefined
-        : () => {
-            server.call({ name: "reload" }).catch(() => {})
-          }
+        : await (await import("../tui/process-server")).startTuiServerProcess({
+            directory: cwd,
+            network,
+            private: !external,
+          })
+      const url = shared ? shared.url : ipc!.url
+      const password = shared ? shared.password : ipc!.password
+
+      // The profiling bootstrap owns SIGUSR2 as its stop signal. Registering
+      // reload at the same time would abort the profiled provider turn. Reload
+      // is an IPC-only affordance and has no shared-server equivalent (spec §12).
+      const reload =
+        ipc && !process.env.OPENCODE_CPU_PROFILE
+          ? () => {
+              ipc.call({ name: "reload" }).catch(() => {})
+            }
+          : undefined
       if (reload) process.on("SIGUSR2", reload)
 
       const prompt = await input(args.prompt)
       const config = await TuiConfig.get()
-      const headers = server.password
-        ? ServerAuth.headers({ password: server.password })
+      const headers = password
+        ? ServerAuth.headers({ password })
         : external || ServerAuth.header()
           ? ServerAuth.headers()
           : undefined
 
       try {
         await validateSession({
-          url: await server.url,
+          url: await url,
           sessionID: args.session,
           directory: cwd,
           headers,
@@ -192,14 +212,16 @@ export const TuiThreadCommand = cmd({
         return
       }
 
-      setTimeout(() => {
-        void server.url.then((url) => {
-          fetch(new URL("/global/config", url), { headers })
-            .then((response) => response.json() as Promise<{ autoupdate?: ConfigV1.Info["autoupdate"] }>)
-            .then((global) => server.call({ name: "checkUpgrade", input: { autoupdate: global.autoupdate } }))
-            .catch(() => {})
-        })
-      }, 1000).unref?.()
+      if (ipc) {
+        setTimeout(() => {
+          void ipc.url.then((resolved) => {
+            fetch(new URL("/global/config", resolved), { headers })
+              .then((response) => response.json() as Promise<{ autoupdate?: ConfigV1.Info["autoupdate"] }>)
+              .then((global) => ipc.call({ name: "checkUpgrade", input: { autoupdate: global.autoupdate } }))
+              .catch(() => {})
+          })
+        }, 1000).unref?.()
+      }
 
       try {
         const { Effect } = await import("effect")
@@ -207,17 +229,19 @@ export const TuiThreadCommand = cmd({
         const { createLegacyTuiPluginHost } = await import("@/plugin/tui/runtime")
         await Effect.runPromise(
           run({
-            url: server.url,
-            async onSnapshot() {
-              const tui = writeHeapSnapshot("tui.heapsnapshot")
-              const snapshot = await server.call({ name: "snapshot" })
-              return [tui, String(snapshot)]
-            },
+            url,
+            onSnapshot: ipc
+              ? async () => {
+                  const tui = writeHeapSnapshot("tui.heapsnapshot")
+                  const snapshot = await ipc.call({ name: "snapshot" })
+                  return [tui, String(snapshot)]
+                }
+              : undefined,
             config,
             pluginHost: createLegacyTuiPluginHost(),
             directory: cwd,
             headers,
-            events: server.events,
+            events: ipc?.events,
             args: {
               continue: args.continue,
               sessionID: args.session,
@@ -232,6 +256,8 @@ export const TuiThreadCommand = cmd({
       } finally {
         if (reload) process.off("SIGUSR2", reload)
       }
+
+      if (ipc) await ipc.stop()
     } finally {
       try {
         unguard?.()
