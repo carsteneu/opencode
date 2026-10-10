@@ -9,23 +9,30 @@ import { release as releaseInstance, retain as retainInstance } from "./instance
 // without a scope receives the stream bit-for-bit as before, which also keeps
 // older clients that do not know about scopes working.
 //
-// A scope is a directory plus the set of root sessions the client currently
-// shows. The visible set is the closure over the parentID tree, computed from
-// session lifecycle events observed on the bus, so subagent sessions that do
-// not exist yet at declaration time still count.
+// A scope is a directory, a project and the set of root sessions the client
+// currently shows. The visible set is the closure over the parentID tree,
+// computed from session lifecycle events observed on the bus, so subagent
+// sessions that do not exist yet at declaration time still count.
+//
+// The project is what separates "the session list this window renders" (which is
+// project-wide) from "a foreign project's session metadata" (which must never
+// cross a window boundary).
 
 export type ScopeInput = {
   readonly directory?: string
+  readonly project?: string
   readonly sessions: ReadonlyArray<string>
 }
 
 export type Scope = {
   readonly directory: string
+  readonly project: string
   readonly sessions: ReadonlySet<string>
 }
 
 type Entry = {
   directory: string
+  project: string
   roots: Set<string>
   visible: Set<string>
 }
@@ -34,12 +41,14 @@ const entries = new Map<string, Entry>()
 const childrenOf = new Map<string, Set<string>>()
 let observing = false
 
-// Session list/status events (R4): the session list renders the live status of
-// every listed session and the agent block reads the whole status map, so these
-// reach every window of the same project. They are NOT shared across projects —
-// natively each window had its own server with exactly one project, so a foreign
-// project's SessionInfo (title, directory, cost, tokens, share url) never crossed
-// a window boundary and must not now.
+// Session list/status events (R4): these are what the session list renders —
+// title, cost, tokens, live status, deletions — and it lists the whole project,
+// not just the window's directory (a window at the repo root asks the list for
+// path "" and gets every session of the project, session.ts list). So R4 is keyed
+// on the project. It is NOT shared across projects: natively each window had its
+// own server with exactly one project, so a foreign project's SessionInfo (title,
+// directory, cost, tokens, share url) never crossed a window boundary and must
+// not now.
 const SESSION_STATUS = new Set([
   "session.created",
   "session.updated",
@@ -83,6 +92,7 @@ export function installScopeTracking() {
 
 export function setScope(clientID: string, input: ScopeInput) {
   const directory = input.directory ?? ""
+  const project = input.project ?? ""
   const previous = entries.get(clientID)
   // A window re-declares on every session switch and may move to another
   // directory, so the refcount has to follow the window: release the directory it
@@ -99,6 +109,7 @@ export function setScope(clientID: string, input: ScopeInput) {
   if (previous?.directory !== directory) retainInstance(directory)
   const entry: Entry = {
     directory,
+    project,
     roots: new Set(input.sessions.filter((id) => typeof id === "string" && id.length > 0)),
     visible: new Set(),
   }
@@ -115,12 +126,12 @@ export function clearScope(clientID: string) {
 export function getScope(clientID: string): Scope | undefined {
   const entry = entries.get(clientID)
   if (!entry) return undefined
-  return { directory: entry.directory, sessions: entry.visible }
+  return { directory: entry.directory, project: entry.project, sessions: entry.visible }
 }
 
-// An empty scope: location-less and project-wide session status still pass (R2,
-// R4), everything foreign is dropped. Used as the fail-closed fallback below.
-const EMPTY: Scope = { directory: "", sessions: new Set() }
+// An empty scope: location-less events still pass (R2), everything foreign is
+// dropped. Used as the fail-closed fallback below.
+const EMPTY: Scope = { directory: "", project: "", sessions: new Set() }
 
 /**
  * Decision for a subscriber identified by the opt-in `x-opencode-client-id`
@@ -135,7 +146,7 @@ const EMPTY: Scope = { directory: "", sessions: new Set() }
 export function allowsForClient(clientID: string | undefined, event: GlobalBusEvent): boolean {
   if (!clientID) return true
   const entry = entries.get(clientID)
-  return allows(event, entry ? { directory: entry.directory, sessions: entry.visible } : EMPTY)
+  return allows(event, entry ? { directory: entry.directory, project: entry.project, sessions: entry.visible } : EMPTY)
 }
 
 /** Pure decision function: may this event be delivered to a scoped client? */
@@ -150,14 +161,19 @@ export function allows(event: GlobalBusEvent, scope: Scope): boolean {
   // R1: location-bound non-session events only for the own directory.
   if (DIRECTORY_BOUND.has(frame.type)) return directory === scope.directory
 
-  // R4: session status/list reaches the whole project for the window's own
-  // directory — the session list renders the live status of every listed session
-  // and the agent block reads the whole status map. A foreign directory is only
-  // delivered for sessions the window actually shows, so a /move-ed session (its
-  // directory is no longer the cwd) keeps its live status without re-opening the
-  // foreign-project metadata channel.
+  // R4: session list/status reaches the whole project the window shows.
   if (SESSION_STATUS.has(frame.type)) {
-    return directory === scope.directory || (frame.sessionID !== undefined && scope.sessions.has(frame.sessionID))
+    const own = frame.sessionID !== undefined && scope.sessions.has(frame.sessionID)
+    // Both sides know their project: that is the whole decision. The session list
+    // is project-wide (see SESSION_STATUS), so the title, cost, status and
+    // deletion of a session living in a sibling directory of this project must
+    // still arrive or the list goes stale — and a foreign project's must not,
+    // even if its directory string happens to match.
+    if (scope.project !== "" && event.project !== undefined) return event.project === scope.project || own
+    // No project on one side (an older client, or an event published without an
+    // instance context): narrow decision — own directory, or a session this
+    // window actually shows (a /move-ed session).
+    return directory === scope.directory || own
   }
 
   // R3: session content only for the own session tree.

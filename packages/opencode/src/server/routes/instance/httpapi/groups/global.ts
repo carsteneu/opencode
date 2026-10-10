@@ -60,6 +60,7 @@ export const GlobalUpgradeInput = Schema.Struct({
 export const GlobalScopeInput = Schema.Struct({
   clientID: Schema.String,
   directory: Schema.optional(Schema.String),
+  project: Schema.optional(Schema.String),
   sessions: Schema.Array(Schema.String),
 })
 

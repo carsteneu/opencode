@@ -4,26 +4,30 @@ import { allows, allowsForClient, clearScope, getScope, installScopeTracking, se
 
 const A = "/work/a"
 const B = "/work/b"
+const PA = "proj_a"
+const PB = "proj_b"
 
 let counter = 0
 function clientID() {
   return `tui_test_${++counter}`
 }
 
-function scope(directory: string, sessions: string[]): Scope {
-  return { directory, sessions: new Set(sessions) }
+function scope(directory: string, sessions: string[], project = ""): Scope {
+  return { directory, project, sessions: new Set(sessions) }
 }
 
-function live(type: string, sessionID?: string, directory?: string) {
+function live(type: string, sessionID?: string, directory?: string, project?: string) {
   return {
     directory,
+    project,
     payload: { id: "evt", type, properties: sessionID ? { sessionID } : {} },
   }
 }
 
-function sync(type: string, versioned: string, sessionID: string, directory?: string) {
+function sync(type: string, versioned: string, sessionID: string, directory?: string, project?: string) {
   return {
     directory,
+    project,
     payload: { type: "sync", syncEvent: { id: "evt", type: versioned, seq: 1, aggregateID: sessionID, data: { sessionID } } },
   }
 }
@@ -70,23 +74,32 @@ describe("event scope filter", () => {
     expect(allows(sync("session.next.step.started", "session.next.step.started.1", "ses_b", A), own)).toBe(false)
   })
 
-  test("R4: session status/list is project-wide only inside our own directory", () => {
-    const own = scope(A, ["ses_a"])
+  test("R4: session status/list follows the window's project, never a foreign one", () => {
+    const own = scope(A, ["ses_a"], PA)
     for (const type of ["session.created", "session.updated", "session.deleted", "session.status", "session.idle"]) {
-      // Own directory: every session of the project is delivered, as before.
-      expect(allows(live(type, "ses_b", A), own)).toBe(true)
-      expect(allows(sync(type, `${type}.1`, "ses_b", A), own)).toBe(true)
-      // Foreign directory: not delivered at all. Natively each window had its own
-      // single-project server, so cross-project session metadata never existed;
-      // delivering it here shares SessionInfo (title, directory, cost, tokens,
-      // share url) of a foreign project.
-      expect(allows(live(type, "ses_b", B), own)).toBe(false)
-      expect(allows(sync(type, `${type}.1`, "ses_b", B), own)).toBe(false)
-      // Foreign directory but one of our own sessions (a /move-ed session): the
-      // live status must still arrive or the session list shows it as dark.
-      expect(allows(live(type, "ses_a", B), own)).toBe(true)
-      expect(allows(sync(type, `${type}.1`, "ses_a", B), own)).toBe(true)
+      // Another directory of the SAME project: the list is project-wide (a window
+      // at the repo root asks for path "" and gets every project session), so its
+      // title/cost/status/deletion has to arrive.
+      expect(allows(live(type, "ses_b", B, PA), own)).toBe(true)
+      expect(allows(sync(type, `${type}.1`, "ses_b", B, PA), own)).toBe(true)
+      // A foreign project: dropped, even from the window's own directory — the
+      // old per-window server never showed another project's session metadata.
+      expect(allows(live(type, "ses_b", B, PB), own)).toBe(false)
+      expect(allows(live(type, "ses_b", A, PB), own)).toBe(false)
+      // ...unless it is a session this window actually shows (a /move-ed session
+      // whose directory is no longer the cwd).
+      expect(allows(live(type, "ses_a", B, PB), own)).toBe(true)
     }
+  })
+
+  test("R4: without a declared project the narrow directory rule still applies", () => {
+    const own = scope(A, [], "")
+    expect(allows(live("session.status", "ses_b", A), own)).toBe(true)
+    expect(allows(live("session.status", "ses_b", B), own)).toBe(false)
+    // An event published without an instance context carries no project; it must
+    // not be dropped for the window's own directory.
+    expect(allows(live("session.status", "ses_b", A, undefined), scope(A, [], PA))).toBe(true)
+    expect(allows(live("session.status", "ses_b", B, undefined), scope(A, [], PA))).toBe(false)
   })
 
   test("unknown events are delivered (in doubt, deliver)", () => {

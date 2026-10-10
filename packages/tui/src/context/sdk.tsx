@@ -31,6 +31,12 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
     headers["x-opencode-client-id"] = clientId
     let declared: string[] | undefined
     let declaring = false
+    // The session list a window renders is project-wide, so R4 has to be keyed on
+    // the project and not only on the working directory — otherwise the title,
+    // cost, status and deletion of a session that lives in a sibling directory of
+    // the same project never arrives and the list goes stale. Declared alongside
+    // the directory below.
+    let projectID = ""
     // The base URL is re-pointed on rediscovery, so the scope POST follows the
     // window to whatever server it is talking to now.
     let serverUrl: string | Promise<string> = props.url
@@ -38,7 +44,12 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
       const response = await (props.fetch ?? fetch)(new URL("/global/scope", await serverUrl), {
         method: "POST",
         headers: { ...headers, "content-type": "application/json" },
-        body: JSON.stringify({ clientID: clientId, directory: props.directory, sessions: declared ?? [] }),
+        body: JSON.stringify({
+          clientID: clientId,
+          project: projectID || undefined,
+          directory: props.directory,
+          sessions: declared ?? [],
+        }),
       })
       if (!response.ok) throw new Error(`scope declaration rejected: ${response.status}`)
     }
@@ -46,7 +57,7 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
     // frame, so a lost declaration would silently starve this window of its own
     // content. Retry with backoff instead of swallowing the failure.
     const declare = async () => {
-      if (declared === undefined || declaring) return
+      if ((declared === undefined && projectID === "") || declaring) return
       declaring = true
       try {
         for (let attempt = 0; attempt < 5; attempt++) {
@@ -76,6 +87,17 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
         }),
     })
     const { client, connected } = sdk
+
+    // Resolve the project once and hand it to the server with the next
+    // declaration. Until it lands R4 falls back to the own-directory decision,
+    // which withholds sibling-directory session metadata only.
+    const loadProject = async () => {
+      const response = await client.project.current().catch(() => undefined)
+      const id = response?.data?.id
+      if (!id || id === projectID) return
+      projectID = id
+      await declare()
+    }
 
     // A window attached to a shared server must survive that server dying: run
     // discovery again (a healthy peer is reattached, a dead one is replaced by a
@@ -200,6 +222,7 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
     }
 
     onMount(async () => {
+      void loadProject()
       if (props.events) {
         const unsub = await props.events.subscribe(handleEvent)
         onCleanup(unsub)

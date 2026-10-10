@@ -39,3 +39,40 @@ test("the TUI declares an event scope carrying its client id", async () => {
     app.renderer.destroy()
   }
 })
+
+// The session list a window renders is project-wide, so R4 is keyed on the
+// project: without it the title/cost/status of a session living in a sibling
+// directory of the same project would never arrive.
+test("the TUI declares its project alongside the directory", async () => {
+  const seen = Promise.withResolvers<Record<string, unknown>>()
+  const calls = createFetch(async (url, request) => {
+    if (url.pathname.endsWith("/project/current")) return json({ id: "proj_x" })
+    if (url.pathname === "/global/scope") {
+      const body = (await request.json()) as Record<string, unknown>
+      if (body.project) seen.resolve(body)
+      return json(true)
+    }
+    return undefined
+  })
+
+  function Harness() {
+    const sdk = useSDK()
+    onMount(() => {
+      void sdk.scope(["ses_root"])
+    })
+    return <box />
+  }
+
+  const app = await testRender(() => (
+    <SDKProvider url="http://test" directory={directory} fetch={calls.fetch} events={eventSource()}>
+      <Harness />
+    </SDKProvider>
+  ))
+  try {
+    const body = await seen.promise
+    expect(body.project).toBe("proj_x")
+    expect(body.directory).toBe(directory)
+  } finally {
+    app.renderer.destroy()
+  }
+})

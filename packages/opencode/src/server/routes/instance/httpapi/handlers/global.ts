@@ -137,6 +137,7 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
       if (ctx.payload.clientID.length === 0 || ctx.payload.clientID.length > 200) return false
       setScope(ctx.payload.clientID, {
         directory: ctx.payload.directory,
+        project: ctx.payload.project?.slice(0, 200),
         sessions: ctx.payload.sessions.slice(0, 1000),
       })
       return true
