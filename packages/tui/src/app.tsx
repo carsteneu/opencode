@@ -98,7 +98,7 @@ import {
   useOpencodeKeymap,
 } from "./keymap"
 
-import type { EventSource } from "./context/sdk"
+import type { EventSource, Rediscover } from "./context/sdk"
 import { DialogVariant } from "./component/dialog-variant"
 import { createTuiAttention } from "./attention"
 import * as TuiAudio from "./audio"
@@ -167,6 +167,7 @@ export type TuiInput = {
   fetch?: typeof fetch
   headers?: RequestInit["headers"]
   events?: EventSource
+  rediscover?: Rediscover
   pluginHost: TuiPluginHost
 }
 
@@ -326,6 +327,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                           fetch={input.fetch}
                                           headers={input.headers}
                                           events={input.events}
+                                          rediscover={input.rediscover}
                                         >
                                           <PermissionProvider>
                                             <ProjectProvider>

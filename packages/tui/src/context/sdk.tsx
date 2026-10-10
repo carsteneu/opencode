@@ -9,6 +9,8 @@ export type EventSource = {
   subscribe: (handler: (event: GlobalEvent) => void) => Promise<() => void>
 }
 
+export type Rediscover = () => Promise<{ url: string; headers?: RequestInit["headers"] } | undefined>
+
 export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
   name: "SDK",
   init: (props: {
@@ -17,6 +19,7 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
     fetch?: typeof fetch
     headers?: RequestInit["headers"]
     events?: EventSource
+    rediscover?: Rediscover
   }) => {
     const abort = new AbortController()
     let sse: AbortController | undefined
@@ -28,9 +31,11 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
     headers["x-opencode-client-id"] = clientId
     let declared: string[] | undefined
     let declaring = false
+    // The base URL is re-pointed on rediscovery, so the scope POST follows the
+    // window to whatever server it is talking to now.
+    let serverUrl: string | Promise<string> = props.url
     const post = async () => {
-      const base = await props.url
-      const response = await (props.fetch ?? fetch)(new URL("/global/scope", base), {
+      const response = await (props.fetch ?? fetch)(new URL("/global/scope", await serverUrl), {
         method: "POST",
         headers: { ...headers, "content-type": "application/json" },
         body: JSON.stringify({ clientID: clientId, directory: props.directory, sessions: declared ?? [] }),
@@ -71,6 +76,25 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
         }),
     })
     const { client, connected } = sdk
+
+    // A window attached to a shared server must survive that server dying: run
+    // discovery again (a healthy peer is reattached, a dead one is replaced by a
+    // freshly started server), re-point the client, and let the loop resubscribe
+    // and re-declare the scope. Only the shared path passes a resolver; the IPC
+    // path keeps today's behaviour.
+    const redial = async () => {
+      if (!props.rediscover) return false
+      const next = await props.rediscover()
+      if (!next) return false
+      if (next.headers) {
+        const incoming = Object.fromEntries(new Headers(next.headers as HeadersInit).entries())
+        delete headers["authorization"]
+        Object.assign(headers, incoming)
+      }
+      serverUrl = next.url
+      sdk.retarget(next.url)
+      return true
+    }
 
     const handlers = new Set<(event: GlobalEvent) => void>()
     const emitter = {
@@ -132,31 +156,42 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
         while (true) {
           if (abort.signal.aborted || ctrl.signal.aborted) break
 
-          const events = await client.global.event({
-            signal: ctrl.signal,
-            sseMaxRetryAttempts: 0,
-          })
+          try {
+            const events = await client.global.event({
+              signal: ctrl.signal,
+              sseMaxRetryAttempts: 0,
+            })
 
-          // Re-assert the scope on every (re)connect so a reconnect cannot
-          // silently widen what this window receives.
-          void declare()
+            // Re-assert the scope on every (re)connect so a reconnect cannot
+            // silently widen what this window receives.
+            void declare()
 
-          if (Flag.OPENCODE_EXPERIMENTAL_WORKSPACES) {
-            // Start syncing workspaces, it's important to do this after
-            // we've started listening to events
-            await client.sync.start().catch(() => {})
-          }
+            if (Flag.OPENCODE_EXPERIMENTAL_WORKSPACES) {
+              // Start syncing workspaces, it's important to do this after
+              // we've started listening to events
+              await client.sync.start().catch(() => {})
+            }
 
-          for await (const event of events.stream) {
-            if (ctrl.signal.aborted) break
-            handleEvent(event)
+            for await (const event of events.stream) {
+              if (ctrl.signal.aborted) break
+              handleEvent(event)
+            }
+          } catch (error) {
+            if (abort.signal.aborted || ctrl.signal.aborted) break
+            // Without a resolver there is nowhere else to go — the error ends
+            // the loop, exactly as before.
+            if (!props.rediscover) throw error
           }
 
           if (timer) clearTimeout(timer)
           if (queue.length > 0) flush()
-          attempt += 1
           if (abort.signal.aborted || ctrl.signal.aborted) break
 
+          // The stream ended — cleanly or not. Rediscover before retrying so a
+          // dead shared server does not leave this window permanently dark.
+          if (await redial().catch(() => false)) attempt = 0
+
+          attempt += 1
           // Exponential backoff
           const backoff = Math.min(retryDelay * 2 ** (attempt - 1), maxRetryDelay)
           await new Promise((resolve) => setTimeout(resolve, backoff))
@@ -194,7 +229,9 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
       directory: props.directory,
       event: emitter,
       fetch: props.fetch ?? fetch,
-      url: props.url,
+      get url() {
+        return serverUrl
+      },
       scope(sessions: string[]) {
         declared = [...sessions]
         return declare()

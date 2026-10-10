@@ -10,20 +10,23 @@ export function createQueuedClient<C extends object>(input: {
   url: string | Promise<string>
   create: (baseUrl: string) => C
 }) {
-  const url = Promise.resolve(input.url)
+  let url = Promise.resolve(input.url)
   let real: C | undefined
   let connectionError: unknown
   const [connected, setConnected] = createSignal(false)
-  url.then(
-    (baseUrl) => {
-      real = input.create(baseUrl)
-      setConnected(true)
-    },
-    (error) => {
-      connectionError = error
-      setConnected(true)
-    },
-  )
+  const bind = (pending: Promise<string>) => {
+    pending.then(
+      (baseUrl) => {
+        real = input.create(baseUrl)
+        setConnected(true)
+      },
+      (error) => {
+        connectionError = error
+        setConnected(true)
+      },
+    )
+  }
+  bind(url)
 
   const makeStep = (path: PropertyKey[]): any =>
     new Proxy(function () {} as any, {
@@ -58,5 +61,22 @@ export function createQueuedClient<C extends object>(input: {
     },
   })
 
-  return { client, connected, url }
+  return {
+    client,
+    connected,
+    get url() {
+      return url
+    },
+    /**
+     * Point the client at a server discovered later, after the one it attached
+     * to died. The next call builds a fresh SDK against the new base URL; a call
+     * already in flight keeps the URL it started with.
+     */
+    retarget(next: string) {
+      real = undefined
+      connectionError = undefined
+      url = Promise.resolve(next)
+      bind(url)
+    },
+  }
 }

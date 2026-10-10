@@ -165,10 +165,9 @@ export const TuiThreadCommand = cmd({
       // HTTP/SSE, exactly like `attach`. Disabled by the escape hatch, for
       // external servers (--port/--hostname/mdns), and whenever discovery fails
       // — then the private IPC child is used unchanged.
-      const shared =
-        external || process.env.OPENCODE_SHARED_SERVER === "0"
-          ? undefined
-          : await (await import("../tui/shared-server")).findOrStartSharedServer().catch(() => undefined)
+      const discovery =
+        external || process.env.OPENCODE_SHARED_SERVER === "0" ? undefined : await import("../tui/shared-server")
+      const shared = discovery ? await discovery.findOrStartSharedServer().catch(() => undefined) : undefined
 
       const ipc = shared
         ? undefined
@@ -179,6 +178,18 @@ export const TuiThreadCommand = cmd({
           })
       const url = shared ? shared.url : ipc!.url
       const password = shared ? shared.password : ipc!.password
+
+      // The window re-runs discovery when its stream dies, so a shared server
+      // that crashed is replaced instead of leaving this window dark forever
+      // (spec §9). Fresh credentials, because the replacement publishes its own
+      // password.
+      const rediscover = discovery
+        ? async () => {
+            const next = await discovery.findOrStartSharedServer().catch(() => undefined)
+            if (!next) return undefined
+            return { url: next.url, headers: ServerAuth.headers({ password: next.password }) }
+          }
+        : undefined
 
       // The profiling bootstrap owns SIGUSR2 as its stop signal. Registering
       // reload at the same time would abort the profiled provider turn. Reload
@@ -242,6 +253,7 @@ export const TuiThreadCommand = cmd({
             directory: cwd,
             headers,
             events: ipc?.events,
+            rediscover,
             args: {
               continue: args.continue,
               sessionID: args.session,
