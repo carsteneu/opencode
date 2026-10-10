@@ -23,6 +23,7 @@ import { Permission } from "@/permission"
 import { Plugin } from "@/plugin"
 import { PluginPtyEnvironment } from "@/plugin/pty-environment"
 import { InstanceStore } from "@/project/instance-store"
+import { SharedUnload } from "@/server/shared/unload"
 import { Project } from "@/project/project"
 import { Vcs } from "@/project/vcs"
 import { ProviderAuth } from "@/provider/auth"
@@ -263,6 +264,7 @@ const app = LayerNode.group([
   ShareNext.node,
   SessionShare.node,
   InstanceStore.node,
+  SharedUnload.node,
   httpClient,
   EventV2.node,
   ProjectV2.node,

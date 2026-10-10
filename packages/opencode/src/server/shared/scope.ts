@@ -1,4 +1,5 @@
 import { GlobalBus, type GlobalEvent as GlobalBusEvent } from "@/bus/global"
+import { release as releaseInstance, retain as retainInstance } from "./instances"
 
 // Opt-in per-subscriber isolation for the global event stream.
 //
@@ -78,8 +79,16 @@ export function installScopeTracking() {
 }
 
 export function setScope(clientID: string, input: ScopeInput) {
+  const directory = input.directory ?? ""
+  const previous = entries.get(clientID)
+  // A window re-declares on every session switch and may move to another
+  // directory, so the refcount has to follow the window: release the directory it
+  // left, retain the one it declares now. Unguarded retains would leak a client
+  // per declaration and keep the instance alive forever.
+  if (previous && previous.directory !== directory) releaseInstance(previous.directory)
+  if (previous?.directory !== directory) retainInstance(directory)
   const entry: Entry = {
-    directory: input.directory ?? "",
+    directory,
     roots: new Set(input.sessions.filter((id) => typeof id === "string" && id.length > 0)),
     visible: new Set(),
   }
@@ -88,6 +97,8 @@ export function setScope(clientID: string, input: ScopeInput) {
 }
 
 export function clearScope(clientID: string) {
+  const previous = entries.get(clientID)
+  if (previous) releaseInstance(previous.directory)
   entries.delete(clientID)
 }
 
