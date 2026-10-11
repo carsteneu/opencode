@@ -1,6 +1,6 @@
 export * as Sqlite from "./sqlite.js"
 
-import { Context, Effect, Fiber, Scope, Semaphore, Stream } from "effect"
+import { Context, Duration, Effect, Fiber, Schedule, Scope, Semaphore, Stream } from "effect"
 import { identity } from "effect/Function"
 import { SqlClient, Statement } from "effect/sql"
 import type { Connection } from "effect/sql/SqlConnection"
@@ -95,3 +95,28 @@ export const makeClient = <
         readonly updateValues: never
       } & Extensions
   })
+
+export const LOCK_RETRY_ATTEMPTS = 6
+const lockedStatementSchedule = Schedule.exponential(Duration.millis(25)).pipe(Schedule.jittered)
+const transactionEnd = /^\s*(?:COMMIT|END)(?:\s+TRANSACTION)?\s*;?\s*$/i
+
+function retryLocked<A, R>(effect: Effect.Effect<A, SqlError, R>) {
+  return effect.pipe(
+    Effect.retry({
+      schedule: lockedStatementSchedule,
+      times: LOCK_RETRY_ATTEMPTS,
+      while: (error) => error.reason._tag === "LockTimeoutError",
+    }),
+  )
+}
+
+// Native SQLite busy handlers block the JavaScript event loop. A BUSY/LOCKED
+// statement has not completed, so retry that statement and keep whole
+// transactions under their existing ownership and rollback semantics.
+export function retryLockedStatement<A, R>(
+  effect: Effect.Effect<A, SqlError, R>,
+  input: { readonly query: string; readonly inTransaction: boolean },
+) {
+  if (!input.inTransaction || transactionEnd.test(input.query)) return retryLocked(effect)
+  return effect
+}

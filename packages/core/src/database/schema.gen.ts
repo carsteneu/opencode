@@ -269,6 +269,13 @@ const schema: Omit<DatabaseMigration.Migration, "id"> = {
       yield* tx.run(
         `CREATE UNIQUE INDEX \`session_pending_session_admitted_seq_idx\` ON \`session_pending\` (\`session_id\`,\`admitted_seq\`);`,
       )
+      yield* tx.run(`CREATE INDEX \`session_v2_time_updated_id_idx\` ON \`session_v2\` (\`time_updated\`,\`id\`);`)
+      yield* tx.run(
+        `CREATE INDEX \`session_v2_project_time_updated_id_idx\` ON \`session_v2\` (\`project_id\`,\`time_updated\`,\`id\`);`,
+      )
+      yield* tx.run(
+        `CREATE INDEX \`session_v2_directory_time_updated_id_idx\` ON \`session_v2\` (\`directory\`,\`time_updated\`,\`id\`);`,
+      )
       yield* tx.run(`CREATE INDEX \`session_v2_project_idx\` ON \`session_v2\` (\`project_id\`);`)
       yield* tx.run(`CREATE INDEX \`session_v2_workspace_idx\` ON \`session_v2\` (\`workspace_id\`);`)
       yield* tx.run(`CREATE INDEX \`session_v2_parent_idx\` ON \`session_v2\` (\`parent_id\`);`)

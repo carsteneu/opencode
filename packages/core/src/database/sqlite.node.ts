@@ -2,7 +2,7 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite"
 import { Context, Effect, Layer } from "effect"
 import { Reactivity } from "effect/reactivity"
 import { SqlClient } from "effect/sql"
-import { classifySqliteError, SqlError } from "effect/sql/SqlError"
+import { classifySqliteError, LockTimeoutError, SqlError } from "effect/sql/SqlError"
 import { Sqlite } from "./sqlite.js"
 
 const TypeId = "~@opencode/core/database/SqliteNode" as const
@@ -22,6 +22,16 @@ interface Config extends Sqlite.ClientConfig {
   readonly allowExtension?: boolean
 }
 
+// node:sqlite reports SQLITE_BUSY/SQLITE_LOCKED as `{ code: "ERR_SQLITE_ERROR", errcode: 5|6 }`,
+// which classifySqliteError does not read, so a locked statement would surface as an unknown error.
+export function classifyNodeSqliteError(cause: unknown, message: string, operation: string) {
+  const errcode =
+    typeof cause === "object" && cause !== null && "errcode" in cause ? Reflect.get(cause, "errcode") : undefined
+  if (typeof errcode === "number" && [5, 6].includes(errcode & 0xff))
+    return new LockTimeoutError({ cause, message, operation })
+  return classifySqliteError(cause, { message, operation })
+}
+
 const make = (options: Config) =>
   Effect.gen(function* () {
     const native = (yield* Sqlite.Native) as DatabaseSync
@@ -35,7 +45,7 @@ const make = (options: Config) =>
         } catch (cause) {
           return Effect.fail(
             new SqlError({
-              reason: classifySqliteError(cause, { message: "Failed to execute statement", operation: "execute" }),
+              reason: classifyNodeSqliteError(cause, "Failed to execute statement", "execute"),
             }),
           )
         }
@@ -53,22 +63,28 @@ const make = (options: Config) =>
         } catch (cause) {
           return Effect.fail(
             new SqlError({
-              reason: classifySqliteError(cause, { message: "Failed to execute statement", operation: "execute" }),
+              reason: classifyNodeSqliteError(cause, "Failed to execute statement", "execute"),
             }),
           )
         }
       })
 
-    const connection = Sqlite.makeConnection(run, runValues, {
-      loadExtension: (path: string) =>
-        Effect.try({
-          try: () => native.loadExtension(path),
-          catch: (cause) =>
-            new SqlError({
-              reason: classifySqliteError(cause, { message: "Failed to load extension", operation: "loadExtension" }),
-            }),
-        }),
-    })
+    const connection = Sqlite.makeConnection(
+      (query, params) =>
+        Sqlite.retryLockedStatement(run(query, params), { query, inTransaction: native.isTransaction }),
+      (query, params) =>
+        Sqlite.retryLockedStatement(runValues(query, params), { query, inTransaction: native.isTransaction }),
+      {
+        loadExtension: (path: string) =>
+          Effect.try({
+            try: () => native.loadExtension(path),
+            catch: (cause) =>
+              new SqlError({
+                reason: classifyNodeSqliteError(cause, "Failed to load extension", "loadExtension"),
+              }),
+          }),
+      },
+    )
 
     return yield* Sqlite.makeClient(options, connection, TypeId, (acquirer) => ({
       loadExtension: (path: string) => Effect.flatMap(acquirer, (_) => _.loadExtension(path)),
@@ -81,7 +97,7 @@ const nativeLayer = (config: Config) =>
     Effect.gen(function* () {
       const native = new DatabaseSync(config.filename, {
         readOnly: config.readonly,
-        timeout: config.timeout,
+        timeout: config.timeout ?? 0,
         allowExtension: config.allowExtension,
         enableForeignKeyConstraints: true,
         open: true,
