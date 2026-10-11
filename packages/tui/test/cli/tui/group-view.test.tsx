@@ -327,6 +327,7 @@ function mount(input: {
                 groupExploration: () => true,
                 legacyTurns: () => false,
                 diffWrapMode: () => "word",
+                sessionRunning: () => false,
                 models: () => [],
                 messageIndex: () => undefined,
                 config: input.config,
