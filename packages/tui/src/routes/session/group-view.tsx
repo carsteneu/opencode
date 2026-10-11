@@ -3,7 +3,7 @@ import { RGBA, type Renderable } from "@opentui/core"
 import { useRenderer, type JSX } from "@opentui/solid"
 import type { SessionMessageAssistantTool, SessionMessageInfo } from "@opencode/client"
 import { createSyntaxStyleMemo, useTheme, useThemes } from "../../context/theme"
-import { reasoningSummary } from "../../context/thinking"
+import { groupsReasoning, reasoningSummary } from "../../context/thinking"
 import { SplitBorder } from "../../ui/border"
 import { Locale } from "../../util/locale"
 import { EntryAnchor, GroupAnchor, visitEntries } from "./anchor-view"
@@ -107,7 +107,8 @@ function GroupContent(props: GroupProps) {
       return total + (start === undefined || end === undefined ? 0 : Math.max(0, end - start))
     }, 0),
   )
-  const grouped = () => (props.node.kind === "reasoning" ? ctx.thinkingMode() === "hide" : ctx.groupExploration())
+  const grouped = () =>
+    props.node.kind === "reasoning" ? groupsReasoning(ctx.thinkingMode()) : ctx.groupExploration()
   const completed = () =>
     props.node.kind === "reasoning"
       ? props.completed

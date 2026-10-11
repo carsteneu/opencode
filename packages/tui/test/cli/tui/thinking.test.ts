@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { reasoningSummary } from "../../../src/context/thinking"
+import { groupsReasoning, reasoningSummary } from "../../../src/context/thinking"
 
 describe("reasoningSummary", () => {
   test("extracts a leading summary title and leaves markdown body", () => {
@@ -32,5 +32,12 @@ describe("reasoningSummary", () => {
 
   test("leaves content without a leading title in its body", () => {
     expect(reasoningSummary("Details only.")).toEqual({ title: null, body: "Details only." })
+  })
+})
+
+describe("groupsReasoning", () => {
+  test("collapses reasoning only while thinking is hidden", () => {
+    expect(groupsReasoning("hide")).toBe(true)
+    expect(groupsReasoning("show")).toBe(false)
   })
 })

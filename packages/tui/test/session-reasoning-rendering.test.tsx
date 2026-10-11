@@ -1,0 +1,96 @@
+import { expect, test } from "bun:test"
+import { createTestRenderer } from "@opentui/core/testing"
+import { Effect, FileSystem } from "effect"
+import { Global } from "@opencode/util/global"
+import type { SessionMessageInfo } from "@opencode/client"
+import { createEventStream, createFetch, directory, json } from "./fixture/tui-client"
+import { tmpdir } from "./fixture/fixture"
+
+type Setup = Awaited<ReturnType<typeof createTestRenderer>>
+
+const session = {
+  id: "ses_reasoning",
+  title: "Reasoning rendering",
+  projectID: "proj_test",
+  location: { directory },
+  cost: 0,
+  tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+  time: { created: 0, updated: 10 },
+}
+
+const TITLE = "Inspecting PR workflow"
+const BODY = "The body text is here."
+const messages: SessionMessageInfo[] = [
+  { type: "user", id: "user_1", text: "think about it", time: { created: 0 } },
+  {
+    type: "assistant",
+    id: "assistant_1",
+    agent: "build",
+    model: { providerID: "fixture", id: "fixture" },
+    time: { created: 1, completed: 6 },
+    content: [
+      { type: "reasoning", text: `**${TITLE}**\n\n${BODY}`, time: { created: 2, completed: 5 } },
+      { type: "text", text: "Here is the answer." },
+    ],
+  },
+] as unknown as SessionMessageInfo[]
+
+async function withSession(thinking: "show" | "hide", run: (setup: Setup) => Promise<void>) {
+  await using state = await tmpdir()
+  const setup = await createTestRenderer({ width: 100, height: 30, useThread: false, kittyKeyboard: true })
+  setup.renderer.start()
+  const calls = createFetch((url) => {
+    if (url.pathname === "/api/session") return json({ data: [session], cursor: {} })
+    if (url.pathname === `/api/session/${session.id}`) return json({ data: session })
+    if (url.pathname === `/api/session/${session.id}/message`) return json({ data: messages.toReversed(), cursor: {} })
+    if (url.pathname === `/api/session/${session.id}/inbox` || url.pathname === `/api/session/${session.id}/permission`)
+      return json({ data: [] })
+    return undefined
+  }, createEventStream())
+  const server = Bun.serve({ port: 0, idleTimeout: 0, fetch: (request) => calls.fetch(request) })
+  const { run: runApp } = await import("../src/app")
+  const task = Effect.runPromise(
+    runApp({
+      app: { name: "test", version: "test", channel: "test" },
+      server: { endpoint: { url: server.url.toString() } },
+      config: {
+        get: async () => ({ animations: false, tabs: { enabled: false }, session: { thinking } }),
+        update: async () => ({}),
+      },
+      packages: { prepare: async () => ({ directory: "" }) },
+      args: { sessionID: session.id },
+      terminalHandoff: async () => ({ renderer: setup.renderer, mode: "dark", complete: () => {} }),
+      log: () => {},
+    }).pipe(Effect.provide(Global.layerWith({ state: state.path })), Effect.provide(FileSystem.layerNoop({}))),
+  )
+  try {
+    await setup.waitForFrame((frame) => frame.includes("think about it"))
+    await setup.waitForFrame((frame) => frame.includes("Here is the answer."))
+    await setup.waitForVisualIdle({ quietFrames: 3 })
+    await run(setup)
+  } finally {
+    setup.renderer.destroy()
+    await task
+    await server.stop()
+  }
+}
+
+const lines = (frame: string) => frame.split("\n")
+
+test("shown reasoning renders its body and keeps the summary title in the header", async () => {
+  await withSession("show", async (setup) => {
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain(BODY)
+    const header = lines(frame).find((line) => line.includes("Thought"))
+    expect(header).toBeDefined()
+    expect(header).toContain(TITLE)
+  })
+}, 30000)
+
+test("hidden reasoning collapses into one summary row without the body", async () => {
+  await withSession("hide", async (setup) => {
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain(TITLE)
+    expect(frame).not.toContain(BODY)
+  })
+}, 30000)

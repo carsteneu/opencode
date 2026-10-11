@@ -88,7 +88,7 @@ import { DialogExportResult } from "../../ui/dialog-export-result"
 import { sessionEpilogue } from "../../util/presentation"
 import { useConfig } from "../../config"
 import { useClipboard } from "../../context/clipboard"
-import { nextThinkingMode, type ThinkingMode } from "../../context/thinking"
+import { groupsReasoning, nextThinkingMode, type ThinkingMode } from "../../context/thinking"
 import { getScrollAcceleration } from "../../util/scroll"
 import { collapseShellOutput, collapseToolOutput } from "../../util/collapse-tool-output"
 import { Keymap, type KeymapCommand } from "../../context/keymap"
@@ -246,7 +246,7 @@ export function Session(props: {
     sessionTabs.groupExpanded(sessionID, groupID) ??
     (verbosity() === "high" && (kind === "exploration" || kind === "instructions"))
   const groupedKind = (kind: GroupKind) =>
-    kind === "reasoning" ? thinkingMode() === "hide" : kind === "exploration" ? groupExploration() : true
+    kind === "reasoning" ? groupsReasoning(thinkingMode()) : kind === "exploration" ? groupExploration() : true
 
   Keymap.createLayer(() => ({
     priority: 10,
