@@ -1,6 +1,6 @@
 export * as Media from "./media.js"
 
-import { Effect, FileSystem, Schema, SchemaGetter } from "effect"
+import { Effect, FileSystem, Schema, SchemaGetter, Stream } from "effect"
 import { Base64 } from "effect/encoding"
 import { HttpClientRequest } from "effect/http"
 import { ProviderID } from "./schema/ids.js"
@@ -12,6 +12,13 @@ import { detectMediaType, fileMediaType } from "./utils/media-type.js"
 export { detectMediaType } from "./utils/media-type.js"
 
 const OCTET_STREAM = "application/octet-stream"
+
+/**
+ * Cap for a downloaded image asset. Image payloads are the one kind the TUI previews eagerly and their URLs are
+ * provider-supplied, so an unbounded read would let a hostile or misconfigured origin exhaust memory. Every other
+ * kind keeps today's unbounded read: those downloads are user-driven and may legitimately be large.
+ */
+export const MAX_IMAGE_DOWNLOAD_BYTES = 32 * 1024 * 1024
 
 // ---------------------------------------------------------------------------
 // Source — the serializable wire/persistence form of a media asset
@@ -159,7 +166,7 @@ export class Asset {
           ? Effect.fromResult(Base64.decode(source.data)).pipe(
               Effect.mapError((cause) => invalid(`Media asset contains invalid base64 data`, cause)),
             )
-          : download(source, this.headers)
+          : download(source, this.headers, this.kind === "image" ? MAX_IMAGE_DOWNLOAD_BYTES : undefined)
       return decoded.pipe(Effect.tap((data) => Effect.sync(() => (this.#bytes = data))))
     })
   }
@@ -243,24 +250,46 @@ export const AssetSchema = AssetEncoded.pipe(
 const download = Effect.fn("Media.download")(function* (
   source: Extract<Source, { readonly type: "url" }>,
   headers: Record<string, string> | undefined,
+  limit?: number,
 ) {
   const executor = yield* Service
   const response = yield* executor.execute(
     HttpClientRequest.get(source.url).pipe(HttpClientRequest.setHeaders(headers ?? {})),
   )
-  const buffer = yield* response.arrayBuffer.pipe(
-    Effect.mapError(
-      (cause) =>
-        new AIError({
-          reason: new InvalidProviderOutputError({
-            message: `Failed to read media from ${source.url}`,
-            http: new HttpContext({ url: response.request.url, status: response.status, headers: response.headers }),
-            cause,
-          }),
-        }),
+  const http = new HttpContext({ url: response.request.url, status: response.status, headers: response.headers })
+  const failure = (cause: unknown) =>
+    new AIError({ reason: new InvalidProviderOutputError({ message: `Failed to read media from ${source.url}`, http, cause }) })
+  const buffer = yield* response.stream.pipe(
+    Stream.runFoldEffect(
+      () => ({ chunks: [] as Array<Uint8Array>, bytes: 0 }),
+      (acc, chunk) => {
+        const bytes = acc.bytes + chunk.byteLength
+        if (limit !== undefined && bytes > limit)
+          return Effect.fail(
+            new AIError({
+              reason: new InvalidProviderOutputError({
+                message: `Media image from ${source.url} exceeds the ${limit} byte limit`,
+                http,
+              }),
+            }),
+          )
+        acc.chunks.push(chunk)
+        acc.bytes = bytes
+        return Effect.succeed(acc)
+      },
     ),
+    Effect.map((acc) => {
+      const data = new Uint8Array(acc.bytes)
+      let offset = 0
+      for (const chunk of acc.chunks) {
+        data.set(chunk, offset)
+        offset += chunk.byteLength
+      }
+      return data
+    }),
+    Effect.mapError((error) => (error instanceof AIError ? error : failure(error))),
   )
-  return new Uint8Array(buffer)
+  return buffer
 })
 
 // ---------------------------------------------------------------------------
