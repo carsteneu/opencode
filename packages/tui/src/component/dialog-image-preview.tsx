@@ -1,9 +1,15 @@
 import { TextAttributes } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
-import { createMemo, createSignal } from "solid-js"
+import path from "node:path"
+import { createMemo, createSignal, onCleanup } from "solid-js"
 import { Keymap } from "../context/keymap"
+import { useTuiPaths } from "../context/runtime"
 import { useTheme } from "../context/theme"
+import { abbreviateHome } from "../runtime"
+import { DialogPrompt } from "../ui/dialog-prompt"
 import { useDialog } from "../ui/dialog"
+import { useToast } from "../ui/toast"
+import { saveSessionImage } from "../util/session-image-save"
 
 type ImagePreviewItem = Readonly<{
   uri: string
@@ -18,6 +24,7 @@ export function DialogImagePreview(props: { images: readonly ImagePreviewItem[];
   const [failed, setFailed] = createSignal(false)
   const current = createMemo(() => props.images[index()])
   const imageHeight = createMemo(() => Math.max(3, dimensions().height - 8))
+  const saveShortcut = Keymap.useShortcut("dialog.image.save")
 
   dialog.setSize("xlarge")
   dialog.setCentered(true)
@@ -28,11 +35,17 @@ export function DialogImagePreview(props: { images: readonly ImagePreviewItem[];
     setIndex((value) => (value + direction + props.images.length) % props.images.length)
   }
 
+  function save() {
+    const image = current()
+    if (image) dialog.replace(() => <DialogImageSave image={image} />)
+  }
+
   Keymap.createLayer(() => ({
     mode: "modal",
     commands: [
       { bind: "left", title: "Previous image", group: "Dialog", run: () => move(-1) },
       { bind: "right", title: "Next image", group: "Dialog", run: () => move(1) },
+      { id: "dialog.image.save", bind: "s", title: "Save image", group: "Dialog", run: save },
     ],
   }))
 
@@ -42,9 +55,14 @@ export function DialogImagePreview(props: { images: readonly ImagePreviewItem[];
         <text attributes={TextAttributes.BOLD} fg={theme.text.base}>
           Image {index() + 1} of {props.images.length}
         </text>
-        <text fg={theme.text.muted} onMouseUp={() => dialog.clear()}>
-          esc
-        </text>
+        <box flexDirection="row" gap={2}>
+          <text fg={theme.text.muted} onMouseUp={save}>
+            {saveShortcut() ? `${saveShortcut()} save` : "save"}
+          </text>
+          <text fg={theme.text.muted} onMouseUp={() => dialog.clear()}>
+            esc
+          </text>
+        </box>
       </box>
       <image
         id="prompt-image-viewer-image"
@@ -67,5 +85,61 @@ export function DialogImagePreview(props: { images: readonly ImagePreviewItem[];
         </text>
       </box>
     </box>
+  )
+}
+
+function DialogImageSave(props: { image: ImagePreviewItem }) {
+  const dialog = useDialog()
+  const toast = useToast()
+  const paths = useTuiPaths()
+  const theme = useTheme().surface("dialog")
+  const [saving, setSaving] = createSignal(false)
+  let closed = false
+
+  onCleanup(() => {
+    closed = true
+  })
+
+  // Resolving here rather than in the util keeps relative and `~` paths a UI concern.
+  function resolveDirectory(input: string) {
+    const value = input.trim()
+    if (value === "~") return paths.home
+    if (value.startsWith("~/")) return path.resolve(paths.home, value.slice(2))
+    return path.isAbsolute(value) ? value : path.resolve(paths.cwd, value)
+  }
+
+  function save(input: string) {
+    if (saving()) return
+    setSaving(true)
+    void Promise.resolve()
+      .then(() => saveSessionImage(props.image.uri, resolveDirectory(input), props.image.mention?.text))
+      .then(
+        (target) => {
+          if (closed) return
+          toast.show({ message: `Saved ${path.basename(target)} to ${abbreviateHome(target, paths.home)}`, variant: "success" })
+          dialog.clear()
+        },
+        (error) => {
+          if (closed) return
+          toast.error(error)
+          setSaving(false)
+        },
+      )
+  }
+
+  return (
+    <DialogPrompt
+      title="Save image"
+      value={path.join(paths.cwd, "img")}
+      busy={saving()}
+      busyText="Saving image..."
+      description={() => (
+        <text fg={theme.text.muted}>
+          Directory. Relative paths resolve against {abbreviateHome(paths.cwd, paths.home)}; the filename is generated
+          automatically.
+        </text>
+      )}
+      onConfirm={save}
+    />
   )
 }
