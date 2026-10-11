@@ -128,6 +128,7 @@ import { SessionGroupView } from "./group-view"
 import { useEntryAnchor } from "./anchor-view"
 import { containsAnchor, createTimelineAnchors, groupID } from "./anchors"
 import { rowsAfter, rowsBefore, rowWeight } from "./mount-budget"
+import { AgentsStatusBlock } from "./agents-status-block"
 export { InlineToolRow } from "./message-parts"
 export { toolDisplay } from "./message-parts"
 
@@ -1471,6 +1472,9 @@ export function Session(props: {
                 </box>
               </Show>
             </box>
+            <Show when={!session()?.parentID}>
+              <AgentsStatusBlock />
+            </Show>
             <box flexShrink={0}>
               <Show when={!composer.open && !disabled() && queuedPrompts().length > 0}>
                 <QueuedPromptDock prompts={queuedPrompts()} onOpen={openQueuedPrompts} />
