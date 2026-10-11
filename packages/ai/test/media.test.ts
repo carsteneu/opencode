@@ -13,6 +13,22 @@ const GIF = Uint8Array.from([0x47, 0x49, 0x46, 0x38, 0x39, 0x61])
 const WEBP = Uint8Array.from([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50])
 const PDF = Uint8Array.from([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31])
 
+// Mirrors IMAGE_BYTES_MAX in src/media.ts; only image responses are capped.
+const IMAGE_LIMIT = 16 * 1024 * 1024
+
+/** Produce `total` bytes lazily so an over-limit body does not need one large allocation. */
+const oversizedBody = (total: number) => {
+  let sent = 0
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (sent >= total) return controller.close()
+      const size = Math.min(1024 * 1024, total - sent)
+      sent += size
+      controller.enqueue(new Uint8Array(size))
+    },
+  })
+}
+
 describe("Media", () => {
   it.effect("round-trips every source through Media.from(asset.source)", () =>
     Effect.sync(() => {
@@ -117,6 +133,35 @@ describe("Media", () => {
         ),
       )
     }),
+  )
+
+  it.effect("bounds a url image download", () =>
+    Effect.gen(function* () {
+      const asset = Media.url("https://cdn.example.test/huge.png", { mediaType: "image/png" })
+      const error = yield* asset.bytes().pipe(Effect.flip)
+      expect(error.reason._tag).toBe("InvalidProviderOutput")
+      expect(error.message).toContain("byte image limit")
+    }).pipe(
+      Effect.provide(
+        dynamicResponse((input) =>
+          Effect.succeed(input.respond(oversizedBody(IMAGE_LIMIT + 1), { headers: { "content-type": "image/png" } })),
+        ),
+      ),
+    ),
+  )
+
+  it.effect("leaves non-image media downloads unbounded", () =>
+    Effect.gen(function* () {
+      const asset = Media.url("https://cdn.example.test/clip.mp4", { mediaType: "video/mp4" })
+      const bytes = yield* asset.bytes()
+      expect(bytes.byteLength).toBe(IMAGE_LIMIT + 1)
+    }).pipe(
+      Effect.provide(
+        dynamicResponse((input) =>
+          Effect.succeed(input.respond(oversizedBody(IMAGE_LIMIT + 1), { headers: { "content-type": "video/mp4" } })),
+        ),
+      ),
+    ),
   )
 
   it.effect("caches decoded base64 bytes and encodes owned bytes lazily", () =>
