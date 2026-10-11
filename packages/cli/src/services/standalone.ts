@@ -2,7 +2,10 @@ import { CrossSpawnSpawner } from "@opencode/util/cross-spawn-spawner"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Deferred, Effect, Schema, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { createWriteStream, mkdirSync } from "node:fs"
 import { randomBytes } from "node:crypto"
+import { homedir } from "node:os"
+import { join } from "node:path"
 import { selfCommand } from "../util/process"
 
 const Ready = Schema.Struct({ url: Schema.String })
@@ -13,6 +16,16 @@ type Options = {
 }
 
 const startupDirectory = process.cwd()
+const printLogs = () => process.env.OPENCODE_PRINT_LOGS === "1"
+
+// A detached server's diagnostics must not be lost when its stderr is not the
+// TUI's terminal (v1 cli/tui/process-server.ts: serverStderrSink).
+function serverStderrSink() {
+  const dir = join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"), "opencode", "log")
+  // The log directory may not exist yet on first boot.
+  mkdirSync(dir, { recursive: true })
+  return createWriteStream(join(dir, "standalone-server.log"), { flags: "a" })
+}
 
 function command(password: string, options: Options) {
   const [executable, ...args] = options.command ?? [...selfCommand(), "serve"]
@@ -26,7 +39,7 @@ function command(password: string, options: Options) {
     // The server treats EOF on this pipe as the end of its ownership lease.
     // The OS closes it even when the TUI is killed before Effect finalizers run.
     stdin: "pipe",
-    stderr: process.env.OPENCODE_PRINT_LOGS === "1" ? "inherit" : "ignore",
+    stderr: printLogs() ? "inherit" : "pipe",
     killSignal: "SIGTERM",
     forceKillAfter: "3 seconds",
   })
@@ -37,6 +50,16 @@ const makeEndpoint = Effect.fn("cli.standalone.endpoint")(
     const password = randomBytes(32).toString("base64url")
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
     const proc = yield* spawner.spawn(command(password, options))
+    if (!printLogs())
+      yield* Effect.gen(function* () {
+        const log = yield* Effect.sync(() => serverStderrSink())
+        yield* proc.stderr.pipe(
+          Stream.decodeText(),
+          Stream.runForEach((chunk) => Effect.sync(() => log.write(chunk))),
+          Effect.ensuring(Effect.sync(() => log.end())),
+          Effect.forkScoped,
+        )
+      })
     const readyLine = yield* Deferred.make<string, Error>()
     // Keep draining stdout after readiness so later server writes cannot hit EPIPE.
     yield* proc.stdout.pipe(
