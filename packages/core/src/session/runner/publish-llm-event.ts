@@ -3,7 +3,7 @@ import type { Agent } from "@opencode/schema/agent"
 import type { Model } from "@opencode/schema/model"
 import type { RelativePath } from "@opencode/schema/schema"
 import type { Snapshot } from "@opencode/schema/snapshot"
-import { Effect, Fiber, Iterable } from "effect"
+import { Clock, Effect, Fiber, Iterable } from "effect"
 import { isReadonlyArrayNonEmpty } from "effect/Array"
 import { Bus } from "../../bus.js"
 import { SessionEvent } from "../event.js"
@@ -63,6 +63,15 @@ const hostedContent = (result: ToolResultValue): NonEmptyContent => {
   return [{ type: "text", text: stringify(result.value) }]
 }
 
+// Progress for streamed tool inputs is published at most every TOOL_INPUT_PROGRESS_INTERVAL, with a
+// trailing update once the input has been quiet for TOOL_INPUT_PROGRESS_IDLE_INTERVAL or has grown
+// by TOOL_INPUT_PROGRESS_BYTES. Only the tools whose arguments are the payload under a spinner
+// report progress; every other tool would just add stream noise.
+const TOOL_INPUT_PROGRESS_INTERVAL = 500
+const TOOL_INPUT_PROGRESS_IDLE_INTERVAL = 2_000
+const TOOL_INPUT_PROGRESS_BYTES = 16 * 1024
+const TOOL_INPUT_PROGRESS_TOOLS = new Set(["write", "edit", "patch"])
+
 /**
  * Persist one step without executing tools or starting a continuation step.
  *
@@ -86,6 +95,8 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
     progress?: Tool.Metadata
   }
   const tools = new Map<string, ToolState>()
+  type ToolInputProgress = { received: number; published: number; publishedAt: number | undefined }
+  const toolInputProgress = new Map<string, ToolInputProgress>()
   const failureSnapshot = (tool: { readonly progress?: Tool.Metadata }, metadata?: Tool.Metadata) => {
     if (tool.progress === undefined) return metadata === undefined ? {} : { metadata }
     if (metadata === undefined) return { metadata: tool.progress }
@@ -315,6 +326,33 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
       return yield* Effect.die(new Error(`Tool input name changed for ${event.id}: ${tool.name} -> ${event.name}`))
     if (!toolInput.has(event.id)) return yield* Effect.die(new Error(`Duplicate tool input end: ${event.id}`))
     yield* toolInput.end(event.id, undefined, value)
+    toolInputProgress.delete(event.id)
+  })
+
+  const publishToolInputProgress = Effect.fnUntraced(function* (name: string, id: string, text: string) {
+    if (!text || !TOOL_INPUT_PROGRESS_TOOLS.has(name)) return
+    const progress = toolInputProgress.get(id) ?? { received: 0, published: 0, publishedAt: undefined }
+    toolInputProgress.set(id, progress)
+    progress.received += Buffer.byteLength(text, "utf8")
+    const now = yield* Clock.currentTimeMillis
+    const elapsed = progress.publishedAt === undefined ? 0 : now - progress.publishedAt
+    const growth = progress.received - progress.published
+    // The first delta reports immediately; after that a report needs the interval, or the idle
+    // interval together with enough growth to be worth an update.
+    if (
+      progress.publishedAt !== undefined &&
+      (elapsed < TOOL_INPUT_PROGRESS_INTERVAL ||
+        (elapsed < TOOL_INPUT_PROGRESS_IDLE_INTERVAL && growth < TOOL_INPUT_PROGRESS_BYTES))
+    )
+      return
+    progress.published = progress.received
+    progress.publishedAt = now
+    yield* bus.publish(SessionEvent.Tool.Input.Progress, {
+      sessionID: input.sessionID,
+      assistantMessageID,
+      id,
+      received: progress.received,
+    })
   })
 
   const failMalformedToolInput = Effect.fnUntraced(function* (event: {
@@ -451,6 +489,7 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
           return yield* Effect.die(new Error(`Tool input name changed for ${event.id}: ${tool.name} -> ${event.name}`))
         if (!toolInput.has(event.id)) return yield* Effect.die(new Error(`Tool input delta after end: ${event.id}`))
         yield* toolInput.append(event.id, event.text)
+        yield* publishToolInputProgress(tool.name, event.id, event.text)
         return
       }
       case "tool-input-end":

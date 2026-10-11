@@ -943,6 +943,11 @@ export function createData(config: CreateDataInput) {
           if (tool.state.status === "streaming") tool.state.input = event.data.text
         })
         return
+      case "session.tool.input.progress":
+        message.editTool(event.data.sessionID, event.data.assistantMessageID, event.data.id, (tool) => {
+          if (tool.state.status === "streaming") tool.state.received = event.data.received
+        })
+        return
       case "session.tool.called":
         message.editTool(event.data.sessionID, event.data.assistantMessageID, event.data.id, (tool) => {
           tool.time.ran = event.created

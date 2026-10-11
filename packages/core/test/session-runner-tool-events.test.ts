@@ -527,6 +527,83 @@ test("tool input deltas are accumulated without being published", async () => {
   })
 })
 
+const progressOf = (published: ReadonlyArray<{ readonly type: string; readonly data: unknown }>) =>
+  published.filter((event) => event.type === "session.tool.input.progress").map((event) => event.data)
+
+it.effect("reports streamed input size for payload tools without publishing the raw delta", () =>
+  Effect.gen(function* () {
+    const { published, publisher } = capture()
+    yield* Effect.forEach(
+      [
+        LLMEvent.toolInputStart({ id: "w", name: "write" }),
+        LLMEvent.toolInputDelta({ id: "w", name: "write", text: '{"path":"a.txt"' }),
+        LLMEvent.toolInputDelta({ id: "w", name: "write", text: ',"content":"hello"}' }),
+      ],
+      publisher.publish,
+      { discard: true },
+    )
+
+    expect(published.some((event) => event.type === "session.tool.input.delta")).toBe(false)
+    expect(progressOf(published)).toMatchObject([
+      { id: "w", received: Buffer.byteLength('{"path":"a.txt"', "utf8") },
+    ])
+  }),
+)
+
+it.effect("reports no input progress for tools whose arguments are not the payload", () =>
+  Effect.gen(function* () {
+    const { published, publisher } = capture()
+    yield* Effect.forEach(
+      [
+        LLMEvent.toolInputStart({ id: "r", name: "read" }),
+        LLMEvent.toolInputDelta({ id: "r", name: "read", text: '{"path":"a.txt"}' }),
+        LLMEvent.toolInputStart({ id: "s", name: "shell" }),
+        LLMEvent.toolInputDelta({ id: "s", name: "shell", text: '{"command":"ls"}' }),
+      ],
+      publisher.publish,
+      { discard: true },
+    )
+
+    expect(progressOf(published)).toEqual([])
+  }),
+)
+
+it.effect("holds small input progress back until the idle interval", () =>
+  Effect.gen(function* () {
+    const { published, publisher } = capture()
+    yield* publisher.publish(LLMEvent.toolInputStart({ id: "w", name: "write" }))
+    yield* publisher.publish(LLMEvent.toolInputDelta({ id: "w", name: "write", text: "a".repeat(10) }))
+    expect(progressOf(published)).toMatchObject([{ received: 10 }])
+
+    // Inside the minimum interval nothing is reported, however much arrives.
+    yield* publisher.publish(LLMEvent.toolInputDelta({ id: "w", name: "write", text: "b".repeat(10) }))
+    expect(progressOf(published)).toHaveLength(1)
+
+    // Past the minimum interval a small growth still waits for the idle interval.
+    yield* TestClock.adjust("500 millis")
+    yield* publisher.publish(LLMEvent.toolInputDelta({ id: "w", name: "write", text: "c".repeat(10) }))
+    expect(progressOf(published)).toHaveLength(1)
+
+    yield* TestClock.adjust("1500 millis")
+    yield* publisher.publish(LLMEvent.toolInputDelta({ id: "w", name: "write", text: "d".repeat(10) }))
+    expect(progressOf(published)).toMatchObject([{ received: 10 }, { received: 40 }])
+  }),
+)
+
+it.effect("reports large growth once the minimum interval elapsed", () =>
+  Effect.gen(function* () {
+    const { published, publisher } = capture()
+    const chunk = "x".repeat(16 * 1024)
+    yield* publisher.publish(LLMEvent.toolInputStart({ id: "w", name: "write" }))
+    yield* publisher.publish(LLMEvent.toolInputDelta({ id: "w", name: "write", text: chunk }))
+    expect(progressOf(published)).toMatchObject([{ received: 16 * 1024 }])
+
+    yield* TestClock.adjust("500 millis")
+    yield* publisher.publish(LLMEvent.toolInputDelta({ id: "w", name: "write", text: chunk }))
+    expect(progressOf(published)).toMatchObject([{ received: 16 * 1024 }, { received: 32 * 1024 }])
+  }),
+)
+
 test("provider-executed tool metadata is flattened using the route key", async () => {
   const { published, publisher } = capture("openai")
   await Effect.runPromise(

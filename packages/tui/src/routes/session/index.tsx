@@ -129,6 +129,7 @@ import { useEntryAnchor } from "./anchor-view"
 import { containsAnchor, createTimelineAnchors, groupID } from "./anchors"
 import { rowsAfter, rowsBefore, rowWeight } from "./mount-budget"
 import { AgentsStatusBlock } from "./agents-status-block"
+import { toolInputProgress } from "../../util/tool-input-progress"
 export { InlineToolRow } from "./message-parts"
 export { toolDisplay } from "./message-parts"
 
@@ -2578,6 +2579,11 @@ type ToolProps = {
   output?: string
   part: SessionMessageAssistantTool
 }
+
+/** Appends the streamed input size to a pending label while the call's arguments are arriving. */
+function pendingToolInput(label: string, part: SessionMessageAssistantTool) {
+  return toolInputProgress(label, part.state.status === "streaming" ? part.state.received : undefined)
+}
 function GenericTool(props: ToolProps) {
   const theme = useTheme()
   const output = createMemo(() => props.output?.trim() ?? "")
@@ -3028,7 +3034,12 @@ function Write(props: ToolProps) {
         </BlockTool>
       </Match>
       <Match when={true}>
-        <InlineTool icon="←" pending="Preparing write…" complete={stringValue(props.input.path)} part={props.part}>
+        <InlineTool
+          icon="←"
+          pending={pendingToolInput("Preparing write…", props.part)}
+          complete={stringValue(props.input.path)}
+          part={props.part}
+        >
           Write {pathFormatter.format(stringValue(props.input.path))}
         </InlineTool>
       </Match>
@@ -3345,7 +3356,7 @@ function Edit(props: ToolProps) {
               ? { label: "← Edit", value: pathFormatter.format(stringValue(props.input.path)) }
               : undefined
           }
-          title={stringValue(props.input.path) ? undefined : "# Preparing edit…"}
+          title={stringValue(props.input.path) ? undefined : pendingToolInput("# Preparing edit…", props.part)}
           part={props.part}
           spinner={props.part.state.status === "streaming"}
         />
@@ -3462,7 +3473,11 @@ function ApplyPatch(props: ToolProps) {
               : undefined
           }
           title={
-            targets().length === 1 ? undefined : props.part.state.status === "error" ? "# Patch failed" : "Patching"
+            targets().length === 1
+              ? undefined
+              : props.part.state.status === "error"
+                ? "# Patch failed"
+                : pendingToolInput("Patching", props.part)
           }
           part={props.part}
           spinner={props.part.state.status === "streaming" || props.part.state.status === "running"}

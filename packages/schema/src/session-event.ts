@@ -502,6 +502,20 @@ export namespace Tool {
       },
     })
     export type Ended = typeof Ended.Type
+
+    /**
+     * Throttled size of an input still streaming in, published only for tools whose arguments are
+     * the payload the reader is waiting on. Live-only, like the deltas it summarizes: the count
+     * describes bytes that are never persisted.
+     */
+    export const Progress = Event.ephemeral({
+      type: "session.tool.input.progress",
+      schema: {
+        ...ToolBase,
+        received: NonNegativeInt,
+      },
+    })
+    export type Progress = typeof Progress.Type
   }
 
   export const Called = Event.durable({
@@ -687,6 +701,7 @@ export const Definitions = Event.inventory(
   Tool.Input.Started,
   Tool.Input.Delta,
   Tool.Input.Ended,
+  Tool.Input.Progress,
   Tool.Called,
   Tool.Progress,
   Tool.Success,
