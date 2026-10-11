@@ -8,7 +8,7 @@ import { Location } from "./location.js"
 import { Model } from "./model.js"
 import { Project } from "./project.js"
 import { Prompt } from "./prompt.js"
-import { DateTimeUtcFromMillis, PositiveInt, RelativePath, statics } from "./schema.js"
+import { DateTimeUtcFromMillis, NonNegativeInt, PositiveInt, RelativePath, statics } from "./schema.js"
 import { ascending } from "./identifier.js"
 import { Event } from "./event.js"
 import { Shell as ShellSchema } from "./shell.js"
@@ -127,6 +127,8 @@ export interface ToolStateStreaming extends Schema.Schema.Type<typeof ToolStateS
 export const ToolStateStreaming = Schema.Struct({
   status: Schema.tag("streaming"),
   input: Schema.String,
+  // UTF-8 byte count of the input observed so far, pushed on a throttle while the call streams.
+  received: NonNegativeInt.pipe(optional),
 }).annotate({ identifier: "Session.Message.ToolState.Streaming" })
 
 export interface ToolStateRunning extends Schema.Schema.Type<typeof ToolStateRunning> {}
