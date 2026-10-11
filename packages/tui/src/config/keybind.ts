@@ -261,6 +261,7 @@ export const Definitions = {
   "dialog.select.home": keybind("home", "Move to first dialog item"),
   "dialog.select.end": keybind("end", "Move to last dialog item"),
   "dialog.select.submit": keybind("return", "Submit selected dialog item"),
+  "dialog.image.save": keybind("s", "Save the previewed image"),
   "dialog.prompt.submit": keybind("return", "Submit dialog prompt"),
   "dialog.integration.rename": keybind("ctrl+r", "Rename integration account"),
   "dialog.integration.delete": keybind("ctrl+d", "Delete integration account"),
