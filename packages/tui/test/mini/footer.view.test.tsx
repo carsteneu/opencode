@@ -1748,6 +1748,29 @@ test("direct footer admits the model and variant together before the agent and t
   }
 })
 
+test("the statusline shows the elapsed model wait until output starts", async () => {
+  const app = await renderFooter({ width: 120, state: { phase: "running", waiting: Date.now() } })
+  try {
+    await app.renderOnce()
+    const statusline = footerStatusline(app.renderer.root)
+    const read = () =>
+      app
+        .captureCharFrame()
+        .split("\n")
+        .slice(statusline.y, statusline.y + statusline.height)
+        .map((line) => line.trim())
+        .join(" ")
+    expect(read()).toContain("Waiting on model \u00b7 1s")
+
+    app.setState((previous) => ({ ...previous, waiting: undefined }))
+    await app.renderOnce()
+    await app.renderOnce()
+    expect(read()).not.toContain("Waiting on model")
+  } finally {
+    app.cleanup()
+  }
+})
+
 test.each([16, 20, 24, 32])("status takeovers retain complete instructions at %i columns", async (width) => {
   for (const mono of [false, true]) {
     const app = await renderFooter({

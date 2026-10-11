@@ -16,6 +16,7 @@ import { writeSessionOutput } from "./stream"
 import { createFragmentReconciler, fragmentRef, type FragmentReconciler } from "./stream-v2.fragment"
 import { toolImageCommits, userImageCommits, type ImageCommit } from "./stream-v2.image"
 import { messagePrompt } from "./session.shared"
+import { nextModelWait, type ModelWaitEvent, type ModelWaitState } from "./model-wait"
 import { createSubagentTracker, toolCommit, toolFinalPhase } from "./stream-v2.subagent"
 import { normalizeTool, toolOutputText } from "./tool"
 import { toolDisplayContent } from "../util/tool-display"
@@ -161,6 +162,8 @@ type State = {
   pending: Map<string, PendingPrompt>
   admitted: Set<string>
   stepModel: RunInput["model"]
+  /** Whether the current turn is still waiting for its first model output. */
+  modelWait: ModelWaitState
   activeCompaction?: string
 }
 
@@ -179,6 +182,31 @@ export function formatUnknownError(error: unknown): string {
 function sessionID(event: RunV2Event) {
   if (event.type === "form.created") return event.data.form.sessionID
   return "sessionID" in event.data && typeof event.data.sessionID === "string" ? event.data.sessionID : undefined
+}
+
+/**
+ * The model-wait transition an event carries, if any. A turn is waiting from the moment its runner
+ * starts until the first assistant output (text, reasoning, or a tool call) arrives.
+ */
+function modelWaitEvent(event: RunV2Event): ModelWaitEvent | undefined {
+  switch (event.type) {
+    case "session.execution.started":
+    case "session.inbox.delivered":
+    case "session.step.started":
+      return { type: "status", status: "busy", at: Date.now() }
+    case "session.execution.succeeded":
+    case "session.execution.failed":
+    case "session.execution.interrupted":
+    case "session.retry.scheduled":
+      return { type: "status", status: "idle", at: Date.now() }
+    case "session.text.delta":
+    case "session.reasoning.delta":
+    case "session.tool.called":
+    case "session.tool.input.started":
+      return { type: "activity", at: Date.now() }
+    default:
+      return undefined
+  }
 }
 
 function sameLocation(left: LocationRef | undefined, right: LocationRef | undefined) {
@@ -510,6 +538,7 @@ export async function createSessionTransport(input: StreamInput): Promise<Sessio
     pending: new Map(),
     admitted: new Set(),
     stepModel: undefined,
+    modelWait: { phase: "idle" },
   }
   let readyResolve!: () => void
   let readyReject!: (error: unknown) => void
@@ -556,11 +585,27 @@ export async function createSessionTransport(input: StreamInput): Promise<Sessio
   // interrupt ack so the flag and the paint cannot drift apart.
   const paintIdle = (status: string) => {
     state.rootActive = false
+    state.modelWait = nextModelWait(state.modelWait, { type: "status", status: "idle", at: Date.now() })
     write([], { phase: "idle", status })
   }
 
-  const write = (commits: StreamCommit[], patch?: Pick<FooterPatch, "phase" | "status" | "usage">) => {
+  // Only wait-cell transitions reach the footer. Re-sending it with every patch would repaint the
+  // statusline once per streamed chunk, which is exactly what suspending on stream is meant to avoid.
+  let sentWait: number | undefined
+  const takeWait = (): Pick<FooterPatch, "waiting"> | undefined => {
+    const value = state.modelWait.phase === "waiting" ? state.modelWait.since : undefined
+    if (value === sentWait) return undefined
+    sentWait = value
+    return { waiting: value }
+  }
+
+  const write = (
+    commits: StreamCommit[],
+    patch?: Pick<FooterPatch, "phase" | "status" | "usage">,
+  ) => {
     if (state.closed || controller.signal.aborted || input.footer.isClosed) return
+    const wait = takeWait()
+    const payload = patch || wait ? { ...patch, ...wait } : undefined
     if (!state.initial && state.buffered === undefined)
       commits.forEach((commit) => {
         if (!commit.messageID || !commit.partID || (commit.kind !== "assistant" && commit.kind !== "reasoning")) {
@@ -575,7 +620,7 @@ export async function createSessionTransport(input: StreamInput): Promise<Sessio
       })
     writeSessionOutput(
       { footer: input.footer, trace: input.trace },
-      { commits, updates: patch ? [{ type: "stream.patch", patch }] : undefined },
+      { commits, updates: payload ? [{ type: "stream.patch", patch: payload }] : undefined },
     )
   }
 
@@ -986,6 +1031,11 @@ export async function createSessionTransport(input: StreamInput): Promise<Sessio
       ? globals.data.filter((form) => form.sessionID === "global").map((form) => globalForm(form, globals.location))
       : []
     state.rootActive = input.sessionID in active
+    state.modelWait = nextModelWait(state.modelWait, {
+      type: "status",
+      status: state.rootActive ? "busy" : "idle",
+      at: Date.now(),
+    })
     syncBlockers()
     await subagents.hydrate({
       sdk: client,
@@ -1033,6 +1083,8 @@ export async function createSessionTransport(input: StreamInput): Promise<Sessio
     }
     input.trace?.write("recv.event", event)
     subagents.main(client, event, attempt.signal)
+    const wait = modelWaitEvent(event)
+    if (wait) state.modelWait = nextModelWait(state.modelWait, wait)
     if (event.type === "session.renamed") {
       input.onSessionTitle?.(event.data.title)
       return
@@ -1171,6 +1223,7 @@ export async function createSessionTransport(input: StreamInput): Promise<Sessio
       if (!state.fragments.delta(fragment, event.data.delta)) return
       if (!showTools()) {
         bufferQuietText(event.data.assistantMessageID, fragment.partID, event.data.delta, false)
+        write([])
         return
       }
       write([
@@ -1227,6 +1280,7 @@ export async function createSessionTransport(input: StreamInput): Promise<Sessio
             partID: update.partID,
           },
         ])
+      else write([])
       return
     }
     if (event.type === "session.reasoning.ended") {
@@ -1255,6 +1309,7 @@ export async function createSessionTransport(input: StreamInput): Promise<Sessio
         state: { status: "streaming", input: "" },
         time: { created: event.created },
       })
+      write([])
       return
     }
     if (event.type === "session.tool.input.delta" || event.type === "session.tool.input.ended") {

@@ -247,6 +247,7 @@ export class RunFooter implements FooterApi {
       notice: "",
       model: options.modelLabel,
       usage: undefined,
+      waiting: undefined,
       first: options.first,
       interrupt: 0,
       exit: 0,
@@ -554,6 +555,7 @@ export class RunFooter implements FooterApi {
       notice: typeof next.notice === "string" ? next.notice : prev.notice,
       model: typeof next.model === "string" ? next.model : prev.model,
       usage: "usage" in next ? next.usage : prev.usage,
+      waiting: "waiting" in next ? next.waiting : prev.waiting,
       first: typeof next.first === "boolean" ? next.first : prev.first,
       interrupt:
         typeof next.interrupt === "number" && Number.isFinite(next.interrupt)
