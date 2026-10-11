@@ -130,9 +130,9 @@ export function derive(path: string, chunks: ReadonlyArray<UpdateFileChunk>, ori
   const lines = source.text.split("\n")
   if (lines.at(-1) === "") lines.pop()
   const replacements = computeReplacements(lines, path, chunks)
-  for (const [start, remove, insert] of replacements.reverse()) lines.splice(start, remove, ...insert)
-  if (lines.at(-1) !== "") lines.push("")
-  const next = Bom.split(lines.join("\n"))
+  const updated = applyReplacements(lines, replacements)
+  if (updated.at(-1) !== "") updated.push("")
+  const next = Bom.split(updated.join("\n"))
   return { content: next.text, bom: source.bom || next.bom }
 }
 
@@ -339,6 +339,26 @@ function computeReplacements(lines: ReadonlyArray<string>, path: string, chunks:
     lineIndex = found + oldLines.length
   }
   return replacements.sort((left, right) => left[0] - right[0])
+}
+
+// Requires strictly-ascending, non-overlapping replacements (as produced by
+// computeReplacements). Copies once into a new buffer, walking replacements in
+// ascending order, so each original line and inserted line is appended exactly
+// once — O(n) instead of the previous repeated splice.
+export function applyReplacements(
+  lines: ReadonlyArray<string>,
+  replacements: ReadonlyArray<readonly [start: number, remove: number, insert: ReadonlyArray<string>]>,
+) {
+  const result: string[] = []
+  let out = 0
+  let cursor = 0
+  for (const [start, remove, insert] of replacements) {
+    while (cursor < start) result[out++] = lines[cursor++]!
+    for (const line of insert) result[out++] = line
+    cursor = start + remove
+  }
+  while (cursor < lines.length) result[out++] = lines[cursor++]!
+  return result
 }
 
 function seek(lines: ReadonlyArray<string>, pattern: ReadonlyArray<string>, start: number, eof = false) {
