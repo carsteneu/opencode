@@ -91,7 +91,8 @@ test("shown reasoning renders its body and keeps the summary title in the header
 test("hidden reasoning collapses into one summary row without the body", async () => {
   await withSession("hide", async (setup) => {
     const frame = setup.captureCharFrame()
-    expect(frame).toContain(TITLE)
+    const titled = lines(frame).filter((line) => line.includes(TITLE))
+    expect(titled).toHaveLength(1)
     expect(frame).not.toContain(BODY)
   })
 }, 30000)
