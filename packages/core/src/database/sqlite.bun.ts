@@ -56,23 +56,29 @@ const make = (options: Config) =>
         }
       })
 
-    const connection = Sqlite.makeConnection(run, runValues, {
-      export: Effect.try({
-        try: () => native.serialize(),
-        catch: (cause) =>
-          new SqlError({
-            reason: classifySqliteError(cause, { message: "Failed to export database", operation: "export" }),
-          }),
-      }),
-      loadExtension: (path: string) =>
-        Effect.try({
-          try: () => native.loadExtension(path),
+    const connection = Sqlite.makeConnection(
+      (query, params) =>
+        Sqlite.retryLockedStatement(run(query, params), { query, inTransaction: native.inTransaction }),
+      (query, params) =>
+        Sqlite.retryLockedStatement(runValues(query, params), { query, inTransaction: native.inTransaction }),
+      {
+        export: Effect.try({
+          try: () => native.serialize(),
           catch: (cause) =>
             new SqlError({
-              reason: classifySqliteError(cause, { message: "Failed to load extension", operation: "loadExtension" }),
+              reason: classifySqliteError(cause, { message: "Failed to export database", operation: "export" }),
             }),
         }),
-    })
+        loadExtension: (path: string) =>
+          Effect.try({
+            try: () => native.loadExtension(path),
+            catch: (cause) =>
+              new SqlError({
+                reason: classifySqliteError(cause, { message: "Failed to load extension", operation: "loadExtension" }),
+              }),
+          }),
+      },
+    )
 
     return yield* Sqlite.makeClient(options, connection, TypeId, (acquirer) => ({
       export: Effect.flatMap(acquirer, (_) => _.export),

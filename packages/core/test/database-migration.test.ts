@@ -640,4 +640,27 @@ describe("DatabaseMigration", () => {
       }),
     )
   })
+
+  test("creates the session list ordering indexes", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* DatabaseMigration.apply(db)
+
+        const indexes = yield* db.all<{ name: string }>(
+          sql`SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'session_v2' ORDER BY name`,
+        )
+        expect(indexes.map((row) => row.name)).toEqual(
+          expect.arrayContaining([
+            "session_v2_time_updated_id_idx",
+            "session_v2_project_time_updated_id_idx",
+            "session_v2_directory_time_updated_id_idx",
+          ]),
+        )
+        // The ordering index covers the columns SessionStore.list sorts by.
+        const columns = yield* db.all<{ name: string }>(sql`SELECT name FROM pragma_index_info('session_v2_time_updated_id_idx')`)
+        expect(columns.map((row) => row.name)).toEqual(["time_updated", "id"])
+      }),
+    )
+  })
 })
