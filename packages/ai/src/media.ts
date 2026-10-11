@@ -259,12 +259,14 @@ const download = Effect.fn("Media.download")(function* (
   const http = new HttpContext({ url: response.request.url, status: response.status, headers: response.headers })
   const failure = (cause: unknown) =>
     new AIError({ reason: new InvalidProviderOutputError({ message: `Failed to read media from ${source.url}`, http, cause }) })
-  const buffer = yield* response.stream.pipe(
+  // Only the capped read streams. Unbounded downloads keep `arrayBuffer` so their allocation pattern is unchanged.
+  if (limit === undefined) return new Uint8Array(yield* response.arrayBuffer.pipe(Effect.mapError(failure)))
+  return yield* response.stream.pipe(
     Stream.runFoldEffect(
       () => ({ chunks: [] as Array<Uint8Array>, bytes: 0 }),
       (acc, chunk) => {
         const bytes = acc.bytes + chunk.byteLength
-        if (limit !== undefined && bytes > limit)
+        if (bytes > limit)
           return Effect.fail(
             new AIError({
               reason: new InvalidProviderOutputError({
@@ -289,7 +291,6 @@ const download = Effect.fn("Media.download")(function* (
     }),
     Effect.mapError((error) => (error instanceof AIError ? error : failure(error))),
   )
-  return buffer
 })
 
 // ---------------------------------------------------------------------------
