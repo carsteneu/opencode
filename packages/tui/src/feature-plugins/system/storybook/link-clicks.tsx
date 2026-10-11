@@ -93,6 +93,7 @@ function LinkClicksStory(props: { context: Plugin.Context }) {
           models: () => [],
           messageIndex: () => undefined,
           legacyTurns: () => false,
+          sessionRunning: () => false,
           config: config.data,
           mutatePending: async () => false,
           pendingDelivery: () => undefined,

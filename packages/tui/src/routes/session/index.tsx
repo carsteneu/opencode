@@ -1349,6 +1349,7 @@ export function Session(props: {
   // (dimensions() is one object signal with identity equality) and vice versa.
   const terminalWidth = createMemo(() => dimensions().width)
   const terminalHeight = createMemo(() => dimensions().height)
+  const sessionRunning = createMemo(() => data.session.status(route.sessionID) === "running")
 
   return (
     <context.Provider
@@ -1388,6 +1389,7 @@ export function Session(props: {
         models,
         messageIndex: (messageID) => messageIndexes().get(messageID),
         legacyTurns: legacy,
+        sessionRunning,
         config,
         mutatePending,
         pendingDelivery: (inboxID) => pendingDeliveries().get(inboxID),
@@ -2508,7 +2510,9 @@ function SessionImages(props: { images: readonly { uri: string }[]; paddingLeft?
   const dialog = useDialog()
   const images = createMemo(() => (ctx.config.session?.image_preview ? props.images : []))
   const height = createMemo(() => Math.max(4, Math.min(8, Math.floor(ctx.terminal.height / 4))))
-  const visible = createMemo(() => images().slice(0, 3))
+  // Image glyphs repaint the whole row every frame while streaming text advances; suspend the
+  // previews until the runner idles so the two do not compete for the same frame budget.
+  const visible = createMemo(() => (ctx.sessionRunning() ? [] : images().slice(0, 3)))
 
   return (
     <Show when={visible().length > 0}>
