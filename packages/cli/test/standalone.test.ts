@@ -38,6 +38,31 @@ test("standalone server exits when its owner is killed", async () => {
   }
 })
 
+test("pipes the standalone server stderr into a sidecar log", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-cli-stderr-"))
+  const probe = Bun.spawn([process.execPath, path.join(import.meta.dir, "fixture/standalone-stderr.ts")], {
+    cwd: path.join(import.meta.dir, ".."),
+    env: isolatedEnv(root),
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+
+  try {
+    const line = await Promise.race([
+      readLine(probe.stdout, "SIDECAR_LOG "),
+      Bun.sleep(10_000).then(() => undefined),
+    ])
+    expect(line).toBeDefined()
+    expect(line).toContain(path.join(root, "data", "opencode", "log", "standalone-server.log"))
+    expect(line).toContain("SIDECAR_MARKER")
+  } finally {
+    probe.kill("SIGKILL")
+    await probe.exited
+    await fs.rm(root, { recursive: true, force: true })
+  }
+})
+
 async function readLine(stream: ReadableStream<Uint8Array>, prefix: string) {
   const reader = stream.getReader()
   const decoder = new TextDecoder()
