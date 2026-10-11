@@ -27,6 +27,7 @@ export async function renderLocal(
     preferences?: Partial<ModelPreference>
     args?: Args
     fetch?: FetchHandler
+    cwd?: string
   } = {},
 ) {
   const temporary = await tmpdir()
@@ -58,7 +59,7 @@ export async function renderLocal(
 
   const setup = await testRender(
     () => (
-      <TestTuiContexts paths={{ state: temporary.path }}>
+      <TestTuiContexts paths={{ state: temporary.path }} cwd={input.cwd}>
         <ArgsProvider {...input.args}>
           <ConfigProvider config={createTuiResolvedConfig()}>
             <Keymap.Provider>
