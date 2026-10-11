@@ -81,9 +81,10 @@ test("shown reasoning renders its body and keeps the summary title in the header
   await withSession("show", async (setup) => {
     const frame = setup.captureCharFrame()
     expect(frame).toContain(BODY)
-    const header = lines(frame).find((line) => line.includes("Thought"))
-    expect(header).toBeDefined()
-    expect(header).toContain(TITLE)
+    // The title belongs to the header once; the body renders the reasoning without repeating it.
+    const titled = lines(frame).filter((line) => line.includes(TITLE))
+    expect(titled).toHaveLength(1)
+    expect(titled[0]).toContain("Thought")
   })
 }, 30000)
 

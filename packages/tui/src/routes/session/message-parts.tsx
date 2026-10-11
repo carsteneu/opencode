@@ -90,7 +90,7 @@ export function ReasoningPart(props: {
                 drawUnstyledText={false}
                 streaming={true}
                 syntaxStyle={thinkingSyntax()}
-                content={content()}
+                content={summary().body}
                 conceal={ctx.markdownMode() === "rendered"}
                 fg={theme.text.muted}
               />
