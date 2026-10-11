@@ -1,7 +1,6 @@
-import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js"
+import { Index, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js"
 import type { MouseEvent } from "@opentui/core"
 import { useRoute, useRouteData } from "../../context/route"
-import { useClient } from "../../context/client"
 import { useData } from "../../context/data"
 import { useStorage } from "../../context/storage"
 import { useTheme } from "../../context/theme"
@@ -99,7 +98,6 @@ function AgentStatusRow(props: {
 export function AgentsStatusBlock() {
   const route = useRouteData("session")
   const { navigate } = useRoute()
-  const client = useClient()
   const data = useData()
   const theme = useTheme()
   const [dismissedStore, updateDismissed] = useStorage().store<{
@@ -123,18 +121,9 @@ export function AgentsStatusBlock() {
     }),
   )
 
-  // A child session's transcript is only loaded when its route mounts, but an unopened
-  // child still has to answer for its retry state and running tool. Fetch each once.
-  const requested = new Set<string>()
-  createEffect(() => {
-    if (client.connection.status() !== "connected") return
-    for (const child of children()) {
-      if (requested.has(child.id) || data.session.message.list(child.id).length > 0) continue
-      requested.add(child.id)
-      void data.session.message.sync(child.id).catch(() => undefined)
-    }
-  })
-
+  // A child session's transcript arrives over the live event stream, so a child that started while
+  // this client was connected reports its retry state and running tool without a fetch. A child
+  // that predates the connection has no transcript until its next step, and shows state only.
   const rows = createMemo(() =>
     deriveAgentRows({
       parentID: route.sessionID,
@@ -193,9 +182,9 @@ export function AgentsStatusBlock() {
           </box>
           <Show when={expanded()}>
             <box flexDirection="column" gap={0}>
-              <For each={rows()}>
-                {(row) => <AgentStatusRow row={row} now={now()} onOpen={open} onDismiss={dismiss} />}
-              </For>
+              <Index each={rows()}>
+                {(row) => <AgentStatusRow row={row()} now={now()} onOpen={open} onDismiss={dismiss} />}
+              </Index>
             </box>
           </Show>
         </box>

@@ -139,7 +139,7 @@ export function deriveAgentRows(input: {
         reason = retry.error.message
       } else if (partDone) {
         state = "done"
-      } else if (task?.status === "running" || task?.status === "streaming") {
+      } else if (task?.status === "running") {
         state = "running"
       } else if (active) {
         state = "running"
