@@ -60,6 +60,13 @@ export const UninstallCommand = {
     const method = await Installation.method()
     prompts.log.info(`Installation method: ${method}`)
 
+    // The resident shared server runs under systemd and would outlive the
+    // binary it points at; stop and remove it with the rest.
+    if (!args.dryRun) {
+      const { removeAutostart } = await import("@/server/shared/autostart")
+      await removeAutostart().catch(() => {})
+    }
+
     const targets = await collectRemovalTargets(args, method)
 
     await showRemovalSummary(targets, method)

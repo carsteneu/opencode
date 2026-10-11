@@ -121,6 +121,11 @@ const cli = yargs(args)
       ),
     )
     .command(
+      lazyCommand({ command: "autostart [action]", describe: "manage the resident shared-server autostart service" }, () =>
+        import("./cli/cmd/autostart").then((m) => m.AutostartCommand),
+      ),
+    )
+    .command(
       lazyCommand({ command: "web", describe: "start opencode server and open web interface" }, () =>
         import("./cli/cmd/web").then((m) => m.WebCommand),
       ),

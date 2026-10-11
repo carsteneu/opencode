@@ -1,4 +1,5 @@
 import { pidAlive, probeHealth, readLock, removeLock, type Lock } from "@/server/shared/lock"
+import { ensureAutostart } from "@/server/shared/autostart"
 
 const DEFAULT_TIMEOUT_MS = 10_000
 const POLL_MS = 100
@@ -14,6 +15,13 @@ export type SharedTarget = { readonly url: string; readonly password: string }
 export async function findOrStartSharedServer(
   options: { timeoutMs?: number } = {},
 ): Promise<SharedTarget | undefined> {
+  // Converge the autostart service first: after an install or an update this is
+  // what re-enables/restarts the resident server, so the discovery below finds
+  // it instead of spawning a second on-demand server next to a stale one.
+  // No-ops (no systemd, config off, already current) within a few systemctl
+  // queries; every failure is swallowed inside.
+  await ensureAutostart()
+
   const existing = readLock()
   if (existing) {
     if (!pidAlive(existing.pid)) {
