@@ -34,6 +34,57 @@ const ripgrepStub = (entry: string, onFind: (input: Ripgrep.FindInput) => void) 
   )
 
 describe("FileSystemSearch", () => {
+  it.live("constructs the fff index lazily on the first search", () =>
+    Effect.gen(function* () {
+      let creates = 0
+      let destroys = 0
+      const layer = FileSystemSearch.makeFffLayer(() => {
+        creates++
+        return {
+          ok: true as const,
+          value: {
+            destroy: () => {
+              destroys++
+            },
+            fileSearch: () => ({
+              ok: true as const,
+              value: {
+                items: [{ relativePath: "src/index.ts" }],
+                scores: [{ total: 1 }],
+              },
+            }),
+            directorySearch: () => ({ ok: true as const, value: { items: [], scores: [] } }),
+            mixedSearch: () => ({ ok: true as const, value: { items: [], scores: [] } }),
+          },
+        }
+      }).pipe(
+        Layer.provide(
+          Layer.succeed(
+            Location.Service,
+            Location.Service.of(location({ directory: AbsolutePath.make(path.join(os.tmpdir(), "opencode-fff-lazy")) })),
+          ),
+        ),
+      )
+
+      yield* Effect.gen(function* () {
+        const search = yield* FileSystemSearch.Service
+        yield* Effect.sleep("10 millis")
+        expect(creates).toBe(0)
+
+        const entries = yield* search.find({ query: "index", type: "file" })
+        expect(creates).toBe(1)
+        expect(entries.map((entry) => entry.path)).toEqual([RelativePath.make("src/index.ts")])
+
+        // A later search reuses the cached index instead of rebuilding it.
+        yield* search.find({ query: "index", type: "file" })
+        expect(creates).toBe(1)
+        expect(destroys).toBe(0)
+      }).pipe(Effect.provide(layer))
+
+      expect(destroys).toBe(1)
+    }),
+  )
+
   it.live("honors wildcard directory rules from .gitignore", () =>
     Effect.gen(function* () {
       const directory = (yield* Effect.acquireDisposable(Effect.promise(() => tmpdir("opencode-fff-ignore-")))).path
