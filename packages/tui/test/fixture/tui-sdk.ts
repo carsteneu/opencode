@@ -99,6 +99,7 @@ export function createFetch(override?: FetchHandler, events?: ReturnType<typeof 
         data: [],
       })
     if (url.pathname === "/project/current") return json({ id: "proj_test" })
+    if (url.pathname === "/global/scope") return json(true)
     if (url.pathname === "/api/reference")
       return json({ location: { directory, project: { id: "proj_test", directory } }, data: [] })
     if (url.pathname === "/provider") return json({ all: [], default: {}, connected: [] })
