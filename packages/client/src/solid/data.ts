@@ -545,6 +545,7 @@ export function createData(config: CreateDataInput) {
 
   function evictSession(sessionID: string) {
     if (sessionOutbox.has(sessionID)) return
+    dropSessionDeltas(sessionID)
     sync.invalidate(`session.pending:${sessionID}`)
     sync.invalidate(`session.message:${sessionID}`)
     messageLoads.delete(sessionID)
@@ -568,6 +569,7 @@ export function createData(config: CreateDataInput) {
 
   function removeSession(sessionID: string) {
     activeUpdates?.set(sessionID, undefined)
+    dropSessionDeltas(sessionID)
     store.session.pending[sessionID]?.forEach((item) => outbox.delete(item.id))
     messageIndex.delete(sessionID)
     sync.invalidate(`session:${sessionID}`)
@@ -594,6 +596,76 @@ export function createData(config: CreateDataInput) {
         }
       }),
     )
+  }
+
+  // Fast-streaming models publish deltas faster than the renderer keeps up, and one store write
+  // per delta starves it (#36043). Deltas accumulate per message field and flush once per
+  // connection batch: connection.publish dispatches its queue synchronously, so a microtask flush
+  // lands right behind that batch. The window is the publish interval (10ms by default), not the
+  // socket chunk — several events coalesce into one write.
+  type DeltaField = "text" | "reasoning" | "toolInput"
+  type PendingDelta = {
+    readonly sessionID: string
+    readonly messageID: string
+    readonly field: DeltaField
+    readonly toolID: string
+    readonly deltas: string[]
+  }
+  const pendingDeltas = new Map<string, PendingDelta>()
+  let deltaFlushScheduled = false
+
+  const deltaKey = (messageID: string, field: DeltaField, toolID = "") => `${messageID}|${field}|${toolID}`
+
+  function accumulateDelta(sessionID: string, messageID: string, field: DeltaField, delta: string, toolID = "") {
+    const key = deltaKey(messageID, field, toolID)
+    const pending = pendingDeltas.get(key)
+    if (pending) pending.deltas.push(delta)
+    else pendingDeltas.set(key, { sessionID, messageID, field, toolID, deltas: [delta] })
+    scheduleDeltaFlush()
+  }
+
+  // Settle a field before the store moves on to a new part of it: the fragments land on the part
+  // they were streamed for, and nothing stays queued to land on the part that replaced it. A field
+  // replaced by a full value settles the same way — the full value overwrites right after.
+  function settleDeltas(messageID: string, field: DeltaField, toolID = "") {
+    const key = deltaKey(messageID, field, toolID)
+    const pending = pendingDeltas.get(key)
+    if (!pending) return
+    pendingDeltas.delete(key)
+    applyDelta(pending)
+  }
+
+  // A re-read of the transcript replaces the rows these were streamed for, and an evicted session
+  // has none left; the flush ordering is what normally prevents this (the flush drains pending
+  // deltas before an awaited re-read can publish), so this only guards the invariant.
+  function dropSessionDeltas(sessionID: string) {
+    for (const [key, pending] of pendingDeltas) if (pending.sessionID === sessionID) pendingDeltas.delete(key)
+  }
+
+  function applyDelta(item: PendingDelta) {
+    const delta = item.deltas.join("")
+    if (delta.length === 0) return
+    if (item.field === "text") message.editText(item.sessionID, item.messageID, (text) => (text.text += delta))
+    else if (item.field === "reasoning")
+      message.editReasoning(item.sessionID, item.messageID, (reasoning) => (reasoning.text += delta))
+    else
+      message.editTool(item.sessionID, item.messageID, item.toolID, (tool) => {
+        if (tool.state.status === "streaming") tool.state.input += delta
+      })
+  }
+
+  function flushDeltas() {
+    deltaFlushScheduled = false
+    if (pendingDeltas.size === 0) return
+    const pending = [...pendingDeltas.values()]
+    pendingDeltas.clear()
+    batch(() => pending.forEach(applyDelta))
+  }
+
+  function scheduleDeltaFlush() {
+    if (deltaFlushScheduled) return
+    deltaFlushScheduled = true
+    queueMicrotask(flushDeltas)
   }
 
   function handleEvent(event: OpenCodeEvent) {
@@ -908,21 +980,22 @@ export function createData(config: CreateDataInput) {
         })
         return
       case "session.text.started":
+        settleDeltas(event.data.assistantMessageID, "text")
         message.editAssistant(event.data.sessionID, event.data.assistantMessageID, (assistant) => {
           assistant.content.push({ type: "text", text: "" })
         })
         return
       case "session.text.delta":
-        message.editText(event.data.sessionID, event.data.assistantMessageID, (text) => {
-          text.text += event.data.delta
-        })
+        accumulateDelta(event.data.sessionID, event.data.assistantMessageID, "text", event.data.delta)
         return
       case "session.text.ended":
+        settleDeltas(event.data.assistantMessageID, "text")
         message.editText(event.data.sessionID, event.data.assistantMessageID, (text) => {
           text.text = event.data.text
         })
         return
       case "session.tool.input.started":
+        settleDeltas(event.data.assistantMessageID, "toolInput", event.data.id)
         message.editAssistant(event.data.sessionID, event.data.assistantMessageID, (assistant) => {
           assistant.content.push({
             type: "tool",
@@ -934,16 +1007,22 @@ export function createData(config: CreateDataInput) {
         })
         return
       case "session.tool.input.delta":
-        message.editTool(event.data.sessionID, event.data.assistantMessageID, event.data.id, (tool) => {
-          if (tool.state.status === "streaming") tool.state.input += event.data.delta
-        })
+        accumulateDelta(
+          event.data.sessionID,
+          event.data.assistantMessageID,
+          "toolInput",
+          event.data.delta,
+          event.data.id,
+        )
         return
       case "session.tool.input.ended":
+        settleDeltas(event.data.assistantMessageID, "toolInput", event.data.id)
         message.editTool(event.data.sessionID, event.data.assistantMessageID, event.data.id, (tool) => {
           if (tool.state.status === "streaming") tool.state.input = event.data.text
         })
         return
       case "session.tool.called":
+        settleDeltas(event.data.assistantMessageID, "toolInput", event.data.id)
         message.editTool(event.data.sessionID, event.data.assistantMessageID, event.data.id, (tool) => {
           tool.time.ran = event.created
           tool.executed = event.data.executed
@@ -957,6 +1036,7 @@ export function createData(config: CreateDataInput) {
         })
         return
       case "session.tool.success":
+        settleDeltas(event.data.assistantMessageID, "toolInput", event.data.id)
         message.editTool(event.data.sessionID, event.data.assistantMessageID, event.data.id, (tool) => {
           if (tool.state.status !== "running") return
           tool.state = {
@@ -971,6 +1051,7 @@ export function createData(config: CreateDataInput) {
         })
         return
       case "session.tool.failed":
+        settleDeltas(event.data.assistantMessageID, "toolInput", event.data.id)
         message.editTool(event.data.sessionID, event.data.assistantMessageID, event.data.id, (tool) => {
           if (tool.state.status !== "streaming" && tool.state.status !== "running") return
           tool.state = {
@@ -986,6 +1067,7 @@ export function createData(config: CreateDataInput) {
         })
         return
       case "session.reasoning.started":
+        settleDeltas(event.data.assistantMessageID, "reasoning")
         message.editAssistant(event.data.sessionID, event.data.assistantMessageID, (assistant) => {
           assistant.content.push({
             type: "reasoning",
@@ -996,11 +1078,10 @@ export function createData(config: CreateDataInput) {
         })
         return
       case "session.reasoning.delta":
-        message.editReasoning(event.data.sessionID, event.data.assistantMessageID, (reasoning) => {
-          reasoning.text += event.data.delta
-        })
+        accumulateDelta(event.data.sessionID, event.data.assistantMessageID, "reasoning", event.data.delta)
         return
       case "session.reasoning.ended":
+        settleDeltas(event.data.assistantMessageID, "reasoning")
         message.editReasoning(event.data.sessionID, event.data.assistantMessageID, (reasoning) => {
           reasoning.text = event.data.text
           reasoning.time = { created: reasoning.time?.created ?? event.created, completed: event.created }
@@ -1671,6 +1752,9 @@ export function createData(config: CreateDataInput) {
             )
             const messages = local.length === 0 ? fetched : [...fetched, ...local]
             batch(() => {
+              // The response replaces the transcript, so nothing accumulated against the old rows
+              // may still land on top of it.
+              dropSessionDeltas(sessionID)
               messageIndex.set(sessionID, new Map(messages.map((message, index) => [message.id, index])))
               setStore("session", "message", sessionID, reconcile(messages))
               setStore("session", "messageCursor", sessionID, response.cursor.next ?? undefined)
