@@ -18,3 +18,12 @@ export function nextThinkingMode(current: ThinkingMode): ThinkingMode {
   const idx = MODES.indexOf(current)
   return MODES[(idx + 1) % MODES.length] ?? "show"
 }
+
+/**
+ * Reasoning collapses into one summary group while thinking is hidden, and renders every part
+ * inline while it is shown. Single source for the gate, shared by the transcript projector and
+ * the group renderer so a part is never both grouped and rendered.
+ */
+export function groupsReasoning(mode: ThinkingMode) {
+  return mode === "hide"
+}

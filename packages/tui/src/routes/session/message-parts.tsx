@@ -1,4 +1,4 @@
-import { createMemo, createSignal, Match, Show, Switch } from "solid-js"
+import { createMemo, Match, Show, Switch } from "solid-js"
 import { RGBA, TextAttributes, type MouseEvent } from "@opentui/core"
 import type { JSX } from "@opentui/solid"
 import type {
@@ -48,52 +48,42 @@ export function ReasoningPart(props: {
   const { currentSyntax: syntax } = useThemes()
   const thinkingSyntax = createSyntaxStyleMemo(() => generateThinkingSyntax(syntax(), theme.text.muted))
   const ctx = use()
-  // Collapsed by default in hide mode: a single line throughout, so the
-  // layout never shifts. Click to open the full markdown block, click to close.
-  const [expanded, setExpanded] = createSignal(false)
 
   const content = createMemo(() => reasoningContent(props.part))
   const isDone = createMemo(
     () => props.part.time?.completed !== undefined || props.message.time.completed !== undefined,
   )
-  const inMinimal = createMemo(() => ctx.thinkingMode() === "hide")
   const duration = createMemo(() => {
     const end = props.part.time?.completed ?? props.message.time.completed
     const start = props.part.time?.created ?? props.message.time.created
     return end === undefined ? 0 : Math.max(0, end - start)
   })
   const summary = createMemo(() => reasoningSummary(content()))
-  const toggle = () => {
-    if (!inMinimal()) return
-    setExpanded((prev) => !prev)
-  }
 
   return (
     <Show when={content()}>
       <box paddingLeft={3} flexDirection="column" flexShrink={0}>
         <box
-          border={!inMinimal() || expanded() ? ["left"] : undefined}
+          border={["left"]}
           customBorderChars={SplitBorder.customBorderChars}
           borderColor={theme.decrease(theme.background.base)}
-          paddingLeft={!inMinimal() || expanded() ? 1 : 0}
+          paddingLeft={1}
         >
-          <box onMouseUp={toggle}>
+          <box>
             <ReasoningHeader
-              toggleable={inMinimal()}
-              open={!inMinimal() || expanded()}
               done={isDone()}
-              title={inMinimal() && !expanded() ? summary().title : null}
+              title={summary().title}
               duration={isDone() ? Locale.duration(duration()) : undefined}
             />
           </box>
         </box>
-        <Show when={!inMinimal() || expanded()}>
+        <Show when={summary().body}>
           <box marginTop={1}>
             <box
               border={["left"]}
               customBorderChars={SplitBorder.customBorderChars}
               borderColor={theme.decrease(theme.background.base)}
-              paddingLeft={inMinimal() ? 3 : 1}
+              paddingLeft={1}
             >
               <code
                 filetype="markdown"
@@ -117,23 +107,15 @@ export function reasoningContent(part: SessionMessageAssistantReasoning) {
   return part.text.replace("[REDACTED]", "").trim()
 }
 
-function ReasoningHeader(props: {
-  toggleable: boolean
-  open: boolean
-  done: boolean
-  title: string | null
-  duration?: string
-}) {
+function ReasoningHeader(props: { done: boolean; title: string | null; duration?: string }) {
   const theme = useTheme()
   const fg = () =>
-    props.open
-      ? RGBA.fromValues(
-          theme.text.feedback.warning.base.r,
-          theme.text.feedback.warning.base.g,
-          theme.text.feedback.warning.base.b,
-          0.6,
-        )
-      : theme.text.feedback.warning.base
+    RGBA.fromValues(
+      theme.text.feedback.warning.base.r,
+      theme.text.feedback.warning.base.g,
+      theme.text.feedback.warning.base.b,
+      0.6,
+    )
 
   return (
     <Switch>
@@ -144,9 +126,6 @@ function ReasoningHeader(props: {
       </Match>
       <Match when={true}>
         <text fg={fg()} wrapMode="none">
-          <Show when={props.toggleable}>
-            <span>{props.open ? "- " : "+ "}</span>
-          </Show>
           <span>Thought</span>
           <Show when={props.title || props.duration}>
             <span>: </span>
