@@ -28,7 +28,11 @@ Description=opencode shared server (resident; disable via sharedServerAutostart=
 
 [Service]
 EnvironmentFile=${input.envFile}
-ExecStart=${input.execPath} serve --shared --hostname 127.0.0.1 --persistent
+# A login shell so the server inherits the same environment the user's
+# terminals have — nvm's node, bun, cargo & co. Tool calls execute inside the
+# server process, and a bare systemd environment would break them (measured:
+# vite picked the system node 18 instead of the nvm one and the build failed).
+ExecStart=/bin/bash -ilc 'exec ${input.execPath} serve --shared --hostname 127.0.0.1 --persistent'
 Restart=on-failure
 RestartSec=2
 

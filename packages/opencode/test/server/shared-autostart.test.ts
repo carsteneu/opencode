@@ -16,9 +16,9 @@ describe("shared-server autostart gate", () => {
 })
 
 describe("shared-server autostart unit", () => {
-  test("references the installed binary, the password file and the persistent flag", () => {
+  test("launches through a login shell with the installed binary, password file and persistent flag", () => {
     const content = unitContent({ execPath: "/home/u/.opencode/bin/opencode", envFile: "/home/u/.local/share/opencode/servers/shared-server.env" })
-    expect(content).toContain("ExecStart=/home/u/.opencode/bin/opencode serve --shared --hostname 127.0.0.1 --persistent")
+    expect(content).toContain("ExecStart=/bin/bash -ilc 'exec /home/u/.opencode/bin/opencode serve --shared --hostname 127.0.0.1 --persistent'")
     expect(content).toContain("EnvironmentFile=/home/u/.local/share/opencode/servers/shared-server.env")
     expect(content).toContain("Restart=on-failure")
     expect(content).toContain("WantedBy=default.target")

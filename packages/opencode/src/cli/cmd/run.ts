@@ -951,6 +951,24 @@ export const RunCommand = effectCmd({
         return await execute(sdk)
       }
 
+      // Shared mode, analogous to the TUI: a headless run rides the one global
+      // server when discovery finds or starts one, so it pays no server boot of
+      // its own. An explicit --port (the caller wants this process's server),
+      // the escape hatch, and a failed discovery keep today's in-process
+      // behaviour unchanged.
+      const shared =
+        args.port || process.env.OPENCODE_SHARED_SERVER === "0"
+          ? undefined
+          : await import("../tui/shared-server").then((m) => m.findOrStartSharedServer().catch(() => undefined))
+      if (shared) {
+        const sdk = createOpencodeClient({
+          baseUrl: shared.url,
+          headers: ServerAuth.headers({ password: shared.password }),
+          directory,
+        })
+        return await execute(sdk)
+      }
+
       const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => {
         const { Server } = await import("@/server/server")
         const request = new Request(input, init)
