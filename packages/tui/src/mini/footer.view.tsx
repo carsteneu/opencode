@@ -477,6 +477,18 @@ export function RunFooterView(props: RunFooterViewProps) {
       return { key: command(), label: "menu" }
     }
   })
+  const [waitTick, setWaitTick] = createSignal(0)
+  createEffect(() => {
+    if (props.state().waiting === undefined) return
+    const timer = setInterval(() => setWaitTick((value) => value + 1), 1000)
+    onCleanup(() => clearInterval(timer))
+  })
+  const waitCell = createMemo(() => {
+    const since = props.state().waiting
+    if (since === undefined) return undefined
+    waitTick()
+    return `\u25f7 Waiting on model \u00b7 ${Math.max(1, Math.round((Date.now() - since) / 1000))}s`
+  })
   const statuslineLayout = createMemo(() => {
     const info = modelStatus()
     return footerStatuslinePolicy({
@@ -486,6 +498,7 @@ export function RunFooterView(props: RunFooterViewProps) {
         text: statusText(),
         expanded: footerDetails() && busy() && interruptLabel() ? `${interruptLabel()} interrupt` : undefined,
       },
+      wait: waitCell(),
       escape: shell() && !takeover() ? { key: "esc", label: "normal" } : undefined,
       work: contextHintCandidates(),
       model: info ? { name: info.model, variant: info.variant } : undefined,

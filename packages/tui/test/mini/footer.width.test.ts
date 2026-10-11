@@ -35,6 +35,12 @@ describe("run footer width", () => {
         ],
       },
       { work: [], status: { text: "Shell" }, escape: { key: "esc", label: "normal" }, context: screenshot.context },
+      {
+        work: [],
+        status: { text: "esc stop" },
+        spinner: mono ? "*" : "\u25aa",
+        wait: "\u25f7 Waiting on model \u00b7 12s",
+      },
     ]
     for (const fixture of fixtures) {
       let previous: FooterStatuslineGroup["id"][] = []
@@ -62,6 +68,27 @@ describe("run footer width", () => {
         previous = ids
       }
     }
+  })
+
+  test("the model-wait cell sits next to the spinner and is dropped before required controls", () => {
+    const wait = "\u25f7 Waiting on model \u00b7 12s"
+    const wide = footerStatuslinePolicy({ work: [], spinner: "\u25aa", wait, width: 60 })
+    expect(wide.groups.map((group) => group.id)).toEqual(["spinner", "wait"])
+    expect(wide.text).toBe(`\u25aa ${wait}`)
+    expect(footerStatuslinePolicy({ work: [], spinner: "\u25aa", wait, width: 5 }).groups.map((group) => group.id)).toEqual([
+      "spinner",
+    ])
+    expect(footerStatuslinePolicy({ work: [], wait, width: 5 }).groups).toEqual([])
+  })
+
+  test("the model-wait cell outranks the other optional facts", () => {
+    const layout = footerStatuslinePolicy({
+      ...screenshot,
+      spinner: "\u25aa",
+      wait: "\u25f7 Waiting on model \u00b7 12s",
+      width: 40,
+    })
+    expect(layout.groups.map((group) => group.id)).toEqual(["spinner", "wait"])
   })
 
   test("identity admission cannot separate the selected variant from its model", () => {

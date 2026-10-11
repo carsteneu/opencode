@@ -178,6 +178,8 @@ export type FooterState = {
   notice: string
   model: string
   usage: { tokens: number; percent?: number; cost?: number } | undefined
+  /** Epoch milliseconds when the current model wait began; absent once output has arrived. */
+  waiting?: number
   first: boolean
   interrupt: number
   exit: number
