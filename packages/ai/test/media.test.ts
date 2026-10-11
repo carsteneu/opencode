@@ -234,4 +234,34 @@ describe("Media", () => {
       expect(missing.reason._tag).toBe("InvalidRequest")
     }).pipe(Effect.provide(NodeFileSystem.layer), Effect.provide(scriptedResponses(["unused"]))),
   )
+
+  it.effect("bounds image downloads while leaving other media unbounded", () => {
+    const limit = Media.MAX_IMAGE_DOWNLOAD_BYTES
+    const oversized = new Uint8Array(limit + 1)
+    return Effect.gen(function* () {
+      const error = yield* Media.url("https://cdn.example.test/huge.png", { mediaType: "image/png" })
+        .bytes()
+        .pipe(Effect.flip)
+      expect(error).toBeInstanceOf(AIError)
+      expect(error.reason._tag).toBe("InvalidProviderOutput")
+      expect(error.message).toContain(`exceeds the ${limit} byte limit`)
+      expect(error.reason.http?.url).toBe("https://cdn.example.test/huge.png")
+
+      const document = yield* Media.url("https://cdn.example.test/huge.pdf", { mediaType: "application/pdf" }).bytes()
+      expect(document.byteLength).toBe(limit + 1)
+
+      const image = yield* Media.url("https://cdn.example.test/small.png", { mediaType: "image/png" }).bytes()
+      expect(image).toEqual(PNG)
+    }).pipe(
+      Effect.provide(
+        dynamicResponse((input) =>
+          Effect.succeed(
+            input.respond(input.request.url.endsWith("small.png") ? PNG : oversized, {
+              headers: { "content-type": "image/png" },
+            }),
+          ),
+        ),
+      ),
+    )
+  })
 })
