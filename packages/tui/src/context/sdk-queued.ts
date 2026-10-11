@@ -41,12 +41,18 @@ export function createQueuedClient<C extends object>(input: {
         return makeStep([...path, next])
       },
       apply(_leaf, _this, args: unknown[]) {
-        return url.then(
+        const mine = generation
+        const pending = url
+        return pending.then(
           (baseUrl) => {
+            // Only the current generation may install the shared client; a call
+            // that was queued before a retarget talks to the URL it started with
+            // through a throwaway client instead of pinning the shared one to it.
+            const instance = mine === generation ? (real ??= input.create(baseUrl)) : input.create(baseUrl)
             // Call through the nearest namespace so `this` stays bound (hey-api
             // methods touch `this.client`, which a detached call would lose).
-            let target: any = (real ??= input.create(baseUrl))
-            let receiver: any = target
+            let target: any = instance
+            let receiver: any = instance
             for (const key of path) {
               receiver = target
               target = target[key]

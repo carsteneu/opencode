@@ -162,6 +162,14 @@ export function allows(event: GlobalBusEvent, scope: Scope): boolean {
   if (DIRECTORY_BOUND.has(frame.type)) return directory === scope.directory
 
   // R4: session list/status reaches the whole project the window shows.
+  //
+  // `event.project` is read off the publishing instance (bus/global.ts), while
+  // `event.directory` prefers an explicitly attached location — and that location
+  // is only a directory + workspaceID reference, it carries no project. So for an
+  // event a relay re-publishes from another project's location, the two fields
+  // disagree and the project is the local one. Reaching that needs the
+  // experimental workspace control-plane; until the event's location reference
+  // carries its project, the both-known branch below is the best available key.
   if (SESSION_STATUS.has(frame.type)) {
     const own = frame.sessionID !== undefined && scope.sessions.has(frame.sessionID)
     // Both sides know their project: that is the whole decision. The session list
@@ -172,7 +180,9 @@ export function allows(event: GlobalBusEvent, scope: Scope): boolean {
     if (scope.project !== "" && event.project !== undefined) return event.project === scope.project || own
     // No project on one side (an older client, or an event published without an
     // instance context): narrow decision — own directory, or a session this
-    // window actually shows (a /move-ed session).
+    // window actually shows. That second clause is the safety valve for a frame
+    // whose project we cannot trust: it keeps delivering the metadata of a session
+    // the window has open, whatever else the frame claims.
     return directory === scope.directory || own
   }
 

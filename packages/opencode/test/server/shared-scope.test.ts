@@ -86,8 +86,8 @@ describe("event scope filter", () => {
       // old per-window server never showed another project's session metadata.
       expect(allows(live(type, "ses_b", B, PB), own)).toBe(false)
       expect(allows(live(type, "ses_b", A, PB), own)).toBe(false)
-      // ...unless it is a session this window actually shows (a /move-ed session
-      // whose directory is no longer the cwd).
+      // ...unless it is a session this window actually shows: a frame we cannot
+      // trust the project of still delivers the metadata of an open session.
       expect(allows(live(type, "ses_a", B, PB), own)).toBe(true)
     }
   })

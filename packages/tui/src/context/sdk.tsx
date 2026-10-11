@@ -56,18 +56,29 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
     // A client that presents the client-id header is filtered from the first
     // frame, so a lost declaration would silently starve this window of its own
     // content. Retry with backoff instead of swallowing the failure.
+    let declarePending = false
     const declare = async () => {
-      if ((declared === undefined && projectID === "") || declaring) return
+      if (declared === undefined && projectID === "") return
+      // A declaration that lands while one is in flight must not be dropped: the
+      // reconnect after a rediscovery re-asserts the scope against the NEW server,
+      // and the in-flight run may be retrying against the old one.
+      if (declaring) {
+        declarePending = true
+        return
+      }
       declaring = true
       try {
-        for (let attempt = 0; attempt < 5; attempt++) {
-          try {
-            await post()
-            return
-          } catch {
-            await Bun.sleep(200 * (attempt + 1))
+        do {
+          declarePending = false
+          for (let attempt = 0; attempt < 5; attempt++) {
+            try {
+              await post()
+              break
+            } catch {
+              await Bun.sleep(200 * (attempt + 1))
+            }
           }
-        }
+        } while (declarePending)
       } finally {
         declaring = false
       }
@@ -108,13 +119,17 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
       if (!props.rediscover) return false
       const next = await props.rediscover()
       if (!next) return false
+      // The credentials of the old server must never survive a re-point.
+      delete headers["authorization"]
       if (next.headers) {
         const incoming = Object.fromEntries(new Headers(next.headers as HeadersInit).entries())
-        delete headers["authorization"]
         Object.assign(headers, incoming)
       }
       serverUrl = next.url
       sdk.retarget(next.url)
+      // A resolve that failed earlier leaves the window on the narrow rule for
+      // good, so try again against the server it is talking to now.
+      void loadProject()
       return true
     }
 
@@ -136,6 +151,9 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
     let last = 0
     const retryDelay = 1000
     const maxRetryDelay = 30000
+    // A stream that lasted this long counts as a healthy connection, so the next
+    // reconnect may start from the backoff floor again.
+    const HEALTHY_STREAM_MS = 30_000
 
     const flush = () => {
       if (queue.length === 0) return
@@ -181,6 +199,7 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
         while (true) {
           if (abort.signal.aborted || ctrl.signal.aborted) break
 
+          const opened = Date.now()
           try {
             const events = await client.global.event({
               signal: ctrl.signal,
@@ -219,11 +238,13 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
 
           // The stream ended — cleanly or not. Rediscover before retrying so a
           // dead shared server does not leave this window permanently dark.
-          const previous = await serverUrl
-          const recovered = await redial().catch(() => false)
-          // Only a *different* server earns a fresh backoff. If discovery keeps
-          // handing back the same address that keeps dropping, escalate.
-          if (recovered && (await serverUrl) !== previous) attempt = 0
+          await redial().catch(() => false)
+          // A stream that stayed up means the server was healthy, so the next
+          // reconnect starts from the floor again. One that dies immediately keeps
+          // escalating: rediscovery STARTS a fresh server (on a fresh port) each
+          // time, so resetting on every rediscovery would turn a crash-looping
+          // server into a crash-looping spawn loop.
+          if (Date.now() - opened >= HEALTHY_STREAM_MS) attempt = 0
 
           attempt += 1
           // Exponential backoff

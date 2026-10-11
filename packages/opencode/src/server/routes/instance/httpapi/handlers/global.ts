@@ -33,6 +33,12 @@ function parseBody(body: string) {
   }
 }
 
+// A client-supplied map key, kept only while it is plausibly one. See scopeUpdate.
+function bounded(value: string | undefined, max: number) {
+  if (value === undefined || value.length === 0 || value.length > max) return undefined
+  return value
+}
+
 function eventData(data: unknown): Sse.Event {
   return {
     _tag: "Event",
@@ -132,12 +138,13 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
     })
 
     const scopeUpdate = Effect.fn("GlobalHttpApi.scope")(function* (ctx: { payload: typeof GlobalScopeInput.Type }) {
-      // Bound the client-supplied key and session list so this endpoint cannot
-      // grow the shared server's scope maps without limit.
+      // Bound every client-supplied key so this endpoint cannot grow the shared
+      // server's scope maps without limit. An oversized value is treated as absent
+      // rather than truncated, so a long one can never masquerade as a real key.
       if (ctx.payload.clientID.length === 0 || ctx.payload.clientID.length > 200) return false
       setScope(ctx.payload.clientID, {
-        directory: ctx.payload.directory,
-        project: ctx.payload.project?.slice(0, 200),
+        directory: bounded(ctx.payload.directory, 4096),
+        project: bounded(ctx.payload.project, 200),
         sessions: ctx.payload.sessions.slice(0, 1000),
       })
       return true
