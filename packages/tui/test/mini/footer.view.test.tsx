@@ -1825,6 +1825,34 @@ test.each([
   }
 })
 
+test("the statusline shows the model wait with its elapsed time", async () => {
+  const app = await renderFooter({
+    width: 80,
+    state: { phase: "running", waiting: Date.now() - 12_000 },
+  })
+  try {
+    await app.renderOnce()
+    const statusline = footerStatusline(app.renderer.root)
+    expect(app.captureCharFrame().split("\n")[statusline.y].trimEnd()).toContain(
+      "\u25f7 Waiting on model \u00b7 12s",
+    )
+    expect(statusline.height).toBe(1)
+  } finally {
+    app.cleanup()
+  }
+})
+
+test("the statusline hides the model wait once output arrives", async () => {
+  const app = await renderFooter({ width: 80, state: { phase: "running" } })
+  try {
+    await app.renderOnce()
+    const statusline = footerStatusline(app.renderer.root)
+    expect(app.captureCharFrame().split("\n")[statusline.y].trimEnd()).not.toContain("Waiting on model")
+  } finally {
+    app.cleanup()
+  }
+})
+
 test.each([8, 12])("production footer grows for wrapped instructions in %i rows", async (height) => {
   const app = await createTestRenderer({ width: 16, height, screenMode: "split-footer", footerHeight: 4 })
   const footer = new RunFooter(app.renderer, {
