@@ -3,7 +3,7 @@ export * as Bus from "./bus.js"
 import { Cause, Clock, Context, Effect, Layer, Option, PubSub, Schema, Stream } from "effect"
 import { Event } from "@opencode/schema/event"
 import type { EventLog } from "@opencode/schema/event-log"
-import { and, asc, eq, gt, lte, sql } from "drizzle-orm"
+import { and, asc, eq, gt, inArray, lte, sql } from "drizzle-orm"
 import { Database } from "./database/database.js"
 import { EventSequenceTable, EventTable } from "./event/sql.js"
 import type { Location } from "@opencode/schema/location"
@@ -377,7 +377,7 @@ export function configured(options?: Options) {
                             }),
                           )
                         }
-                        if (persist) {
+                        if (persist && input) {
                           const stored = yield* db
                             .select({ aggregateID: EventTable.aggregate_id, seq: EventTable.seq })
                             .from(EventTable)
@@ -427,7 +427,30 @@ export function configured(options?: Options) {
                               },
                             ])
                             .run()
-                            .pipe(Effect.orDie)
+                            .pipe(
+                              // A fresh publish generates its event id and skips the pre-insert lookup
+                              // above, so a duplicate id surfaces here as an insert conflict. Re-check by
+                              // id to reproduce the replay error message; any other insert failure dies
+                              // unchanged.
+                              Effect.catch((error) =>
+                                Effect.gen(function* () {
+                                  const existing = yield* db
+                                    .select({ aggregateID: EventTable.aggregate_id, seq: EventTable.seq })
+                                    .from(EventTable)
+                                    .where(eq(EventTable.id, event.id))
+                                    .get()
+                                    .pipe(Effect.orDie)
+                                  if (!existing) return yield* Effect.die(error)
+                                  return yield* Effect.die(
+                                    new InvalidDurableEventError({
+                                      type: event.type,
+                                      message: `Event ${event.id} already exists at aggregate ${existing.aggregateID} sequence ${existing.seq}`,
+                                    }),
+                                  )
+                                }),
+                              ),
+                              Effect.orDie,
+                            )
                         return { aggregateID, seq, event: committed, route }
                       }),
                     { behavior: "immediate" },
@@ -609,19 +632,6 @@ export function configured(options?: Options) {
                                   }),
                                 )
                               ids.add(item.event.id)
-                              const stored = yield* db
-                                .select({ aggregateID: EventTable.aggregate_id, seq: EventTable.seq })
-                                .from(EventTable)
-                                .where(eq(EventTable.id, item.event.id))
-                                .get()
-                                .pipe(Effect.orDie)
-                              if (stored)
-                                yield* Effect.die(
-                                  new InvalidDurableEventError({
-                                    type: item.event.type,
-                                    message: `Event ${item.event.id} already exists at aggregate ${stored.aggregateID} sequence ${stored.seq}`,
-                                  }),
-                                )
                             }
                             const event = queued[index]
                             for (const projector of projectors.get(
@@ -646,7 +656,38 @@ export function configured(options?: Options) {
                             .onConflictDoUpdate({ target: EventSequenceTable.aggregate_id, set: { seq: finalSeq } })
                             .run()
                             .pipe(Effect.orDie)
-                          if (persist) yield* db.insert(EventTable).values(rows).run().pipe(Effect.orDie)
+                          if (persist)
+                            yield* db
+                              .insert(EventTable)
+                              .values(rows)
+                              .run()
+                              .pipe(
+                                // A fresh batch skips the pre-insert id lookup, so an id already stored
+                                // surfaces here as an insert conflict. Re-query the batch ids to
+                                // reproduce the same error message.
+                                Effect.catch((error) =>
+                                  Effect.gen(function* () {
+                                    const existing = yield* db
+                                      .select({
+                                        id: EventTable.id,
+                                        aggregateID: EventTable.aggregate_id,
+                                        seq: EventTable.seq,
+                                      })
+                                      .from(EventTable)
+                                      .where(inArray(EventTable.id, [...ids]))
+                                      .get()
+                                      .pipe(Effect.orDie)
+                                    if (!existing) return yield* Effect.die(error)
+                                    return yield* Effect.die(
+                                      new InvalidDurableEventError({
+                                        type: queued.find((item) => item.id === existing.id)?.type ?? "unknown",
+                                        message: `Event ${existing.id} already exists at aggregate ${existing.aggregateID} sequence ${existing.seq}`,
+                                      }),
+                                    )
+                                  }),
+                                ),
+                                Effect.orDie,
+                              )
                           return { events: queued, route }
                         }),
                       { behavior: "immediate" },

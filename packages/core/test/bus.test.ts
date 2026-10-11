@@ -1387,4 +1387,30 @@ describe("Bus", () => {
       }).pipe(Effect.provide(eventLayer))
     }),
   )
+
+  it.effect("rejects a duplicate event id on a fresh publish", () =>
+    Effect.gen(function* () {
+      const bus = yield* Bus.Service
+      const aggregateID = Event.ID.create()
+      const eventID = Event.ID.create()
+      yield* bus.publish(SyncMessage, { id: aggregateID, text: "first" }, { id: eventID })
+      const exit = yield* bus.publish(SyncMessage, { id: aggregateID, text: "second" }, { id: eventID }).pipe(Effect.exit)
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(String(exit)).toContain(`Event ${eventID} already exists at aggregate ${aggregateID} sequence 0`)
+    }),
+  )
+
+  it.effect("rejects a duplicate event id on a fresh batch publish", () =>
+    Effect.gen(function* () {
+      const bus = yield* Bus.Service
+      const aggregateID = Event.ID.create()
+      const eventID = Event.ID.create()
+      yield* bus.publishAll([[SyncMessage, { id: aggregateID, text: "first" }, { id: eventID }]])
+      const exit = yield* bus
+        .publishAll([[SyncMessage, { id: aggregateID, text: "second" }, { id: eventID }]])
+        .pipe(Effect.exit)
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(String(exit)).toContain(`Event ${eventID} already exists at aggregate ${aggregateID} sequence 0`)
+    }),
+  )
 })
