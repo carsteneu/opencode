@@ -91,8 +91,16 @@ function ensureEnvFile(envFile: string): boolean {
   return true
 }
 
-function writeUnitIfChanged(unit: string, content: string): boolean {
-  if (fs.existsSync(unit) && fs.readFileSync(unit, "utf8") === content) return false
+export function writeUnit(unit: string, content: string, mode: "create-only" | "repair"): boolean {
+  if (fs.existsSync(unit)) {
+    // Existing units are never rewritten by the background ensure: windows
+    // running an older binary would otherwise "repair" a newer unit back to
+    // their own template every time they reconnect (measured: a reconnecting
+    // .217 window downgraded the login-shell ExecStart written by .218).
+    // Only an explicit `opencode autostart install` repairs.
+    if (mode === "create-only") return false
+    if (fs.readFileSync(unit, "utf8") === content) return false
+  }
   fs.mkdirSync(path.dirname(unit), { recursive: true })
   fs.writeFileSync(unit, content)
   return true
@@ -122,7 +130,7 @@ export type InstallReport = {
  * call on every shared-mode TUI start — when everything is current it costs one
  * lock read and two systemctl queries and touches nothing.
  */
-export async function installAutostart(options: { timeoutMs?: number } = {}): Promise<InstallReport> {
+export async function installAutostart(options: { timeoutMs?: number; createOnly?: boolean } = {}): Promise<InstallReport> {
   const report: InstallReport = {
     supported: true,
     envFileWritten: false,
@@ -146,7 +154,7 @@ export async function installAutostart(options: { timeoutMs?: number } = {}): Pr
   const paths = autostartPaths()
   report.envFileWritten = ensureEnvFile(paths.envFile)
   const content = unitContent({ execPath: process.execPath, envFile: paths.envFile })
-  report.unitWritten = writeUnitIfChanged(paths.unit, content)
+  report.unitWritten = writeUnit(paths.unit, content, options.createOnly ? "create-only" : "repair")
   if (report.unitWritten) await systemctl(["daemon-reload"])
 
   const enable = await systemctl(["enable", UNIT_NAME])
@@ -195,7 +203,9 @@ export async function ensureAutostart(): Promise<void> {
     const { AppRuntime } = await import("@/effect/app-runtime")
     const global = await AppRuntime.runPromise(Config.Service.use((cfg) => cfg.getGlobal()))
     if (!shouldAutostart(global.sharedServerAutostart)) return
-    await installAutostart()
+    // create-only: the background ensure must never rewrite an existing unit
+    // (see writeUnit) — older binaries running in other windows would win.
+    await installAutostart({ createOnly: true })
   } catch {
     // Autostart is an optimization; the finder's fallback covers its absence.
   }

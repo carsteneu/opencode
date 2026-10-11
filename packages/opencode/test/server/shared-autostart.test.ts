@@ -1,5 +1,15 @@
 import { describe, expect, test } from "bun:test"
-import { shouldAutostart, shouldRestartService, unitContent, autostartPaths, UNIT_NAME } from "../../src/server/shared/autostart"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
+import {
+  shouldAutostart,
+  shouldRestartService,
+  unitContent,
+  autostartPaths,
+  writeUnit,
+  UNIT_NAME,
+} from "../../src/server/shared/autostart"
 
 describe("shared-server autostart gate", () => {
   test("absent config means on (the service is the default)", () => {
@@ -26,6 +36,19 @@ describe("shared-server autostart unit", () => {
 
   test("lives in the user systemd directory", () => {
     expect(autostartPaths("/home/u").unit.endsWith(`.config/systemd/user/${UNIT_NAME}`)).toBe(true)
+  })
+
+  test("create-only never touches an existing unit, even when it differs", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ss-autostart-"))
+    try {
+      const unit = path.join(dir, "unit.service")
+      expect(writeUnit(unit, "new content", "create-only")).toBe(true)
+      writeFileSync(unit, "older binary's content")
+      expect(writeUnit(unit, "new content", "create-only")).toBe(false)
+      expect(writeUnit(unit, "new content", "repair")).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 
