@@ -16,6 +16,13 @@ export type InstallOptions = {
   readonly pollMs?: number
   readonly now?: () => number
   readonly active?: () => number
+  /**
+   * Autostart-service mode: never exit on idle. systemd owns the lifetime
+   * (start/stop/restart); the lock is still published and orphan takeover still
+   * applies, so a persistent server yields to a healthy peer and waits for the
+   * next service start.
+   */
+  readonly persistent?: boolean
 }
 
 export type InstallResult = { readonly owned: boolean }
@@ -35,6 +42,8 @@ export async function installSharedLifecycle(options: InstallOptions): Promise<I
     startedAt: new Date().toISOString(),
   }
   if (!(await writeLock(lock))) return { owned: false }
+
+  if (options.persistent) return { owned: true }
 
   const now = options.now ?? Date.now
   const active = options.active ?? activeSseCount

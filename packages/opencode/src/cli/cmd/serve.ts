@@ -5,17 +5,37 @@ import { withNetworkOptions, resolveNetworkOptions } from "../network"
 export const ServeCommand = effectCmd({
   command: "serve",
   builder: (yargs) =>
-    withNetworkOptions(yargs).option("shared", {
-      type: "boolean",
-      hidden: true,
-      default: false,
-      describe: "publish a discovery lock and end with the last client (global shared server)",
-    }),
+    withNetworkOptions(yargs)
+      .option("shared", {
+        type: "boolean",
+        hidden: true,
+        default: false,
+        describe: "publish a discovery lock and end with the last client (global shared server)",
+      })
+      .option("persistent", {
+        type: "boolean",
+        hidden: true,
+        default: false,
+        describe: "internal: autostart-service mode — stay up without clients, gated by sharedServerAutostart",
+      }),
   describe: "starts a headless opencode server",
   // Server loads instances per-request via x-opencode-directory header — no
   // need for an ambient project InstanceContext at startup.
   instance: false,
   handler: Effect.fn("Cli.serve")(function* (args) {
+    if (args.shared && args.persistent) {
+      // The autostart service runs unconditionally at login; the config key is
+      // the live switch. Check it before binding anything so a disabled service
+      // costs one process start and nothing else.
+      const { Config } = yield* Effect.promise(() => import("@/config/config"))
+      const { AppRuntime } = yield* Effect.promise(() => import("@/effect/app-runtime"))
+      const { shouldAutostart } = yield* Effect.promise(() => import("../../server/shared/autostart"))
+      const global = yield* Effect.promise(() => AppRuntime.runPromise(Config.Service.use((cfg) => cfg.getGlobal())))
+      if (!shouldAutostart(global.sharedServerAutostart)) {
+        console.log("[serve --shared --persistent] disabled by sharedServerAutostart=false; exiting")
+        process.exit(0)
+      }
+    }
     const { Server } = yield* Effect.promise(() => import("../../server/server"))
     if (!process.env.OPENCODE_SERVER_PASSWORD) {
       // A shared server is auto-discovered and auto-attached by every window, so
@@ -37,6 +57,7 @@ export const ServeCommand = effectCmd({
         installSharedLifecycle({
           url: server.url.origin,
           password: process.env.OPENCODE_SERVER_PASSWORD ?? "",
+          persistent: args.persistent,
           onIdle: async () => {
             // Reuse the existing disposal path so open instances are torn down
             // exactly like an explicit /global/dispose.
