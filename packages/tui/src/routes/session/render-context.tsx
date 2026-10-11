@@ -19,6 +19,8 @@ export const context = createContext<{
    */
   terminal: { width: number; height: number }
   sessionID: string
+  /** Inline image previews wait for idle so they do not repaint the transcript while a turn streams. */
+  sessionRunning: () => boolean
   anchors: ReturnType<typeof createTimelineAnchors>
   /** Saved disclosure, falling back to the verbosity default for the group kind. */
   groupExpanded: (groupID: string, kind: GroupKind) => boolean

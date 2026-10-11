@@ -1379,6 +1379,7 @@ export function Session(props: {
           },
         },
         sessionID: route.sessionID,
+        sessionRunning: () => data.session.status(route.sessionID) === "running",
         thinkingMode,
         markdownMode,
         groupExploration,
@@ -2533,7 +2534,10 @@ function SessionImages(props: { images: readonly { uri: string }[]; paddingLeft?
                   dialog.replace(() => <DialogImagePreview images={images()} initial={index()} />)
                 }}
               >
-                <Show when={!failed()} fallback={<text>No preview</text>}>
+                <Show
+                  when={!failed() && !ctx.sessionRunning()}
+                  fallback={<text>{failed() ? "No preview" : "Open image"}</text>}
+                >
                   <image
                     source={image.uri}
                     fit="cover"

@@ -83,6 +83,7 @@ function LinkClicksStory(props: { context: Plugin.Context }) {
             return dimensions()
           },
           sessionID: "link-clicks",
+          sessionRunning: () => false,
           anchors: createTimelineAnchors(),
           groupExpanded: () => true,
           setGroupExpanded: () => {},

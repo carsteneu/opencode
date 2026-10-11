@@ -319,6 +319,7 @@ function mount(input: {
                 width: 40,
                 terminal: { width: 40, height: 24 },
                 sessionID: "fixture",
+                sessionRunning: () => false,
                 anchors: input.anchors,
                 groupExpanded: input.expanded,
                 setGroupExpanded: input.setExpanded,
