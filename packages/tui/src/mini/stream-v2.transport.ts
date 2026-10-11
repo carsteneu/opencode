@@ -16,6 +16,7 @@ import { writeSessionOutput } from "./stream"
 import { createFragmentReconciler, fragmentRef, type FragmentReconciler } from "./stream-v2.fragment"
 import { toolImageCommits, userImageCommits, type ImageCommit } from "./stream-v2.image"
 import { messagePrompt } from "./session.shared"
+import { nextModelWait, type ModelWaitEvent, type ModelWaitState } from "./model-wait"
 import { createSubagentTracker, toolCommit, toolFinalPhase } from "./stream-v2.subagent"
 import { normalizeTool, toolOutputText } from "./tool"
 import { toolDisplayContent } from "../util/tool-display"
@@ -559,8 +560,19 @@ export async function createSessionTransport(input: StreamInput): Promise<Sessio
     write([], { phase: "idle", status })
   }
 
+  // Tracks whether the current turn is still waiting for its first model output, so the statusline can show the
+  // elapsed wait. Fed from every phase transition plus the events that prove output arrived.
+  let modelWait: ModelWaitState = { phase: "idle" }
+  let paintedWaiting: number | undefined
+
+  const markWait = (event: ModelWaitEvent) => {
+    modelWait = nextModelWait(modelWait, event)
+  }
+
   const write = (commits: StreamCommit[], patch?: Pick<FooterPatch, "phase" | "status" | "usage">) => {
     if (state.closed || controller.signal.aborted || input.footer.isClosed) return
+    if (patch?.phase === "running") markWait({ type: "status", status: "busy", at: Date.now() })
+    else if (patch?.phase === "idle") markWait({ type: "status", status: "idle", at: Date.now() })
     if (!state.initial && state.buffered === undefined)
       commits.forEach((commit) => {
         if (!commit.messageID || !commit.partID || (commit.kind !== "assistant" && commit.kind !== "reasoning")) {
@@ -573,9 +585,12 @@ export async function createSessionTransport(input: StreamInput): Promise<Sessio
           text: commit.kind === "reasoning" && text ? `Thinking: ${text}` : (text ?? commit.text),
         })
       })
+    const waiting = modelWait.phase === "waiting" ? modelWait.since : undefined
+    const next = waiting === paintedWaiting ? patch : { ...patch, waiting }
+    paintedWaiting = waiting
     writeSessionOutput(
       { footer: input.footer, trace: input.trace },
-      { commits, updates: patch ? [{ type: "stream.patch", patch }] : undefined },
+      { commits, updates: next ? [{ type: "stream.patch", patch: next }] : undefined },
     )
   }
 
@@ -1070,6 +1085,12 @@ export async function createSessionTransport(input: StreamInput): Promise<Sessio
       if (state.pending.delete(event.data.inboxID)) syncPending()
       return
     }
+    if (event.type === "session.retry.scheduled") {
+      // A retry is a fresh request, so the next busy transition starts a new wait clock.
+      markWait({ type: "status", status: "retry", at: Date.now() })
+      write([])
+      return
+    }
     if (event.type === "session.step.started") {
       state.stepModel = { providerID: event.data.model.providerID, modelID: event.data.model.id }
       write([], { phase: "running", status: "assistant responding" })
@@ -1167,6 +1188,7 @@ export async function createSessionTransport(input: StreamInput): Promise<Sessio
       return
     }
     if (event.type === "session.text.delta") {
+      markWait({ type: "activity", at: Date.now() })
       const fragment = fragmentRef(event.data.assistantMessageID, "text", event.data.ordinal)
       if (!state.fragments.delta(fragment, event.data.delta)) return
       if (!showTools()) {
@@ -1211,6 +1233,7 @@ export async function createSessionTransport(input: StreamInput): Promise<Sessio
       return
     }
     if (event.type === "session.reasoning.delta") {
+      markWait({ type: "activity", at: Date.now() })
       const update = state.fragments.delta(
         fragmentRef(event.data.assistantMessageID, "reasoning", event.data.ordinal),
         event.data.delta,
@@ -1248,6 +1271,7 @@ export async function createSessionTransport(input: StreamInput): Promise<Sessio
       return
     }
     if (event.type === "session.tool.input.started") {
+      markWait({ type: "activity", at: Date.now() })
       renderTool(event.data.assistantMessageID, {
         type: "tool",
         id: event.data.id,

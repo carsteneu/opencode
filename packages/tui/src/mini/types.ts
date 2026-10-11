@@ -181,6 +181,8 @@ export type FooterState = {
   first: boolean
   interrupt: number
   exit: number
+  // Epoch ms the current model wait started; undefined once output arrives or the turn ends.
+  waiting?: number
 }
 
 // A partial update to FooterState. The footer merges this onto the current state.

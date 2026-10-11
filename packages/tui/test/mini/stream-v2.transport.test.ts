@@ -2179,6 +2179,65 @@ describe("V2 mini transport", () => {
     await transport.close()
   })
 
+  test("reports the model wait until the first output arrives", async () => {
+    const events = feed()
+    events.push(connected())
+    const client = sdk({ streams: [events] })
+    const ui = footer()
+    const transport = await createSessionTransport({
+      sdk: client,
+      sessionID: "ses_1",
+      thinking: false,
+      footer: ui.api,
+    })
+    const waits = () =>
+      ui.events.flatMap((event) =>
+        event.type === "stream.patch" && "waiting" in event.patch ? [event.patch.waiting] : [],
+      )
+
+    events.push({
+      id: "evt_execution_started",
+      created: 0,
+      type: "session.execution.started",
+      durable: durable("ses_1"),
+      data: { sessionID: "ses_1" },
+    })
+    await Bun.sleep(0)
+    expect(waits()).toHaveLength(1)
+    expect(typeof waits()[0]).toBe("number")
+
+    events.push({
+      id: "evt_text",
+      created: 0,
+      type: "session.text.delta",
+      data: { sessionID: "ses_1", assistantMessageID: "msg_assistant", ordinal: 0, delta: "hi" },
+    })
+    await Bun.sleep(0)
+    expect(waits().at(-1)).toBeUndefined()
+
+    events.push({
+      id: "evt_execution_succeeded",
+      created: 0,
+      type: "session.execution.succeeded",
+      durable: durable("ses_1"),
+      data: { sessionID: "ses_1" },
+    })
+    await Bun.sleep(0)
+    expect(waits().at(-1)).toBeUndefined()
+
+    events.push({
+      id: "evt_execution_started_again",
+      created: 0,
+      type: "session.execution.started",
+      durable: durable("ses_1", 1),
+      data: { sessionID: "ses_1" },
+    })
+    await Bun.sleep(0)
+    expect(typeof waits().at(-1)).toBe("number")
+
+    await transport.close()
+  })
+
   test("preserves active text and reasoning across resize before terminal projection", async () => {
     const events = feed()
     events.push(connected())

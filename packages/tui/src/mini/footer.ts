@@ -250,6 +250,7 @@ export class RunFooter implements FooterApi {
       first: options.first,
       interrupt: 0,
       exit: 0,
+      waiting: undefined,
     })
     this.state = state
     this.setState = setState
@@ -561,6 +562,7 @@ export class RunFooter implements FooterApi {
           : prev.interrupt,
       exit:
         typeof next.exit === "number" && Number.isFinite(next.exit) ? Math.max(0, Math.floor(next.exit)) : prev.exit,
+      waiting: "waiting" in next ? next.waiting : prev.waiting,
     }
 
     if (state.phase === "idle") {

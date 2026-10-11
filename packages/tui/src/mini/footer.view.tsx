@@ -36,6 +36,7 @@ import { footerStatuslinePolicy } from "./footer.width"
 import { Keymap } from "../context/keymap"
 import type { ClipboardService } from "../context/clipboard"
 import { modelInfo } from "./variant.shared"
+import { formatModelWait } from "./model-wait"
 import { monoShortcut } from "./mono"
 import { stringWidth } from "../util/string-width"
 import { formatContextUsage } from "../util/session"
@@ -216,6 +217,19 @@ export function RunFooterView(props: RunFooterViewProps) {
     return current && current.tokens > 0 ? formatContextUsage(current.tokens, current.percent) : ""
   })
   const cost = createMemo(() => (usage()?.cost ? money.format(usage()!.cost!) : ""))
+  const waitingSince = createMemo(() => props.state().waiting)
+  const [waitTick, setWaitTick] = createSignal(0)
+  createEffect(() => {
+    if (waitingSince() === undefined) return
+    const timer = setInterval(() => setWaitTick((value) => value + 1), 1000)
+    onCleanup(() => clearInterval(timer))
+  })
+  const waitLabel = createMemo(() => {
+    waitTick()
+    const since = waitingSince()
+    if (since === undefined || !busy()) return
+    return `\u25f7 Waiting on model \u00b7 ${formatModelWait(Date.now() - since)}`
+  })
   const takeover = createMemo(() => exiting() || (busy() && armed()) || !!props.state().notice.trim())
   const footerDetails = createMemo(() => props.miniSettings().footer === "show" && !takeover())
   const interruptLabel = createMemo(() => {
@@ -500,6 +514,7 @@ export function RunFooterView(props: RunFooterViewProps) {
       cost: footerDetails() ? cost() : undefined,
       provider: info?.provider,
       menu: commandHint(),
+      wait: waitLabel(),
       spinner: busy() ? (props.mono ? "*" : "\u25aa") : undefined,
     })
   })

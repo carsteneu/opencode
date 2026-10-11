@@ -93,6 +93,28 @@ describe("run footer width", () => {
     expect(footerStatuslinePolicy({ ...input, width: 26 }).groups.map((group) => group.id)).toEqual(["queued"])
   })
 
+  test("the wait cell follows the spinner and drops before required controls", () => {
+    const input = {
+      work: [],
+      status: { text: "esc stop" },
+      spinner: "\u25aa",
+      wait: "\u25f7 Waiting on model \u00b7 12s",
+    }
+
+    const wide = footerStatuslinePolicy({ ...input, width: 60 })
+    expect(wide.groups.map((group) => group.id)).toEqual(["spinner", "wait", "status"])
+    expect(wide.text).toBe("\u25aa \u25f7 Waiting on model \u00b7 12s \u00b7 esc stop")
+
+    const narrow = footerStatuslinePolicy({ ...input, width: 12 })
+    expect(narrow.groups.map((group) => group.id)).toEqual(["spinner", "status"])
+    expect(narrow.text).toBe("\u25aa esc stop")
+
+    expect(footerStatuslinePolicy({ ...input, width: 60, wait: undefined }).groups.map((group) => group.id)).toEqual([
+      "spinner",
+      "status",
+    ])
+  })
+
   test("context and cost are distinct additions", () => {
     const input = { work: [], context: screenshot.context, cost: screenshot.cost }
     expect(footerStatuslinePolicy({ ...input, width: 6 }).text).toBe("1% ctx")

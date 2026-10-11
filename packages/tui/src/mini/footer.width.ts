@@ -10,6 +10,7 @@ type FooterAction = {
 export type FooterStatuslineGroup = {
   id:
     | "spinner"
+    | "wait"
     | "status"
     | "escape"
     | "queued"
@@ -37,6 +38,7 @@ export function footerStatuslinePolicy(input: {
   provider?: string
   menu?: FooterAction
   spinner?: string
+  wait?: string
 }) {
   const group = (
     id: FooterStatuslineGroup["id"],
@@ -65,6 +67,7 @@ export function footerStatuslinePolicy(input: {
   const place = () => {
     const order: FooterStatuslineGroup["id"][] = [
       "spinner",
+      "wait",
       "status",
       "escape",
       "queued",
@@ -97,6 +100,7 @@ export function footerStatuslinePolicy(input: {
   // Each stage retains earlier information. Stop at the first non-fitting stage:
   // backfilling shorter, lower-priority groups would make resizing unstable.
   const stages = [
+    ...(input.wait ? [group("wait", input.wait)] : []),
     ...input.work.map((item) => action(item.id, item)),
     ...(input.model ? [identity(8)] : []),
     ...(input.agent ? [group("agent", input.agent, "agent")] : []),
