@@ -122,8 +122,10 @@ export function AgentsStatusBlock() {
   )
 
   // A child session's transcript arrives over the live event stream, so a child that started while
-  // this client was connected reports its retry state and running tool without a fetch. A child
-  // that predates the connection has no transcript until its next step, and shows state only.
+  // this client was connected reports its retry state and running tool. A child already running
+  // when this client attached (restart, reconnect, or a second client) has no transcript until its
+  // next step and shows state only: the store drops child events it has no row for, and nothing
+  // re-syncs a child transcript.
   const rows = createMemo(() =>
     deriveAgentRows({
       parentID: route.sessionID,

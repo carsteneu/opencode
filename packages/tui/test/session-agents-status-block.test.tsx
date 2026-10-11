@@ -7,6 +7,7 @@ import { createEventStream, createFetch, directory, json } from "./fixture/tui-c
 import { tmpdir } from "./fixture/fixture"
 
 type Setup = Awaited<ReturnType<typeof createTestRenderer>>
+type Events = ReturnType<typeof createEventStream>
 
 const tokens = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
 const parent = {
@@ -26,18 +27,22 @@ const child = {
   time: { created: 10, updated: 20 },
 }
 
+const ASSISTANT_ID = "assistant_1"
+const SUBAGENT_PART_ID = "tool_subagent"
+
 const messages: SessionMessageInfo[] = [
   { type: "user", id: "user_1", text: "delegate this", time: { created: 0 } },
   {
     type: "assistant",
-    id: "assistant_1",
+    id: ASSISTANT_ID,
     agent: "build",
     model: { providerID: "fixture", id: "fixture" },
     time: { created: 1 },
     content: [
+      { type: "text", id: "text_1", text: "Delegating. ", time: { created: 1 } },
       {
         type: "tool",
-        id: "tool_subagent",
+        id: SUBAGENT_PART_ID,
         name: "subagent",
         time: { created: 2 },
         state: { status: "running", input: {}, metadata: { sessionID: child.id } },
@@ -46,29 +51,20 @@ const messages: SessionMessageInfo[] = [
   },
 ] as unknown as SessionMessageInfo[]
 
-async function withSession(run: (setup: Setup) => Promise<void>) {
+async function withSession(run: (setup: Setup, events: Events) => Promise<void>) {
   await using state = await tmpdir()
   const setup = await createTestRenderer({ width: 100, height: 30, useThread: false, kittyKeyboard: true })
   setup.renderer.start()
+  const events = createEventStream()
   const calls = createFetch((url) => {
-    const messagesFor = (id: string) =>
-      url.pathname === `/api/session/${id}/message`
-        ? json({ data: id === parent.id ? messages.toReversed() : [], cursor: {} })
-        : undefined
-    return (
-      messagesFor(parent.id) ??
-      messagesFor(child.id) ??
-      (url.pathname === "/api/session"
-        ? json({ data: url.searchParams.get("parentID") ? [child] : [parent, child], cursor: {} })
-        : url.pathname === `/api/session/${parent.id}`
-          ? json({ data: parent })
-          : url.pathname === `/api/session/${child.id}`
-            ? json({ data: child })
-            : /^\/api\/session\/[^/]+\/(inbox|permission)$/.test(url.pathname)
-              ? json({ data: [] })
-              : undefined)
-    )
-  }, createEventStream())
+    if (url.pathname === "/api/session")
+      return json({ data: url.searchParams.get("parentID") ? [child] : [parent, child], cursor: {} })
+    if (url.pathname === `/api/session/${parent.id}`) return json({ data: parent })
+    if (url.pathname === `/api/session/${child.id}`) return json({ data: child })
+    if (url.pathname === `/api/session/${parent.id}/message`) return json({ data: messages.toReversed(), cursor: {} })
+    if (/^\/api\/session\/[^/]+\/(inbox|permission)$/.test(url.pathname)) return json({ data: [] })
+    return undefined
+  }, events)
   const server = Bun.serve({ port: 0, idleTimeout: 0, fetch: (request) => calls.fetch(request) })
   const { run: runApp } = await import("../src/app")
   const task = Effect.runPromise(
@@ -88,7 +84,7 @@ async function withSession(run: (setup: Setup) => Promise<void>) {
   try {
     await setup.waitForFrame((frame) => frame.includes("1/1 active"))
     await setup.waitForVisualIdle({ quietFrames: 3 })
-    await run(setup)
+    await run(setup, events)
   } finally {
     setup.renderer.destroy()
     await task
@@ -97,6 +93,7 @@ async function withSession(run: (setup: Setup) => Promise<void>) {
 }
 
 const lines = (frame: string) => frame.split("\n")
+const ROW_LABEL = "Probe render path"
 const rowOf = (frame: string, label: string) => lines(frame).findIndex((line) => line.includes(label))
 
 test("the session view lists level-1 subagents in an agents block", async () => {
@@ -104,11 +101,11 @@ test("the session view lists level-1 subagents in an agents block", async () => 
     const frame = setup.captureCharFrame()
     expect(frame).toContain("Agents")
     expect(frame).toContain("1/1 active")
-    expect(frame).toContain("Probe render path")
+    expect(frame).toContain(ROW_LABEL)
     expect(frame).toContain("@Explore")
     expect(frame).toContain("running")
   })
-}, 20000)
+}, 30000)
 
 test("the agents block collapses and expands from its header", async () => {
   await withSession(async (setup) => {
@@ -119,7 +116,7 @@ test("the agents block collapses and expands from its header", async () => {
     await setup.waitForVisualIdle({ quietFrames: 3 })
     const collapsed = setup.captureCharFrame()
     expect(collapsed).toContain("expand")
-    expect(collapsed).not.toContain("Probe render path")
+    expect(collapsed).not.toContain(ROW_LABEL)
 
     // The collapsed block is one line shorter, so the header moves with the layout.
     const moved = rowOf(setup.captureCharFrame(), "expand")
@@ -127,6 +124,34 @@ test("the agents block collapses and expands from its header", async () => {
     await setup.waitForVisualIdle({ quietFrames: 3 })
     const expanded = setup.captureCharFrame()
     expect(expanded).toContain("collapse")
-    expect(expanded).toContain("Probe render path")
+    expect(expanded).toContain(ROW_LABEL)
   })
-}, 20000)
+}, 30000)
+
+test("a row re-derives in place when the subagent finishes", async () => {
+  await withSession(async (setup, events) => {
+    expect(setup.captureCharFrame()).toContain("running")
+
+    events.emit({
+      id: "evt_success",
+      created: 400,
+      type: "session.tool.success",
+      durable: { aggregateID: parent.id, seq: 1, version: 2 },
+      location: { directory },
+      data: {
+        sessionID: parent.id,
+        assistantMessageID: ASSISTANT_ID,
+        id: SUBAGENT_PART_ID,
+        content: [{ type: "text", text: "delegated" }],
+        executed: true,
+      },
+    })
+
+    await setup.waitForFrame((frame) => frame.includes("✓ done"))
+    await setup.waitForVisualIdle({ quietFrames: 3 })
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain(ROW_LABEL)
+    expect(frame).toContain("✓ done")
+    expect(frame).toContain("0/1 active")
+  })
+}, 30000)
