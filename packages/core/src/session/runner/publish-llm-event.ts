@@ -289,6 +289,8 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
     yield* text.flush()
     yield* reasoning.flush()
     yield* toolInput.flush()
+    // Flushing ends every open input fragment, so no run can still be reporting progress for one.
+    toolInputProgress.clear()
   })
 
   const startToolInput = Effect.fnUntraced(function* (event: {
