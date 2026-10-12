@@ -144,7 +144,10 @@ export function makeFffLayer(create: typeof Fff.create) {
                 find: () => Effect.succeed([]),
               })
             }
-            yield* Scope.addFinalizer(scope, Effect.sync(() => result.value.destroy()))
+            yield* Scope.addFinalizer(
+              scope,
+              Effect.sync(() => result.value.destroy()),
+            )
             return Service.of({
               find: (input) =>
                 Effect.sync(() => {

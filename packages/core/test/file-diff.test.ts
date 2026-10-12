@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { createTwoFilesPatch, parsePatch } from "diff"
+import { applyPatch, createTwoFilesPatch, parsePatch } from "diff"
 import { fileDiff } from "@opencode/core/tool/plugin/file-diff"
 import { emptyPatch } from "@opencode/core/vcs/patch"
 
@@ -32,15 +32,17 @@ describe("fileDiff", () => {
     expect(diff).toMatchObject({ file: "huge.txt", status: "modified", additions: 200_000, deletions: 200_000 })
   })
 
-  test("degrades to a bounded patch when the output exceeds the byte budget", () => {
+  test("keeps a real patch for a large file with a bounded edit", () => {
     const lines = Array.from({ length: 40_000 }, (_, index) => `before ${index}`)
     const before = lines.join("\n") + "\n"
-    const after = lines.map((line) => line.replace("before", "after-change")).join("\n") + "\n"
+    const after =
+      lines.map((line, index) => (index % 400 === 0 ? line.replace("before", "after-change") : line)).join("\n") + "\n"
     const diff = fileDiff("wide.txt", before, after)
-    // Input stays under 4 MiB / 128 Ki lines, but the unified patch is well over 256 KiB.
-    expect(diff.patch).toBe(emptyPatch("wide.txt"))
-    expect(hunks(diff.patch)).toEqual([])
-    expect(diff.additions).toBe(40_000)
-    expect(diff.deletions).toBe(40_000)
+    // Input stays under 4 MiB / 128 Ki lines and the diff is cheap, so the patch
+    // must stay applicable: consumers use it to render and to derive the old text.
+    expect(hunks(diff.patch).length).toBeGreaterThan(0)
+    expect(applyPatch(before, diff.patch)).toBe(after)
+    expect(diff.additions).toBe(100)
+    expect(diff.deletions).toBe(100)
   })
 })

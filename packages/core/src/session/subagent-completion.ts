@@ -22,26 +22,23 @@ export function text(message: SessionMessage.Info | undefined) {
 // v1 injected subagent results through Truncate.output with its default limits
 // (packages/opencode/src/tool/task.ts:245; packages/opencode/src/tool/truncate.ts
 // MAX_LINES 2000 / MAX_BYTES 50 KiB). The notification fiber is global rather
-// than Location-scoped, so the full text is dropped instead of persisted.
+// than Location-scoped, so the full text is dropped instead of persisted. v1
+// also wrote the full output to disk; that pointer is not available here, so the
+// note states what was dropped without an over-approximate byte figure.
 export function bound(value: string) {
   const lines = value.split("\n")
   if (value.endsWith("\n")) lines.pop()
-  const totalBytes = Buffer.byteLength(value, "utf-8")
-  if (lines.length <= ToolOutput.MAX_LINES && totalBytes <= ToolOutput.MAX_BYTES) return value
+  if (lines.length <= ToolOutput.MAX_LINES && Buffer.byteLength(value, "utf-8") <= ToolOutput.MAX_BYTES) return value
   const kept: string[] = []
   let bytes = 0
-  let hitBytes = false
   for (const line of lines.slice(0, ToolOutput.MAX_LINES)) {
     const size = Buffer.byteLength(line, "utf-8") + (kept.length > 0 ? 1 : 0)
-    if (bytes + size > ToolOutput.MAX_BYTES) {
-      hitBytes = true
-      break
-    }
+    if (bytes + size > ToolOutput.MAX_BYTES) break
     kept.push(line)
     bytes += size
   }
-  const removed = hitBytes ? totalBytes - bytes : lines.length - kept.length
-  return `${kept.join("\n")}\n\n...${removed} ${hitBytes ? "bytes" : "lines"} truncated...`
+  if (kept.length === lines.length) return value
+  return `${kept.join("\n")}\n\n...${lines.length - kept.length} lines truncated...`
 }
 
 export const deliver = Effect.fnUntraced(function* (
