@@ -42,6 +42,8 @@ export function DialogImagePreview(props: { images: readonly ImagePreviewItem[];
 
   Keymap.createLayer(() => ({
     mode: "modal",
+    // A modal dialog must beat the global layers of whatever opened it (the diff viewer binds `s` too).
+    priority: 1,
     commands: [
       { bind: "left", title: "Previous image", group: "Dialog", run: () => move(-1) },
       { bind: "right", title: "Next image", group: "Dialog", run: () => move(1) },
@@ -103,6 +105,7 @@ function DialogImageSave(props: { image: ImagePreviewItem }) {
   // Resolving here rather than in the util keeps relative and `~` paths a UI concern.
   function resolveDirectory(input: string) {
     const value = input.trim()
+    if (value === "") return undefined
     if (value === "~") return paths.home
     if (value.startsWith("~/")) return path.resolve(paths.home, value.slice(2))
     return path.isAbsolute(value) ? value : path.resolve(paths.cwd, value)
@@ -110,13 +113,21 @@ function DialogImageSave(props: { image: ImagePreviewItem }) {
 
   function save(input: string) {
     if (saving()) return
+    const directory = resolveDirectory(input)
+    if (directory === undefined) {
+      toast.error(new Error("Image save directory is required"))
+      return
+    }
     setSaving(true)
     void Promise.resolve()
-      .then(() => saveSessionImage(props.image.uri, resolveDirectory(input), props.image.mention?.text))
+      .then(() => saveSessionImage(props.image.uri, directory, props.image.mention?.text))
       .then(
         (target) => {
           if (closed) return
-          toast.show({ message: `Saved ${path.basename(target)} to ${abbreviateHome(target, paths.home)}`, variant: "success" })
+          toast.show({
+            message: `Saved ${path.basename(target)} to ${abbreviateHome(target, paths.home)}`,
+            variant: "success",
+          })
           dialog.clear()
         },
         (error) => {
@@ -127,16 +138,19 @@ function DialogImageSave(props: { image: ImagePreviewItem }) {
       )
   }
 
+  // `paths.cwd` is the working tree, so the default must not drop downloads into it.
+  const saveDirectory = () => path.join(paths.home, "Downloads")
+
   return (
     <DialogPrompt
       title="Save image"
-      value={path.join(paths.cwd, "img")}
+      value={saveDirectory()}
       busy={saving()}
       busyText="Saving image..."
       description={() => (
         <text fg={theme.text.muted}>
-          Directory. Relative paths resolve against {abbreviateHome(paths.cwd, paths.home)}; the filename is generated
-          automatically.
+          Directory. {abbreviateHome(saveDirectory(), paths.home)} by default; relative paths resolve against{" "}
+          {abbreviateHome(paths.cwd, paths.home)}. The filename is generated automatically.
         </text>
       )}
       onConfirm={save}

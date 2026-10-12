@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { decodeSessionImage, saveSessionImage, sessionImageFilename } from "../../src/util/session-image-save"
@@ -37,6 +37,22 @@ test("falls back to the image bytes when the data URL declares no image mime", (
   expect(sessionImageFilename(octet(GIF), "shot", new Uint8Array(GIF))).toBe("shot.gif")
   expect(sessionImageFilename(octet(WEBP), "shot", new Uint8Array(WEBP))).toBe("shot.webp")
   expect(sessionImageFilename(octet(Buffer.from([0, 1, 2])), "shot", new Uint8Array([0, 1, 2]))).toBe("shot.png")
+})
+
+test("uses the declared image subtype for types the previewer cannot sniff", () => {
+  const svg = `data:image/svg+xml;base64,${Buffer.from("<svg/>").toString("base64")}`
+  expect(sessionImageFilename(svg, "diagram")).toBe("diagram.svg")
+  // An inherited `Object.prototype` member must not become the extension.
+  expect(sessionImageFilename(`data:constructor;base64,${PNG.toString("base64")}`, "shot", new Uint8Array(PNG))).toBe(
+    "shot.png",
+  )
+})
+
+test("sanitizes control, format and reserved-device names", () => {
+  expect(sessionImageFilename(png, "a\u202eb")).toBe("a-b.png")
+  expect(sessionImageFilename(png, "bell\u0007name")).toBe("bell-name.png")
+  expect(sessionImageFilename(png, "CON")).toBe("_CON.png")
+  expect(sessionImageFilename(png, "lpt1.png")).toBe("_lpt1.png")
 })
 
 test("writes the image, creating the directory, and returns the target path", async () => {
@@ -80,4 +96,30 @@ test("never overwrites an existing file", async () => {
 test("requires a save directory", async () => {
   await expect(saveSessionImage(png, "   ")).rejects.toThrow("Image save directory is required")
   await expect(saveSessionImage(png, "bad\0dir")).rejects.toThrow("Image save directory is invalid")
+})
+
+test("writes private files into a private directory", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "session-image-save-"))
+  try {
+    const directory = path.join(root, "mode")
+    const target = await saveSessionImage(png, directory, "shot")
+    const permissions = (await stat(target)).mode & 0o777
+    expect(permissions).toBe(0o600)
+    expect((await stat(directory)).mode & 0o777).toBe(0o700)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("stops renaming after a bounded number of collisions", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "session-image-save-"))
+  try {
+    await Promise.all(
+      Array.from({ length: 100 }, (_, index) => Bun.write(path.join(root, `shot-${index + 2}.png`), "")),
+    )
+    await Bun.write(path.join(root, "shot.png"), "")
+    await expect(saveSessionImage(png, root, "shot")).rejects.toThrow("holds too many copies")
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
 })
