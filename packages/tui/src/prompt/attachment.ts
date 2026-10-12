@@ -11,9 +11,28 @@ type ProjectedFile = Readonly<{
   mention?: { text: string }
 }>
 
+/**
+ * Office and OpenDocument media types. The composer admits them as file attachments and labels them `[File N]`
+ * instead of previewing them; their leading bytes are a generic zip or OLE container, so the declared type is the
+ * only carrier and the server side keys its provider lowering off exactly this set.
+ */
+export const documentMimes: ReadonlySet<string> = new Set([
+  "application/msword",
+  "application/vnd.ms-excel",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.oasis.opendocument.presentation",
+  "application/vnd.oasis.opendocument.spreadsheet",
+  "application/vnd.oasis.opendocument.text",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+])
+
 function attachmentKind(uri: string) {
   if (uri.startsWith("data:image/")) return "Image"
   if (uri.startsWith("data:application/pdf;")) return "PDF"
+  const mime = /^data:([^;,]+)/.exec(uri)?.[1]?.trim().toLowerCase()
+  if (mime !== undefined && documentMimes.has(mime)) return "File"
   return undefined
 }
 

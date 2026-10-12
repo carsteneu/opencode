@@ -1,4 +1,5 @@
 import path from "node:path"
+import { documentMimes } from "../../prompt/attachment"
 
 // Bound filesystem work per terminal paste; the byte budget also bounds staged data.
 const MAX_PASTED_FILEPATHS = 32
@@ -60,13 +61,22 @@ export async function resolvePastedAttachments(text: string, platform: string) {
 
 const mimeTypes: Record<string, string> = {
   ".avif": "image/avif",
+  ".doc": "application/msword",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   ".gif": "image/gif",
   ".jpeg": "image/jpeg",
   ".jpg": "image/jpeg",
+  ".odp": "application/vnd.oasis.opendocument.presentation",
+  ".ods": "application/vnd.oasis.opendocument.spreadsheet",
+  ".odt": "application/vnd.oasis.opendocument.text",
   ".pdf": "application/pdf",
   ".png": "image/png",
+  ".ppt": "application/vnd.ms-powerpoint",
+  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
   ".svg": "image/svg+xml",
   ".webp": "image/webp",
+  ".xls": "application/vnd.ms-excel",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 }
 
 async function readFileBounded(file: string, maxBytes: number) {
@@ -164,7 +174,7 @@ export async function readLocalAttachmentWith(
 ): Promise<LocalAttachment | undefined> {
   const mime = await files.mime(path).catch(() => undefined)
   if (!mime) return undefined
-  if (!mime.startsWith("image/") && mime !== "application/pdf") return undefined
+  if (!mime.startsWith("image/") && mime !== "application/pdf" && !documentMimes.has(mime)) return undefined
   if (mime === "image/svg+xml") {
     const content = await files.readText(path, maxBytes).catch(() => undefined)
     if (!content || Buffer.byteLength(content) > maxBytes) return undefined
