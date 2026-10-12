@@ -529,6 +529,29 @@ Earlier work
     ])
   })
 
+  test("uses materialized office document data as provider media", () => {
+    const mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    const messages = toLLMMessages(
+      [
+        SessionMessage.User.make({
+          id: id("user-local-document"),
+          type: "user",
+          text: "Summarize this",
+          files: [
+            FileAttachment.make({ data: Base64.make("UEsDBA=="), mime, source: { type: "inline" }, name: "report.docx" }),
+          ],
+          time: { created },
+        }),
+      ],
+      model,
+    )
+
+    expect(messages[0]?.content).toEqual([
+      { type: "text", text: "Summarize this" },
+      { type: "media", media: Media.base64("UEsDBA==", mime), filename: "report.docx" },
+    ])
+  })
+
   test("exposes admitted local image source paths before provider media", () => {
     const data = Base64.make("AAECAw==")
     const location = path.resolve("/project/IMG_3480.JPG")

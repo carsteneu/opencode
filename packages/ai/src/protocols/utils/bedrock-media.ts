@@ -50,6 +50,9 @@ const DOCUMENT_FORMATS = {
   "text/markdown": "md",
 } as const satisfies Record<string, DocumentFormat>
 
+/** Bedrock carries inline `source.bytes` for these document formats, so this is the capability the core gate reads. */
+export const lowersDocument = (mediaType: string) => mediaType.toLowerCase() in DOCUMENT_FORMATS
+
 const documentBlock = (name: string, format: DocumentFormat, bytes: string): DocumentBlock => ({
   document: {
     format,

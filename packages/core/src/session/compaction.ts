@@ -9,6 +9,7 @@ import {
   LLMClient,
   LLMEvent,
   LLMRequest,
+  Media,
   Message,
   type ToolEntry,
   UnknownProviderError,
@@ -853,14 +854,16 @@ const serializeToolContent = (content: ReadonlyArray<SessionMessage.ToolStateCom
 /** The newest whole, real user messages within `keep` tokens: no synthetic guidance, no half of an attachment. */
 export const recentUserMessages = (
   messages: ReadonlyArray<SessionMessage.Info>,
-  model: Pick<SessionContext.Loaded["model"], "ref" | "capabilities">,
+  model: Pick<SessionContext.Loaded["model"], "ref" | "capabilities" | "model">,
   keep: number,
 ) => {
   const users = messages
     .filter((message) => message.type === "user")
     .map((message) => ({ ...message, skills: undefined }))
   const sendable = SessionModelRequest.boundImages(
-    SessionModelRequest.unsupportedParts(toLLMMessages(users, model.ref), model.capabilities),
+    SessionModelRequest.unsupportedParts(toLLMMessages(users, model.ref), model.capabilities, {
+      lowersDocument: model.model.route.lowersDocument,
+    }),
   )
   return sendable.slice(oldestToDrop(sendable, estimateMessage, keep))
 }
@@ -879,7 +882,9 @@ export const estimatePrompt = (context: SessionContext.Loaded) => {
   // runner's unsupported-media and image-budget passes; here the image budget only sees images since the anchor,
   // so image-heavy sessions can estimate high.
   const sent = SessionModelRequest.boundImages(
-    SessionModelRequest.unsupportedParts(base.messages, context.model.capabilities),
+    SessionModelRequest.unsupportedParts(base.messages, context.model.capabilities, {
+      lowersDocument: context.model.model.route.lowersDocument,
+    }),
   )
   // The anchor's usage covers its own output, but not its local tool results, which the provider never saw.
   const unmeasured = sent.filter((message) => message.role !== "assistant" || message.id !== anchor?.id)
@@ -958,6 +963,6 @@ const estimatePart = (part: ContentPart): number => {
 const estimateMedia = (mime: string) => {
   const type = mime.toLowerCase()
   if (type.startsWith("image/")) return IMAGE_TOKEN_ESTIMATE
-  if (type === "application/pdf") return PDF_TOKEN_ESTIMATE
+  if (type === "application/pdf" || Media.isOfficeMediaType(type)) return PDF_TOKEN_ESTIMATE
   return 0
 }

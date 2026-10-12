@@ -355,6 +355,7 @@ export const compatibility = {
 
 export const protocol = Protocol.make({
   id: "venice-chat",
+  lowersDocument: OpenAIChat.lowersDocument,
   body: { schema: Body, from: fromRequest },
   stream: {
     event: Schema.Union([Schema.Literal("[DONE]"), Protocol.jsonEvent(Event)]),

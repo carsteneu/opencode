@@ -24,6 +24,60 @@ describe("SessionModelRequest.unsupportedParts", () => {
     ])
   })
 
+  test("replaces office documents the model cannot read, naming the document not the pdf modality", () => {
+    const messages = unsupportedParts(
+      [
+        Message.user([
+          Message.text("Summarize these files"),
+          {
+            type: "media",
+            media: Media.base64("UEsDBA==", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+            filename: "report.docx",
+          },
+        ]),
+      ],
+      capabilities(["text"]),
+    )
+
+    expect(messages[0]?.content).toEqual([
+      Message.text("Summarize these files"),
+      Message.text('ERROR: Cannot read "report.docx" (this model does not support document input). Inform the user.'),
+    ])
+  })
+
+  test("keeps office documents when the route's protocol lowers them inline", () => {
+    const document = {
+      type: "media" as const,
+      media: Media.base64("UEsDBA==", "application/vnd.ms-excel"),
+      filename: "sheet.xls",
+    }
+    const messages = unsupportedParts([Message.user([document])], capabilities(["text", "pdf"]), {
+      lowersDocument: (mediaType) => mediaType === "application/vnd.ms-excel",
+    })
+
+    expect(messages[0]?.content).toEqual([document])
+  })
+
+  test("replaces office documents when the route's protocol cannot lower them", () => {
+    const document = {
+      type: "media" as const,
+      media: Media.base64("UEsDBA==", "application/msword"),
+      filename: "report.doc",
+    }
+    for (const routing of [undefined, {}, { lowersDocument: () => false }]) {
+      const messages = unsupportedParts(
+        [Message.user([Message.text("Summarize this"), document])],
+        capabilities(["text", "pdf"]),
+        routing,
+      )
+
+      expect(messages[0]?.content).toEqual([
+        Message.text("Summarize this"),
+        Message.text('ERROR: Cannot read "report.doc" (this model does not support document input). Inform the user.'),
+      ])
+    }
+  })
+
   test("replaces unsupported media nested in tool results", () => {
     const messages = unsupportedParts(
       [
@@ -82,7 +136,7 @@ describe("SessionModelRequest.unsupportedParts", () => {
         }),
       ),
     ]
-    const result = unsupportedParts(messages, capabilities(["text", "image"]), "xai")
+    const result = unsupportedParts(messages, capabilities(["text", "image"]), { provider: "xai" })
 
     expect(result[0]?.content).toEqual([
       ...user,
@@ -101,7 +155,7 @@ describe("SessionModelRequest.unsupportedParts", () => {
         ],
       },
     })
-    expect(unsupportedParts(messages, capabilities(["text", "image"]), "openai")).toEqual(messages)
+    expect(unsupportedParts(messages, capabilities(["text", "image"]), { provider: "openai" })).toEqual(messages)
   })
 
   test("preserves supported media", () => {

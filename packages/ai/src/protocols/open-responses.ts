@@ -17,13 +17,19 @@ import {
   type ToolDefinition,
   type ToolResultPart,
 } from "../schema/index.js"
-import type { Media } from "../media.js"
+import { kindOf, type Media } from "../media.js"
 import { JsonObject, optionalArray, optionalNull, ProviderShared } from "./shared.js"
 import { classifyProviderFailure } from "../provider-error.js"
 import { effortUpdate } from "../effort-updates.js"
 import { OpenResponsesOptions } from "./utils/open-responses-options.js"
 import { Lifecycle } from "./utils/lifecycle.js"
 import { ToolStream } from "./utils/tool-stream.js"
+
+/**
+ * Every document media type travels inline as an `input_file`; images and video have parts of their own. This is the
+ * capability the core attachment gate reads.
+ */
+export const lowersDocument = (mediaType: string) => kindOf(mediaType) === "document"
 
 const ADAPTER = "open-responses"
 const NAME = "Open Responses"
@@ -1490,6 +1496,7 @@ export const initial = (request: LLMRequest, adapter: ProviderAdapter = BASE_ADA
 
 export const protocol = Protocol.make({
   id: ADAPTER,
+  lowersDocument,
   body: {
     schema: OpenResponsesBody,
     from: fromRequest,

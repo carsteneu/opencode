@@ -112,14 +112,7 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
             file: process.env.OPENCODE_MODELS_PATH,
             fetch: !truthy(process.env.OPENCODE_DISABLE_MODELS_FETCH),
           },
-          config: {
-            directory: process.env.OPENCODE_CONFIG_DIR,
-            project: !truthy(
-              process.env.OPENCODE_CONFIG_PROJECT_DISABLE ?? process.env.OPENCODE_DISABLE_PROJECT_CONFIG,
-            ),
-            file: process.env.OPENCODE_CONFIG,
-            content: process.env.OPENCODE_CONFIG_CONTENT,
-          },
+          config: configOptions(process.env),
           windows: {
             gitbash: process.env.OPENCODE_GIT_BASH_PATH,
           },
@@ -205,6 +198,21 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
 
 function serviceURL(hostname: string, port: number) {
   return `http://${hostname.includes(":") ? `[${hostname}]` : hostname}:${port}`
+}
+
+// Config source options for the spawned server only. The CLI/TUI process keeps
+// reading the global directory for its own config (cli.json) and for TUI plugin
+// discovery; this option reaches neither. `global` is only ever set to false:
+// leaving it undefined keeps the default (global config dir, ~/.claude and
+// ~/.agents load) for every run that does not opt out.
+export function configOptions(env: NodeJS.ProcessEnv) {
+  return {
+    directory: env.OPENCODE_CONFIG_DIR,
+    project: !truthy(env.OPENCODE_CONFIG_PROJECT_DISABLE ?? env.OPENCODE_DISABLE_PROJECT_CONFIG),
+    global: truthy(env.OPENCODE_CONFIG_GLOBAL_DISABLE ?? env.OPENCODE_DISABLE_GLOBAL_CONFIG) ? false : undefined,
+    file: env.OPENCODE_CONFIG,
+    content: env.OPENCODE_CONFIG_CONTENT,
+  }
 }
 
 function truthy(value?: string) {

@@ -28,6 +28,7 @@ export const ServerOptions = Schema.Struct({
     Schema.Struct({
       directory: Schema.optional(Schema.String),
       project: Schema.optional(Schema.Boolean),
+      global: Schema.optional(Schema.Boolean),
       file: Schema.optional(Schema.String),
       content: Schema.optional(Schema.String),
     }),

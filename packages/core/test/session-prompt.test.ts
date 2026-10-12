@@ -485,6 +485,99 @@ describe("Session.prompt", () => {
     }),
   )
 
+  it.effect("keeps a declared document type when sniffing cannot identify the payload", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* Session.Service
+      // Office containers are a zip (or OLE) header plus opaque data, so magic-byte sniffing sees no media type.
+      const bytes = Buffer.from([
+        0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00, 0x08, 0x00, 0xde, 0xad, 0xbe, 0xef, 0x00, 0x11, 0x22, 0x33,
+      ])
+      const mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      const uri = `data:${mime};base64,${bytes.toString("base64")}`
+
+      const message = yield* session.prompt({
+        sessionID,
+        text: "Summarize this",
+        files: [{ uri, name: "report.docx" }],
+        resume: false,
+      })
+
+      expect(message.payload.files).toEqual([
+        {
+          data: bytes.toString("base64"),
+          mime,
+          source: { type: "inline" },
+          name: "report.docx",
+        },
+      ])
+    }),
+  )
+
+  it.effect("does not adopt a declared type that is not an office document", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* Session.Service
+      const bytes = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0xde, 0xad, 0xbe, 0xef, 0x00, 0x11])
+      const uri = `data:application/zip;base64,${bytes.toString("base64")}`
+
+      const message = yield* session.prompt({
+        sessionID,
+        text: "Inspect this",
+        files: [{ uri, name: "archive.zip" }],
+        resume: false,
+      })
+
+      expect(message.payload.files).toEqual([
+        {
+          data: bytes.toString("base64"),
+          mime: "application/octet-stream",
+          source: { type: "inline" },
+          name: "archive.zip",
+        },
+      ])
+    }),
+  )
+
+  it.effect("keeps sniffed content over a declared document type", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* Session.Service
+      const png = Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+        "base64",
+      )
+      const uri = `data:application/msword;base64,${png.toString("base64")}`
+
+      const message = yield* session.prompt({
+        sessionID,
+        text: "Inspect this",
+        files: [{ uri, name: "image.png" }],
+        resume: false,
+      })
+
+      expect(message.payload.files?.[0]?.mime).toBe("image/png")
+    }),
+  )
+
+  it.effect("adopts a declared document type that carries parameters", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* Session.Service
+      const bytes = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0xff, 0xfe, 0x01])
+      const uri = `data:application/msword;charset=binary;base64,${bytes.toString("base64")}`
+
+      const message = yield* session.prompt({
+        sessionID,
+        text: "Summarize this",
+        files: [{ uri, name: "report.doc" }],
+        resume: false,
+      })
+
+      expect(message.payload.files?.[0]).toMatchObject({ mime: "application/msword", name: "report.doc" })
+    }),
+  )
+
   it.effect("rejects malformed base64 data URLs", () =>
     Effect.gen(function* () {
       yield* setup

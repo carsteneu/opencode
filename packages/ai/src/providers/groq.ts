@@ -41,6 +41,7 @@ const Options = Schema.Struct({
 
 export const protocol = Protocol.make({
   id: "groq-chat",
+  lowersDocument: OpenAIChat.lowersDocument,
   body: {
     schema: Schema.Struct({
       ...OpenAIChat.bodyFields,

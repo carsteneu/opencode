@@ -7,7 +7,7 @@ import {
   LanguageModel,
   LLM,
   LLMRequest,
-  type Media,
+  Media,
   Message,
   SystemPart,
 } from "@opencode/ai"
@@ -120,30 +120,42 @@ export const baseTranscript = (input: {
 }
 
 const mimeToModality = (mime: string) => {
-  if (mime.startsWith("image/")) return "image"
-  if (mime.startsWith("audio/")) return "audio"
-  if (mime.startsWith("video/")) return "video"
-  if (mime === "application/pdf") return "pdf"
+  const type = mime.toLowerCase()
+  if (type.startsWith("image/")) return "image"
+  if (type.startsWith("audio/")) return "audio"
+  if (type.startsWith("video/")) return "video"
+  // Office documents ride the pdf modality: they need a file-capable model and providers lower them the same way.
+  if (type === "application/pdf" || Media.isOfficeMediaType(type)) return "pdf"
 }
 
 // xAI rejects any other image type (e.g. GIF) with invalid_image, and the stored image would fail every later turn.
 const XAI_IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/webp"])
 
+/**
+ * The protocol's document capability replaces an office attachment the model reports as pdf-capable but the protocol
+ * cannot carry: those protocols accept a pdf document and no office format, so the part would fail the entire turn
+ * instead of reaching the model as a visible notice. `lowersDocument` comes from the route, which takes it from the
+ * protocol that performs the lowering, so a protocol wrapper is covered without naming it here.
+ */
 const unsupportedMedia = (
   mime: string,
   name: string | undefined,
   capabilities: Model.Capabilities,
-  provider: string | undefined,
+  routing: Routing | undefined,
 ) => {
   const modality = mimeToModality(mime)
   if (!modality) return
+  // Office documents ride the pdf modality, but naming pdf in the notice would misdescribe the file the model refused.
+  const label = modality === "pdf" && Media.isOfficeMediaType(mime) ? "document" : modality
   const unsupported = !capabilities.input.some((item) => item.startsWith(modality))
-    ? modality
-    : provider === "xai" && modality === "image" && !XAI_IMAGE_MIMES.has(mime.toLowerCase())
+    ? label
+    : routing?.provider === "xai" && modality === "image" && !XAI_IMAGE_MIMES.has(mime.toLowerCase())
       ? mime
-      : undefined
+      : Media.isOfficeMediaType(mime) && !(routing?.lowersDocument?.(mime) ?? false)
+        ? "document"
+        : undefined
   if (!unsupported) return
-  return `ERROR: Cannot read ${name ? `"${name}"` : modality} (this model does not support ${unsupported} input). Inform the user.`
+  return `ERROR: Cannot read ${name ? `"${name}"` : label} (this model does not support ${unsupported} input). Inform the user.`
 }
 
 // Remote and provider-referenced media carry no local payload and never count toward the inline budget.
@@ -180,11 +192,14 @@ const replaceMedia = (
       : new Message({ ...message, content })
   })
 
-export const unsupportedParts = (
-  messages: LLMRequest["messages"],
-  capabilities: Model.Capabilities,
-  provider?: string,
-) => replaceMedia(messages, (media) => unsupportedMedia(media.mime, media.name, capabilities, provider))
+/** How the request reaches a provider: which provider, and which document media types its protocol lowers inline. */
+export interface Routing {
+  readonly provider?: string
+  readonly lowersDocument?: (mediaType: string) => boolean
+}
+
+export const unsupportedParts = (messages: LLMRequest["messages"], capabilities: Model.Capabilities, routing?: Routing) =>
+  replaceMedia(messages, (media) => unsupportedMedia(media.mime, media.name, capabilities, routing))
 
 export const boundImages = (messages: LLMRequest["messages"]) => {
   const isImage = (mime: string) => mime.toLowerCase().startsWith("image/")
@@ -294,7 +309,12 @@ export const layer = Layer.effect(
         // TODO: Persist cache lineage so nested forks reuse the root session's cache key.
         promptCacheKey: /^ses_[0-9a-f]{64}$/.test(affinity) ? affinity.slice(4) : affinity,
         system: shaped.system,
-        messages: boundImages(unsupportedParts(shaped.messages, model.capabilities, model.model.provider)),
+        messages: boundImages(
+          unsupportedParts(shaped.messages, model.capabilities, {
+            provider: model.model.provider,
+            lowersDocument: model.model.route.lowersDocument,
+          }),
+        ),
         tools: Array.from(hooked, ([name, t]) => ({ ...t, name })),
         toolChoice: input.toolChoice,
         generation: Object.keys(generation).length === 0 ? undefined : generation,

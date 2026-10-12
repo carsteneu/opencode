@@ -72,12 +72,30 @@ export const AspectRatio = Schema.declare<AspectRatio>(
 export const Kind = Schema.Literals(["image", "video", "audio", "document", "other"])
 export type Kind = Schema.Schema.Type<typeof Kind>
 
+/**
+ * Office and OpenDocument media types. Unlike images and PDFs their leading bytes are a generic zip or OLE container,
+ * so nothing can sniff them; the declared type is the only carrier. They lower to a provider-side file part like a PDF.
+ */
+const OFFICE_MEDIA_TYPES: ReadonlySet<string> = new Set([
+  "application/msword",
+  "application/vnd.ms-excel",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.oasis.opendocument.presentation",
+  "application/vnd.oasis.opendocument.spreadsheet",
+  "application/vnd.oasis.opendocument.text",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+])
+
+export const isOfficeMediaType = (mediaType: string) => OFFICE_MEDIA_TYPES.has(mediaType.toLowerCase())
+
 export const kindOf = (mediaType: string): Kind => {
   const lower = mediaType.toLowerCase()
   if (lower.startsWith("image/")) return "image"
   if (lower.startsWith("video/")) return "video"
   if (lower.startsWith("audio/")) return "audio"
-  if (lower === "application/pdf" || lower.startsWith("text/")) return "document"
+  if (lower === "application/pdf" || lower.startsWith("text/") || isOfficeMediaType(lower)) return "document"
   return "other"
 }
 

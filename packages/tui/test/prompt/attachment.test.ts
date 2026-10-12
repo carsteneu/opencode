@@ -64,6 +64,24 @@ describe("prompt attachments", () => {
     expect(promptAttachmentLabel(files, { uri: "data:application/pdf;base64,BBB" })).toBe("[PDF 1]")
   })
 
+  test("numbers office documents independently from images and PDFs", () => {
+    const uri = "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,UEsDBA=="
+    const files = [{ uri: "data:application/pdf;base64,BBB" }]
+
+    expect(promptAttachmentLabel(files, { uri })).toBe("[File 1]")
+    expect(promptAttachmentLabel([{ uri, mention: { start: 0, end: 8, text: "[File 1]" } }], { uri })).toBe("[File 2]")
+    expect(promptAttachmentLabel([], { uri: "data:application/msword;base64,UEsDBA==" })).toBe("[File 1]")
+    expect(promptAttachmentLabel([], { uri: "data:application/msword;charset=binary;base64,UEsDBA==" })).toBe(
+      "[File 1]",
+    )
+  })
+
+  test("rejects inline attachments outside images, PDFs and documents", () => {
+    expect(() => promptAttachmentLabel([], { uri: "data:audio/mpeg;base64,AAA" })).toThrow(
+      "Unsupported inline attachment",
+    )
+  })
+
   test("does not reuse a label when attachment metadata differs", () => {
     const uri = "data:image/png;base64,AAA"
     const files = [{ uri, name: "one.png", mention: { start: 0, end: 9, text: "[Image 1]" } }]

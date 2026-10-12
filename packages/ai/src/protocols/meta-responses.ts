@@ -201,6 +201,7 @@ const step = Effect.fnUntraced(function* (state: ParserState, input: OpenRespons
 
 export const protocol = Protocol.make({
   id: ADAPTER,
+  lowersDocument: OpenResponses.lowersDocument,
   body: { schema: OpenResponses.OpenResponsesBody, from: fromRequest },
   stream: {
     event: OpenResponses.protocol.stream.event,

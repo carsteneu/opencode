@@ -74,6 +74,27 @@ describe("prompt local attachments", () => {
     })
   })
 
+  test("reads office document attachments as bytes", async () => {
+    const content = new Uint8Array([0x50, 0x4b, 0x03, 0x04])
+    for (const mime of [
+      "application/msword",
+      "application/vnd.ms-excel",
+      "application/vnd.ms-powerpoint",
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "application/vnd.oasis.opendocument.presentation",
+      "application/vnd.oasis.opendocument.spreadsheet",
+      "application/vnd.oasis.opendocument.text",
+    ]) {
+      expect(await readLocalAttachmentWith(files({ mime, bytes: content }), "/tmp/file.bin")).toEqual({
+        type: "binary",
+        mime,
+        content,
+      })
+    }
+  })
+
   test("ignores unsupported and unreadable local files", async () => {
     expect(await readLocalAttachmentWith(files({ mime: "text/plain" }), "/tmp/file.txt")).toBeUndefined()
     expect(
@@ -100,6 +121,21 @@ describe("prompt local attachments", () => {
         { type: "file", uri: "data:image/png;base64,AQID", filename: "one image.png" },
       ])
     }
+  })
+
+  test("resolves a document path as a file attachment", async () => {
+    await using tmp = await tmpdir()
+    const file = path.join(tmp.path, "report.docx")
+    const content = new Uint8Array([0x50, 0x4b, 0x03, 0x04])
+    await Bun.write(file, content)
+
+    expect(await resolvePastedAttachments(file, process.platform)).toEqual([
+      {
+        type: "file",
+        uri: `data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,${Buffer.from(content).toString("base64")}`,
+        filename: "report.docx",
+      },
+    ])
   })
 
   test("resolves quoted paths and URI lists as ordered attachments", async () => {

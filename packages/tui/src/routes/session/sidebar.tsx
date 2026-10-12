@@ -29,23 +29,29 @@ export function Sidebar(props: { sessionID: string }) {
         paddingRight={2}
         position="relative"
       >
-        <box flexShrink={0} paddingRight={2} paddingBottom={1}>
-          <title_shimmer
-            fg={theme.text.base}
-            rename={{
-              pending: data.session.title.pending(props.sessionID),
-              title: withTimestampedFallback(session()),
-            }}
-            enabled={config.animations ?? true}
-            backdrop={theme.background.raised.base}
-            attributes={
-              data.session.title.pending(props.sessionID) && config.animations === false
-                ? TextAttributes.DIM
-                : TextAttributes.BOLD
-            }
-          >
-            {withTimestampedFallback(session())}
-          </title_shimmer>
+        <box flexShrink={0} flexDirection="row" gap={1} paddingRight={2} paddingBottom={1}>
+          <box flexGrow={1} flexShrink={1} minWidth={0}>
+            <title_shimmer
+              fg={theme.text.base}
+              rename={{
+                pending: data.session.title.pending(props.sessionID),
+                title: withTimestampedFallback(session()),
+              }}
+              enabled={config.animations ?? true}
+              backdrop={theme.background.raised.base}
+              attributes={
+                data.session.title.pending(props.sessionID) && config.animations === false
+                  ? TextAttributes.DIM
+                  : TextAttributes.BOLD
+              }
+            >
+              {withTimestampedFallback(session())}
+            </title_shimmer>
+          </box>
+          <Slot
+            path="sidebar.title.actions"
+            input={{ sessionID: props.sessionID, title: session()?.title ?? "" }}
+          />
         </box>
         <scrollbox
           flexGrow={1}

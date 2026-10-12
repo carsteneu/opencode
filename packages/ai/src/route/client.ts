@@ -58,6 +58,8 @@ export interface Route<
   readonly defaults: RouteDefaults
   readonly body: RouteBody<Body>
   readonly supportsEffortUpdates?: (request: LLMRequest) => boolean
+  /** From the protocol: which document media types its `body.from` carries inline. */
+  readonly lowersDocument?: (mediaType: string) => boolean
   readonly sanitizer?: LanguageModelSanitizerCompatibility
   readonly with: {
     <Next extends CompactionOperations | undefined>(
@@ -389,6 +391,7 @@ function makeFromTransport<Body, Prepared, Frame, Event, State>(
       defaults: routeInput.defaults ?? {},
       body: protocol.body,
       supportsEffortUpdates: protocol.supportsEffortUpdates,
+      lowersDocument: protocol.lowersDocument,
       sanitizer: protocol.sanitizer,
       with: (patch: RoutePatch<Body, Prepared>) => {
         const { compact, id, provider, providerMetadataKey, auth, transport, endpoint, ...defaults } = patch

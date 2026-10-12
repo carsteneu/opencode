@@ -51,6 +51,7 @@ export const compatibility = {
 
 export const protocol = Protocol.make({
   id: "alibaba-chat",
+  lowersDocument: OpenAIChat.lowersDocument,
   body: {
     schema: Schema.Struct({
       ...OpenAIChat.bodyFields,
