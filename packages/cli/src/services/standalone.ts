@@ -1,6 +1,6 @@
 import { CrossSpawnSpawner } from "@opencode/util/cross-spawn-spawner"
 import { LayerNode } from "@opencode/util/effect/layer-node"
-import { Deferred, Effect, Schema, Stream } from "effect"
+import { Deferred, Effect, Exit, Schema, Stream } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { createWriteStream, mkdirSync } from "node:fs"
 import { randomBytes } from "node:crypto"
@@ -21,10 +21,14 @@ const printLogs = () => process.env.OPENCODE_PRINT_LOGS === "1"
 // A detached server's diagnostics must not be lost when its stderr is not the
 // TUI's terminal (v1 cli/tui/process-server.ts: serverStderrSink).
 function serverStderrSink() {
-  const dir = join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"), "opencode", "log")
+  const dir = join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "opencode", "log")
   // The log directory may not exist yet on first boot.
   mkdirSync(dir, { recursive: true })
-  return createWriteStream(join(dir, "standalone-server.log"), { flags: "a" })
+  const log = createWriteStream(join(dir, "standalone-server.log"), { flags: "a" })
+  // Without a listener a failed write (ENOSPC, EACCES) is an unhandled 'error'
+  // event, which would take down the CLI.
+  log.on("error", () => {})
+  return log
 }
 
 function command(password: string, options: Options) {
@@ -52,11 +56,14 @@ const makeEndpoint = Effect.fn("cli.standalone.endpoint")(
     const proc = yield* spawner.spawn(command(password, options))
     if (!printLogs())
       yield* Effect.gen(function* () {
-        const log = yield* Effect.sync(() => serverStderrSink())
+        // The pipe must be drained even when the sidecar log cannot be opened,
+        // or the server stalls once its stderr buffer fills.
+        const sink = yield* Effect.sync(() => serverStderrSink()).pipe(Effect.exit)
+        const log = Exit.isSuccess(sink) ? sink.value : undefined
         yield* proc.stderr.pipe(
           Stream.decodeText(),
-          Stream.runForEach((chunk) => Effect.sync(() => log.write(chunk))),
-          Effect.ensuring(Effect.sync(() => log.end())),
+          Stream.runForEach((chunk) => Effect.sync(() => log?.write(chunk))),
+          Effect.ensuring(Effect.sync(() => log?.end())),
           Effect.forkScoped,
         )
       })
