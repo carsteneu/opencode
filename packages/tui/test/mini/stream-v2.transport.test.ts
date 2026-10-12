@@ -713,9 +713,9 @@ describe("V2 mini transport", () => {
     })
 
     while (!ui.commits.some((commit) => commit.text === "Done.")) await Bun.sleep(0)
-    expect(ui.commits.filter((commit) => commit.kind === "assistant" || commit.kind === "tool").map((commit) => commit.text)).toEqual([
-      "Done.",
-    ])
+    expect(
+      ui.commits.filter((commit) => commit.kind === "assistant" || commit.kind === "tool").map((commit) => commit.text),
+    ).toEqual(["Done."])
     await transport.close()
   })
 
@@ -743,7 +743,11 @@ describe("V2 mini transport", () => {
               model: { providerID: "test", id: "model" },
               content: [
                 { type: "text", text: "I'll check." },
-                canonicalToolPart("read", { status: "completed", input: {}, content: [{ type: "text", text: "file" }] }),
+                canonicalToolPart("read", {
+                  status: "completed",
+                  input: {},
+                  content: [{ type: "text", text: "file" }],
+                }),
               ],
               time: { created: 2, completed: 3 },
             },
@@ -760,7 +764,9 @@ describe("V2 mini transport", () => {
 
     while (!ui.commits.some((commit) => commit.text === "Done.")) await Bun.sleep(0)
     expect(
-      ui.commits.filter((commit) => commit.kind === "user" || commit.kind === "assistant" || commit.kind === "tool").map((commit) => commit.text),
+      ui.commits
+        .filter((commit) => commit.kind === "user" || commit.kind === "assistant" || commit.kind === "tool")
+        .map((commit) => commit.text),
     ).toEqual(["what happened", "Done."])
     await transport.close()
   })
@@ -2930,10 +2936,7 @@ describe("V2 mini transport", () => {
       { sessionID: "ses_1", model: { providerID: "openai", id: "gpt-5", variant: "high" } },
       { signal: undefined },
     )
-    expect(defaultModel).toHaveBeenCalledWith(
-      { location: { directory: "/project" } },
-      { signal: undefined },
-    )
+    expect(defaultModel).toHaveBeenCalledWith({ location: { directory: "/project" } }, { signal: undefined })
     await transport.close()
   })
 
@@ -2984,6 +2987,48 @@ describe("V2 mini transport", () => {
     await turn
 
     expect(interrupted).toHaveBeenCalledWith({ sessionID: "ses_1", resume: true })
+    await transport.close()
+  })
+
+  test("the first statusline patch of a turn clears a wait left over from a previous transport", async () => {
+    const events = feed()
+    events.push(connected())
+    const idle = defer()
+    const client = sdk({ streams: [events], wait: () => idle.promise })
+    const ui = footer()
+    const transport = await createSessionTransport({
+      sdk: client,
+      sessionID: "ses_1",
+      thinking: false,
+      footer: ui.api,
+    })
+    let admitted = false
+    // @ts-expect-error successful SDK response is valid for both modes at runtime
+    spyOn(client.session, "prompt").mockImplementation((request) => {
+      admitted = true
+      return ok({ data: promptAdmission(request) })
+    })
+    const controller = new AbortController()
+    const turn = transport.runPromptTurn({
+      agent: undefined,
+      model: undefined,
+      variant: undefined,
+      prompt: { messageID: "msg_prompt", text: "hello", parts: [] },
+      files: [],
+      includeFiles: true,
+      signal: controller.signal,
+    })
+    while (!admitted) await Bun.sleep(0)
+    while (!ui.events.some((event) => event.type === "stream.patch")) await Bun.sleep(0)
+    const first = ui.events.find((event) => event.type === "stream.patch")
+    if (first?.type !== "stream.patch") throw new Error("expected a statusline patch")
+    // The footer keeps the previous wait unless the patch carries the key, so the first one has to carry it.
+    expect("waiting" in first.patch).toBe(true)
+    expect(first.patch.waiting).toBeUndefined()
+
+    controller.abort()
+    idle.resolve()
+    await turn
     await transport.close()
   })
 
