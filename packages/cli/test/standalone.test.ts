@@ -49,10 +49,7 @@ test("pipes the standalone server stderr into a sidecar log", async () => {
   })
 
   try {
-    const line = await Promise.race([
-      readLine(probe.stdout, "SIDECAR_LOG "),
-      Bun.sleep(10_000).then(() => undefined),
-    ])
+    const line = await Promise.race([readLine(probe.stdout, "SIDECAR_LOG "), Bun.sleep(10_000).then(() => undefined)])
     expect(line).toBeDefined()
     expect(line).toContain(path.join(root, "data", "opencode", "log", "standalone-server.log"))
     expect(line).toContain("SIDECAR_MARKER")
