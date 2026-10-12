@@ -6,6 +6,7 @@ import { SessionInbox } from "@opencode/schema/session-inbox"
 import type { Session } from "@opencode/schema/session"
 import type { SessionMessage } from "@opencode/schema/session-message"
 import { FSUtil } from "@opencode/util/fs-util"
+import { Media } from "@opencode/ai"
 import { Effect } from "effect"
 import path from "path"
 import { fileURLToPath } from "url"
@@ -110,7 +111,7 @@ const materializeAttachment = Effect.fn("SessionPrompt.materializeAttachment")(f
       message: `Attachment exceeds the ${MAX_ATTACHMENT_BYTES} byte limit: ${label}`,
     })
 
-  const mime = resolved.mime ?? Mime.detect(resolved.bytes)
+  const mime = resolved.mime ?? declaredOrDetectedMime(input.uri, resolved.bytes)
   const content =
     mime === "text/plain" && resolved.start !== undefined
       ? Buffer.from(
@@ -205,6 +206,19 @@ const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 // A data URL is the whole file; errors and logs must name the attachment, not echo its bytes.
 function attachmentLabel(input: PromptInput.FileAttachment) {
   return input.name ?? (input.uri.startsWith("data:") ? "inline attachment" : input.uri)
+}
+
+/**
+ * Sniffed content wins over a declared data URL type, except for office media types: their leading bytes are a generic
+ * zip or OLE container, so the declaration is the only carrier of the real type and the attachment must not reach
+ * `attachments` as `application/octet-stream`. Everything else stays content-decided — a declaration alone never
+ * relabels bytes that sniff as something else, nor bytes that identify nothing at all.
+ */
+function declaredOrDetectedMime(uri: string, bytes: Uint8Array) {
+  const detected = Mime.detect(bytes)
+  if (detected !== "application/octet-stream") return detected
+  const declared = /^data:([^;,]+)/.exec(uri)?.[1]?.trim().toLowerCase()
+  return declared !== undefined && Media.isOfficeMediaType(declared) ? declared : detected
 }
 
 function decodeDataURL(uri: string, label: string) {

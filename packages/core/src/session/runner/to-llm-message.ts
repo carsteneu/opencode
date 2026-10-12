@@ -73,9 +73,10 @@ const directoryAttachment = (file: FileAttachment): ContentPart => ({
 })
 
 const attachmentContent = (file: FileAttachment): ContentPart[] => {
-  if (file.mime === "text/plain") return [textAttachment(file)]
-  if (file.mime === "application/x-directory") return [directoryAttachment(file)]
-  if (imageMimes.has(file.mime) || file.mime === "application/pdf") {
+  const mime = file.mime.toLowerCase()
+  if (mime === "text/plain") return [textAttachment(file)]
+  if (mime === "application/x-directory") return [directoryAttachment(file)]
+  if (imageMimes.has(mime) || mime === "application/pdf" || Media.isOfficeMediaType(mime)) {
     const location = attachmentLocation(file)
     return [...(location === undefined ? [] : [Message.text(`Attached file: ${location}`)]), media(file)]
   }
@@ -84,13 +85,13 @@ const attachmentContent = (file: FileAttachment): ContentPart[] => {
 
 const userAttachmentContent = (files: readonly FileAttachment[]) => {
   const eligible = files.filter(
-    (file) => imageMimes.has(file.mime) && file.source.type === "inline" && file.mention?.text,
+    (file) => imageMimes.has(file.mime.toLowerCase()) && file.source.type === "inline" && file.mention?.text,
   )
   if (eligible.length < 2) return files.flatMap(attachmentContent)
 
   const seen = new Map<string, Set<string>>()
   return files.flatMap((file) => {
-    if (!imageMimes.has(file.mime) || file.source.type !== "inline" || !file.mention?.text)
+    if (!imageMimes.has(file.mime.toLowerCase()) || file.source.type !== "inline" || !file.mention?.text)
       return attachmentContent(file)
     const metadata = JSON.stringify([file.mime, file.name ?? null, file.description ?? null, file.mention.text])
     const payloads = seen.get(metadata) ?? new Set<string>()
