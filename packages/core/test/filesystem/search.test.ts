@@ -61,7 +61,9 @@ describe("FileSystemSearch", () => {
         Layer.provide(
           Layer.succeed(
             Location.Service,
-            Location.Service.of(location({ directory: AbsolutePath.make(path.join(os.tmpdir(), "opencode-fff-lazy")) })),
+            Location.Service.of(
+              location({ directory: AbsolutePath.make(path.join(os.tmpdir(), "opencode-fff-lazy")) }),
+            ),
           ),
         ),
       )

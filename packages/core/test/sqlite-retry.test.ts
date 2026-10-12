@@ -6,7 +6,11 @@ import { classifyNodeSqliteError } from "@opencode/core/database/sqlite.node"
 
 const locked = () =>
   new SqlError({
-    reason: new LockTimeoutError({ cause: new Error("database is locked"), message: "database is locked", operation: "execute" }),
+    reason: new LockTimeoutError({
+      cause: new Error("database is locked"),
+      message: "database is locked",
+      operation: "execute",
+    }),
   })
 const unrelated = () => new SqlError({ reason: new UnknownError({ cause: new Error("boom"), message: "boom" }) })
 

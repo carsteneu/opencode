@@ -14,11 +14,30 @@ const spliceReference = (lines: ReadonlyArray<string>, replacements: ReadonlyArr
 describe("Patch.applyReplacements", () => {
   test("matches the descending-splice behavior for ascending replacements", () => {
     const cases: ReadonlyArray<{ lines: string[]; replacements: Replacement[] }> = [
-      { lines: ["a", "b", "c", "d"], replacements: [[1, 1, ["B"]], [3, 1, ["D", "D2"]]] },
+      {
+        lines: ["a", "b", "c", "d"],
+        replacements: [
+          [1, 1, ["B"]],
+          [3, 1, ["D", "D2"]],
+        ],
+      },
       // Equal offsets must keep insertion order.
-      { lines: ["x"], replacements: [[1, 0, ["first"]], [1, 0, ["second", "third"]]] },
+      {
+        lines: ["x"],
+        replacements: [
+          [1, 0, ["first"]],
+          [1, 0, ["second", "third"]],
+        ],
+      },
       // Insert at end, empty insert, pure removal, and remove-everything.
-      { lines: ["a", "b"], replacements: [[0, 1, []], [1, 1, ["mid"]], [2, 0, ["tail"]]] },
+      {
+        lines: ["a", "b"],
+        replacements: [
+          [0, 1, []],
+          [1, 1, ["mid"]],
+          [2, 0, ["tail"]],
+        ],
+      },
       { lines: ["only"], replacements: [[0, 1, []]] },
       { lines: [], replacements: [[0, 0, ["fresh"]]] },
       { lines: ["a", "b", "c"], replacements: [[0, 3, ["collapsed"]]] },
