@@ -14,8 +14,10 @@
 import { Plugin } from "@opencode/plugin/effect"
 import { Error as ToolError } from "@opencode/plugin/promise/tool"
 import { Effect } from "effect"
+import { autoResolve } from "./auto_resolve"
 import { codeNavGuard, type ToolCallEvent } from "./code_nav"
 import { injectYesMemToolContext } from "./context"
+import { failureLearn } from "./failure_learn"
 import { ruleGuard, type ToolResultEvent } from "./rule_guard"
 import { YesMemRPC } from "./rpc"
 
@@ -27,6 +29,8 @@ export default Plugin.define({
       const rpc = new YesMemRPC()
       const codeNav = codeNavGuard(rpc, directory)
       const guard = ruleGuard(directory)
+      const learn = failureLearn(rpc, directory)
+      const resolve = autoResolve(rpc, directory)
 
       // v1 primed the project index once per activation so the first code_nav check is fast.
       // `call` resolves instead of rejecting, so it is safe to wrap in Effect.promise.
@@ -50,6 +54,10 @@ export default Plugin.define({
       const reject = (evaluate: () => Promise<string | undefined>) =>
         Effect.tryPromise({ try: evaluate, catch: () => undefined })
 
+      // Async work that must never fail its hook.
+      const attempt = (evaluate: () => Promise<unknown>) =>
+        Effect.tryPromise({ try: evaluate, catch: () => undefined }).pipe(Effect.asVoid)
+
       yield* context.tool.hook("execute.before", (event) =>
         Effect.gen(function* () {
           const message = yield* reject(() => before(event))
@@ -58,7 +66,13 @@ export default Plugin.define({
       )
 
       yield* context.tool.hook("execute.after", (event) =>
-        Effect.sync(() => guard.after(event as ToolResultEvent)),
+        Effect.gen(function* () {
+          // Order matters: the guard may replace the error message, and the learners must see (and extend)
+          // whatever is current.
+          guard.after(event as ToolResultEvent)
+          yield* attempt(() => learn.after(event as ToolResultEvent))
+          yield* attempt(() => resolve.after(event as ToolResultEvent))
+        }),
       )
 
       // Read-only conversation capture for the guard context. The three message-mutating nudges of the v1
