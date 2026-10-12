@@ -22,6 +22,10 @@ call sites.
 | `failure_learn.ts` | port of v1 `failure_learn.ts` | Error → `remember`, plus a `hybrid_search` assist note. |
 | `auto_resolve.ts` | port of v1 `auto_resolve.ts` | `git commit -m` → `resolve_by_text`. |
 | `session.ts` | new | Session tracking + `register_pid` (v1 used the `session.created` hook). |
+| `messages.ts` | new | Message helpers shared by the nudges (v1 duplicated them). |
+| `skill_nudge.ts` | port of v1 `skill_nudge.ts` | Staged skill suggestion on the terminal user message. |
+| `ledger_nudge.ts` | port of v1 `ledger_nudge.ts` | Appends the active plan as a live ledger block. |
+| `idle_reminder.ts` | port of v1 `idle_reminder.ts` | Invisible yesmem reminder every Nth user turn. |
 | `shell.ts` | port of v1 `shell.env` | Exports the yesmem environment to spawned shells. |
 | `skill_whitelist.ts` | port of v1 `skill_whitelist.ts` | Installed-skill set used to filter ghost suggestions (roots are resolved per call, so `YESMEM_SKILL_ROOTS` is honoured). |
 | `log.ts` | new | v1 duplicated this logger in four modules. |
@@ -64,7 +68,7 @@ Every other hook still runs plain async code, lifted with `Effect.tryPromise` in
 | `tool.execute.after` | `ctx.tool.hook("execute.after", e)` | `status: "completed"` exposes a mutable `e.result`; `status: "error"` a mutable `e.error`. rule_guard's directive is injected first, then failure_learn, then auto_resolve. |
 | `shell.env` | `ctx.shell.hook("create.before", e)` | Mutable `e.env`. |
 | `session.created` | `ctx.event.subscribe()` → `session.created`, `data.sessionID` | Registers the process with the daemon; mirrors the id into `process.env.YESMEM_SESSION_ID`. |
-| `experimental.chat.messages.transform` (conversation capture only) | `ctx.session.hook("context", e)` | Read-only capture of the last messages for the guard context. |
+| `experimental.chat.messages.transform` | `ctx.session.hook("context", e)` | Four handlers in registration order: read-only conversation capture for the guard, then the three nudges (`skill_nudge`, `ledger_nudge`, `idle_reminder`). Every nudge only patches the **terminal user message** so the prompt-cache prefix stays intact, keeps a marker guard against double patching, and is idempotent per distinct message. |
 | `chat.params` (summary-title fallback) | — | No v2 equivalent; the fallback is dropped. |
 
 ## Deviations from v1
@@ -95,11 +99,6 @@ Every other hook still runs plain async code, lifted with `Effect.tryPromise` in
 
 ## Known gaps (not built here)
 
-- **Nudges.** v1's `skill_nudge`, `ledger_nudge` and `idle_reminder` appended text to the outgoing message
-  list through `experimental.chat.messages.transform`. They are **not** ported. Note for a follow-up: the v2
-  session domain does exist and `ctx.session.hook("context")` exposes a mutable `messages` array
-  (`packages/core/src/plugin/plan.ts` inserts reminders through it), so these three nudges are portable
-  without any core change. What is missing is a scope decision, not an API.
 - **`chat.params`.** No v2 equivalent, so the summary-title conversation fallback is gone.
 - **`code_nav` and the dedicated `grep`/`glob` tools.** v1 blocked shell commands and the `read` tool only;
   v2's separate `grep`/`glob` tools are not covered, matching v1's behaviour rather than extending it.
@@ -124,6 +123,13 @@ Every other hook still runs plain async code, lifted with `Effect.tryPromise` in
 - **Trust.** `RULES.md`, `.git`/`HEAD` and the guard's answer are treated as data, not as trusted input: the
   violated-rule text is capped and labelled, learned snippets are capped, and file paths are stripped of
   control characters before they reach a message or the log.
+- **Nudges.** All three are patched into the terminal user message only. `skill_nudge` matches the catalogue
+  triggers locally first; when that fails it asks the configured model in the **background** and caches the
+  answer by (catalogue, message) — that call sends the user message and the skill catalogue to the provider,
+  and the first sighting of a message is never nudged from the cache. `ledger_nudge` fetches the active plan
+  with a 2 s budget. `idle_reminder` is deterministic (every Nth user turn, `YESMEM_IDLE_CADENCE`, floor 2).
+  Kill switches: `YESMEM_SKILL_NUDGE` (unset = on), `YESMEM_LEDGER=off`, `YESMEM_IDLE=off`; the skill
+  catalogue is looked up via `YESMEM_SKILL_CATALOG`, then the plugin directory, then the project directory.
 
 ## Tests
 
@@ -141,4 +147,6 @@ integration test additionally drives the plugin through the real core plugin hos
 The daemon is always a local mock socket pointed to by `YESMEM_SOCKET`, the guard endpoint a local HTTP mock,
 and `YESMEM_LOG_FILE` keeps the plugin's debug log out of the live install; no live daemon, config directory or
 provider is touched. Besides the per-feature tests there is a resilience group (a throwing hook callback must
-not fail the call, a failed commit must not resolve tasks) and the integration group described above.
+not fail the call, a failed commit must not resolve tasks), a nudge group (catalogue parsing in both shapes,
+local match, ghost filtering, no double patch, the background match plus its cache, ledger rendering and
+patch-once, idle cadence) and the integration group described above.

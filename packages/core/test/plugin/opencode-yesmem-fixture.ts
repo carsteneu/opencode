@@ -89,6 +89,23 @@ export async function withSocket<T>(socketPath: string, body: () => Promise<T>):
   }
 }
 
+/** Runs `body` with the given env overrides and restores the previous values afterwards. */
+export async function withEnv<T>(environment: Record<string, string | undefined>, body: () => Promise<T>): Promise<T> {
+  const previous = new Map(Object.keys(environment).map((key) => [key, process.env[key]]))
+  for (const [key, value] of Object.entries(environment)) {
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+  }
+  try {
+    return await body()
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+}
+
 export type HookEvent = Record<string, any>
 export type HookCallback = (event: HookEvent) => unknown
 export type HookResult = { readonly event: HookEvent; readonly failed: boolean; readonly error?: any }

@@ -11,6 +11,7 @@
 //
 // See README.md for the mapping table and the documented gaps.
 
+import { fileURLToPath } from "node:url"
 import { Plugin } from "@opencode/plugin/effect"
 import { Error as ToolError } from "@opencode/plugin/promise/tool"
 import { Effect, Stream } from "effect"
@@ -18,10 +19,15 @@ import { autoResolve } from "./auto_resolve"
 import { codeNavGuard, type ToolCallEvent } from "./code_nav"
 import { injectYesMemToolContext } from "./context"
 import { failureLearn } from "./failure_learn"
+import { idleReminder, type ContextEvent } from "./idle_reminder"
+import { ledgerNudge } from "./ledger_nudge"
 import { ruleGuard, type ToolResultEvent } from "./rule_guard"
 import { YesMemRPC } from "./rpc"
 import { sessionTracker, type HostEvent } from "./session"
 import { shellEnvironment, type ShellCreateEvent } from "./shell"
+import { skillNudge } from "./skill_nudge"
+
+const pluginDirectory = fileURLToPath(new URL(".", import.meta.url))
 
 export default Plugin.define({
   id: "opencode.yesmem",
@@ -35,6 +41,15 @@ export default Plugin.define({
       const resolve = autoResolve(rpc, directory)
       const session = sessionTracker(rpc)
       const shell = shellEnvironment(rpc, rpc.socket, session.current)
+      const skills = skillNudge(
+        [
+          process.env.YESMEM_SKILL_CATALOG,
+          `${pluginDirectory.replace(/\/$/, "")}/RULES.md`,
+          `${directory.replace(/\/$/, "")}/RULES.md`,
+        ].filter((candidate): candidate is string => Boolean(candidate)),
+      )
+      const ledger = ledgerNudge(rpc)
+      const idle = idleReminder()
 
       // v1 primed the project index without waiting for it, and activation must not stall on the daemon:
       // `Plugin.awaitActivation` gates session entry points on this effect completing.
@@ -91,11 +106,14 @@ export default Plugin.define({
         }),
       )
 
-      // Read-only conversation capture for the guard context. The three message-mutating nudges of the v1
-      // plugin are deliberately not ported (see README).
+      // Message-level hooks run in registration order. The guard capture must see the request BEFORE the
+      // nudges patch it, and every nudge only touches the terminal user message (prompt-cache safety).
       yield* context.session.hook("context", (event) =>
         Effect.sync(() => guard.capture((event as { messages: ReadonlyArray<any> }).messages)),
       )
+      yield* context.session.hook("context", (event) => attempt(() => skills.context(event as ContextEvent)))
+      yield* context.session.hook("context", (event) => attempt(() => ledger.context(event as ContextEvent)))
+      yield* context.session.hook("context", (event) => attempt(() => idle.context(event as ContextEvent)))
 
       yield* context.shell.hook("create.before", (event) => attempt(() => shell.before(event as ShellCreateEvent)))
 
