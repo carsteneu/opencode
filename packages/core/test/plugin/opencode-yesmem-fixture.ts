@@ -13,7 +13,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { Host } from "@opencode/plugin/host"
 import { ensurePluginRuntime } from "@opencode/plugin/runtime"
-import { Cause, Effect, Exit, Stream } from "effect"
+import { Cause, Effect, Exit, Fiber, PubSub, Stream } from "effect"
 
 // External plugins import `effect` and `@opencode/plugin` from the host; the CLI installs that mapping at
 // startup (packages/cli/src/index.ts) and the core plugin tests install it the same way.
@@ -92,6 +92,8 @@ export type HookRecorder = {
   readonly context: any
   /** Runs every registered callback in registration order; a failure stops the chain, as in the host. */
   fire: (key: string, event: HookEvent) => Promise<HookResult>
+  /** Publishes one host event into the plugin's subscription. */
+  emit: (event: HookEvent) => void
 }
 
 function firstFailure(cause: Cause.Cause<unknown>) {
@@ -105,6 +107,7 @@ function firstFailure(cause: Cause.Cause<unknown>) {
  */
 export function fakeContext(directory: string): HookRecorder {
   const hooks = new Map<string, HookCallback[]>()
+  const events = Effect.runSync(PubSub.unbounded<HookEvent>())
   const domain = (name: string) => ({
     hook: (hookName: string, callback: HookCallback) => {
       const key = `${name}.${hookName}`
@@ -120,11 +123,12 @@ export function fakeContext(directory: string): HookRecorder {
     tool: domain("tool"),
     shell: domain("shell"),
     session: domain("session"),
-    event: { subscribe: () => Stream.empty },
+    event: { subscribe: () => Stream.fromPubSub(events) },
   }
   return {
     hooks,
     context,
+    emit: (event) => Effect.runSync(PubSub.publish(events, event)),
     async fire(key, event) {
       for (const callback of hooks.get(key) ?? []) {
         const result = callback(event)
@@ -140,8 +144,32 @@ export function fakeContext(directory: string): HookRecorder {
   }
 }
 
-export async function loadPlugin(recorder: HookRecorder) {
+/**
+ * Loads the plugin against the fake context.
+ *
+ * `keepAlive` mirrors the host, which keeps the plugin's scope open for the plugin's lifetime: without it
+ * the forked event subscription is interrupted as soon as the setup effect completes.
+ */
+export async function loadPlugin(recorder: HookRecorder, options: { keepAlive?: boolean } = {}) {
   const module = (await Host.load(yesmemEntry("index.ts"))) as EffectPluginModule
-  await Effect.runPromise(module.default.effect(recorder.context) as Effect.Effect<unknown>)
-  return module
+  const setup = module.default.effect(recorder.context) as Effect.Effect<unknown>
+  if (!options.keepAlive) {
+    // The plugin registers its hooks inside a scope; the host supplies it for the plugin's lifetime.
+    await Effect.runPromise(Effect.scoped(setup) as Effect.Effect<unknown>)
+    return { module, stop: () => Promise.resolve() }
+  }
+
+  let ready!: () => void
+  const started = new Promise<void>((resolve) => (ready = resolve))
+  const fiber = Effect.runFork(
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* setup
+        yield* Effect.sync(() => ready())
+        yield* Effect.never
+      }),
+    ) as Effect.Effect<never>,
+  )
+  await started
+  return { module, stop: () => Effect.runPromise(Fiber.interrupt(fiber)).then(() => undefined) }
 }

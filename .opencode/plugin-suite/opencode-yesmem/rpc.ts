@@ -27,6 +27,11 @@ export class YesMemRPC {
     this.socketPath = socketPath || defaultSocketPath()
   }
 
+  /** The socket this client dials; subprocesses are handed the same path. */
+  get socket(): string {
+    return this.socketPath
+  }
+
   call(method: string, params?: Record<string, any>, opts?: { timeoutMs?: number }): Promise<RPCResponse> {
     // Callers that must never block (e.g. the live-ledger subscriber) pass a shorter bound.
     const timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS

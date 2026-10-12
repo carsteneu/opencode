@@ -13,13 +13,15 @@
 
 import { Plugin } from "@opencode/plugin/effect"
 import { Error as ToolError } from "@opencode/plugin/promise/tool"
-import { Effect } from "effect"
+import { Effect, Stream } from "effect"
 import { autoResolve } from "./auto_resolve"
 import { codeNavGuard, type ToolCallEvent } from "./code_nav"
 import { injectYesMemToolContext } from "./context"
 import { failureLearn } from "./failure_learn"
 import { ruleGuard, type ToolResultEvent } from "./rule_guard"
 import { YesMemRPC } from "./rpc"
+import { sessionTracker, type HostEvent } from "./session"
+import { shellEnvironment, type ShellCreateEvent } from "./shell"
 
 export default Plugin.define({
   id: "opencode.yesmem",
@@ -31,6 +33,8 @@ export default Plugin.define({
       const guard = ruleGuard(directory)
       const learn = failureLearn(rpc, directory)
       const resolve = autoResolve(rpc, directory)
+      const session = sessionTracker(rpc)
+      const shell = shellEnvironment(rpc, rpc.socket, session.current)
 
       // v1 primed the project index once per activation so the first code_nav check is fast.
       // `call` resolves instead of rejecting, so it is safe to wrap in Effect.promise.
@@ -79,6 +83,16 @@ export default Plugin.define({
       // plugin are deliberately not ported (see README).
       yield* context.session.hook("context", (event) =>
         Effect.sync(() => guard.capture((event as { messages: ReadonlyArray<any> }).messages)),
+      )
+
+      yield* context.shell.hook("create.before", (event) =>
+        attempt(() => shell.before(event as ShellCreateEvent)),
+      )
+
+      // Session tracking: register the owning process with the daemon for every session that starts.
+      yield* context.event.subscribe().pipe(
+        Stream.runForEach((event) => attempt(() => session.observe(event as HostEvent))),
+        Effect.forkScoped,
       )
     }),
 })
