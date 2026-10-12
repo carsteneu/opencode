@@ -124,6 +124,7 @@ function makeRoutes<AuthError, AuthServices>(
     Config.node.replace(
       Config.configured({
         project: options.config?.project,
+        global: options.config?.global,
         file: options.config?.file,
         content: options.config?.content,
       }),

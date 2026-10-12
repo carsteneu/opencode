@@ -99,6 +99,38 @@ it.live("updates the global shell without replacing unrelated JSONC", () =>
   }),
 )
 
+it.live("skips the global config directory when config.global is false", () =>
+  Effect.gen(function* () {
+    const tmp = yield* Effect.acquireDisposable(Effect.promise(() => tmpdir("opencode-config-global-off-")))
+    const global = path.join(tmp.path, "global")
+    const project = path.join(tmp.path, "project")
+    yield* Effect.promise(() =>
+      Promise.all([fs.mkdir(global, { recursive: true }), fs.mkdir(project, { recursive: true })]),
+    )
+    const globalConfig = path.join(global, "opencode.json")
+    yield* Effect.promise(() => fs.writeFile(globalConfig, JSON.stringify({ shell: "/bin/global-sentinel" })))
+
+    const entriesFor = (config?: { global?: boolean }) =>
+      Effect.gen(function* () {
+        const server = yield* startServer(global, config)
+        const url = new URL("/api/config", server.base)
+        url.searchParams.set("location[directory]", project)
+        const response = yield* Effect.promise(() => fetch(url, { headers: server.headers }))
+        const body: unknown = yield* Effect.promise(() => response.json())
+        expect(response.status).toBe(200)
+        return Schema.decodeUnknownSync(Schema.Array(Config.Entry))(body)
+      })
+
+    // Control: the default loads the global document from the same directory.
+    const loaded = yield* entriesFor()
+    expect(loaded.some((entry) => entry.type === "document" && entry.path === globalConfig)).toBe(true)
+
+    const skipped = yield* entriesFor({ global: false })
+    expect(skipped.some((entry) => entry.type === "document" && entry.path === globalConfig)).toBe(false)
+    expect(skipped.some((entry) => entry.type === "directory" && entry.path === global)).toBe(false)
+  }),
+)
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
