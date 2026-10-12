@@ -20,9 +20,9 @@ import path from "node:path"
 const EXPECTED_TAG = "v0.5.6-perf.7"
 
 // "linux-x64-only": the linux x64 native package is pinned to a tarball, every
-// other platform resolves from the npm registry. Switch to "all" once all
-// platform packages are pinned to a tarball of EXPECTED_TAG.
-const PLATFORM_POLICY: "linux-x64-only" | "all" = "linux-x64-only"
+// other platform resolves from the npm registry. Switch to "all" (or export
+// OPENTUI_PLATFORM_POLICY=all in CI) once all platform packages are pinned.
+const PLATFORM_POLICY: "linux-x64-only" | "all" = process.env.OPENTUI_PLATFORM_POLICY === "all" ? "all" : "linux-x64-only"
 
 const PINNED = ["@opentui/core", "@opentui/core-linux-x64", "@opentui/keymap", "@opentui/solid"] as const
 const URL_SHAPE = /^https:\/\/github\.com\/carsteneu\/opentui\/releases\/download\/(v[0-9][^/]*)\/([a-z0-9-]+)-([0-9][^/]*)\.tgz$/
