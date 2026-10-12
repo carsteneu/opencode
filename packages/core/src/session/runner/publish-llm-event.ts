@@ -63,10 +63,11 @@ const hostedContent = (result: ToolResultValue): NonEmptyContent => {
   return [{ type: "text", text: stringify(result.value) }]
 }
 
-// Progress for streamed tool inputs is published at most every TOOL_INPUT_PROGRESS_INTERVAL, with a
-// trailing update once the input has been quiet for TOOL_INPUT_PROGRESS_IDLE_INTERVAL or has grown
-// by TOOL_INPUT_PROGRESS_BYTES. Only the tools whose arguments are the payload under a spinner
-// report progress; every other tool would just add stream noise.
+// Progress for streamed tool inputs is published at most every TOOL_INPUT_PROGRESS_INTERVAL: the
+// first delta reports immediately, and afterwards a report needs that interval to have elapsed and
+// then either the longer idle interval or growth of TOOL_INPUT_PROGRESS_BYTES. Only the tools whose
+// arguments are the payload under a spinner report progress; every other tool would just add stream
+// noise.
 const TOOL_INPUT_PROGRESS_INTERVAL = 500
 const TOOL_INPUT_PROGRESS_IDLE_INTERVAL = 2_000
 const TOOL_INPUT_PROGRESS_BYTES = 16 * 1024
@@ -339,8 +340,8 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
     const now = yield* Clock.currentTimeMillis
     const elapsed = progress.publishedAt === undefined ? 0 : now - progress.publishedAt
     const growth = progress.received - progress.published
-    // The first delta reports immediately; after that a report needs the interval, or the idle
-    // interval together with enough growth to be worth an update.
+    // The first delta reports immediately; after that a report needs the interval, and then either
+    // the idle interval to have elapsed or enough growth to be worth an update.
     if (
       progress.publishedAt !== undefined &&
       (elapsed < TOOL_INPUT_PROGRESS_INTERVAL ||
