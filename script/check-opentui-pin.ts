@@ -17,14 +17,26 @@
 
 import path from "node:path"
 
-const EXPECTED_TAG = "v0.5.6-perf.7"
+const EXPECTED_TAG = "v0.5.17-perf.5"
 
-// "linux-x64-only": the linux x64 native package is pinned to a tarball, every
-// other platform resolves from the npm registry. Switch to "all" (or export
-// OPENTUI_PLATFORM_POLICY=all in CI) once all platform packages are pinned.
-const PLATFORM_POLICY: "linux-x64-only" | "all" = process.env.OPENTUI_PLATFORM_POLICY === "all" ? "all" : "linux-x64-only"
+// "all": every native platform package is pinned to a tarball, so no platform
+// falls back to a registry package. Export OPENTUI_PLATFORM_POLICY=linux-x64-only
+// to relax it.
+const PLATFORM_POLICY: "linux-x64-only" | "all" = process.env.OPENTUI_PLATFORM_POLICY === "linux-x64-only" ? "linux-x64-only" : "all"
 
-const PINNED = ["@opentui/core", "@opentui/core-linux-x64", "@opentui/keymap", "@opentui/solid"] as const
+const PINNED = [
+  "@opentui/core",
+  "@opentui/core-darwin-arm64",
+  "@opentui/core-darwin-x64",
+  "@opentui/core-linux-arm64",
+  "@opentui/core-linux-arm64-musl",
+  "@opentui/core-linux-x64",
+  "@opentui/core-linux-x64-musl",
+  "@opentui/core-win32-arm64",
+  "@opentui/core-win32-x64",
+  "@opentui/keymap",
+  "@opentui/solid",
+] as const
 const URL_SHAPE = /^https:\/\/github\.com\/carsteneu\/opentui\/releases\/download\/(v[0-9][^/]*)\/([a-z0-9-]+)-([0-9][^/]*)\.tgz$/
 const skip = new Set([".git", ".opencode", ".turbo", "dist", "node_modules"])
 

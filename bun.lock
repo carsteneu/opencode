@@ -1139,7 +1139,14 @@
   "overrides": {
     "@effect/platform-node-shared": "catalog:",
     "@opentui/core": "catalog:",
+    "@opentui/core-darwin-arm64": "catalog:",
+    "@opentui/core-darwin-x64": "catalog:",
+    "@opentui/core-linux-arm64": "catalog:",
+    "@opentui/core-linux-arm64-musl": "catalog:",
     "@opentui/core-linux-x64": "catalog:",
+    "@opentui/core-linux-x64-musl": "catalog:",
+    "@opentui/core-win32-arm64": "catalog:",
+    "@opentui/core-win32-x64": "catalog:",
     "@opentui/keymap": "catalog:",
     "@opentui/solid": "catalog:",
     "@types/bun": "catalog:",
@@ -1163,10 +1170,17 @@
     "@npmcli/arborist": "9.4.0",
     "@octokit/rest": "22.0.0",
     "@openauthjs/openauth": "0.0.0-20250322224806",
-    "@opentui/core": "https://github.com/carsteneu/opentui/releases/download/v0.5.17-perf.4/opentui-core-0.5.17-perf.4.tgz",
-    "@opentui/core-linux-x64": "https://github.com/carsteneu/opentui/releases/download/v0.5.17-perf.4/opentui-core-linux-x64-0.5.17-perf.4.tgz",
-    "@opentui/keymap": "https://github.com/carsteneu/opentui/releases/download/v0.5.17-perf.4/opentui-keymap-0.5.17-perf.4.tgz",
-    "@opentui/solid": "https://github.com/carsteneu/opentui/releases/download/v0.5.17-perf.4/opentui-solid-0.5.17-perf.4.tgz",
+    "@opentui/core": "https://github.com/carsteneu/opentui/releases/download/v0.5.17-perf.5/opentui-core-0.5.17-perf.5.tgz",
+    "@opentui/core-darwin-arm64": "https://github.com/carsteneu/opentui/releases/download/v0.5.17-perf.5/opentui-core-darwin-arm64-0.5.17-perf.5.tgz",
+    "@opentui/core-darwin-x64": "https://github.com/carsteneu/opentui/releases/download/v0.5.17-perf.5/opentui-core-darwin-x64-0.5.17-perf.5.tgz",
+    "@opentui/core-linux-arm64": "https://github.com/carsteneu/opentui/releases/download/v0.5.17-perf.5/opentui-core-linux-arm64-0.5.17-perf.5.tgz",
+    "@opentui/core-linux-arm64-musl": "https://github.com/carsteneu/opentui/releases/download/v0.5.17-perf.5/opentui-core-linux-arm64-musl-0.5.17-perf.5.tgz",
+    "@opentui/core-linux-x64": "https://github.com/carsteneu/opentui/releases/download/v0.5.17-perf.5/opentui-core-linux-x64-0.5.17-perf.5.tgz",
+    "@opentui/core-linux-x64-musl": "https://github.com/carsteneu/opentui/releases/download/v0.5.17-perf.5/opentui-core-linux-x64-musl-0.5.17-perf.5.tgz",
+    "@opentui/core-win32-arm64": "https://github.com/carsteneu/opentui/releases/download/v0.5.17-perf.5/opentui-core-win32-arm64-0.5.17-perf.5.tgz",
+    "@opentui/core-win32-x64": "https://github.com/carsteneu/opentui/releases/download/v0.5.17-perf.5/opentui-core-win32-x64-0.5.17-perf.5.tgz",
+    "@opentui/keymap": "https://github.com/carsteneu/opentui/releases/download/v0.5.17-perf.5/opentui-keymap-0.5.17-perf.5.tgz",
+    "@opentui/solid": "https://github.com/carsteneu/opentui/releases/download/v0.5.17-perf.5/opentui-solid-0.5.17-perf.5.tgz",
     "@pierre/diffs": "1.5.1",
     "@playwright/test": "1.59.1",
     "@sentry/solid": "10.71.0",
@@ -2301,13 +2315,27 @@
 
     "@opentelemetry/semantic-conventions": ["@opentelemetry/semantic-conventions@1.43.0", "", {}, "sha512-eSYWTm620tTk45EKSedaUL8MFYI8hW164hIXsgIHyxu3VobUB3fFCu5t0hQby6OoWRPsG1KkKUG2M5UadiLiVg=="],
 
-    "@opentui/core": ["@opentui/core@https://github.com/carsteneu/opentui/releases/download/v0.5.17-perf.4/opentui-core-0.5.17-perf.4.tgz", { "dependencies": { "bun-ffi-structs": "0.3.1", "diff": "9.0.0", "marked": "17.0.1", "string-width": "7.2.0", "strip-ansi": "7.1.2" }, "optionalDependencies": { "@opentui/core-darwin-arm64": "0.5.17-perf.4", "@opentui/core-darwin-x64": "0.5.17-perf.4", "@opentui/core-linux-arm64": "0.5.17-perf.4", "@opentui/core-linux-arm64-musl": "0.5.17-perf.4", "@opentui/core-linux-x64": "0.5.17-perf.4", "@opentui/core-linux-x64-musl": "0.5.17-perf.4", "@opentui/core-win32-arm64": "0.5.17-perf.4", "@opentui/core-win32-x64": "0.5.17-perf.4" }, "peerDependencies": { "web-tree-sitter": "0.25.10" } }, "sha512-4fa+Jm7isu3BWSnh6oXdcFu8dI/6+yHigXeSJwi9KuzInTeoOtr03bF+A22GG89gTvOVVfSQef9bEtGLNmCrUQ=="],
+    "@opentui/core": ["@opentui/core@https://github.com/carsteneu/opentui/releases/download/v0.5.17-perf.5/opentui-core-0.5.17-perf.5.tgz", { "dependencies": { "bun-ffi-structs": "0.3.1", "diff": "9.0.0", "marked": "17.0.1", "string-width": "7.2.0", "strip-ansi": "7.1.2" }, "optionalDependencies": { "@opentui/core-darwin-arm64": "0.5.17-perf.5", "@opentui/core-darwin-x64": "0.5.17-perf.5", "@opentui/core-linux-arm64": "0.5.17-perf.5", "@opentui/core-linux-arm64-musl": "0.5.17-perf.5", "@opentui/core-linux-x64": "0.5.17-perf.5", "@opentui/core-linux-x64-musl": "0.5.17-perf.5", "@opentui/core-win32-arm64": "0.5.17-perf.5", "@opentui/core-win32-x64": "0.5.17-perf.5" }, "peerDependencies": { "web-tree-sitter": "0.25.10" } }, "sha512-J+gc42D1TQoEoI8CyqiZVZTgMU9dgGHBBezjOf0e++kYRmTk8FsC1YK35xAJQbRtkxFsmTHXkO41S7NG2503jQ=="],
 
-    "@opentui/core-linux-x64": ["@opentui/core-linux-x64@https://github.com/carsteneu/opentui/releases/download/v0.5.17-perf.4/opentui-core-linux-x64-0.5.17-perf.4.tgz", {}, "sha512-sCA/6qxyExnt180CEp/FamPNMrWNjXCeNrpfaYnQ+aK1wUvYYt6iCBt1Dr/fOtjJKaOypZPLOG8A1micTR3aiA=="],
+    "@opentui/core-darwin-arm64": ["@opentui/core-darwin-arm64@https://github.com/carsteneu/opentui/releases/download/v0.5.17-perf.5/opentui-core-darwin-arm64-0.5.17-perf.5.tgz", {}, "sha512-3/21mrwkXJ9HXTQddnGRoPRHJc+eGc4IPQ/EF8qPW8lsK+ksAsQOGC8hVNe5eKJO3ldjc4RWFM4dqmdgz0VrHQ=="],
 
-    "@opentui/keymap": ["@opentui/keymap@https://github.com/carsteneu/opentui/releases/download/v0.5.17-perf.4/opentui-keymap-0.5.17-perf.4.tgz", { "dependencies": { "@opentui/core": "0.5.17-perf.4" }, "peerDependencies": { "@opentui/react": "0.5.17-perf.4", "@opentui/solid": "0.5.17-perf.4", "react": ">=19.2.0", "solid-js": "1.9.12" }, "optionalPeers": ["@opentui/react", "@opentui/solid", "react", "solid-js"] }, "sha512-0mQ/9d8Os+pWVQJ2rUcUksgh0qp63qZXIjLh083o1vm4U1Oe0VSaX+0O+oRWi6HLauurMO01TDMbAEw2KU+C0g=="],
+    "@opentui/core-darwin-x64": ["@opentui/core-darwin-x64@https://github.com/carsteneu/opentui/releases/download/v0.5.17-perf.5/opentui-core-darwin-x64-0.5.17-perf.5.tgz", {}, "sha512-79qUZguVq45mEF5r0eqyPc/zyhEEDIPlR7CRF3izfA3XTHDjblDKJTt1N+4fo4ORZ8o6gxXAfUUi3GSj0GX7+Q=="],
 
-    "@opentui/solid": ["@opentui/solid@https://github.com/carsteneu/opentui/releases/download/v0.5.17-perf.4/opentui-solid-0.5.17-perf.4.tgz", { "dependencies": { "@babel/core": "7.29.7", "@babel/preset-typescript": "7.27.1", "@opentui/core": "0.5.17-perf.4", "babel-plugin-module-resolver": "5.0.2", "babel-preset-solid": "1.9.12", "entities": "7.0.1", "s-js": "^0.4.9" }, "peerDependencies": { "solid-js": "1.9.12" } }, "sha512-G9qXHAgVamWx8OVDgnnFwOUBzv9CYHxXT+5IEkHTyabFdPsXz26QULuL4gTCAsga9y+8mAys2FdKDxchQVkhCg=="],
+    "@opentui/core-linux-arm64": ["@opentui/core-linux-arm64@https://github.com/carsteneu/opentui/releases/download/v0.5.17-perf.5/opentui-core-linux-arm64-0.5.17-perf.5.tgz", {}, "sha512-4Of0E0ymxHWRvonLwulBqxZof0Mlcx+2UAZb1cIWcTkomaUw/QFz5WKk6hSNkOhj1YzF8tLHaMa4PIqQmlKRkA=="],
+
+    "@opentui/core-linux-arm64-musl": ["@opentui/core-linux-arm64-musl@https://github.com/carsteneu/opentui/releases/download/v0.5.17-perf.5/opentui-core-linux-arm64-musl-0.5.17-perf.5.tgz", {}, "sha512-X8IGck9m9WiVEE/qKGz3rC6lbUDlQJa+4xOoWNHVjPIQ3Av//4RkfF6nE3/VNTgTeONTPYLTQ2+nXU3ft72afg=="],
+
+    "@opentui/core-linux-x64": ["@opentui/core-linux-x64@https://github.com/carsteneu/opentui/releases/download/v0.5.17-perf.5/opentui-core-linux-x64-0.5.17-perf.5.tgz", {}, "sha512-5NbD5TvEQMbx8Bzp7VaMiziX4yqQfNKcCtJJypLpIcODlsHFZn4meF95HqLJIwR/aD+B81l7epJfaOuU7Idetw=="],
+
+    "@opentui/core-linux-x64-musl": ["@opentui/core-linux-x64-musl@https://github.com/carsteneu/opentui/releases/download/v0.5.17-perf.5/opentui-core-linux-x64-musl-0.5.17-perf.5.tgz", {}, "sha512-/EVS8XQvB4gaNVEwenXZtYGs2FIxhLBJKGPPG/NFXI9N8rCswLkUekpY/ezQYm4zwljasN/0boYMkjF4jrL+vg=="],
+
+    "@opentui/core-win32-arm64": ["@opentui/core-win32-arm64@https://github.com/carsteneu/opentui/releases/download/v0.5.17-perf.5/opentui-core-win32-arm64-0.5.17-perf.5.tgz", {}, "sha512-Lacuw6jjKNZcZAJKV8A6iY7n6ht4BzQz1Lp52t0kybxLZZxAbs2Iy+WblDu1velUKYlGGt28M+iYIH0pobGpaw=="],
+
+    "@opentui/core-win32-x64": ["@opentui/core-win32-x64@https://github.com/carsteneu/opentui/releases/download/v0.5.17-perf.5/opentui-core-win32-x64-0.5.17-perf.5.tgz", {}, "sha512-/0+VQaQbMtyJEpapIMuEQqoPvem/1pvBjSEaqqRNeRsAWxtjwIFX3LSFDtB/wDCoy93BxtvQMXpohBwJ5iUarg=="],
+
+    "@opentui/keymap": ["@opentui/keymap@https://github.com/carsteneu/opentui/releases/download/v0.5.17-perf.5/opentui-keymap-0.5.17-perf.5.tgz", { "dependencies": { "@opentui/core": "0.5.17-perf.5" }, "peerDependencies": { "@opentui/react": "0.5.17-perf.5", "@opentui/solid": "0.5.17-perf.5", "react": ">=19.2.0", "solid-js": "1.9.12" }, "optionalPeers": ["@opentui/react", "@opentui/solid", "react", "solid-js"] }, "sha512-Vf9m47J2NxVCIq/VPbse0XayUt51yLWZtMcV6xYCqyIThetzDa65sS6vZBy69CsxCoDXa+6OILh00TIf/YkUEQ=="],
+
+    "@opentui/solid": ["@opentui/solid@https://github.com/carsteneu/opentui/releases/download/v0.5.17-perf.5/opentui-solid-0.5.17-perf.5.tgz", { "dependencies": { "@babel/core": "7.29.7", "@babel/preset-typescript": "7.27.1", "@opentui/core": "0.5.17-perf.5", "babel-plugin-module-resolver": "5.0.2", "babel-preset-solid": "1.9.12", "entities": "7.0.1", "s-js": "^0.4.9" }, "peerDependencies": { "solid-js": "1.9.12" } }, "sha512-b6scXXq1oBoFHYFHTwFcE1Rdkynv7my/MHFE7p4QX9/JHAxT7LxWllJhIGjrTz80bRRQ9FcRpeH2OjtaE7Nflw=="],
 
     "@opentunnel/client": ["@opentunnel/client@0.4.0", "", { "dependencies": { "@opentunnel/protocol": "0.4.0" }, "peerDependencies": { "effect": "^4.0.0" } }, "sha512-Y6UiO/ouJ/vtdIy4QmCTRY2DPTRpHy2+jR0F6+AKXoD57ozd8W9ZTTP2J1KDqTb7ZfJmRTuqtx1ZR2TnejlZGQ=="],
 
