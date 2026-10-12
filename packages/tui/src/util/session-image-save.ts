@@ -10,7 +10,11 @@ const MIME_EXTENSION: Record<string, string> = {
   "image/webp": "webp",
   "image/gif": "gif",
 }
+const IMAGE_SUBTYPE = /^image\/([a-z0-9]{2,5})(?:\+|$)/i
+const UNSAFE_FILENAME = /[<>:"/\\|?*\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g
+const WINDOWS_RESERVED = /^(?:aux|con|nul|prn|com[1-9]|lpt[1-9])(?:\.|$)/i
 const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+const MAX_PUBLISH_ATTEMPTS = 100
 
 /** The decoded preview bytes; previews are inline `data:` URLs, so no load step is needed. */
 export function decodeSessionImage(uri: string): Uint8Array {
@@ -22,20 +26,27 @@ export function decodeSessionImage(uri: string): Uint8Array {
 }
 
 /**
- * Filename with the extension the bytes actually are, so the saved file stays openable. The data URL's mime wins
- * when it is a known image type; otherwise (the diff viewer sends `application/octet-stream`) the bytes are sniffed.
+ * Filename with the extension the bytes actually are, so the saved file stays openable. The data URL's mime decides
+ * first (any `image/*` subtype, not just the ones the preview renders), then the bytes are sniffed for the
+ * `application/octet-stream` URLs the diff viewer sends.
  */
 export function sessionImageFilename(uri: string, label?: string, data?: Uint8Array) {
   const match = DATA_IMAGE.exec(uri)
   if (!match) throw new Error("Image preview is not a base64 data URL")
-  const extension = MIME_EXTENSION[match[1].toLowerCase()] ?? sniffImageExtension(data) ?? "png"
+  const mime = match[1].toLowerCase()
+  const extension =
+    (Object.hasOwn(MIME_EXTENSION, mime) ? MIME_EXTENSION[mime] : undefined) ??
+    IMAGE_SUBTYPE.exec(mime)?.[1] ??
+    sniffImageExtension(data) ??
+    "png"
   const stem = (label ?? "")
     .replace(IMAGE_EXTENSION, "")
-    .replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, "-")
+    .replace(UNSAFE_FILENAME, "-")
     .replace(/\s+/g, " ")
     .replace(/^[.\s-]+|[.\s-]+$/g, "")
     .slice(0, 60)
-  return `${stem || "opencode-image"}.${extension}`
+  const filename = stem || "opencode-image"
+  return `${WINDOWS_RESERVED.test(filename) ? `_${filename}` : filename}.${extension}`
 }
 
 function sniffImageExtension(data: Uint8Array | undefined) {
@@ -49,22 +60,26 @@ function sniffImageExtension(data: Uint8Array | undefined) {
   return undefined
 }
 
-/** Write the preview bytes into `directory`, creating it, and return the path actually used. */
+/**
+ * Write the preview bytes into `directory`, creating it, and return the path actually used. The directory is the
+ * user's own input, so only the payload shape and the file mode are constrained here.
+ */
 export async function saveSessionImage(uri: string, directory: string, label?: string): Promise<string> {
   if (!directory.trim()) throw new Error("Image save directory is required")
   if (directory.includes("\0")) throw new Error("Image save directory is invalid")
   const data = decodeSessionImage(uri)
   const filename = sessionImageFilename(uri, label, data)
-  await mkdir(directory, { recursive: true })
+  await mkdir(directory, { recursive: true, mode: 0o700 })
   return publishUnique(directory, filename, data)
 }
 
 async function publishUnique(directory: string, filename: string, data: Uint8Array, attempt = 1): Promise<string> {
+  if (attempt > MAX_PUBLISH_ATTEMPTS) throw new Error(`Image save directory ${directory} holds too many copies`)
   const extension = path.extname(filename)
   const stem = filename.slice(0, -extension.length)
   const target = path.join(directory, attempt === 1 ? filename : `${stem}-${attempt}${extension}`)
   // `wx` fails instead of overwriting, so a concurrent save cannot clobber an earlier image.
-  return writeFile(target, data, { flag: "wx" }).then(
+  return writeFile(target, data, { flag: "wx", mode: 0o600 }).then(
     () => target,
     (error) => {
       if (isFileExists(error)) return publishUnique(directory, filename, data, attempt + 1)

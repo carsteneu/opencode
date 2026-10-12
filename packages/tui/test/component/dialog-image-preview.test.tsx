@@ -11,7 +11,7 @@ const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0
 test("the image dialog saves the previewed bytes through the save prompt", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "dialog-image-preview-"))
   try {
-    await using setup = await renderLocal({ cwd: directory })
+    await using setup = await renderLocal({ cwd: directory, paths: { home: directory } })
     setup.dialog.replace(() => (
       <DialogImagePreview
         images={[{ uri: `data:image/png;base64,${PNG.toString("base64")}`, mention: { text: "shot" } }]}
@@ -25,7 +25,9 @@ test("the image dialog saves the previewed bytes through the save prompt", async
     setup.mockInput.pressEnter()
     await setup.waitFor(() => setup.dialog.stack.length === 0)
 
-    expect(new Uint8Array(await readFile(path.join(directory, "img", "shot.png")))).toEqual(new Uint8Array(PNG))
+    // The default must not be the working tree, or accepting it would litter the checkout.
+    expect(new Uint8Array(await readFile(path.join(directory, "Downloads", "shot.png")))).toEqual(new Uint8Array(PNG))
+    expect(await Bun.file(path.join(directory, "img", "shot.png")).exists()).toBe(false)
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

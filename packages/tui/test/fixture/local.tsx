@@ -8,6 +8,7 @@ import { DataProvider, useData } from "../../src/context/data"
 import { LocalProvider, useLocal } from "../../src/context/local"
 import { Keymap } from "../../src/context/keymap"
 import { LocationProvider, useLocation } from "../../src/context/location"
+import type { TuiPaths } from "../../src/context/runtime"
 import { PermissionProvider } from "../../src/context/permission"
 import { RouteProvider, useRoute } from "../../src/context/route"
 import { ThemeProvider } from "../../src/context/theme"
@@ -28,6 +29,7 @@ export async function renderLocal(
     args?: Args
     fetch?: FetchHandler
     cwd?: string
+    paths?: Partial<TuiPaths>
   } = {},
 ) {
   const temporary = await tmpdir()
@@ -59,7 +61,7 @@ export async function renderLocal(
 
   const setup = await testRender(
     () => (
-      <TestTuiContexts paths={{ state: temporary.path }} cwd={input.cwd}>
+      <TestTuiContexts paths={{ state: temporary.path, ...input.paths }} cwd={input.cwd}>
         <ArgsProvider {...input.args}>
           <ConfigProvider config={createTuiResolvedConfig()}>
             <Keymap.Provider>
