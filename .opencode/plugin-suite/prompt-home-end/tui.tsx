@@ -12,7 +12,14 @@ export default Plugin.define({
   id: "opencode.prompt.home-end",
   setup(context) {
     const move = (command: "input.buffer.home" | "input.buffer.end") => () => {
-      if (!context.renderer.currentFocusedEditor) return false
+      // Mirror the core edit-buffer guard (withFocusedEditor): only consume the
+      // key when a live editor can actually move its buffer, otherwise let the
+      // transcript jump through.
+      const editor = context.renderer.currentFocusedEditor as {
+        isDestroyed?: boolean
+        gotoBufferHome?: unknown
+      } | null
+      if (!editor || editor.isDestroyed || typeof editor.gotoBufferHome !== "function") return false
       context.keymap.dispatch(command)
     }
     context.keymap.layer(() => ({

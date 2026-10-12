@@ -3,11 +3,14 @@ import { Plugin } from "@opencode/plugin/tui"
 import { createEffect, createSignal, on, onCleanup, Show } from "solid-js"
 
 // v2's core counter (routes/session/rows.ts turnTokensPerSecond) is undefined
-// whenever the provider delivers no usage timing (gd-flash, some gateways). v1
-// counted client-side from the text stream instead; this plugin restores that
-// fallback and renders it into the prompt footer without touching the core
-// counter. Port of v1 util/token-rate.ts: cumulative characters / 4 as a token
-// estimate over a sliding window, shown only while deltas keep arriving.
+// whenever the provider delivers no usage timing (gd-flash, some gateways), so
+// its assistant-footer cell stays empty. v1 counted client-side from the text
+// stream instead; this plugin adds that live estimate to the prompt footer
+// without touching the core counter. Port of v1 util/token-rate.ts as wired in
+// v1 routes/session/footer.tsx (window and refresh both 1000ms there), counting
+// only text deltas like v1 did (`field === "text"`): it is an "out" estimate, so
+// on reasoning models it reads below the core cell, and the two cells are
+// independent.
 const WINDOW_MS = 1000
 const REFRESH_MS = 1000
 
@@ -116,7 +119,7 @@ function TokensPerSecond(props: { context: Plugin.Context; sessionID?: string })
   })
 
   return (
-    <Show when={rate() > 0}>
+    <Show when={Math.round(rate()) > 0}>
       <text fg={props.context.theme.text.muted} wrapMode="none" flexShrink={0}>
         out ~{Math.round(rate())} tk/s
       </text>

@@ -39,7 +39,7 @@ describe("prompt home/end plugin", () => {
     expect(typeof module.default.setup).toBe("function")
   })
 
-  test("registers a high-priority layer that binds home/end and yields without a focused editor", async () => {
+  test("registers a high-priority layer that binds home/end and yields without a live editor", async () => {
     const module = (await Host.load(entry.href)) as Module
     const h = harness()
     await module.default.setup(h.context)
@@ -51,13 +51,18 @@ describe("prompt home/end plugin", () => {
     expect(home).toBeDefined()
     expect(end).toBeDefined()
 
-    // No focused editor: decline so session.first/session.last still navigate.
+    // No editor: decline so session.first/session.last still navigate.
     expect(home!.run()).toBe(false)
     expect(end!.run()).toBe(false)
+    // An editor that cannot move a buffer (or is destroyed) also declines.
+    h.renderer.currentFocusedEditor = {}
+    expect(home!.run()).toBe(false)
+    h.renderer.currentFocusedEditor = { gotoBufferHome: () => {}, isDestroyed: true }
+    expect(home!.run()).toBe(false)
     expect(h.dispatched).toEqual([])
 
-    // Focused editor: dispatch the core buffer commands.
-    h.renderer.currentFocusedEditor = {}
+    // Live editor: dispatch the core buffer commands.
+    h.renderer.currentFocusedEditor = { gotoBufferHome: () => {} }
     expect(home!.run()).toBeUndefined()
     expect(end!.run()).toBeUndefined()
     expect(h.dispatched).toEqual(["input.buffer.home", "input.buffer.end"])

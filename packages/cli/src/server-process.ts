@@ -200,9 +200,11 @@ function serviceURL(hostname: string, port: number) {
   return `http://${hostname.includes(":") ? `[${hostname}]` : hostname}:${port}`
 }
 
-// Config source options for the spawned server. `global` is only ever set to
-// false: leaving it undefined keeps the default (global config dir, ~/.claude
-// and ~/.agents load) for every run that does not opt out.
+// Config source options for the spawned server only. The CLI/TUI process keeps
+// reading the global directory for its own config (cli.json) and for TUI plugin
+// discovery; this option reaches neither. `global` is only ever set to false:
+// leaving it undefined keeps the default (global config dir, ~/.claude and
+// ~/.agents load) for every run that does not opt out.
 export function configOptions(env: NodeJS.ProcessEnv) {
   return {
     directory: env.OPENCODE_CONFIG_DIR,
