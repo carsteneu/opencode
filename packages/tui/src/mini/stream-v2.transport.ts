@@ -591,7 +591,10 @@ export async function createSessionTransport(input: StreamInput): Promise<Sessio
 
   // Only wait-cell transitions reach the footer. Re-sending it with every patch would repaint the
   // statusline once per streamed chunk, which is exactly what suspending on stream is meant to avoid.
-  let sentWait: number | undefined
+  // A fresh transport starts `unset`, so its first patch clears a wait left over from a previous run
+  // instead of leaving a stale "Waiting on model" cell behind.
+  const UNSET = Symbol("unset")
+  let sentWait: number | undefined | symbol = UNSET
   const takeWait = (): Pick<FooterPatch, "waiting"> | undefined => {
     const value = state.modelWait.phase === "waiting" ? state.modelWait.since : undefined
     if (value === sentWait) return undefined
@@ -599,10 +602,7 @@ export async function createSessionTransport(input: StreamInput): Promise<Sessio
     return { waiting: value }
   }
 
-  const write = (
-    commits: StreamCommit[],
-    patch?: Pick<FooterPatch, "phase" | "status" | "usage">,
-  ) => {
+  const write = (commits: StreamCommit[], patch?: Pick<FooterPatch, "phase" | "status" | "usage">) => {
     if (state.closed || controller.signal.aborted || input.footer.isClosed) return
     const wait = takeWait()
     const payload = patch || wait ? { ...patch, ...wait } : undefined
@@ -1057,8 +1057,7 @@ export async function createSessionTransport(input: StreamInput): Promise<Sessio
     if (!current(attempt)) return
     const client = attempt.client
     if (catalogEvents.has(event.type)) {
-      if (input.location && event.location && event.location.directory !== input.location.directory)
-        return
+      if (input.location && event.location && event.location.directory !== input.location.directory) return
       void refreshCatalog(attempt)
       return
     }

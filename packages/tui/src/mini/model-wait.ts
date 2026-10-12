@@ -1,4 +1,7 @@
-export type ModelWaitState = { phase: "idle" } | { phase: "waiting"; since: number } | { phase: "active"; since: number }
+export type ModelWaitState =
+  | { phase: "idle" }
+  | { phase: "waiting"; since: number }
+  | { phase: "active"; since: number }
 
 export type ModelWaitEvent =
   | { type: "status"; status: "busy" | "idle" | "retry"; at: number }
