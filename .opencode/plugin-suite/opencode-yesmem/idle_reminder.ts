@@ -2,7 +2,7 @@
 //
 // Ported from the v1 plugin's idle_reminder.ts: the reminder is patched into the terminal user message, so
 // the model sees it and the TUI shows nothing. Deterministic and stateless — the cadence is counted from the
-// request's own message array.
+// request's own message array, and only messages the human actually wrote count (messages.ts).
 //
 // Disable entirely with YESMEM_IDLE=off; cadence via YESMEM_IDLE_CADENCE (floor 2).
 
@@ -13,10 +13,10 @@ const REMINDER_SIG = "[yesmem-idle]"
 const FALLBACK =
   "Du hast ein Langzeitgedaechtnis (yesmem). Bei nicht-trivialen Aufgaben: ZUERST search(thema)."
 
-// v2 has no `synthetic` flag on parts (v1 excluded synthetic-only user messages); the environment context
-// lives in the request's system parts, so counting user messages with text is the equivalent.
 function cadence(): number {
-  return Math.max(2, Number(process.env.YESMEM_IDLE_CADENCE || 3))
+  const configured = Number(process.env.YESMEM_IDLE_CADENCE || 3)
+  // A non-numeric value yields NaN, which would silently disable the reminder — fall back to the default.
+  return Number.isFinite(configured) ? Math.max(2, configured) : 3
 }
 
 export interface ContextEvent {
@@ -35,10 +35,11 @@ export function idleReminder() {
 
     const hit = findTerminalUserText(messages)
     if (!hit) return
-    // Some loops resend the patched message; never append twice.
+    // Every step of a turn presents a fresh copy of the message, so the marker only guards against a
+    // repeated dispatch of the same object.
     if (hit.text.includes(REMINDER_SIG)) return
 
-    hit.part.text = `${hit.text}\n\n${REMINDER_SIG} ${FALLBACK}`
+    hit.part.text = `${hit.part.text ?? ""}\n\n${REMINDER_SIG} ${FALLBACK}`
     debugLog("idle_reminder", `patched invisible reminder at user-turn ${turns}`)
   }
 

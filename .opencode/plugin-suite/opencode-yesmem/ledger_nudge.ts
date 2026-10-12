@@ -1,12 +1,14 @@
 // ledger_nudge — live ledger for the active plan.
 //
-// Appends the thread-scoped active plan as a compact ledger block to the terminal user message, once per
-// distinct user message (v1: ledger_nudge.ts). Cache-safety: only the mutable tail is patched, and a
-// mid-turn set_plan/update_plan does not change the already-injected ledger (plan-version-freeze) — the new
-// state arrives with the next distinct user message.
+// Appends the thread-scoped active plan as a compact ledger block to the terminal user message
+// (v1: ledger_nudge.ts). Cache-safety: only the terminal human message is patched, the fetched plan is
+// cached per user message so every step of a turn injects identical bytes, and a mid-turn
+// set_plan/update_plan does not change the already-injected ledger (plan-version-freeze) — the new state
+// arrives with the next user message.
 //
 // v2 adaptation: the thread id comes from the hook's own sessionID instead of a process-global "current
-// session", and the RPC keeps its 2 s budget so a slow daemon never stalls the first model call.
+// session", and the RPC keeps a short budget so an unresponsive daemon delays the first model call of a turn
+// by at most that budget.
 //
 // Disable entirely with YESMEM_LEDGER=off.
 
@@ -15,6 +17,9 @@ import { findTerminalUserText, hashString, type HostMessage } from "./messages"
 import type { YesMemRPC } from "./rpc"
 
 const MAX_LEDGER_LINES = 40
+const MAX_LEDGER_CHARS = 4000
+const LEDGER_CACHE_TTL_MS = 120_000
+const PLAN_FETCH_TIMEOUT_MS = 1000
 const HEADER = "[yesmem-ledger v1]"
 const FOOTER = "[/yesmem-ledger]"
 
@@ -23,18 +28,41 @@ export interface ContextEvent {
   messages?: HostMessage[]
 }
 
-/** Renders the ledger block from the active plan (pass-through, bounded). Null when there is nothing to show. */
+/** Control characters would reach the model and the terminal; the block delimiters must stay unforgeable. */
+function sanitizeLine(line: string): string {
+  return line
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, "")
+    .replace(/\[\/?yesmem-ledger[^\]]*\]/g, "(ledger)")
+}
+
+/** Renders the ledger block from the active plan (sanitized and bounded). Null when there is nothing to show. */
 export function renderLedger(plan: string): string | null {
   if (!plan || !plan.trim()) return null
   const lines = plan.split("\n")
   const truncated = lines.length > MAX_LEDGER_LINES
-  const body = (truncated ? lines.slice(0, MAX_LEDGER_LINES) : lines).map((line) => `  ${line}`).join("\n")
+  const body = (truncated ? lines.slice(0, MAX_LEDGER_LINES) : lines)
+    .map((line) => `  ${sanitizeLine(line)}`)
+    .join("\n")
+    .substring(0, MAX_LEDGER_CHARS)
   const hint = truncated ? `\n  … (ledger truncated, ${lines.length - MAX_LEDGER_LINES} more lines)` : ""
   return `${HEADER}\n${body}${hint}\n${FOOTER}`
 }
 
 export function ledgerNudge(rpc: YesMemRPC) {
-  let lastPatchedKey = ""
+  let cachedKey = ""
+  let cachedLedger: string | null = null
+  let cachedTs = 0
+
+  async function fetchLedger(threadID: string): Promise<string | null> {
+    const response = await rpc.call("get_plan", { thread_id: threadID }, { timeoutMs: PLAN_FETCH_TIMEOUT_MS })
+    if (!response.ok || !response.result) {
+      debugLog("ledger", `get_plan skip: ${response.error || "empty"}`)
+      return null
+    }
+    const plan = response.result
+    if (!plan.exists || plan.status !== "active") return null
+    return renderLedger(typeof plan.plan === "string" ? plan.plan : "")
+  }
 
   async function context(event: ContextEvent) {
     try {
@@ -45,38 +73,25 @@ export function ledgerNudge(rpc: YesMemRPC) {
 
       const hit = findTerminalUserText(messages)
       if (!hit) return
-
-      // Patch once per distinct user message: the message identity keeps two turns with identical text apart.
-      const key = hit.message.id ? `id:${hit.message.id}` : hashString(hit.text)
-      if (key === lastPatchedKey) return
-      if (hit.text.includes(HEADER)) {
-        lastPatchedKey = key
-        return
-      }
+      // A repeated dispatch of the already patched message needs no work.
+      if (hit.text.includes(HEADER)) return
 
       const threadID = event.sessionID ? `opencode:${event.sessionID}` : ""
       if (!threadID) return
 
-      const response = await rpc.call("get_plan", { thread_id: threadID }, { timeoutMs: 2000 })
-      if (!response.ok || !response.result) {
-        debugLog("ledger", `get_plan skip: ${response.error || "empty"}`)
-        lastPatchedKey = key // do not retry this message on every dispatch
-        return
+      // The message identity keeps two turns with identical text apart and lets the steps of one turn share
+      // the same ledger bytes (the runner rebuilds the request for every step).
+      const key = hit.message.id ? `id:${hit.message.id}` : hashString(hit.text)
+      const now = Date.now()
+      if (key !== cachedKey || now - cachedTs > LEDGER_CACHE_TTL_MS) {
+        cachedKey = key
+        cachedLedger = await fetchLedger(threadID)
+        cachedTs = now
       }
-      const plan = response.result
-      if (!plan.exists || plan.status !== "active") {
-        lastPatchedKey = key
-        return
-      }
-      const ledger = renderLedger(typeof plan.plan === "string" ? plan.plan : "")
-      if (!ledger) {
-        lastPatchedKey = key
-        return
-      }
+      if (!cachedLedger) return
 
-      hit.part.text = `${hit.text}\n\n${ledger}`
-      lastPatchedKey = key
-      debugLog("ledger", `APPENDED ledger (${ledger.length} chars)`)
+      hit.part.text = `${hit.part.text ?? ""}\n\n${cachedLedger}`
+      debugLog("ledger", `APPENDED ledger (${cachedLedger.length} chars)`)
     } catch (error: any) {
       debugLog("ledger", `ERR: ${error?.message || String(error)}`)
     }

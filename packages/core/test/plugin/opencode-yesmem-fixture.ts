@@ -173,7 +173,18 @@ export function fakeContext(directory: string): HookRecorder {
  * `keepAlive` mirrors the host, which keeps the plugin's scope open for the plugin's lifetime: without it
  * the forked event subscription is interrupted as soon as the setup effect completes.
  */
+type ResettableModule = { _resetCaches?: () => void }
+
+/** The plugin keeps process-lifetime caches; a test must not inherit another test's answers. */
+async function resetPluginCaches() {
+  for (const file of ["skill_nudge.ts"]) {
+    const pluginModule = (await Host.load(yesmemEntry(file))) as ResettableModule
+    pluginModule._resetCaches?.()
+  }
+}
+
 export async function loadPlugin(recorder: HookRecorder, options: { keepAlive?: boolean } = {}) {
+  await resetPluginCaches()
   const module = (await Host.load(yesmemEntry("index.ts"))) as EffectPluginModule
   const setup = module.default.effect(recorder.context) as Effect.Effect<unknown>
   if (!options.keepAlive) {

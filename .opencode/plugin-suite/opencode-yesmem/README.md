@@ -68,7 +68,15 @@ Every other hook still runs plain async code, lifted with `Effect.tryPromise` in
 | `tool.execute.after` | `ctx.tool.hook("execute.after", e)` | `status: "completed"` exposes a mutable `e.result`; `status: "error"` a mutable `e.error`. rule_guard's directive is injected first, then failure_learn, then auto_resolve. |
 | `shell.env` | `ctx.shell.hook("create.before", e)` | Mutable `e.env`. |
 | `session.created` | `ctx.event.subscribe()` → `session.created`, `data.sessionID` | Registers the process with the daemon; mirrors the id into `process.env.YESMEM_SESSION_ID`. |
-| `experimental.chat.messages.transform` | `ctx.session.hook("context", e)` | Four handlers in registration order: read-only conversation capture for the guard, then the three nudges (`skill_nudge`, `ledger_nudge`, `idle_reminder`). Every nudge only patches the **terminal user message** so the prompt-cache prefix stays intact, keeps a marker guard against double patching, and is idempotent per distinct message. |
+| `experimental.chat.messages.transform` | `ctx.session.hook("context", e)` | Four handlers in registration order: read-only conversation capture for the guard, then the three nudges (`skill_nudge`, `ledger_nudge`, `idle_reminder`). Every nudge only patches the **last message the human actually wrote** (see below), keeps a marker guard against double patching, and produces identical bytes for every step of a turn. |
+
+`role === "user"` is not the human: v2 lowers several history entries to user-role messages
+(`packages/core/src/session/runner/to-llm-message.ts`). A message counts as human only when it has metadata
+and its text does not open with one of the frames the core builds for shell results
+(`The following shell command was executed by the user:`), compaction (`<conversation-checkpoint>`), a location
+switch (`The working directory has been changed to `) or a skill injection (`Base directory for this skill: `,
+`packages/core/src/skill.ts`). Synthetic messages carry no metadata at all. The predicate lives in
+`messages.ts` and drives both the patch target and the idle cadence.
 | `chat.params` (summary-title fallback) | — | No v2 equivalent; the fallback is dropped. |
 
 ## Deviations from v1
@@ -89,7 +97,14 @@ Every other hook still runs plain async code, lifted with `Effect.tryPromise` in
    process.)
 6. **`log.ts`.** v1 duplicated the file logger in every module. The log is `plugin-v2.log` (mode `0600`) so a
    running v1 plugin keeps its own, and `YESMEM_LOG_FILE` overrides the path.
-7. **`auto_resolve` checks the outcome.** v1 resolved tasks from a `git commit -m "..."` regardless of whether
+7. **Human-turn targeting, sanitization and caps (v2-only hardening).** v1 had the message *types* available
+   and could rule out synthetic turns directly; the v2 hook only sees lowered messages, so `messages.ts`
+   recognises the non-human frames above. v1 also injected daemon/model text verbatim: the ledger block is now
+   bounded (40 lines, 4000 chars) and stripped of control characters with its delimiters neutralized, a skill
+   name must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` before it is injected, the stage-2 response body is
+   capped, and a `RULES.md` larger than 256 KiB is ignored instead of being read into memory on the request
+   path.
+8. **`auto_resolve` checks the outcome.** v1 resolved tasks from a `git commit -m "..."` regardless of whether
    the commit succeeded. A failed commit (rejected hook, failing test) is now ignored.
 8. **Guard request hardening.** Redirects are refused (`redirect: "error"`), the response body is capped, the
    cached decision is keyed on the full prompt instead of a 32-bit hash, expired entries are evicted, and a
@@ -123,11 +138,13 @@ Every other hook still runs plain async code, lifted with `Effect.tryPromise` in
 - **Trust.** `RULES.md`, `.git`/`HEAD` and the guard's answer are treated as data, not as trusted input: the
   violated-rule text is capped and labelled, learned snippets are capped, and file paths are stripped of
   control characters before they reach a message or the log.
-- **Nudges.** All three are patched into the terminal user message only. `skill_nudge` matches the catalogue
+- **Nudges.** All three are patched into the last human message only. `skill_nudge` matches the catalogue
   triggers locally first; when that fails it asks the configured model in the **background** and caches the
-  answer by (catalogue, message) — that call sends the user message and the skill catalogue to the provider,
-  and the first sighting of a message is never nudged from the cache. `ledger_nudge` fetches the active plan
-  with a 2 s budget. `idle_reminder` is deterministic (every Nth user turn, `YESMEM_IDLE_CADENCE`, floor 2).
+  answer by (catalogue, message text) — that call sends the user message and the skill catalogue to the
+  provider, and the first sighting of a message is never nudged from the cache. `ledger_nudge` fetches the
+  active plan with a 1 s budget and caches it per user message, so every step of a turn injects the same bytes
+  and one turn costs one fetch. `idle_reminder` is deterministic (every Nth human turn, `YESMEM_IDLE_CADENCE`,
+  floor 2, ignoring non-numeric values).
   Kill switches: `YESMEM_SKILL_NUDGE` (unset = on), `YESMEM_LEDGER=off`, `YESMEM_IDLE=off`; the skill
   catalogue is looked up via `YESMEM_SKILL_CATALOG`, then the plugin directory, then the project directory.
 
@@ -148,5 +165,6 @@ The daemon is always a local mock socket pointed to by `YESMEM_SOCKET`, the guar
 and `YESMEM_LOG_FILE` keeps the plugin's debug log out of the live install; no live daemon, config directory or
 provider is touched. Besides the per-feature tests there is a resilience group (a throwing hook callback must
 not fail the call, a failed commit must not resolve tasks), a nudge group (catalogue parsing in both shapes,
-local match, ghost filtering, no double patch, the background match plus its cache, ledger rendering and
-patch-once, idle cadence) and the integration group described above.
+local match, ghost filtering, no double patch, human-turn targeting, the background match plus its cache,
+ledger rendering/sanitization/patch-once/one-fetch-per-turn, idle cadence on human turns only, and the
+skill-name validation) and the integration group described above.
