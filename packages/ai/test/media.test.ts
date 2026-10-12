@@ -257,7 +257,38 @@ describe("Media", () => {
         dynamicResponse((input) =>
           Effect.succeed(
             input.respond(input.request.url.endsWith("small.png") ? PNG : oversized, {
-              headers: { "content-type": "image/png" },
+              headers: {
+                "content-type": input.request.url.endsWith(".pdf") ? "application/pdf" : "image/png",
+              },
+            }),
+          ),
+        ),
+      ),
+    )
+  })
+
+  it.effect("caps a download whose response declares an image while the URL declares no media type", () => {
+    const limit = Media.MAX_IMAGE_DOWNLOAD_BYTES
+    const oversized = new Uint8Array(limit + 1)
+    return Effect.gen(function* () {
+      const error = yield* Media.url("https://cdn.example.test/undeclared-image").bytes().pipe(Effect.flip)
+      expect(error).toBeInstanceOf(AIError)
+      expect(error.reason._tag).toBe("InvalidProviderOutput")
+      expect(error.message).toContain(`exceeds the ${limit} byte limit`)
+
+      const undeclared = yield* Media.url("https://cdn.example.test/undeclared-blob").bytes()
+      expect(undeclared.byteLength).toBe(limit + 1)
+    }).pipe(
+      Effect.provide(
+        dynamicResponse((input) =>
+          Effect.succeed(
+            input.respond(oversized, {
+              headers: {
+                // Response headers keep the origin's casing, so the decision cannot assume a lower-case name.
+                "Content-Type": input.request.url.endsWith("undeclared-image")
+                  ? "image/png"
+                  : "application/octet-stream",
+              },
             }),
           ),
         ),
