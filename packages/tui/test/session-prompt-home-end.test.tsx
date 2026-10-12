@@ -40,27 +40,35 @@ const fetch: FetchHandler = (url) => {
   return undefined
 }
 
-test("Home navigates the transcript while ctrl+a stays in the focused composer", async () => {
-  await using setup = await createAppFixture({
-    config: { animations: false, tabs: { mode: "off" } },
-    args: { sessionID: "ses_test" },
-    fetch,
-  })
-  await setup.ready
-  await setup.waitForFrame((frame) => frame.includes("History message 0399"))
+test(
+  "Home navigates the transcript while ctrl+a stays in the focused composer",
+  async () => {
+    await using setup = await createAppFixture({
+      config: { animations: false, tabs: { mode: "off" } },
+      args: { sessionID: "ses_test" },
+      fetch,
+    })
+    await setup.ready
+    await setup.waitForFrame((frame) => frame.includes("History message 0399"))
 
-  // A typed draft proves the composer holds focus for the following keys.
-  await setup.mockInput.typeText("draft")
-  await setup.waitForFrame((frame) => frame.includes("draft"))
+    // A typed draft proves the composer holds focus for the following keys.
+    await setup.mockInput.typeText("draft")
+    await setup.waitForFrame((frame) => frame.includes("draft"))
 
-  setup.mockInput.pressKey("HOME")
-  await setup.waitForFrame((frame) => frame.includes("History message 0000"))
-  expect(setup.captureCharFrame()).toContain("draft")
+    setup.mockInput.pressKey("HOME")
+    await setup.waitForFrame((frame) => frame.includes("History message 0000"))
+    expect(setup.captureCharFrame()).toContain("draft")
 
-  // ctrl+a is input.line.home: a buffer move, so the transcript stays put.
-  setup.mockInput.pressKey("a", { ctrl: true })
-  await setup.waitForVisualIdle()
-  const frame = setup.captureCharFrame()
-  expect(frame).toContain("History message 0000")
-  expect(frame).toContain("draft")
-})
+    // Back to the bottom, so the next assertion can actually observe a jump.
+    setup.mockInput.pressKey("END")
+    await setup.waitForFrame((frame) => frame.includes("History message 0399"))
+
+    // ctrl+a is input.line.home: a buffer move, so the transcript stays put.
+    setup.mockInput.pressKey("a", { ctrl: true })
+    await setup.waitForVisualIdle()
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("History message 0399")
+    expect(frame).toContain("draft")
+  },
+  30_000,
+)

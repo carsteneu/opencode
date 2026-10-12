@@ -5,7 +5,10 @@ import { testRender } from "@opentui/solid"
 import type { JSX } from "solid-js"
 import { Host } from "@opencode/plugin/host"
 import type { Plugin } from "@opencode/plugin/tui"
+import type { SlotPath } from "@opencode/plugin/tui/context"
 import "../src/plugin/runtime-plugin-support.bun"
+
+const actionsSlot: SlotPath = "sidebar.title.actions"
 
 const entry = new URL("../../../.opencode/plugin-suite/rename-pencil/tui.tsx", import.meta.url)
 
@@ -83,7 +86,7 @@ describe("sidebar title rename pencil plugin", () => {
       },
     } as unknown as Plugin.Context
     await module.default.setup(fake)
-    expect(placed?.append).toBe("sidebar.title.actions")
+    expect(placed?.append).toBe(actionsSlot)
   })
 
   test("prompts with the current title and renames to the trimmed value", async () => {

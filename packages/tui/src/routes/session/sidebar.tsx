@@ -50,7 +50,7 @@ export function Sidebar(props: { sessionID: string }) {
           </box>
           <Slot
             path="sidebar.title.actions"
-            input={{ sessionID: props.sessionID, title: withTimestampedFallback(session()) }}
+            input={{ sessionID: props.sessionID, title: session()?.title ?? "" }}
           />
         </box>
         <scrollbox

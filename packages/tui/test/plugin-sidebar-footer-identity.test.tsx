@@ -5,7 +5,10 @@ import { testRender } from "@opentui/solid"
 import type { JSX } from "solid-js"
 import { Host } from "@opencode/plugin/host"
 import type { Plugin } from "@opencode/plugin/tui"
+import type { SlotPath } from "@opencode/plugin/tui/context"
 import "../src/plugin/runtime-plugin-support.bun"
+
+const identitySlot: SlotPath = "sidebar.footer"
 
 const entry = new URL("../../../.opencode/plugin-suite/sidebar-footer/tui.tsx", import.meta.url)
 
@@ -43,7 +46,7 @@ describe("sidebar footer identity plugin", () => {
       },
     } as unknown as Plugin.Context
     await module.default.setup(fake)
-    expect(claim?.append).toBe("sidebar.footer")
+    expect(claim?.append).toBe(identitySlot)
     expect(typeof claim?.render).toBe("function")
   })
 
