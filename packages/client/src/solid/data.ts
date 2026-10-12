@@ -676,12 +676,15 @@ export function createData(config: CreateDataInput) {
   // cursor. The client cannot mint a cursor for an arbitrary message, so a frontier left behind
   // the retained window would let the next backfill splice older rows across a gap; reading the
   // session again restores both. History the reader pulled in explicitly is never trimmed — it
-  // was asked for, and a jump to the start depends on it staying resident.
+  // was asked for, and a jump to the start depends on it staying resident — and neither is a
+  // window held open while a page is in flight, so the frontier a pending page was sliced from
+  // cannot move under it.
   const messageRowLimit = 100
   const historyLoaded = new Set<string>()
+  const historyPaging = new Set<string>()
 
   function trimMessages(sessionID: string, messages: SessionMessageInfo[]) {
-    if (historyLoaded.has(sessionID)) return
+    if (historyLoaded.has(sessionID) || historyPaging.has(sessionID)) return
     const excess = messages.length - messageRowLimit
     if (excess <= 0) return
     messages.splice(0, excess)
@@ -1824,6 +1827,7 @@ export function createData(config: CreateDataInput) {
           }
           const cursor = store.session.messageCursor[sessionID]
           if (!cursor || signal?.aborted) return
+          historyPaging.add(sessionID)
           setStore("session", "messageLoading", sessionID, true)
           const request = (async () => {
             const fetched: SessionMessageInfo[] = []
@@ -1842,9 +1846,10 @@ export function createData(config: CreateDataInput) {
               next = response.cursor.next ?? undefined
               if (!options?.all) break
             } while (next)
-            // A trim or a re-read while the page was in flight rewrote the frontier it was sliced
-            // from, so the page starts below rows the store no longer holds. Splicing it in would
-            // leave those rows as a gap, and the re-minted cursor would carry the gap forward.
+            // A re-read while the page was in flight replaced the rows and re-minted the frontier
+            // it was sliced from, so the page starts below rows the store no longer holds. Splicing
+            // it in would leave those rows as a gap, and the re-minted cursor would carry the gap
+            // forward. A trim cannot be the cause: the window is held open while paging.
             if (store.session.messageCursor[sessionID] !== cursor) return
             // A jump through history publishes once, not once per page of offscreen messages.
             const existing = store.session.message[sessionID] ?? []
@@ -1862,7 +1867,10 @@ export function createData(config: CreateDataInput) {
             .catch((error) => {
               if (!signal?.aborted) throw error
             })
-            .finally(() => setStore("session", "messageLoading", sessionID, false))
+            .finally(() => {
+              historyPaging.delete(sessionID)
+              setStore("session", "messageLoading", sessionID, false)
+            })
           track(messageLoads, sessionID, request)
           await request
         },

@@ -138,7 +138,7 @@ test("keeps the history behind a jump to the start", async () => {
   }
 })
 
-test("does not splice in a page fetched from a frontier that moved", async () => {
+test("holds the window open while a page is in flight", async () => {
   let release!: () => void
   const gate = new Promise<void>((resolve) => (release = resolve))
   const setup = fixture(newestPage, { block: () => gate })
@@ -146,19 +146,55 @@ test("does not splice in a page fetched from a frontier that moved", async () =>
     await setup.data.session.message.sync(sessionID)
     const loading = setup.data.session.message.loadMore(sessionID)
 
-    // The window fills while the page is in flight, dropping rows and retiring the cursor.
+    // The window would trim here, but moving the frontier now would make the page land across a
+    // gap, so the retained rows stay until the page is spliced in.
     setup.stream(120)
-    expect(setup.data.session.message.list(sessionID)).toHaveLength(100)
+    expect(setup.data.session.message.list(sessionID)).toHaveLength(123)
 
     release()
     await loading
 
-    // The page was sliced from the cursor the trim retired, so it is older than the rows the store
-    // already dropped: splicing it in would leave that hole in the transcript.
     const ids = setup.data.session.message.list(sessionID).map((message) => message.id)
-    expect(ids).toHaveLength(100)
-    expect(ids).not.toContain("msg_old_0")
-    expect(setup.data.session.message.more(sessionID)).toBe(false)
+    expect(ids).toHaveLength(125)
+    expect(ids[0]).toBe("msg_old_0")
+    expect(ids[2]).toBe("msg_new_0")
+    expect(ids.at(-1)).toBe("msg_syn_119")
+  } finally {
+    setup.dispose()
+  }
+})
+
+test("does not splice in a page a re-read replaced", async () => {
+  let release!: () => void
+  const gate = new Promise<void>((resolve) => (release = resolve))
+  let reads = 0
+  const setup = fixture(
+    (cursor) => {
+      if (cursor === undefined) {
+        reads += 1
+        return reads === 1
+          ? { data: [row("msg_new_1", 1)], next: "at_new_1" }
+          : { data: [row("msg_new_2", 2)], next: "at_new_2" }
+      }
+      if (cursor === "at_new_1") return { data: [row("msg_old_0", 0)], next: "at_old_0" }
+      return { data: [], next: undefined }
+    },
+    { block: () => gate },
+  )
+  try {
+    await setup.data.session.message.sync(sessionID)
+    const loading = setup.data.session.message.loadMore(sessionID)
+
+    // The re-read replaces the transcript and mints a frontier of its own while the page is in
+    // flight: that page starts below rows the store no longer holds.
+    setup.data.session.evict(sessionID)
+    await setup.data.session.message.sync(sessionID)
+
+    release()
+    await loading
+
+    expect(setup.data.session.message.list(sessionID).map((message) => message.id)).toEqual(["msg_new_2"])
+    expect(setup.data.session.message.loading(sessionID)).toBe(false)
   } finally {
     setup.dispose()
   }
