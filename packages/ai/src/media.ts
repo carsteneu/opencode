@@ -15,8 +15,10 @@ const OCTET_STREAM = "application/octet-stream"
 
 /**
  * Cap for a downloaded image asset. Image payloads are the one kind the TUI previews eagerly and their URLs are
- * provider-supplied, so an unbounded read would let a hostile or misconfigured origin exhaust memory. Every other
- * kind keeps today's unbounded read: those downloads are user-driven and may legitimately be large.
+ * provider-supplied, so an unbounded read would let a hostile or misconfigured origin exhaust memory. The kind comes
+ * from the declared media type, which image protocols frequently omit (`Media.url(sample)`), so a response that
+ * declares an image content type is capped too. Every other download keeps today's unbounded read: those are
+ * user-driven and may legitimately be large.
  */
 export const MAX_IMAGE_DOWNLOAD_BYTES = 32 * 1024 * 1024
 
@@ -258,19 +260,22 @@ const download = Effect.fn("Media.download")(function* (
   )
   const http = new HttpContext({ url: response.request.url, status: response.status, headers: response.headers })
   const failure = (cause: unknown) =>
-    new AIError({ reason: new InvalidProviderOutputError({ message: `Failed to read media from ${source.url}`, http, cause }) })
+    new AIError({
+      reason: new InvalidProviderOutputError({ message: `Failed to read media from ${source.url}`, http, cause }),
+    })
+  const capped = limit ?? (declaresImage(response.headers) ? MAX_IMAGE_DOWNLOAD_BYTES : undefined)
   // Only the capped read streams. Unbounded downloads keep `arrayBuffer` so their allocation pattern is unchanged.
-  if (limit === undefined) return new Uint8Array(yield* response.arrayBuffer.pipe(Effect.mapError(failure)))
+  if (capped === undefined) return new Uint8Array(yield* response.arrayBuffer.pipe(Effect.mapError(failure)))
   return yield* response.stream.pipe(
     Stream.runFoldEffect(
       () => ({ chunks: [] as Array<Uint8Array>, bytes: 0 }),
       (acc, chunk) => {
         const bytes = acc.bytes + chunk.byteLength
-        if (bytes > limit)
+        if (bytes > capped)
           return Effect.fail(
             new AIError({
               reason: new InvalidProviderOutputError({
-                message: `Media image from ${source.url} exceeds the ${limit} byte limit`,
+                message: `Media image from ${source.url} exceeds the ${capped} byte limit`,
                 http,
               }),
             }),
@@ -292,6 +297,12 @@ const download = Effect.fn("Media.download")(function* (
     Effect.mapError((error) => (error instanceof AIError ? error : failure(error))),
   )
 })
+
+/** Response header names arrive in their original case, so compare the only header that matters here case-insensitively. */
+const declaresImage = (headers: Record<string, string>) =>
+  Object.entries(headers).some(
+    ([name, value]) => name.toLowerCase() === "content-type" && value.trim().toLowerCase().startsWith("image/"),
+  )
 
 // ---------------------------------------------------------------------------
 // Constructors
