@@ -16,6 +16,7 @@ import { Error as ToolError } from "@opencode/plugin/promise/tool"
 import { Effect } from "effect"
 import { codeNavGuard, type ToolCallEvent } from "./code_nav"
 import { injectYesMemToolContext } from "./context"
+import { ruleGuard, type ToolResultEvent } from "./rule_guard"
 import { YesMemRPC } from "./rpc"
 
 export default Plugin.define({
@@ -25,6 +26,7 @@ export default Plugin.define({
       const directory = String(context.location.directory)
       const rpc = new YesMemRPC()
       const codeNav = codeNavGuard(rpc, directory)
+      const guard = ruleGuard(directory)
 
       // v1 primed the project index once per activation so the first code_nav check is fast.
       // `call` resolves instead of rejecting, so it is safe to wrap in Effect.promise.
@@ -36,6 +38,8 @@ export default Plugin.define({
       async function before(event: ToolCallEvent): Promise<string | undefined> {
         const blocked = await codeNav.before(event)
         if (blocked) return blocked
+        const violation = await guard.before(event)
+        if (violation) return violation
         // Session and cwd context rides on every yesmem_ tool call.
         injectYesMemToolContext(event, directory)
         return undefined
@@ -51,6 +55,16 @@ export default Plugin.define({
           const message = yield* reject(() => before(event))
           if (message) return yield* new ToolError({ message })
         }),
+      )
+
+      yield* context.tool.hook("execute.after", (event) =>
+        Effect.sync(() => guard.after(event as ToolResultEvent)),
+      )
+
+      // Read-only conversation capture for the guard context. The three message-mutating nudges of the v1
+      // plugin are deliberately not ported (see README).
+      yield* context.session.hook("context", (event) =>
+        Effect.sync(() => guard.capture((event as { messages: ReadonlyArray<any> }).messages)),
       )
     }),
 })
