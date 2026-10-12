@@ -73,7 +73,13 @@ fi
 # ── 3. Install dependencies ────────────────────────────────────────────
 info "Installing dependencies (this may take a minute) ..."
 cd "$OPENCODE_SRC"
-bun install --frozen-lockfile 2>/dev/null || bun install
+bun install --frozen-lockfile || {
+  err "bun install --frozen-lockfile failed: the lockfile does not match this source tree."
+  err "Refusing to fall back to a non-frozen install, because a rewritten lock would"
+  err "accept whatever the pinned release URLs serve now instead of the verified hashes."
+  err "Run 'bun install' in $OPENCODE_SRC yourself if you accept that, then re-run this script."
+  exit 1
+}
 
 # ── 4. Build (current platform only) ──────────────────────────────────
 info "Building opencode for current platform ..."

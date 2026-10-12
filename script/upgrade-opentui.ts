@@ -3,7 +3,7 @@
 import path from "node:path"
 
 const args = process.argv.slice(2)
-const usage = "Usage: bun run script/upgrade-opentui.ts [--snapshot] <version>"
+const usage = "Usage: bun run script/upgrade-opentui.ts [--snapshot] [--force-npm] <version>"
 
 if (args.includes("--help") || args.includes("-h")) {
   console.log(usage)
@@ -12,7 +12,10 @@ if (args.includes("--help") || args.includes("-h")) {
 
 const snapshotArg = args.find((arg) => arg.startsWith("--snapshot="))
 const snapshot = args.includes("--snapshot") || snapshotArg !== undefined
-const unknown = args.find((arg) => arg.startsWith("-") && arg !== "--snapshot" && !arg.startsWith("--snapshot="))
+const forceNpm = args.includes("--force-npm")
+const unknown = args.find(
+  (arg) => arg.startsWith("-") && arg !== "--snapshot" && arg !== "--force-npm" && !arg.startsWith("--snapshot="),
+)
 if (unknown) {
   console.error(`Unknown option: ${unknown}`)
   console.error(usage)
@@ -36,14 +39,14 @@ const ver = raw.replace(/^v/, "")
 const root = path.resolve(import.meta.dir, "..")
 const lockfile = path.join(root, "bun.lock")
 const skip = new Set([".git", ".opencode", ".turbo", "dist", "node_modules"])
-const keys = ["@opentui/core", "@opentui/keymap", "@opentui/solid"] as const
+const keys = ["@opentui/core", "@opentui/core-linux-x64", "@opentui/keymap", "@opentui/solid"] as const
 
 const files = (await Array.fromAsync(new Bun.Glob("**/package.json").scan({ cwd: root }))).filter(
   (file) => !file.split("/").some((part) => skip.has(part)),
 )
 
 const setVersion = (cur: string, kind: "dep" | "peer") => {
-  if (cur === "catalog:" || cur.startsWith("workspace:")) return cur
+  if (cur === "catalog:" || cur.startsWith("workspace:") || cur.startsWith("http")) return cur
   if (snapshot) return ver
   if (kind === "peer") return `>=${ver}`
   if (cur.startsWith(">=")) return `>=${ver}`
@@ -74,6 +77,8 @@ const editCatalog = (obj: unknown) => {
     .map((key) => {
       const cur = map[key]
       if (typeof cur !== "string" || cur === ver) return false
+      // Never downgrade a pinned release tarball to a bare registry version.
+      if (cur.startsWith("http")) return false
       map[key] = ver
       return true
     })
@@ -93,6 +98,17 @@ const editOverrides = (obj: unknown) => {
       return true
     })
     .some(Boolean)
+}
+
+// A tarball-pinned catalog cannot be upgraded by version: rewriting it would
+// swap the release URLs for registry versions and leave the native platform
+// package stale. Detect that before any file is written.
+const urlPinned = await findUrlPinnedEntries(files)
+if (urlPinned.length > 0 && !snapshot && !forceNpm) {
+  console.error("Refusing to upgrade a tarball-pinned catalog to registry versions:")
+  for (const item of urlPinned) console.error(`- ${item}`)
+  console.error("Use script/sync-opentui-overlay.ts for a pinned overlay, or pass --force-npm to override.")
+  process.exit(1)
 }
 
 const out = (
@@ -154,6 +170,29 @@ if (stale.length > 0) {
 
 console.log("bun.lock opentui versions are consistent")
 
+async function findUrlPinnedEntries(manifests: string[]) {
+  const found: string[] = []
+  for (const rel of manifests) {
+    const json = JSON.parse(await Bun.file(path.join(root, rel)).text())
+    const blocks = [
+      ["catalog", json.workspaces?.catalog],
+      ["overrides", json.overrides],
+      ["dependencies", json.dependencies],
+      ["devDependencies", json.devDependencies],
+      ["peerDependencies", json.peerDependencies],
+    ] as const
+    for (const [block, obj] of blocks) {
+      if (!obj || typeof obj !== "object") continue
+      for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+        if (key.startsWith("@opentui/") && typeof value === "string" && value.startsWith("http")) {
+          found.push(`${rel} ${block}.${key}`)
+        }
+      }
+    }
+  }
+  return found
+}
+
 async function fixKnownLockfileIssues() {
   const txt = await Bun.file(lockfile).text()
   const stale = findStaleLockfileEntriesInText(txt)
@@ -188,5 +227,5 @@ function findStaleLockfileEntriesInText(txt: string) {
       pkg: match[2]!,
       version: match[3]!,
     }))
-    .filter((item) => item.version !== ver)
+    .filter((item) => item.version !== ver && !item.version.startsWith("http"))
 }
