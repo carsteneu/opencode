@@ -72,6 +72,7 @@ export const compatibility = {
 
 export const protocol = Protocol.make({
   id: "zai-chat",
+  lowersDocument: OpenAIChat.lowersDocument,
   body: { schema: Body, from: fromRequest },
   stream: OpenAIChat.protocol.stream,
 })

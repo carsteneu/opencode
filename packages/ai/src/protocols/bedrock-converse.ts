@@ -854,6 +854,7 @@ const onHalt = (state: ParserState): ReadonlyArray<LLMEvent> => {
  */
 export const protocol = Protocol.make({
   id: ADAPTER,
+  lowersDocument: BedrockMedia.lowersDocument,
   body: {
     schema: BedrockConverseBody,
     from: fromRequest,

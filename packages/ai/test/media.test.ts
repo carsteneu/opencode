@@ -38,6 +38,30 @@ describe("Media", () => {
     }),
   )
 
+  it.effect("classifies office and OpenDocument media types as documents", () =>
+    Effect.sync(() => {
+      const mimes = [
+        "application/msword",
+        "application/vnd.ms-excel",
+        "application/vnd.ms-powerpoint",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.oasis.opendocument.presentation",
+        "application/vnd.oasis.opendocument.spreadsheet",
+        "application/vnd.oasis.opendocument.text",
+      ]
+      for (const mime of mimes) {
+        expect(Media.base64("AQID", mime).kind).toBe("document")
+        expect(Media.isOfficeMediaType(mime)).toBe(true)
+        expect(Media.isOfficeMediaType(mime.toUpperCase())).toBe(true)
+      }
+      expect(Media.isOfficeMediaType("application/pdf")).toBe(false)
+      expect(Media.isOfficeMediaType("text/csv")).toBe(false)
+      expect(Media.base64("AQID", "application/octet-stream").kind).toBe("other")
+    }),
+  )
+
   it.effect("parses data URLs and rejects malformed ones", () =>
     Effect.sync(() => {
       const asset = Media.fromDataUrl("data:image/jpeg;base64,/9j/")

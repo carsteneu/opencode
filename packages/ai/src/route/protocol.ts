@@ -45,6 +45,12 @@ export interface Protocol<Body, Frame, Event, State> {
   readonly supportsEffortUpdates?: (request: LLMRequest) => boolean
   /** Tool schema sanitizer for every model on this protocol unless the model's compatibility sets one; wrappers around another `body.from` must forward it. */
   readonly sanitizer?: LanguageModelSanitizerCompatibility
+  /**
+   * Which office document media types `body.from` carries inline as a file or document part; a protocol that reads
+   * only a pdf leaves it unset, and core then replaces an office attachment with a visible notice instead of failing
+   * the turn. Wrappers around another `body.from` must forward it.
+   */
+  readonly lowersDocument?: (mediaType: string) => boolean
 }
 
 export interface ProtocolBody<Body> {

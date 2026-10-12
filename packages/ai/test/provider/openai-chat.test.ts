@@ -820,13 +820,15 @@ describe("OpenAI Chat route", () => {
 
   it.effect("rejects non-image media that cannot be lowered", () =>
     Effect.gen(function* () {
-      const error = yield* compileRequest(
-        LLM.request({
-          model,
-          messages: [Message.user({ type: "media", media: Media.base64("AAECAw==", "audio/mpeg") })],
-        }),
-      ).pipe(Effect.flip)
-      expect(error.message).toContain("OpenAI Chat does not support media type audio/mpeg")
+      for (const mime of ["audio/mpeg", "text/plain"]) {
+        const error = yield* compileRequest(
+          LLM.request({
+            model,
+            messages: [Message.user({ type: "media", media: Media.base64("AAECAw==", mime) })],
+          }),
+        ).pipe(Effect.flip)
+        expect(error.message).toContain(`OpenAI Chat does not support media type ${mime}`)
+      }
     }),
   )
 
@@ -854,6 +856,53 @@ describe("OpenAI Chat route", () => {
           ],
         },
       ])
+    }),
+  )
+
+  it.effect("lowers inline office documents as file parts", () =>
+    Effect.gen(function* () {
+      const mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      const prepared = yield* compileRequest(
+        LLM.request({
+          model,
+          messages: [
+            Message.user([
+              { type: "text", text: "Summarize these." },
+              { type: "media", media: Media.base64("UEsDBA==", mime), filename: "report.docx" },
+              { type: "media", media: Media.base64("UEsDBA==", mime) },
+            ]),
+          ],
+        }),
+      )
+      expect(prepared.body.messages).toEqual([
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Summarize these." },
+            { type: "file", file: { filename: "report.docx", file_data: `data:${mime};base64,UEsDBA==` } },
+            { type: "file", file: { filename: "document", file_data: `data:${mime};base64,UEsDBA==` } },
+          ],
+        },
+      ])
+    }),
+  )
+
+  it.effect("requires inline data for office documents", () =>
+    Effect.gen(function* () {
+      const error = yield* compileRequest(
+        LLM.request({
+          model,
+          messages: [
+            Message.user({
+              type: "media",
+              media: Media.url("https://example.com/report.docx", {
+                mediaType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              }),
+            }),
+          ],
+        }),
+      ).pipe(Effect.flip)
+      expect(error.message).toContain("OpenAI Chat requires inline media")
     }),
   )
 
@@ -892,6 +941,39 @@ describe("OpenAI Chat route", () => {
         content: [
           { type: "file", file: { filename: "report.pdf", file_data: "data:application/pdf;base64,JVBERi0=" } },
         ],
+      })
+    }),
+  )
+
+  it.effect("moves office documents from tool results into a follow-up user message", () =>
+    Effect.gen(function* () {
+      const mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      const prepared = yield* compileRequest(
+        LLM.request({
+          model,
+          messages: [
+            Message.user("Read the sheet."),
+            Message.assistant([ToolCallPart.make({ id: "call_sheet", name: "read", input: {} })]),
+            Message.tool({
+              id: "call_sheet",
+              name: "read",
+              resultType: "content",
+              result: [
+                { type: "text", text: "Sheet read successfully" },
+                { type: "file", mime, uri: "data:" + mime + ";base64,UEsDBA==", name: "sheet.xlsx" },
+              ],
+            }),
+          ],
+        }),
+      )
+      expect(prepared.body.messages).toContainEqual({
+        role: "tool",
+        tool_call_id: "call_sheet",
+        content: "Sheet read successfully",
+      })
+      expect(prepared.body.messages.at(-1)).toEqual({
+        role: "user",
+        content: [{ type: "file", file: { filename: "sheet.xlsx", file_data: `data:${mime};base64,UEsDBA==` } }],
       })
     }),
   )

@@ -21,6 +21,7 @@ export type Settings = ProviderPackage.Settings & OpenAIProviderOptionsInput & {
 
 export const protocol = Protocol.make({
   id: "digitalocean-chat",
+  lowersDocument: OpenAIChat.lowersDocument,
   body: {
     schema: OpenAIChat.protocol.body.schema,
     from: (request) => OpenAIChat.fromRequest(request, { cacheControl: cacheControl() }),

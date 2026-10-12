@@ -57,6 +57,7 @@ const ChatOptions = Schema.Struct({
 
 const chatProtocol = Protocol.make({
   id: "moonshot-chat",
+  lowersDocument: OpenAIChat.lowersDocument,
   body: {
     schema: Schema.Struct({ ...OpenAIChat.bodyFields, thinking: ChatOptions.fields.thinking }),
     from: Effect.fn("Moonshot.chatFromRequest")(function* (request: LLMRequest) {

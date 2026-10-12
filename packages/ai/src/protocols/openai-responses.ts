@@ -290,6 +290,7 @@ const step = (state: OpenResponses.ParserState, input: OpenResponses.Event) => {
 
 export const protocol = Protocol.make({
   id: ADAPTER,
+  lowersDocument: OpenResponses.lowersDocument,
   body: {
     schema: OpenAIResponsesBody,
     from: fromRequest,

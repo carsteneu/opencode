@@ -23,6 +23,7 @@ import {
   type ToolDefinition,
 } from "../schema/index.js"
 import { classifyProviderFailure } from "../provider-error.js"
+import { isOfficeMediaType } from "../media.js"
 import { isRecord, JsonObject, optionalArray, optionalNull, ProviderShared } from "./shared.js"
 import { OpenAIOptions } from "./utils/openai-options.js"
 import { Lifecycle } from "./utils/lifecycle.js"
@@ -362,16 +363,28 @@ const lowerToolCall = (
   extra_content: decodeExtraContent(part.providerMetadata?.[options.providerMetadataKey]?.extraContent),
 })
 
+/**
+ * Chat Completions carries a document inline as a `file` part when it is a PDF or one of the office formats our
+ * providers forward. Other document types are refused rather than degraded, so this is also the capability the core
+ * attachment gate reads.
+ */
+export const lowersDocument = (mediaType: string) => {
+  const mime = mediaType.toLowerCase()
+  return mime === "application/pdf" || isOfficeMediaType(mime)
+}
+
 const lowerMedia = Effect.fnUntraced(function* (part: MediaPart) {
-  // Chat Completions accepts PDFs, and no other documents, as inline `file` parts; file URLs are not supported.
-  if (part.media.mediaType.toLowerCase() === "application/pdf")
+  // File URLs are not supported, so a document must be inline.
+  if (lowersDocument(part.media.mediaType)) {
+    const mime = part.media.mediaType.toLowerCase()
     return {
       type: "file" as const,
       file: {
-        filename: part.filename ?? "document.pdf",
+        filename: part.filename ?? (mime === "application/pdf" ? "document.pdf" : "document"),
         file_data: (yield* ProviderShared.requireInlineMedia("OpenAI Chat", part.media)).dataUrl,
       },
     }
+  }
   if (part.media.kind !== "image")
     return yield* ProviderShared.invalidRequest(`OpenAI Chat does not support media type ${part.media.mediaType}`)
   const url =
@@ -1274,6 +1287,7 @@ export const finishEvents = Effect.fnUntraced(function* (state: ParserState) {
  */
 export const protocol = Protocol.make({
   id: ADAPTER,
+  lowersDocument,
   body: {
     schema: OpenAIChatBody,
     from: fromRequest,
