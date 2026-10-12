@@ -9,7 +9,7 @@ import { abbreviateHome } from "../runtime"
 import { DialogPrompt } from "../ui/dialog-prompt"
 import { useDialog } from "../ui/dialog"
 import { useToast } from "../ui/toast"
-import { saveSessionImage } from "../util/session-image-save"
+import { resolveSessionImageDirectory, saveSessionImage } from "../util/session-image-save"
 
 type ImagePreviewItem = Readonly<{
   uri: string
@@ -102,18 +102,9 @@ function DialogImageSave(props: { image: ImagePreviewItem }) {
     closed = true
   })
 
-  // Resolving here rather than in the util keeps relative and `~` paths a UI concern.
-  function resolveDirectory(input: string) {
-    const value = input.trim()
-    if (value === "") return undefined
-    if (value === "~") return paths.home
-    if (value.startsWith("~/")) return path.resolve(paths.home, value.slice(2))
-    return path.isAbsolute(value) ? value : path.resolve(paths.cwd, value)
-  }
-
   function save(input: string) {
     if (saving()) return
-    const directory = resolveDirectory(input)
+    const directory = resolveSessionImageDirectory(input, paths)
     if (directory === undefined) {
       toast.error(new Error("Image save directory is required"))
       return

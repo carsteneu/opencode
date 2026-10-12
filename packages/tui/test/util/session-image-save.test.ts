@@ -2,12 +2,18 @@ import { expect, test } from "bun:test"
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { decodeSessionImage, saveSessionImage, sessionImageFilename } from "../../src/util/session-image-save"
+import {
+  decodeSessionImage,
+  resolveSessionImageDirectory,
+  saveSessionImage,
+  sessionImageFilename,
+} from "../../src/util/session-image-save"
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0])
 const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0])
 const GIF = Buffer.from([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0, 0])
 const WEBP = Buffer.from([0x52, 0x49, 0x46, 0x46, 0x24, 0, 0, 0, 0x57, 0x45, 0x42, 0x50, 0])
+const ICO = Buffer.from([0x00, 0x00, 0x01, 0x00, 0x01, 0x00])
 const png = `data:image/png;base64,${PNG.toString("base64")}`
 const jpeg = `data:image/jpeg;base64,${JPEG.toString("base64")}`
 
@@ -36,16 +42,37 @@ test("falls back to the image bytes when the data URL declares no image mime", (
   expect(sessionImageFilename(octet(PNG), "shot", new Uint8Array(PNG))).toBe("shot.png")
   expect(sessionImageFilename(octet(GIF), "shot", new Uint8Array(GIF))).toBe("shot.gif")
   expect(sessionImageFilename(octet(WEBP), "shot", new Uint8Array(WEBP))).toBe("shot.webp")
+  expect(sessionImageFilename(octet(ICO), "shot", new Uint8Array(ICO))).toBe("shot.ico")
   expect(sessionImageFilename(octet(Buffer.from([0, 1, 2])), "shot", new Uint8Array([0, 1, 2]))).toBe("shot.png")
 })
 
 test("uses the declared image subtype for types the previewer cannot sniff", () => {
   const svg = `data:image/svg+xml;base64,${Buffer.from("<svg/>").toString("base64")}`
   expect(sessionImageFilename(svg, "diagram")).toBe("diagram.svg")
+  const subtype = (mime: string) => `data:${mime};base64,${PNG.toString("base64")}`
+  expect(sessionImageFilename(subtype("image/x-icon"), "favicon")).toBe("favicon.ico")
+  expect(sessionImageFilename(subtype("image/vnd.microsoft.icon"), "favicon")).toBe("favicon.ico")
+  expect(sessionImageFilename(subtype("image/x-canon-cr2"), "raw")).toBe("raw.cr2")
+  expect(sessionImageFilename(subtype("image/x-adobe-dng"), "raw")).toBe("raw.dng")
+  // A subtype with no plausible extension still has to be sniffed rather than guessed.
+  expect(sessionImageFilename(subtype("image/vnd.example~weird"), "shot")).toBe("shot.png")
   // An inherited `Object.prototype` member must not become the extension.
   expect(sessionImageFilename(`data:constructor;base64,${PNG.toString("base64")}`, "shot", new Uint8Array(PNG))).toBe(
     "shot.png",
   )
+})
+
+test("truncating a long label never leaves a trailing separator", () => {
+  expect(sessionImageFilename(png, `${"x".repeat(59)}.yyyyy`)).toBe(`${"x".repeat(59)}.png`)
+})
+
+test("resolves the directory the save prompt holds", () => {
+  const roots = { home: "/home/user", cwd: "/work/tree" }
+  expect(resolveSessionImageDirectory("   ", roots)).toBeUndefined()
+  expect(resolveSessionImageDirectory("~", roots)).toBe("/home/user")
+  expect(resolveSessionImageDirectory("~/pics", roots)).toBe("/home/user/pics")
+  expect(resolveSessionImageDirectory("/tmp/out", roots)).toBe("/tmp/out")
+  expect(resolveSessionImageDirectory("out", roots)).toBe("/work/tree/out")
 })
 
 test("sanitizes control, format and reserved-device names", () => {
