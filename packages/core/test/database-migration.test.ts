@@ -658,7 +658,9 @@ describe("DatabaseMigration", () => {
           ]),
         )
         // The ordering index covers the columns SessionStore.list sorts by.
-        const columns = yield* db.all<{ name: string }>(sql`SELECT name FROM pragma_index_info('session_v2_time_updated_id_idx')`)
+        const columns = yield* db.all<{ name: string }>(
+          sql`SELECT name FROM pragma_index_info('session_v2_time_updated_id_idx')`,
+        )
         expect(columns.map((row) => row.name)).toEqual(["time_updated", "id"])
       }),
     )

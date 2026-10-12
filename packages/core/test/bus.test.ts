@@ -1394,7 +1394,9 @@ describe("Bus", () => {
       const aggregateID = Event.ID.create()
       const eventID = Event.ID.create()
       yield* bus.publish(SyncMessage, { id: aggregateID, text: "first" }, { id: eventID })
-      const exit = yield* bus.publish(SyncMessage, { id: aggregateID, text: "second" }, { id: eventID }).pipe(Effect.exit)
+      const exit = yield* bus
+        .publish(SyncMessage, { id: aggregateID, text: "second" }, { id: eventID })
+        .pipe(Effect.exit)
       expect(Exit.isFailure(exit)).toBe(true)
       expect(String(exit)).toContain(`Event ${eventID} already exists at aggregate ${aggregateID} sequence 0`)
     }),
