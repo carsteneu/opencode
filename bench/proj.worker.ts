@@ -6,6 +6,7 @@ const projections = new Map<string, Projection>()
 
 self.onmessage = (event: MessageEvent<{ id: number; key: string; text: string }>) => {
   const { id, key, text } = event.data
+  if (typeof text !== "string") throw new Error("project payload text must be a string")
   const next = project(projections.get(key), text, true)
   projections.set(key, next)
   self.postMessage({ id, blocks: next.blocks })

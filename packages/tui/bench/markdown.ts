@@ -62,7 +62,9 @@ function summarize(samples: number[]): string {
 }
 
 async function main() {
-  const singleArm = process.argv[5] as "content" | "contentUpdate" | undefined
+  const singleArm = process.argv[5]
+  if (singleArm !== undefined && singleArm !== "content" && singleArm !== "contentUpdate")
+    throw new Error(`unknown arm ${JSON.stringify(singleArm)}`)
   if (singleArm) {
     // one arm, one repetition, clean process - driven by the shell runner
     const r = await runArm(singleArm)

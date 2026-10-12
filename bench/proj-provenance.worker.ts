@@ -6,6 +6,7 @@ const projects = new Map<string, Projection>()
 
 self.onmessage = (event: MessageEvent<{ id: number; key: string; suffix: string }>) => {
   const { id, key, suffix = "" } = event.data
+  if (typeof suffix !== "string") throw new Error("project payload suffix must be a string")
   const previous = projects.get(key)
   const text = (previous?.text ?? "") + suffix
   const tail = previous?.blocks.at(-1)

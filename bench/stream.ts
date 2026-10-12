@@ -37,6 +37,8 @@ function codeBlock(language: string, lines: string[]): string {
  * characters (clamped by the repeating structure) and slices it into deltas.
  */
 export function makeStream(targetChars: number, deltaSize = 24, seed = 1): Stream {
+  if (!Number.isInteger(targetChars) || targetChars <= 0) throw new Error("targetChars must be a positive integer")
+  if (!Number.isInteger(deltaSize) || deltaSize <= 0) throw new Error("deltaSize must be a positive integer")
   let state = seed >>> 0
   const rand = () => {
     state = (state * 1664525 + 1013904223) >>> 0

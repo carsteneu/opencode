@@ -5,7 +5,7 @@ opencode v2 now that markdown parsing is off the main thread in the GUI
 (`packages/session-ui/src/components/markdown.worker.ts`), and what an append
 provenance port (B2: `fromLength`/`toLength` in the delta schema) would still buy.
 
-Branch under test: `yesloop/v2-b2-measure` (HEAD `2d657da9f1`).
+Branch under test: `yesloop/v2-b2-measure` (harness commit `804db8845f`; based on `2d657da9f1`).
 Comparison baseline: base commit `4617210822` (v2.0.26), pristine worktree
 `.worktrees/baseline-66ecdd4` (`66ecdd4eb1` = base + chore).
 
@@ -42,8 +42,8 @@ bun install --frozen-lockfile
 
 bun bench/parse.ts 40000 24 9
 bun bench/worker.ts 40000 24 7
-packages/tui/bench/markdown.ts 40000 24 1 content        # one arm, one process
-packages/tui/bench/markdown.ts 40000 24 1 contentUpdate
+bun packages/tui/bench/markdown.ts 40000 24 1 content        # one arm, one process
+bun packages/tui/bench/markdown.ts 40000 24 1 contentUpdate
 bun packages/client/bench/store.ts 40000 24 7 20
 ```
 
