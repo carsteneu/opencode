@@ -487,7 +487,9 @@ export function RunFooterView(props: RunFooterViewProps) {
     const since = props.state().waiting
     if (since === undefined) return undefined
     waitTick()
-    return `\u25f7 Waiting on model \u00b7 ${Math.max(1, Math.round((Date.now() - since) / 1000))}s`
+    const elapsed = `${Math.max(1, Math.round((Date.now() - since) / 1000))}s`
+    // Mono mode has neither the glyph nor the middle dot, so the cell follows the rest of the statusline.
+    return props.mono ? `Waiting on model - ${elapsed}` : `\u25f7 Waiting on model \u00b7 ${elapsed}`
   })
   const statuslineLayout = createMemo(() => {
     const info = modelStatus()
