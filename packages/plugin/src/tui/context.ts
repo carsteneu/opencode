@@ -199,6 +199,7 @@ export interface SlotMap {
   readonly "session.panel": PanelInput
   readonly "sidebar.content": { readonly sessionID: string }
   readonly "sidebar.footer": { readonly sessionID: string }
+  readonly "sidebar.title.actions": { readonly sessionID: string; readonly title: string }
 }
 export type SlotPath = keyof SlotMap
 
