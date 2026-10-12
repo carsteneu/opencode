@@ -9,15 +9,16 @@
 // `{"method":string,"params":object}`, answered by one JSON object per line
 // `{"result":...}` or `{"error":string}`.
 
+import { homedir } from "node:os"
 import { connect } from "node:net"
 import type { RPCResponse } from "./types"
 
 const DEFAULT_TIMEOUT_MS = 5000
+const MAX_RESPONSE_BYTES = 1024 * 1024
 
 function defaultSocketPath() {
   if (process.env.YESMEM_SOCKET) return process.env.YESMEM_SOCKET
-  const home = process.env.HOME || "/home/chief"
-  return `${home}/.claude/yesmem/daemon.sock`
+  return `${process.env.HOME || homedir()}/.claude/yesmem/daemon.sock`
 }
 
 export class YesMemRPC {
@@ -40,6 +41,7 @@ export class YesMemRPC {
     return new Promise<RPCResponse>((resolve) => {
       let settled = false
       let buffer = ""
+      let bytes = 0
       const socket = connect({ path: this.socketPath })
 
       const finish = (response: RPCResponse) => {
@@ -50,16 +52,18 @@ export class YesMemRPC {
         resolve(response)
       }
 
+      // Peer bytes never travel back in an error string: callers render these messages into model-visible
+      // text, and a compromised daemon would otherwise get to speak through them.
       const parse = (text: string): RPCResponse => {
         const trimmed = text.trim()
         if (!trimmed) return { ok: false, error: "empty response" }
         try {
           const parsed = JSON.parse(trimmed)
-          if (parsed?.error) return { ok: false, error: String(parsed.error) }
+          if (parsed?.error) return { ok: false, error: String(parsed.error).substring(0, 500) }
           // The daemon wraps successful responses in {result: ...}; unwrap it so callers see clean data.
           return { ok: true, result: parsed?.result !== undefined ? parsed.result : parsed }
         } catch {
-          return { ok: false, error: `parse error: ${trimmed.substring(0, 200)}` }
+          return { ok: false, error: "unparseable response" }
         }
       }
 
@@ -72,6 +76,11 @@ export class YesMemRPC {
         socket.end()
       })
       socket.on("data", (chunk) => {
+        bytes += chunk.length
+        if (bytes > MAX_RESPONSE_BYTES) {
+          finish({ ok: false, error: "response too large" })
+          return
+        }
         buffer += chunk.toString()
         const newline = buffer.indexOf("\n")
         if (newline !== -1) finish(parse(buffer.slice(0, newline)))

@@ -8,6 +8,8 @@ import { Error as ToolError } from "@opencode/plugin/promise/tool"
 import type { YesMemRPC } from "./rpc"
 
 const harmlessCommands = ["grep", "diff", "test", "[", "rg"]
+// Snippets come from the memory store and are rendered into a model-visible error.
+const MAX_SNIPPET_CHARS = 1000
 
 function isHarmlessExit(command: string | undefined): boolean {
   if (!command) return false
@@ -56,6 +58,7 @@ export function failureLearn(rpc: YesMemRPC, directory: string) {
       .slice(0, 3)
       .map((result) => `- [${result.category}] ${result.content}`)
       .join("\n")
+      .substring(0, MAX_SNIPPET_CHARS)
     event.error = new ToolError({
       message: `${errorText}\n\n[YesMem Assist] Similar known issues:\n${snippets}`,
       ...(event.error.error === undefined ? {} : { error: event.error.error }),

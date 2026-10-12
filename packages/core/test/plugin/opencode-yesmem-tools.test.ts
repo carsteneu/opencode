@@ -26,13 +26,13 @@ const notIndexed = (request: DaemonRequest) => {
 
 /** Asserts the call was rejected the way the session runner expects, and returns the message. */
 const blocked = (result: HookResult) => {
-  expect(result.error).toBeDefined()
+  expect(result.failed).toBe(true)
   // Only a genuine Tool.Error is turned into a model-visible tool failure by the runner.
-  expect(result.error._tag).toBe("Tool.Error")
+  expect(result.error?._tag).toBe("Tool.Error")
   return String(result.error.message)
 }
 
-const passed = (result: HookResult) => expect(result.error).toBeUndefined()
+const passed = (result: HookResult) => expect(result.failed).toBe(false)
 
 describe("yesmem tool context injection", () => {
   test("adds the session, source agent and cwd to yesmem_ tool calls", async () => {
@@ -42,13 +42,13 @@ describe("yesmem tool context injection", () => {
         const recorder = fakeContext("/workspace/a")
         await loadPlugin(recorder)
 
-        const { event, error } = await recorder.fire("tool.execute.before", {
+        const { event, failed } = await recorder.fire("tool.execute.before", {
           tool: "yesmem_search",
           sessionID: "ses_a",
           input: { query: "first" },
         })
 
-        expect(error).toBeUndefined()
+        expect(failed).toBe(false)
         expect(event.input).toEqual({
           query: "first",
           _session_id: "opencode:ses_a",
@@ -68,13 +68,13 @@ describe("yesmem tool context injection", () => {
         const recorder = fakeContext("/workspace/b")
         await loadPlugin(recorder)
 
-        const { event, error } = await recorder.fire("tool.execute.before", {
+        const { event, failed } = await recorder.fire("tool.execute.before", {
           tool: "todowrite",
           sessionID: "ses_b",
           input: { todos: [] },
         })
 
-        expect(error).toBeUndefined()
+        expect(failed).toBe(false)
         expect(event.input).toEqual({ todos: [] })
       })
     } finally {

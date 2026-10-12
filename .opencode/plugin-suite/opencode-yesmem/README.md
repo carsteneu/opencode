@@ -23,7 +23,7 @@ call sites.
 | `auto_resolve.ts` | port of v1 `auto_resolve.ts` | `git commit -m` → `resolve_by_text`. |
 | `session.ts` | new | Session tracking + `register_pid` (v1 used the `session.created` hook). |
 | `shell.ts` | port of v1 `shell.env` | Exports the yesmem environment to spawned shells. |
-| `skill_whitelist.ts` | copy of v1 `skill_whitelist.ts` | Installed-skill set used to filter ghost suggestions. |
+| `skill_whitelist.ts` | port of v1 `skill_whitelist.ts` | Installed-skill set used to filter ghost suggestions (roots are resolved per call, so `YESMEM_SKILL_ROOTS` is honoured). |
 | `log.ts` | new | v1 duplicated this logger in four modules. |
 
 `RULES.md` from the v1 directory is **project data**, not plugin source, and is not copied.
@@ -80,10 +80,18 @@ Every other hook still runs plain async code, lifted with `Effect.tryPromise` in
    provider resolved from the user's `config.yaml`/`models.json`/`auth.json`, which is untestable.
 4. **Tool names and sets.** v2 names the shell tool `shell` (not `bash`) and adds a file-mutating `patch`
    tool. blockable = `write`/`edit`/`patch`; suggestable adds `patch`; `task` is now `subagent`.
-5. **Indexed-project memo.** v1 kept one process-wide boolean, so the first indexed project made every later
-   project look indexed. The memo is keyed by directory.
-6. **`log.ts`.** v1 duplicated the file logger in every module. The log file is `plugin-v2.log`, so a running
-   v1 plugin keeps its own.
+5. **Indexed-project memo.** The code_nav memo is keyed by directory and holds one entry. (With one plugin
+   instance per location this is equivalent to v1's single flag; it matters only if several instances share a
+   process.)
+6. **`log.ts`.** v1 duplicated the file logger in every module. The log is `plugin-v2.log` (mode `0600`) so a
+   running v1 plugin keeps its own, and `YESMEM_LOG_FILE` overrides the path.
+7. **`auto_resolve` checks the outcome.** v1 resolved tasks from a `git commit -m "..."` regardless of whether
+   the commit succeeded. A failed commit (rejected hook, failing test) is now ignored.
+8. **Guard request hardening.** Redirects are refused (`redirect: "error"`), the response body is capped, the
+   cached decision is keyed on the full prompt instead of a 32-bit hash, expired entries are evicted, and a
+   timeout is no longer retried — a dead guard endpoint cost two full timeouts (about 30 s) per call before.
+9. **RPC hardening.** The response buffer is capped (1 MiB), and daemon bytes are no longer echoed back inside
+   error strings, because callers render those strings into model-visible text.
 
 ## Known gaps (not built here)
 
@@ -95,6 +103,27 @@ Every other hook still runs plain async code, lifted with `Effect.tryPromise` in
 - **`chat.params`.** No v2 equivalent, so the summary-title conversation fallback is gone.
 - **`code_nav` and the dedicated `grep`/`glob` tools.** v1 blocked shell commands and the `read` tool only;
   v2's separate `grep`/`glob` tools are not covered, matching v1's behaviour rather than extending it.
+
+## Operational notes
+
+- **Data egress.** When a project has a `RULES.md`, the guard is asked about every `read`/`shell`/`grep`/`glob`/
+  `write`/`edit`/`patch` call, and the request body carries the rules text, up to 300 chars of the tool
+  arguments (for a `write` that is file content) and up to 6 recent conversation messages. It goes to the
+  provider the configured model resolves to. The guard answers `PASS` and stays silent when no key/URL
+  resolves; `YESMEM_GUARD_URL`/`YESMEM_GUARD_KEY` point it elsewhere, and removing the project's `RULES.md`
+  disables the guard entirely.
+- **Latency.** code_nav, the guard and the learner add daemon/provider round trips to tool calls. Every RPC is
+  bounded (5 s) and the guard request is bounded (15 s, no retry on timeout); a wedged daemon therefore
+  degrades rather than hangs, but it does cost real time on every call.
+- **`register_pid` is per call.** Every shell call re-registers `process.pid` for the current session, and the
+  daemon keeps one mapping per PID — with several concurrent sessions the last shell wins. This is v1
+  behaviour, kept for parity.
+- **Session id is per process.** The plugin tracks one current session (last `session.created`) and exports it
+  to spawned shells; `execute.before` still injects the *per-call* session into `yesmem_` tool arguments, which
+  is the value the MCP tools use.
+- **Trust.** `RULES.md`, `.git`/`HEAD` and the guard's answer are treated as data, not as trusted input: the
+  violated-rule text is capped and labelled, learned snippets are capped, and file paths are stripped of
+  control characters before they reach a message or the log.
 
 ## Tests
 
@@ -109,5 +138,7 @@ the tests load them through the real host loader and call the registered hook ca
 integration test additionally drives the plugin through the real core plugin host (`PluginModule` +
 `Tool.Service` snapshot), which is what proves a block rejects the call before the tool runs.
 
-The daemon is always a local mock socket pointed to by `YESMEM_SOCKET`; no live daemon, config directory or
-provider is touched.
+The daemon is always a local mock socket pointed to by `YESMEM_SOCKET`, the guard endpoint a local HTTP mock,
+and `YESMEM_LOG_FILE` keeps the plugin's debug log out of the live install; no live daemon, config directory or
+provider is touched. Besides the per-feature tests there is a resilience group (a throwing hook callback must
+not fail the call, a failed commit must not resolve tasks) and the integration group described above.

@@ -70,8 +70,8 @@ async function withEnv<T>(environment: Record<string, string | undefined>, body:
 }
 
 const blocked = (result: HookResult) => {
-  expect(result.error).toBeDefined()
-  expect(result.error._tag).toBe("Tool.Error")
+  expect(result.failed).toBe(true)
+  expect(result.error?._tag).toBe("Tool.Error")
   return String(result.error.message)
 }
 
@@ -122,7 +122,7 @@ describe("rule_guard", () => {
             input: { filePath: "src/feature.ts", oldString: "a", newString: "b" },
           })
 
-          expect(result.error).toBeUndefined()
+          expect(result.failed).toBe(false)
           expect(guard.requests.length).toBe(1)
         }),
       )
@@ -157,7 +157,7 @@ describe("rule_guard", () => {
             sessionID: "ses_guard",
             input: { filePath: "docs/notes.md", content: "x" },
           })
-          expect(docs.error).toBeUndefined()
+          expect(docs.failed).toBe(false)
           expect(guard.requests.length).toBe(1)
         }),
       )
@@ -189,7 +189,7 @@ describe("rule_guard", () => {
               id: "call_1",
               input: { command: "echo myskill" },
             })
-            expect(before.error).toBeUndefined()
+            expect(before.failed).toBe(false)
 
             const after = await recorder.fire("tool.execute.after", {
               tool: "shell",
@@ -200,7 +200,7 @@ describe("rule_guard", () => {
               result: { content: "hi" },
             })
 
-            expect(after.error).toBeUndefined()
+            expect(after.failed).toBe(false)
             expect(String(after.event.result.content)).toContain("MANDATORY CHECK")
             expect(String(after.event.result.content)).toContain("myskill")
             expect(String(after.event.result.content)).toEndWith("hi")
@@ -216,7 +216,8 @@ describe("rule_guard", () => {
 
   test("drops suggestions for skills that are not installed", async () => {
     const daemon = await mockDaemon(() => ({ result: {} }))
-    const guard = await mockGuard({ decision: "SUGGEST", suggestion: "ghost" })
+    const ghost = `ghost-${process.pid}-${Date.now()}`
+    const guard = await mockGuard({ decision: "SUGGEST", suggestion: ghost })
     const project = await projectWithRules()
     const skills = await mkdtemp(path.join(tmpdir(), "yesmem-skills-"))
     try {

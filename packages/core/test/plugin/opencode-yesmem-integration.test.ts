@@ -33,6 +33,9 @@ const firstFailure = (cause: Cause.Cause<unknown>) => {
   return undefined
 }
 
+// Restored by the scenario's finalizer; kept outside the generator so the finalizer can see it.
+let previousSocket: string | undefined
+
 /**
  * Drives the plugin through the real core plugin host: the same module loader, the same hook dispatcher,
  * the same tool execution path the server uses.
@@ -44,6 +47,7 @@ function scenario(filePath: string) {
       Effect.promise(() => mockDaemon(daemonHandler)),
       (daemon) => Effect.promise(() => daemon.close()),
     )
+    previousSocket = process.env.YESMEM_SOCKET
     process.env.YESMEM_SOCKET = daemon.socketPath
 
     const plugins = yield* Plugin.Service
@@ -75,7 +79,8 @@ function scenario(filePath: string) {
   }).pipe(
     Effect.ensuring(
       Effect.sync(() => {
-        delete process.env.YESMEM_SOCKET
+        if (previousSocket === undefined) delete process.env.YESMEM_SOCKET
+        else process.env.YESMEM_SOCKET = previousSocket
       }),
     ),
   )

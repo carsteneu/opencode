@@ -83,8 +83,13 @@ function isBlockedCommand(command: string): boolean {
   return blockedCommands.includes(command.split(/\s+/)[0].toLowerCase())
 }
 
+// File paths are model- and repository-controlled; control characters would reach the terminal and the model.
+function safe(value: string): string {
+  return value.replace(/[\u0000-\u001f\u007f-\u009f]/g, "")
+}
+
 function suggestTool(file: string, project: string): string {
-  return `get_file_symbols("${file}", "${project}") for overview, or get_code_snippet(file="${file}", project="${project}", start_line=x, end_line=y)`
+  return `get_file_symbols("${safe(file)}", "${safe(project)}") for overview, or get_code_snippet(file="${safe(file)}", project="${safe(project)}", start_line=x, end_line=y)`
 }
 
 export interface ToolCallEvent {
@@ -175,11 +180,11 @@ export function codeNavGuard(rpc: YesMemRPC, pluginDirectory: string) {
 
       const key = isShell ? targets.map((t) => relativePath(t, directory).replace(/\/+$/, "")).join(",") : hit
       if (!strike(key)) {
-        debugLog("code_nav", `ALLOW-2ND ${tool} ${key}`)
+        debugLog("code_nav", `ALLOW-2ND ${tool} ${safe(key)}`)
         return
       }
 
-      debugLog("code_nav", `BLOCK-1ST ${tool} ${key}`)
+      debugLog("code_nav", `BLOCK-1ST ${tool} ${safe(key)}`)
       const suggestion = suggestTool(isShell ? (targets[0] ?? "") : hit, directory)
       const scope = isShell ? "shell nav on indexed file(s)" : "read on indexed file"
       return `YesMem: BLOCKED ${scope}\n  → ${suggestion}\n  If the code tools don't find what you need, run this ${tool} again.`

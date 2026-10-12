@@ -14,6 +14,7 @@
 //     `@opencode/plugin`, so a third-party YAML module cannot be relied on
 
 import { readFile } from "node:fs/promises"
+import { homedir } from "node:os"
 import { Error as ToolError } from "@opencode/plugin/promise/tool"
 import { debugLog } from "./log"
 import { isSkillInstalled } from "./skill_whitelist"
@@ -25,21 +26,15 @@ const suggestableTools = new Set(["write", "edit", "patch", "read", "shell", "gr
 const skipTools = new Set(["skill", "subagent", "todowrite"])
 
 const GUARD_CACHE_TTL_MS = 5000
+const MAX_GUARD_RESPONSE_CHARS = 100_000
+const MAX_VIOLATION_CHARS = 1000
+
+// Keyed on the full text, not a 32-bit hash: the map holds a handful of entries and a hash collision would
+// hand one call another call's decision.
 const guardCache = new Map<string, { result: GuardResult; ts: number }>()
 
-let rulesHash = ""
-
-function hashString(input: string): string {
-  let hash = 0
-  for (let i = 0; i < input.length; i++) {
-    hash = (hash << 5) - hash + input.charCodeAt(i)
-    hash |= 0
-  }
-  return String(hash)
-}
-
 function guardCacheKey(rules: string, tool: string, context: string): string {
-  return hashString(`${rules}|${tool}|${context}`)
+  return `${rules}\u0000${tool}\u0000${context}`
 }
 
 async function readText(file: string): Promise<string | undefined> {
@@ -160,7 +155,7 @@ export async function resolveGuardConfig(): Promise<{ model: string; apiUrl: str
     }
   }
 
-  const home = process.env.HOME || "/home/chief"
+  const home = process.env.HOME || homedir()
   const config = parseGuardConfig((await readText(`${home}/.claude/yesmem/config.yaml`)) ?? "")
   let model = config.model || "deepseek-v4-flash"
   const providerTargets = config.providerTargets
@@ -224,9 +219,11 @@ async function guardCheck(
   canBlock: boolean,
   retried = false,
 ): Promise<GuardResult> {
+  const now = Date.now()
+  for (const [key, entry] of guardCache) if (now - entry.ts >= GUARD_CACHE_TTL_MS) guardCache.delete(key)
   const cacheKey = guardCacheKey(rules, tool, context)
   const cached = guardCache.get(cacheKey)
-  if (cached && Date.now() - cached.ts < GUARD_CACHE_TTL_MS) return cached.result
+  if (cached) return cached.result
 
   const config = await resolveGuardConfig()
   if (!config.apiKey || !config.apiUrl) {
@@ -268,8 +265,10 @@ async function guardCheck(
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.apiKey}` },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(15000),
+      // The endpoint may be redirected by an override URL; a redirect would replay the prompt elsewhere.
+      redirect: "error",
     })
-    const raw = await response.text()
+    const raw = (await response.text()).substring(0, MAX_GUARD_RESPONSE_CHARS)
     const elapsed = Date.now() - started
     const message = (JSON.parse(raw) as any)?.choices?.[0]?.message
     const content: string = message?.content || ""
@@ -294,11 +293,13 @@ async function guardCheck(
     debugLog("guard", `[${elapsed}ms] PASS`)
     return { decision: "PASS" }
   } catch (error: any) {
-    if (!retried) {
+    const aborted = error?.name === "AbortError" || error?.name === "TimeoutError"
+    // A timeout is not retried: the caller has already waited the full budget.
+    if (!retried && !aborted) {
       await new Promise((resolve) => setTimeout(resolve, 500))
       return guardCheck(rules, tool, context, canBlock, true)
     }
-    debugLog("guard", `check failed (retried): ${error?.message || String(error)}`)
+    debugLog("guard", `check failed: ${error?.message || String(error)}`)
     return { decision: "PASS" }
   }
 }
@@ -364,12 +365,11 @@ export function ruleGuard(directory: string) {
     try {
       if (!rulesLoaded) {
         rulesCache = await loadRules(directory)
-        rulesHash = hashString(rulesCache)
         gitBranch = await getGitBranch(directory)
         rulesLoaded = true
         debugLog(
           "guard",
-          `loaded ${rulesCache.split("\n").length} rules ~${Math.round(rulesCache.length / 4)} sys-tok (hash=${rulesHash}) branch=${gitBranch || "?"}`,
+          `loaded ${rulesCache.split("\n").length} rules ~${Math.round(rulesCache.length / 4)} sys-tok branch=${gitBranch || "?"}`,
         )
       }
       if (!rulesCache || rulesCache.startsWith("No ")) return
@@ -410,7 +410,10 @@ export function ruleGuard(directory: string) {
 
       const canBlock = blockableTools.has(toolName)
       const result = await guardCheck(rulesCache, toolName, context, canBlock)
-      if (result.decision === "BLOCK" && canBlock) return `${(result.violations || []).join("; ")}`
+      if (result.decision === "BLOCK" && canBlock) {
+        // The text comes from a model whose prompt embeds repository content; it reaches the model again.
+        return `Rule check blocked this call: ${(result.violations || []).join("; ").substring(0, MAX_VIOLATION_CHARS)}`
+      }
       if (result.decision === "SUGGEST") {
         const suggestion = result.suggestion || ""
         if (suggestion && !isSkillInstalled(suggestion)) {

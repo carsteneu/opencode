@@ -10,6 +10,8 @@ import type { ToolResultEvent } from "./failure_learn"
 export function autoResolve(rpc: YesMemRPC, directory: string) {
   async function after(event: ToolResultEvent) {
     if (event.tool !== "shell") return
+    // A rejected commit (hook failure, nothing staged) must not resolve anything. v1 had no status check.
+    if (event.status !== "completed") return
     const command = (event.input as Record<string, any> | undefined)?.command as string | undefined
     if (!command?.startsWith("git commit")) return
 

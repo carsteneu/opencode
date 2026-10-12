@@ -2,11 +2,15 @@
 // Best effort only: a plugin must never fail because a log line could not be written.
 
 import { appendFileSync } from "node:fs"
+import { homedir } from "node:os"
 
-const LOG_FILE = `${process.env.HOME || "/home/chief"}/.claude/yesmem/logs/plugin-v2.log`
+// YESMEM_LOG_FILE lets tests (and users) keep the plugin's debug output out of the live install.
+function logFile() {
+  return process.env.YESMEM_LOG_FILE || `${process.env.HOME || homedir()}/.claude/yesmem/logs/plugin-v2.log`
+}
 
 export function debugLog(tag: string, message: string) {
   try {
-    appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${tag} ${message}\n`)
+    appendFileSync(logFile(), `[${new Date().toISOString()}] ${tag} ${message}\n`, { mode: 0o600 })
   } catch {}
 }

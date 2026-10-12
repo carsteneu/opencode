@@ -19,6 +19,9 @@ import { Cause, Effect, Exit, Fiber, PubSub, Stream } from "effect"
 // startup (packages/cli/src/index.ts) and the core plugin tests install it the same way.
 ensurePluginRuntime()
 
+// The plugin resolves its debug log file at call time; keep test runs out of the live yesmem install.
+process.env.YESMEM_LOG_FILE ??= path.join(tmpdir(), "yesmem-plugin-test.log")
+
 export const yesmemEntry = (file: string) =>
   new URL(`../../../../.opencode/plugin-suite/opencode-yesmem/${file}`, import.meta.url).href
 
@@ -61,8 +64,11 @@ export async function mockDaemon(handler: (request: DaemonRequest) => unknown | 
   return {
     socketPath,
     requests,
-    /** Requests after the activation-time index priming that `setup` performs. */
-    hooked: (from = 1) => requests.slice(from),
+    /**
+     * Requests the plugin issued in response to hooks. The activation-time index priming is asynchronous
+     * (it must not stall plugin activation), so it is filtered by method instead of by position.
+     */
+    hooked: () => requests.filter((request) => request.method !== "search_code_index"),
     close: async () => {
       for (const socket of sockets) socket.destroy()
       await new Promise<void>((resolve) => server.close(() => resolve()))
@@ -85,7 +91,7 @@ export async function withSocket<T>(socketPath: string, body: () => Promise<T>):
 
 export type HookEvent = Record<string, any>
 export type HookCallback = (event: HookEvent) => unknown
-export type HookResult = { readonly event: HookEvent; readonly error?: any }
+export type HookResult = { readonly event: HookEvent; readonly failed: boolean; readonly error?: any }
 
 export type HookRecorder = {
   readonly hooks: Map<string, HookCallback[]>
@@ -134,12 +140,12 @@ export function fakeContext(directory: string): HookRecorder {
         const result = callback(event)
         if (Effect.isEffect(result)) {
           const exit = await Effect.runPromiseExit(result as Effect.Effect<unknown, unknown>)
-          if (Exit.isFailure(exit)) return { event, error: firstFailure(exit.cause) }
+          if (Exit.isFailure(exit)) return { event, failed: true, error: firstFailure(exit.cause) }
         } else {
           await result
         }
       }
-      return { event }
+      return { event, failed: false }
     },
   }
 }

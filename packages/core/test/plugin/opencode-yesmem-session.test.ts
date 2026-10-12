@@ -27,6 +27,23 @@ async function emitUntil(recorder: { emit: (event: any) => void }, event: unknow
 }
 
 describe("shell environment", () => {
+  test("a shell hook that throws does not fail the shell call", async () => {
+    const daemon = await mockDaemon(daemonHandler)
+    try {
+      await withSocket(daemon.socketPath, async () => {
+        const recorder = fakeContext("/workspace/shell4")
+        await loadPlugin(recorder)
+
+        // Writing into a frozen env throws in module (strict) code.
+        const result = await recorder.fire("shell.create.before", { env: Object.freeze({}) })
+
+        expect(result.failed).toBe(false)
+      })
+    } finally {
+      await daemon.close()
+    }
+  })
+
   test("exports the yesmem socket and source agent to every shell call", async () => {
     const daemon = await mockDaemon(daemonHandler)
     try {
@@ -34,9 +51,9 @@ describe("shell environment", () => {
         const recorder = fakeContext("/workspace/shell")
         await loadPlugin(recorder)
 
-        const { event, error } = await recorder.fire("shell.create.before", { env: {} })
+        const { event, failed } = await recorder.fire("shell.create.before", { env: {} })
 
-        expect(error).toBeUndefined()
+        expect(failed).toBe(false)
         expect(event.env.YESMEM_SOCKET).toBe(daemon.socketPath)
         expect(event.env.YESMEM_SOURCE_AGENT).toBe("opencode")
         // No session yet, so there is nothing to register.

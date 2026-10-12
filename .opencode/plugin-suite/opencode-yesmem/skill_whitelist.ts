@@ -1,11 +1,13 @@
 // Filesystem-backed set of installed skill names.
 // Used by rule_guard to filter out suggestions for skills that exist in the RULES.md catalog but are not
-// actually installed. Copied from the v1 plugin unchanged apart from the header.
+// actually installed. Ported from the v1 plugin; the skill roots are resolved per call instead of at module
+// load so YESMEM_SKILL_ROOTS and HOME changes are honoured.
 
 import { readdirSync, statSync } from "node:fs"
+import { homedir } from "node:os"
 import { join } from "node:path"
 
-const HOME = process.env.HOME || "/home/chief"
+const HOME = process.env.HOME || homedir()
 
 // Roots opencode/Claude Code scan for skills. Bundled skills that were never installed live only in the
 // source repo and won't appear here — exactly the ghosts we want to filter out.
@@ -63,10 +65,4 @@ export function loadInstalledSkills(): Set<string> {
 export function isSkillInstalled(name: string): boolean {
   if (!name) return false
   return loadInstalledSkills().has(name.toLowerCase())
-}
-
-// For tests: force a rescan on next call.
-export function _resetCacheForTest(): void {
-  cachedNames = null
-  cacheKey = ""
 }

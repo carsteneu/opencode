@@ -36,11 +36,11 @@ export default Plugin.define({
       const session = sessionTracker(rpc)
       const shell = shellEnvironment(rpc, rpc.socket, session.current)
 
-      // v1 primed the project index once per activation so the first code_nav check is fast.
-      // `call` resolves instead of rejecting, so it is safe to wrap in Effect.promise.
+      // v1 primed the project index without waiting for it, and activation must not stall on the daemon:
+      // `Plugin.awaitActivation` gates session entry points on this effect completing.
       yield* Effect.promise(() =>
         rpc.call("search_code_index", { pattern: "func", kind: "function", project: directory, limit: 1 }),
-      )
+      ).pipe(Effect.forkScoped)
 
       // Returns the message the call must be rejected with, or undefined to let it run.
       async function before(event: ToolCallEvent): Promise<string | undefined> {
@@ -53,14 +53,26 @@ export default Plugin.define({
         return undefined
       }
 
-      // A before hook may fail; a rejected promise would be a defect, so the async work is lifted into the
-      // error channel and only an intentional block becomes a Tool.Error.
-      const reject = (evaluate: () => Promise<string | undefined>) =>
-        Effect.tryPromise({ try: evaluate, catch: () => undefined })
-
-      // Async work that must never fail its hook.
+      // v1 wrapped every composed call in its own try/catch: the plugin's bookkeeping must never fail a tool
+      // call, a shell, or the plugin itself. `Effect.promise` takes a promise that cannot reject, and an
+      // async IIFE cannot throw synchronously, so a throwing callback is swallowed here.
       const attempt = (evaluate: () => Promise<unknown>) =>
-        Effect.tryPromise({ try: evaluate, catch: () => undefined }).pipe(Effect.asVoid)
+        Effect.promise(async () => {
+          try {
+            await evaluate()
+          } catch {
+            // best effort
+          }
+        })
+
+      const reject = (evaluate: () => Promise<string | undefined>) =>
+        Effect.promise(async () => {
+          try {
+            return await evaluate()
+          } catch {
+            return undefined
+          }
+        })
 
       yield* context.tool.hook("execute.before", (event) =>
         Effect.gen(function* () {
@@ -85,9 +97,7 @@ export default Plugin.define({
         Effect.sync(() => guard.capture((event as { messages: ReadonlyArray<any> }).messages)),
       )
 
-      yield* context.shell.hook("create.before", (event) =>
-        attempt(() => shell.before(event as ShellCreateEvent)),
-      )
+      yield* context.shell.hook("create.before", (event) => attempt(() => shell.before(event as ShellCreateEvent)))
 
       // Session tracking: register the owning process with the daemon for every session that starts.
       yield* context.event.subscribe().pipe(
