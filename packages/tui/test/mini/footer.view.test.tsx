@@ -1771,6 +1771,25 @@ test("the statusline shows the elapsed model wait until output starts", async ()
   }
 })
 
+test("the statusline renders the model wait without the glyph in mono mode", async () => {
+  const app = await renderFooter({ width: 120, mono: true, state: { phase: "running", waiting: Date.now() } })
+  try {
+    await app.renderOnce()
+    const statusline = footerStatusline(app.renderer.root)
+    const read = () =>
+      app
+        .captureCharFrame()
+        .split("\n")
+        .slice(statusline.y, statusline.y + statusline.height)
+        .map((line) => line.trim())
+        .join(" ")
+    expect(read()).toContain("Waiting on model - 1s")
+    expect(read()).not.toContain("\u25f7")
+  } finally {
+    app.cleanup()
+  }
+})
+
 test.each([16, 20, 24, 32])("status takeovers retain complete instructions at %i columns", async (width) => {
   for (const mono of [false, true]) {
     const app = await renderFooter({
