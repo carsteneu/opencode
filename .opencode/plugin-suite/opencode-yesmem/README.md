@@ -22,7 +22,8 @@ call sites.
 | `failure_learn.ts` | port of v1 `failure_learn.ts` | Error → `remember`, plus a `hybrid_search` assist note. |
 | `auto_resolve.ts` | port of v1 `auto_resolve.ts` | `git commit -m` → `resolve_by_text`. |
 | `session.ts` | new | Session tracking + `register_pid` (v1 used the `session.created` hook). |
-| `messages.ts` | new | Message helpers shared by the nudges (v1 duplicated them). |
+| `messages.ts` | new | Message helpers + the human-turn predicate shared by the nudges. |
+| `http.ts` | new | Response reader with a byte budget (v1 read bodies unbounded). |
 | `skill_nudge.ts` | port of v1 `skill_nudge.ts` | Staged skill suggestion on the terminal user message. |
 | `ledger_nudge.ts` | port of v1 `ledger_nudge.ts` | Appends the active plan as a live ledger block. |
 | `idle_reminder.ts` | port of v1 `idle_reminder.ts` | Invisible yesmem reminder every Nth user turn. |
@@ -70,13 +71,17 @@ Every other hook still runs plain async code, lifted with `Effect.tryPromise` in
 | `session.created` | `ctx.event.subscribe()` → `session.created`, `data.sessionID` | Registers the process with the daemon; mirrors the id into `process.env.YESMEM_SESSION_ID`. |
 | `experimental.chat.messages.transform` | `ctx.session.hook("context", e)` | Four handlers in registration order: read-only conversation capture for the guard, then the three nudges (`skill_nudge`, `ledger_nudge`, `idle_reminder`). Every nudge only patches the **last message the human actually wrote** (see below), keeps a marker guard against double patching, and produces identical bytes for every step of a turn. |
 
-`role === "user"` is not the human: v2 lowers several history entries to user-role messages
-(`packages/core/src/session/runner/to-llm-message.ts`). A message counts as human only when it has metadata
-and its text does not open with one of the frames the core builds for shell results
-(`The following shell command was executed by the user:`), compaction (`<conversation-checkpoint>`), a location
-switch (`The working directory has been changed to `) or a skill injection (`Base directory for this skill: `,
-`packages/core/src/skill.ts`). Synthetic messages carry no metadata at all. The predicate lives in
-`messages.ts` and drives both the patch target and the idle cadence.
+`role === "user"` is not the human: v2 lowers several history entries to user-role messages. A message counts
+as human only when it has metadata, does not open with one of the frames the core builds (shell results
+`The following shell command was executed by the user:`, compaction `<conversation-checkpoint>`, a location
+switch `The working directory has been changed to `, an inlined skill `<skill_content`), and does not reuse an
+earlier message id. The last rule matters because a skill activation appends its message with the id of the
+human message that triggered it (`packages/schema/src/session-message.ts:28` plus the skill event id in
+`packages/core/src/session/session.ts`), so a repeated id is a derived message and keeps the patch target on
+the human turn. Synthetic messages carry no metadata at all (`packages/core/src/bus.ts` only sets it when the
+publisher passes one). The predicate lives in `messages.ts` and drives both the patch target and the idle
+cadence. Known limit, documented in the file: a user-role message with metadata, a fresh id and a bare
+SKILL.md body would pass — no core path produces one today.
 | `chat.params` (summary-title fallback) | — | No v2 equivalent; the fallback is dropped. |
 
 ## Deviations from v1
@@ -103,8 +108,12 @@ switch (`The working directory has been changed to `) or a skill injection (`Bas
    bounded (40 lines, 4000 chars) and stripped of control characters with its delimiters neutralized, a skill
    name must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` before it is injected, the stage-2 response body is
    capped, and a `RULES.md` larger than 256 KiB is ignored instead of being read into memory on the request
-   path.
-8. **`auto_resolve` checks the outcome.** v1 resolved tasks from a `git commit -m "..."` regardless of whether
+   path. The delimiter neutralizer is case-insensitive and the strip covers the Unicode line/paragraph
+   separators and bidi overrides, so a plan cannot close the block or forge a top-level line.
+8. **Response bodies are read with a budget.** `http.ts#readBodyCapped` stops reading once the budget is
+   exhausted; v1 (and this plugin before the review) called `response.text()` and trimmed afterwards, which
+   caps parsing but not buffering.
+9. **`auto_resolve` checks the outcome.** v1 resolved tasks from a `git commit -m "..."` regardless of whether
    the commit succeeded. A failed commit (rejected hook, failing test) is now ignored.
 8. **Guard request hardening.** Redirects are refused (`redirect: "error"`), the response body is capped, the
    cached decision is keyed on the full prompt instead of a 32-bit hash, expired entries are evicted, and a
@@ -167,4 +176,6 @@ provider is touched. Besides the per-feature tests there is a resilience group (
 not fail the call, a failed commit must not resolve tasks), a nudge group (catalogue parsing in both shapes,
 local match, ghost filtering, no double patch, human-turn targeting, the background match plus its cache,
 ledger rendering/sanitization/patch-once/one-fetch-per-turn, idle cadence on human turns only, and the
-skill-name validation) and the integration group described above.
+skill-name validation), a message-classification group built from the core's own frames
+(`opencode-yesmem-messages.test.ts`), a body-budget group (`opencode-yesmem-http.test.ts`) and the integration
+group described above.

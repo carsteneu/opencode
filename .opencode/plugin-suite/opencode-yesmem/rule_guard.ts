@@ -16,6 +16,7 @@
 import { readFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { Error as ToolError } from "@opencode/plugin/promise/tool"
+import { readBodyCapped } from "./http"
 import { debugLog } from "./log"
 import { isSkillInstalled } from "./skill_whitelist"
 
@@ -268,7 +269,7 @@ async function guardCheck(
       // The endpoint may be redirected by an override URL; a redirect would replay the prompt elsewhere.
       redirect: "error",
     })
-    const raw = (await response.text()).substring(0, MAX_GUARD_RESPONSE_CHARS)
+    const raw = await readBodyCapped(response, MAX_GUARD_RESPONSE_CHARS)
     const elapsed = Date.now() - started
     const message = (JSON.parse(raw) as any)?.choices?.[0]?.message
     const content: string = message?.content || ""

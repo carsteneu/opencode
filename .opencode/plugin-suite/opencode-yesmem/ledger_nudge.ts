@@ -28,11 +28,16 @@ export interface ContextEvent {
   messages?: HostMessage[]
 }
 
-/** Control characters would reach the model and the terminal; the block delimiters must stay unforgeable. */
+/**
+ * Plan text reaches the model inside the user's message and is written by a model, so it is untrusted here:
+ * control characters and separators that render as line breaks are removed (parity with the code_nav strip,
+ * plus the Unicode line/paragraph separators and bidi overrides), and the block delimiters are neutralized
+ * case-insensitively — otherwise a plan could close the block and open a trusted-looking instruction.
+ */
 function sanitizeLine(line: string): string {
   return line
-    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, "")
-    .replace(/\[\/?yesmem-ledger[^\]]*\]/g, "(ledger)")
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g, "")
+    .replace(/\[\/?yesmem-ledger[^\]]*\]/gi, "(ledger)")
 }
 
 /** Renders the ledger block from the active plan (sanitized and bounded). Null when there is nothing to show. */

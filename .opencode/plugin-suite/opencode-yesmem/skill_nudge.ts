@@ -13,6 +13,7 @@
 // Disable entirely with YESMEM_SKILL_NUDGE=off (v1 had no switch for this one; the other two nudges do).
 
 import { readFile, stat } from "node:fs/promises"
+import { readBodyCapped } from "./http"
 import { debugLog } from "./log"
 import { findTerminalUserText, hashString, type HostMessage } from "./messages"
 import { resolveGuardConfig } from "./rule_guard"
@@ -150,9 +151,13 @@ async function guardConfig() {
   return config
 }
 
-async function modelMatch(userMessage: string, catalogText: string): Promise<string | null> {
+/**
+ * Returns the matched skill, `null` for a definitive "no match" (cacheable) and `undefined` when the call
+ * failed (not cacheable — a transient error must not poison the message forever).
+ */
+async function modelMatch(userMessage: string, catalogText: string): Promise<string | null | undefined> {
   const config = await guardConfig()
-  if (!config?.apiKey) return null
+  if (!config?.apiKey) return undefined
 
   const systemPrompt =
     `You evaluate user messages against a skill catalog. ` +
@@ -178,28 +183,36 @@ async function modelMatch(userMessage: string, catalogText: string): Promise<str
     })
     if (!response.ok) {
       debugLog("skill_nudge", `model err ${response.status}`)
-      return null
+      return undefined
     }
     // Bound the body: the timeout limits time, not bytes.
-    const raw = (await response.text()).substring(0, MAX_MODEL_RESPONSE_CHARS)
+    const raw = await readBodyCapped(response, MAX_MODEL_RESPONSE_CHARS)
     const content = (JSON.parse(raw) as any)?.choices?.[0]?.message?.content || ""
     const trimmed = String(content).trim()
     return trimmed && trimmed !== "NONE" ? trimmed : null
   } catch (error: any) {
     debugLog("skill_nudge", `model err: ${error?.message || String(error)}`)
-    return null
+    return undefined
   }
 }
 
-function precompute(key: string, userMessage: string, catalogText: string) {
+function precompute(key: string, userMessage: string, catalogText: string, onTransient?: () => void) {
   if (inFlight.has(key)) return
   inFlight.add(key)
   modelMatch(userMessage, catalogText)
     .then((skill) => {
+      // Only a definitive answer is cached; a failed call stays open for the next sighting.
+      if (skill === undefined) {
+        debugLog("skill_nudge", `no answer for ${key}, will retry`)
+        onTransient?.()
+        return
+      }
       cacheSet(key, skill)
       debugLog("skill_nudge", `cached ${key}=${skill ?? "NONE"}`)
     })
-    .catch(() => {})
+    .catch(() => {
+      onTransient?.()
+    })
     .finally(() => inFlight.delete(key))
 }
 
@@ -218,6 +231,7 @@ export function skillNudge(catalogPaths: readonly string[]) {
   let catalogHash = ""
   let loadedPath: string | null = null
   let loadedMtime = -1
+  // Keyed on catalogue + text: a catalogue change must not wedge the message that was pending before it.
   let lastPrecomputed: string | null = null
 
   async function loadCatalog() {
@@ -277,10 +291,13 @@ export function skillNudge(catalogPaths: readonly string[]) {
         const key = `${catalogHash}\u0000${hit.text}`
         const cached = resultCache.get(key)
         if (cached === undefined) {
-          // Cache miss: start the background match once per distinct text, never nudge on the first sighting.
-          if (hit.text !== lastPrecomputed) {
-            lastPrecomputed = hit.text
-            precompute(key, hit.text, catalogText)
+          // Cache miss: start the background match once per (catalogue, text); never nudge on the first sighting.
+          const pending = `${catalogHash}\u0000${hit.text}`
+          if (pending !== lastPrecomputed) {
+            lastPrecomputed = pending
+            precompute(key, hit.text, catalogText, () => {
+              if (lastPrecomputed === pending) lastPrecomputed = null
+            })
           }
           return
         }
