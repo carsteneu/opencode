@@ -99,6 +99,17 @@ function monoCode(renderable: CodeRenderable): void {
     updateStreamingPreview(content, monoStyledText(initialStyledText))
   }
 
+  // A renderable may deliver the styled snapshot through a concrete method instead of the public
+  // property, which would bypass the override below. Translate that channel as well.
+  const deliver = renderable as {
+    setInitialStyledText?: (value: StyledText | undefined, content?: string) => void
+  }
+  const setInitialStyledText = deliver.setInitialStyledText?.bind(renderable)
+  if (setInitialStyledText) {
+    deliver.setInitialStyledText = (value, content) =>
+      setInitialStyledText(value && isStyledText(value) ? monoStyledText(value) : value, content)
+  }
+
   const initialDescriptor = Object.getOwnPropertyDescriptor(CodeRenderable.prototype, "initialStyledText")
   const contentDescriptor = Object.getOwnPropertyDescriptor(CodeRenderable.prototype, "content")
   if (!initialDescriptor?.set || !contentDescriptor?.get || !contentDescriptor.set) return
