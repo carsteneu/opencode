@@ -10,6 +10,7 @@ const MIME_EXTENSION: Record<string, string> = {
   "image/webp": "webp",
   "image/gif": "gif",
 }
+const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
 
 /** The decoded preview bytes; previews are inline `data:` URLs, so no load step is needed. */
 export function decodeSessionImage(uri: string): Uint8Array {
@@ -20,11 +21,14 @@ export function decodeSessionImage(uri: string): Uint8Array {
   return new Uint8Array(data)
 }
 
-/** Filename with the extension the data URL declares, so the bytes stay openable after the save. */
-export function sessionImageFilename(uri: string, label?: string) {
+/**
+ * Filename with the extension the bytes actually are, so the saved file stays openable. The data URL's mime wins
+ * when it is a known image type; otherwise (the diff viewer sends `application/octet-stream`) the bytes are sniffed.
+ */
+export function sessionImageFilename(uri: string, label?: string, data?: Uint8Array) {
   const match = DATA_IMAGE.exec(uri)
   if (!match) throw new Error("Image preview is not a base64 data URL")
-  const extension = MIME_EXTENSION[match[1].toLowerCase()] ?? "png"
+  const extension = MIME_EXTENSION[match[1].toLowerCase()] ?? sniffImageExtension(data) ?? "png"
   const stem = (label ?? "")
     .replace(IMAGE_EXTENSION, "")
     .replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, "-")
@@ -34,12 +38,23 @@ export function sessionImageFilename(uri: string, label?: string) {
   return `${stem || "opencode-image"}.${extension}`
 }
 
+function sniffImageExtension(data: Uint8Array | undefined) {
+  if (!data) return undefined
+  if (PNG_MAGIC.every((byte, index) => data[index] === byte)) return "png"
+  if (data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) return "jpg"
+  if (data[0] === 0x47 && data[1] === 0x49 && data[2] === 0x46 && data[3] === 0x38) return "gif"
+  const riff = data[0] === 0x52 && data[1] === 0x49 && data[2] === 0x46 && data[3] === 0x46
+  const webp = data[8] === 0x57 && data[9] === 0x45 && data[10] === 0x42 && data[11] === 0x50
+  if (riff && webp) return "webp"
+  return undefined
+}
+
 /** Write the preview bytes into `directory`, creating it, and return the path actually used. */
 export async function saveSessionImage(uri: string, directory: string, label?: string): Promise<string> {
   if (!directory.trim()) throw new Error("Image save directory is required")
   if (directory.includes("\0")) throw new Error("Image save directory is invalid")
   const data = decodeSessionImage(uri)
-  const filename = sessionImageFilename(uri, label)
+  const filename = sessionImageFilename(uri, label, data)
   await mkdir(directory, { recursive: true })
   return publishUnique(directory, filename, data)
 }
