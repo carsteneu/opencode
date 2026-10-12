@@ -59,7 +59,7 @@ class TokenRateMeter {
   }
 }
 
-function TokensPerSecond(props: { context: Plugin.Context; sessionID?: string }) {
+function TokensPerSecond(props: { context: Plugin.Context; sessionID?: string; showDetails: boolean }) {
   const [rate, setRate] = createSignal(0)
   const meter = new TokenRateMeter(WINDOW_MS)
   let messageID: string | undefined
@@ -119,7 +119,7 @@ function TokensPerSecond(props: { context: Plugin.Context; sessionID?: string })
   })
 
   return (
-    <Show when={Math.round(rate()) > 0}>
+    <Show when={props.showDetails && Math.round(rate()) > 0}>
       <text fg={props.context.theme.text.muted} wrapMode="none" flexShrink={0}>
         out ~{Math.round(rate())} tk/s
       </text>
@@ -132,7 +132,9 @@ export default Plugin.define({
   setup(context) {
     context.ui.slot({
       append: "prompt.footer",
-      render: (props) => <TokensPerSecond context={context} sessionID={props.sessionID} />,
+      render: (props) => (
+        <TokensPerSecond context={context} sessionID={props.sessionID} showDetails={props.showDetails} />
+      ),
     })
   },
 })

@@ -15,7 +15,7 @@ type Command = {
 }
 
 function harness() {
-  const dispatched: string[] = []
+  const calls: string[] = []
   let factory: (() => { priority?: number; commands?: Command[] }) | undefined
   const renderer: { currentFocusedEditor: unknown } = { currentFocusedEditor: null }
   const context = {
@@ -24,12 +24,9 @@ function harness() {
       layer(value: () => { priority?: number; commands?: Command[] }) {
         factory = value
       },
-      dispatch(id: string) {
-        dispatched.push(id)
-      },
     },
   } as unknown as Plugin.Context
-  return { context, renderer, dispatched, layer: () => factory?.() }
+  return { context, renderer, calls, layer: () => factory?.() }
 }
 
 describe("prompt home/end plugin", () => {
@@ -39,7 +36,7 @@ describe("prompt home/end plugin", () => {
     expect(typeof module.default.setup).toBe("function")
   })
 
-  test("registers a high-priority layer that binds home/end and yields without a live editor", async () => {
+  test("registers a high-priority layer that moves a live editor buffer and yields otherwise", async () => {
     const module = (await Host.load(entry.href)) as Module
     const h = harness()
     await module.default.setup(h.context)
@@ -54,17 +51,20 @@ describe("prompt home/end plugin", () => {
     // No editor: decline so session.first/session.last still navigate.
     expect(home!.run()).toBe(false)
     expect(end!.run()).toBe(false)
-    // An editor that cannot move a buffer (or is destroyed) also declines.
+    // A destroyed editor, or one without the buffer methods, also declines.
     h.renderer.currentFocusedEditor = {}
     expect(home!.run()).toBe(false)
     h.renderer.currentFocusedEditor = { gotoBufferHome: () => {}, isDestroyed: true }
     expect(home!.run()).toBe(false)
-    expect(h.dispatched).toEqual([])
+    expect(h.calls).toEqual([])
 
-    // Live editor: dispatch the core buffer commands.
-    h.renderer.currentFocusedEditor = { gotoBufferHome: () => {} }
+    // Live editor: move its buffer directly.
+    h.renderer.currentFocusedEditor = {
+      gotoBufferHome: () => h.calls.push("home"),
+      gotoBufferEnd: () => h.calls.push("end"),
+    }
     expect(home!.run()).toBeUndefined()
     expect(end!.run()).toBeUndefined()
-    expect(h.dispatched).toEqual(["input.buffer.home", "input.buffer.end"])
+    expect(h.calls).toEqual(["home", "end"])
   })
 })

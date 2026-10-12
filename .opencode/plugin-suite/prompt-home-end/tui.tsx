@@ -11,22 +11,26 @@ import { Plugin } from "@opencode/plugin/tui"
 export default Plugin.define({
   id: "opencode.prompt.home-end",
   setup(context) {
-    const move = (command: "input.buffer.home" | "input.buffer.end") => () => {
-      // Mirror the core edit-buffer guard (withFocusedEditor): only consume the
-      // key when a live editor can actually move its buffer, otherwise let the
-      // transcript jump through.
+    const move = (method: "gotoBufferHome" | "gotoBufferEnd") => () => {
+      // Move the focused editor's buffer directly (the same handler the core
+      // input.buffer.home/end commands run). Dispatching the command id instead
+      // would report the key as handled even when the command is unreachable,
+      // leaving Home/End dead; this only consumes the key when it can act.
       const editor = context.renderer.currentFocusedEditor as {
         isDestroyed?: boolean
-        gotoBufferHome?: unknown
+        gotoBufferHome?: () => void
+        gotoBufferEnd?: () => void
       } | null
-      if (!editor || editor.isDestroyed || typeof editor.gotoBufferHome !== "function") return false
-      context.keymap.dispatch(command)
+      if (!editor || editor.isDestroyed) return false
+      const goto = editor[method]
+      if (typeof goto !== "function") return false
+      goto.call(editor)
     }
     context.keymap.layer(() => ({
       priority: 10,
       commands: [
-        { bind: "home", title: "Buffer start", group: "Prompt", run: move("input.buffer.home") },
-        { bind: "end", title: "Buffer end", group: "Prompt", run: move("input.buffer.end") },
+        { bind: "home", title: "Buffer start", group: "Prompt", run: move("gotoBufferHome") },
+        { bind: "end", title: "Buffer end", group: "Prompt", run: move("gotoBufferEnd") },
       ],
     }))
   },
