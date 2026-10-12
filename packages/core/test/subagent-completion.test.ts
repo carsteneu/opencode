@@ -28,15 +28,21 @@ describe("SubagentCompletion.bound", () => {
   })
 
   test("stops on the byte limit when few lines are long", () => {
-    const value = Array.from({ length: 2_000 }, (_, index) => `${String(index).padStart(4, "0")} ${"y".repeat(96)}`).join(
-      "\n",
-    )
+    const value = Array.from(
+      { length: 2_000 },
+      (_, index) => `${String(index).padStart(4, "0")} ${"y".repeat(96)}`,
+    ).join("\n")
     const bounded = SubagentCompletion.bound(value)
     expect(bounded).toContain("0000 ")
     expect(bounded).not.toContain("1999 ")
-    expect(bounded).toContain("bytes truncated...")
+    expect(bounded).toContain("lines truncated...")
     // Only the head is kept, so the retained lines stay within the byte budget.
     expect(bounded.split("\n\n...")[0]!.length).toBeLessThanOrEqual(ToolOutput.MAX_BYTES)
+  })
+
+  test("never claims a truncation it did not perform", () => {
+    const value = `${"z".repeat(ToolOutput.MAX_BYTES - 1)}\n`
+    expect(SubagentCompletion.bound(value)).toBe(value)
   })
 })
 

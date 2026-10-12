@@ -8,8 +8,6 @@ import { emptyPatch } from "../../vcs/patch.js"
 const DIFF_TIMEOUT_MS = 250
 const MAX_DIFF_INPUT_CODE_UNITS = 4 * 1024 * 1024
 const MAX_DIFF_LINE_TOKENS = 128 * 1024
-// Largest inline patch the TUI previews (packages/core/src/tool/structured-file-diff.ts).
-const MAX_PATCH_BYTES = 256 * 1024
 
 export function fileDiff(
   file: string,
@@ -26,12 +24,14 @@ export function fileDiff(
   if (!structured) return coarse(file, before, after, status, oldLines, newLines)
 
   const counts = countChanges(structured)
-  const patch = formatPatch(structured)
-  // Degrade to a patchless preview instead of returning a diff no consumer can display.
-  if (Buffer.byteLength(patch, "utf-8") > MAX_PATCH_BYTES) return { file, patch: emptyPatch(file), status, ...counts }
-  return { file, patch, status, ...counts }
+  return { file, patch: formatPatch(structured), status, ...counts }
 }
 
+// v1 kept an oversized patch out of FileDiff.Info, but its `patch` was optional
+// and consumers fell back to the file contents. v2's `patch` is required and
+// consumers apply it (packages/cli/src/acp/permission.ts), so an empty
+// placeholder would show an oversized edit as no change. The input budget above
+// is what keeps the result bounded; `patch` stays a real patch.
 function coarse(
   file: string,
   before: string,
