@@ -149,9 +149,7 @@ export function project(previous: Projection | undefined, text: string, live: bo
   const tail = previous.blocks.at(-1)
   const suffix = text.slice(previous.text.length)
 
-  // A reference definition collapses the whole text into a single block, and one can be completed
-  // by an append whose label already streamed, so this check has to see the whole text.
-  if (!suffix || !tail || refs(text)) return { text, blocks: stream(text, live) }
+  if (!suffix || !tail) return { text, blocks: stream(text, live) }
 
   // The lexer replaces carriage returns before it lexes, so a raw is never a byte-exact suffix of
   // the text it came from. Appending across a CR, or onto text that is about to be normalized, has
@@ -161,13 +159,17 @@ export function project(previous: Projection | undefined, text: string, live: bo
   // A code tail is extended in place instead of re-lexed. Its opener line has to be closed for
   // that: while the info string is still streaming, the suffix is language metadata rather than
   // code content, and the tail has to be re-derived. The appended lines must not end on a line of
-  // structure characters either, because such a line can close a construct above the fence.
+  // structure characters either, because such a line can close a construct above the fence. And a
+  // reference definition collapses the whole text into a single block, so an append that completes
+  // one cannot be answered with a code block. That check scans the whole text, so it is only paid
+  // when this branch would otherwise fire.
   if (
     tail.mode === "code" &&
     !tail.complete &&
     tail.raw.includes("\n") &&
     !structuralLine(tail.raw + suffix) &&
-    !closesFence(tail.raw, suffix)
+    !closesFence(tail.raw, suffix) &&
+    !refs(text)
   )
     return {
       text,
