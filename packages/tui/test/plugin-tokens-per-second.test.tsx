@@ -41,7 +41,7 @@ function delta(text: string) {
 }
 
 test(
-  "renders a client-side tok/s estimate from text deltas and hides it when the stream stops",
+  "renders a client-side tok/s estimate from text deltas and keeps the cell at 0 when the stream stops",
   async () => {
     await using setup = await createAppFixture({
       config: { animations: false, tabs: { mode: "off" }, plugins: [pluginDirectory] },
@@ -53,22 +53,24 @@ test(
     await Bun.sleep(3500)
     await setup.renderOnce()
 
-    // Feed deltas until the plugin's slot is live and the cell appears.
+    // The cell is permanent, exactly like v1's footer: idle it reads 0.
+    expect(setup.captureCharFrame()).toMatch(/out ~0 tk\/s/)
+
+    // Feed deltas until the meter reads a live rate.
     await setup.waitFor(
       async () => {
         setup.events.emit(delta("assistant output chunk "))
         await Bun.sleep(60)
         await setup.renderOnce()
-        return setup.captureCharFrame().includes("tk/s")
+        return /out ~[1-9]\d* tk\/s/.test(setup.captureCharFrame())
       },
       { maxPasses: 100 },
     )
-    expect(setup.captureCharFrame()).toMatch(/out ~\d+ tk\/s/)
 
-    // No further deltas: the sliding window empties and the cell disappears.
+    // No further deltas: the sliding window empties and the cell falls back to 0.
     await Bun.sleep(2200)
     await setup.renderOnce()
-    expect(setup.captureCharFrame()).not.toContain("tk/s")
+    expect(setup.captureCharFrame()).toMatch(/out ~0 tk\/s/)
   },
   30_000,
 )

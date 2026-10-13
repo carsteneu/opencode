@@ -10,7 +10,8 @@ import { createEffect, createSignal, on, onCleanup, Show } from "solid-js"
 // v1 routes/session/footer.tsx (window and refresh both 1000ms there), counting
 // only text deltas like v1 did (`field === "text"`): it is an "out" estimate, so
 // on reasoning models it reads below the core cell, and the two cells are
-// independent.
+// independent. Like v1's footer the cell is permanent and idle it reads
+// `out ~0 tk/s`, so the meter never moves in and out of the layout.
 const WINDOW_MS = 1000
 const REFRESH_MS = 1000
 
@@ -44,7 +45,8 @@ class TokenRateMeter {
     if (this.samples.length < 2) return 0
     const first = this.samples[0]
     const last = this.samples[this.samples.length - 1]
-    // A stalled stream reads 0 so the cell disappears instead of freezing.
+    // A stalled stream reads 0 so the cell falls back to idle instead of
+    // freezing at the last value.
     if (at - last.at > this.windowMs) return 0
     const elapsed = (last.at - first.at) / 1000
     if (elapsed <= 0) return 0
@@ -119,7 +121,7 @@ function TokensPerSecond(props: { context: Plugin.Context; sessionID?: string; s
   })
 
   return (
-    <Show when={props.showDetails && Math.round(rate()) > 0}>
+    <Show when={props.showDetails}>
       <text fg={props.context.theme.text.muted} wrapMode="none" flexShrink={0}>
         out ~{Math.round(rate())} tk/s
       </text>
