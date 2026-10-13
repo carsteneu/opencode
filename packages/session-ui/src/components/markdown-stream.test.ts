@@ -246,3 +246,94 @@ describe("markdown stream", () => {
     })
   })
 })
+
+// The live prose tail is reconciled incrementally: only the region from the last block
+// boundary on is re-lexed, the frozen blocks above it are carried over untouched.
+describe("markdown stream incremental tail", () => {
+  test("carries frozen blocks over when prose is appended", () => {
+    const previous = project(undefined, "# Plan\n\nFirst body.\n\nSecond body.\n\nlive tail", true)
+    const next = project(previous, `${previous.text} continues`, true)
+
+    expect(previous.blocks).toHaveLength(4)
+    expect(next.blocks[0]).toBe(previous.blocks[0])
+    expect(next.blocks[1]).toBe(previous.blocks[1])
+    expect(next.blocks.at(-1)).toEqual({
+      raw: "live tail continues",
+      src: "live tail continues",
+      mode: "live",
+    })
+  })
+
+  test("re-derives the healed tail instead of appending to the healed text", () => {
+    const previous = project(undefined, "text **bo", true)
+
+    expect(previous.blocks.at(-1)).toEqual({ raw: "text **bo", src: "text **bo**", mode: "live" })
+
+    const next = project(previous, "text **bold** done", true)
+
+    expect(next.blocks.at(-1)).toEqual({ raw: "text **bold** done", src: "text **bold** done", mode: "live" })
+  })
+
+  test("freezes the tail and keeps a new block live when the append opens one", () => {
+    const previous = project(undefined, "paragraph", true)
+    const next = project(previous, "paragraph\n\n- item", true)
+
+    expect(next.blocks).toEqual([
+      { raw: "paragraph\n\n", src: "paragraph\n\n", mode: "full" },
+      { raw: "- item", src: "- item", mode: "live" },
+    ])
+  })
+
+  test("keeps a growing table in one live block", () => {
+    const previous = project(undefined, "| a | b |\n|---|", true)
+    const next = project(previous, `${previous.text}\n| 1 | 2 |`, true)
+
+    expect(next.blocks).toEqual([
+      { raw: "| a | b |\n|---|\n| 1 | 2 |", src: "| a | b |\n|---|\n| 1 | 2 |", mode: "live" },
+    ])
+  })
+
+  test("closes a fence that the append completes without re-lexing the prefix above it", () => {
+    const previous = project(undefined, "# Plan\n\nIntro.\n\n```ts\nconst x = 1\n``", true)
+    const next = project(previous, `${previous.text}\``, true)
+
+    expect(next.blocks[0]).toBe(previous.blocks[0])
+    expect(next.blocks.at(-1)).toEqual({
+      raw: "```ts\nconst x = 1\n```",
+      src: "const x = 1",
+      mode: "code",
+      language: "ts",
+      complete: true,
+    })
+  })
+
+  test("derives the tail from the current text even when the projection is reused", () => {
+    const reused = project(undefined, "# Plan\n\nFirst body\n\nshared tail", true)
+    const text = "# Plan\n\nFirst body\n\nshared tail for a different part"
+    const next = project(reused, text, true)
+
+    expect(next.blocks).toEqual(stream(text, true))
+  })
+
+  test("does not carry a normalized tail raw into the next projection", () => {
+    const previous = project(undefined, "- item ", true)
+
+    // the lexer rewrites a list item's trailing whitespace into a newline, so the tail raw is not
+    // the text suffix it came from - the region must be cut from the text, not from tail.raw
+    expect(previous.blocks.at(-1)).toEqual({ raw: "- item\n", src: "- item\n", mode: "live" })
+
+    const next = project(previous, "- item x", true)
+
+    expect(next.blocks).toEqual(stream("- item x", true))
+  })
+
+  test("keeps a normalized tail region correct while it keeps growing", () => {
+    let projection = project(undefined, "- item ", true)
+
+    for (const delta of ["x", " y", "\n- second", "\n  continued", "\n\nparagraph"]) {
+      const text = projection.text + delta
+      projection = project(projection, text, true)
+      expect(projection.blocks).toEqual(stream(text, true))
+    }
+  })
+})
