@@ -11,6 +11,7 @@ import { RunScrollbackStream } from "../../src/mini/scrollback.surface"
 import { RUN_THEME_FALLBACK, RUN_THEME_MONO } from "../../src/mini/theme"
 import type { StreamCommit } from "../../src/mini/types"
 import { diffImageFixture } from "../fixture/diff-image"
+import { sizedImage } from "../fixture/sized-image"
 
 const wide = `data:image/png;base64,${Buffer.from(diffImageFixture).toString("base64")}`
 // A 48 x 192 PNG with four colored quadrants.
@@ -125,13 +126,31 @@ test("reserves wrapped caption rows and allows caption-only output in a short te
   expect(out.externalOutput.take().at(-1)!.height).toBe(3)
 })
 
-test("uses physical cell geometry without enlarging a small image", async () => {
+test("stretches a small image to the transcript width instead of its natural cell geometry", async () => {
   const out = await setup({ imagePreview: true })
   // oxlint-disable-next-line no-restricted-globals -- OpenTUI does not expose test resolution mutation publicly.
   Reflect.set(out.renderer, "_resolution", { width: 800, height: 720 })
   await out.scrollback.append(image(wide))
-  expect(out.previews[0]!.size).toEqual({ width: 6, height: 1 })
+  expect(out.previews[0]!.size).toEqual({ width: 80, height: 13 })
   expect(out.previews[0]!.x).toBe(0)
+})
+
+test("keeps the caption without decoding an image above the inline pixel budget", async () => {
+  const out = await setup({ imagePreview: true })
+  await out.scrollback.append(image(sizedImage(3000, 3000), "huge.png"))
+  const commits = out.externalOutput.take()
+  expect(commits).toHaveLength(1)
+  expect(commits[0]!.text).toContain("\u203a huge.png\nNo preview")
+  expect(commits[0]!.height).toBe(2)
+  expect(out.previews[0]!.native).toBeNull()
+  expect(out.previews[0]!.image.loadError).toBeNull()
+})
+
+test("still decodes a real image within the inline pixel budget", async () => {
+  const out = await setup({ imagePreview: true })
+  await out.scrollback.append(image(wide, "landscape.png"))
+  expect(out.previews[0]!.image.loadError).toBeNull()
+  expect(out.previews[0]!.native).not.toBeNull()
 })
 
 test("finishes active text before every image and renders more than three images in order", async () => {

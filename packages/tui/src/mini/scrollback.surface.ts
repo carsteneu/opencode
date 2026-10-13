@@ -14,6 +14,7 @@ import {
   type ScrollbackSurface,
 } from "@opentui/core"
 import { entryBody, entryCanStream, entryDone, entryFlags } from "./entry.body"
+import { inlineImageBudgetExceeded } from "./image-budget"
 import { monoMarkdownRenderable, monoMarkdownTableOptions } from "./mono"
 import { entryColor, entryLook, entrySyntax } from "./scrollback.shared"
 import { turnSummaryCommit } from "./turn-summary"
@@ -368,13 +369,13 @@ export class RunScrollbackStream {
     }
   }
 
-  private async writeImage(commit: StreamCommit): Promise<void> {
+  private async writeImage(commit: StreamCommit, source: string): Promise<void> {
     const surface = this.renderer.createScrollbackSurface(entryFlags(commit))
     this.imageSurface = surface
 
     try {
       const image = new ImageRenderable(surface.renderContext, {
-        source: commit.image,
+        source: inlineImageBudgetExceeded(source) ? undefined : source,
         fit: "fit",
         visible: false,
         alignSelf: "flex-start",
@@ -400,23 +401,13 @@ export class RunScrollbackStream {
       surface.render()
 
       if (image.image && !this.mono) {
-        const resolution = this.renderer.resolution
+        // The transcript owns the width; the aspect ratio drives the height and
+        // only the rows left above the live region cap it.
         const fitted = image.getFittedSize(
-          Math.min(
-            surface.width,
-            resolution?.width
-              ? Math.max(1, Math.floor((image.image.width * this.renderer.terminalWidth) / resolution.width))
-              : Infinity,
-          ),
-          Math.min(
-            Math.max(0, this.renderer.terminalHeight - this.renderer.height - caption.height),
-            resolution?.height
-              ? Math.max(1, Math.floor((image.image.height * this.renderer.terminalHeight) / resolution.height))
-              : Infinity,
-          ),
+          surface.width,
+          Math.max(0, this.renderer.terminalHeight - this.renderer.height - caption.height),
           image.cellAspectRatio,
         )
-        // fit centers within its rectangle, so the rectangle itself must be fitted.
         image.width = fitted.width
         image.height = fitted.height
         image.visible = fitted.width > 0 && fitted.height > 0
@@ -449,7 +440,7 @@ export class RunScrollbackStream {
     }
 
     if (commit.image && this.imagePreview && !this.mono) {
-      await this.writeImage(commit)
+      await this.writeImage(commit, commit.image)
       this.tail = commit
       return
     }
