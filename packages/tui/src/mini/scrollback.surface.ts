@@ -369,10 +369,7 @@ export class RunScrollbackStream {
     }
   }
 
-  private async writeImage(commit: StreamCommit): Promise<void> {
-    const source = commit.image
-    if (!source) return
-
+  private async writeImage(commit: StreamCommit, source: string): Promise<void> {
     const surface = this.renderer.createScrollbackSurface(entryFlags(commit))
     this.imageSurface = surface
 
@@ -443,7 +440,7 @@ export class RunScrollbackStream {
     }
 
     if (commit.image && this.imagePreview && !this.mono) {
-      await this.writeImage(commit)
+      await this.writeImage(commit, commit.image)
       this.tail = commit
       return
     }
