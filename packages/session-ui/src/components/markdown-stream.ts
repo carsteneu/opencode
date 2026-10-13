@@ -22,7 +22,10 @@ const lexer = new Marked(markdownMath)
 function refs(text: string) {
   if (!text.includes("]:")) return false
 
-  return /^[ \t]{0,3}\[[^\]]+\]:[ \t]*(?:\S+|\r?\n[ \t]+\S+)/m.test(text)
+  // The label class must not cross a line break: `[^\]]+` makes the engine retry and backtrack from
+  // every `[` in the text, which is quadratic on a body of unclosed brackets. A label that spans a
+  // line break is no longer treated as a definition, and `stream` makes the same decision.
+  return /^[ \t]{0,3}\[[^\]\n]+\]:[ \t]*(?:\S+|\r?\n[ \t]+\S+)/m.test(text)
 }
 
 function language(value: string | undefined) {
@@ -66,10 +69,16 @@ function heal(text: string) {
  * a setext underline, a rule, a math delimiter, a table delimiter). A line that still holds a letter
  * or a digit cannot turn into one, so a line like that is safe to extend. Trailing blank lines are
  * ignored: they end constructs rather than complete them.
+ *
+ * The last non-blank line is found from the end on purpose. A forward pattern like `/\n+$/` retries
+ * at every position of a long run of newlines and backtracks it each time, which is quadratic and
+ * runs once per delta - a fence body of blank lines would stall the worker.
  */
 function structuralLine(raw: string) {
-  const content = raw.replace(/\n+$/, "")
-  const line = content.slice(content.lastIndexOf("\n") + 1)
+  let end = raw.length
+
+  while (end > 0 && raw[end - 1] === "\n") end--
+  const line = raw.slice(raw.lastIndexOf("\n", end - 1) + 1, end)
 
   return !/[\p{L}\p{N}]/u.test(line)
 }

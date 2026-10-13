@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { canReusePendingBlock } from "./markdown-projection"
-import { project, stream } from "./markdown-stream"
+import { project, stream, type Block } from "./markdown-stream"
 
 describe("markdown stream", () => {
   test("heals incomplete emphasis while streaming", () => {
@@ -268,6 +268,28 @@ describe("markdown stream tail reconciliation", () => {
     const next = project(previous, `${previous.text}$$\n`, true)
 
     expect(next.blocks).toEqual(stream(next.text, true))
+  })
+
+  // the guards run once per delta, so their cost has to stay proportional to the delta, not to the
+  // text: a fence body of blank lines and a body of unclosed brackets are the two shapes that made
+  // a whole-text scan quadratic
+  test.each([
+    ["blank lines in a fence body", "```text\n" + "\n".repeat(120_000) + "x"],
+    ["unclosed brackets in a fence body", "```text\n]:\n" + "[a".repeat(60_000)],
+  ])("stays linear on %s", (_name, text) => {
+    const started = performance.now()
+    const projection = project(undefined, text, true)
+    const elapsed = performance.now() - started
+
+    expect(projection.blocks).toEqual(stream(text, true))
+    // the same document costs seconds per delta without the linear scans
+    expect(elapsed).toBeLessThan(2000)
+  })
+
+  test("does not treat a label spanning a line break as a definition", () => {
+    const text = "see [a\nb]: https://example.com/guide"
+
+    expect(stream(text, true)).toEqual([{ raw: text, src: text, mode: "live" }] satisfies Block[])
   })
 
   test("does not extend an indented code tail as if it were a fence", () => {

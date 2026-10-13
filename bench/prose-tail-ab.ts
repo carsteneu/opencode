@@ -20,9 +20,15 @@ const resultsDir = `${import.meta.dir}/results`
 const probe = `${import.meta.dir}/prose-tail-ram.ts`
 const probeSha = new Bun.CryptoHasher("sha256").update(await Bun.file(probe).text()).digest("hex")
 
+// the arm directory is operator supplied and the runner writes into it, so refuse anything that is
+// not a checkout of this repository
+if (!(await Bun.file(`${baseDir}/packages/session-ui/src/components/markdown-stream.ts`).exists()))
+  throw new Error(`baseline is not a checkout of this repo: ${baseDir}`)
+
 await $`mkdir -p ${resultsDir}`.quiet()
 await $`cp ${probe} ${baseDir}/bench/prose-tail-ram.ts`.quiet()
 
+const relative = (path: string) => path.replace(`${patchDir}/`, "")
 const baseHead = (await $`git rev-parse --short HEAD`.cwd(baseDir).text()).trim()
 const patchHead = (await $`git rev-parse --short HEAD`.cwd(patchDir).text()).trim()
 
@@ -123,8 +129,12 @@ for (const arm of ["baseline", "patch"] as const) {
 const raw = {
   methodology: {
     arms: {
-      baseline: { dir: baseDir, head: baseHead, measured: samples.find((s) => s.arm === "baseline")?.measured },
-      patch: { dir: patchDir, head: patchHead, measured: samples.find((s) => s.arm === "patch")?.measured },
+      baseline: {
+        dir: relative(baseDir),
+        head: baseHead,
+        measured: samples.find((s) => s.arm === "baseline")?.measured,
+      },
+      patch: { dir: ".", head: patchHead, measured: samples.find((s) => s.arm === "patch")?.measured },
     },
     probeSha,
     rounds,
