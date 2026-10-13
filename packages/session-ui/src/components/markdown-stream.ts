@@ -74,6 +74,26 @@ function structuralLine(raw: string) {
   return !/[\p{L}\p{N}]/u.test(line)
 }
 
+/**
+ * A delta can carry several lines and any of them can end a construct that started above the tail,
+ * so all of them are checked. The last line is left to `structuralLine`, which owns the case of a
+ * line that is still being extended.
+ */
+function structuralSpan(text: string) {
+  return text
+    .split("\n")
+    .slice(0, -1)
+    .some((line) => line.trim() !== "" && structuralLine(line))
+}
+
+/**
+ * marked only allows spaces before a fence, while `open()` also accepts a tab - and a tab-indented
+ * line is an indented code block, whose raw has no fence to extend.
+ */
+function fenceLine(raw: string) {
+  return /^ {0,3}(`{3,}|~{3,})/.test(raw)
+}
+
 export function stream(text: string, live: boolean): Block[] {
   if (!live) return completedProjection(text).blocks
 
@@ -158,16 +178,18 @@ export function project(previous: Projection | undefined, text: string, live: bo
 
   // A code tail is extended in place instead of re-lexed. Its opener line has to be closed for
   // that: while the info string is still streaming, the suffix is language metadata rather than
-  // code content, and the tail has to be re-derived. The appended lines must not end on a line of
-  // structure characters either, because such a line can close a construct above the fence. And a
-  // reference definition collapses the whole text into a single block, so an append that completes
-  // one cannot be answered with a code block. That check scans the whole text, so it is only paid
-  // when this branch would otherwise fire.
+  // code content, and the tail has to be re-derived. The appended lines must not end a construct
+  // above the fence - neither on the line still being extended nor on any earlier line of the
+  // delta - and a reference definition collapses the whole text into a single block, so an append
+  // that completes one cannot be answered with a code block. That last check scans the whole text,
+  // so it is only paid when this branch would otherwise fire.
   if (
     tail.mode === "code" &&
     !tail.complete &&
+    fenceLine(tail.raw) &&
     tail.raw.includes("\n") &&
     !structuralLine(tail.raw + suffix) &&
+    !structuralSpan(suffix) &&
     !closesFence(tail.raw, suffix) &&
     !refs(text)
   )

@@ -51,6 +51,8 @@ type Sample = {
   arm: "baseline" | "patch"
   loadBefore: string
   loadAfter: string
+  /** sha256 of the file under test, so the artifact can be tied to the code it measured */
+  measured: string
   parseCurrentCpuMs: number
   parseCurrentSpread: number[]
   parseFastPathCpuMs: number
@@ -72,6 +74,9 @@ for (let round = 1; round <= rounds; round++) {
   for (const arm of ["baseline", "patch"] as const) {
     const dir = arm === "baseline" ? baseDir : patchDir
     const loadBefore = await loadavg()
+    const measured = new Bun.CryptoHasher("sha256")
+      .update(await Bun.file(`${dir}/packages/session-ui/src/components/markdown-stream.ts`).text())
+      .digest("hex")
     const parse = JSON.parse(await $`bun bench/parse.ts 40000 24 3`.cwd(dir).quiet().text())
     const ram = JSON.parse(await $`bun bench/prose-tail-ram.ts 40000 24`.cwd(dir).quiet().text())
     const loadAfter = await loadavg()
@@ -81,6 +86,7 @@ for (let round = 1; round <= rounds; round++) {
       arm,
       loadBefore,
       loadAfter,
+      measured,
       parseCurrentCpuMs: medianOf(parse.current_full_relex.cpuMs),
       parseCurrentSpread: spreadOf(parse.current_full_relex.cpuMs),
       parseFastPathCpuMs: medianOf(parse.fastpath_v1_same_line.cpuMs),
@@ -116,7 +122,10 @@ for (const arm of ["baseline", "patch"] as const) {
 
 const raw = {
   methodology: {
-    arms: { baseline: { dir: baseDir, head: baseHead }, patch: { dir: patchDir, head: patchHead } },
+    arms: {
+      baseline: { dir: baseDir, head: baseHead, measured: samples.find((s) => s.arm === "baseline")?.measured },
+      patch: { dir: patchDir, head: patchHead, measured: samples.find((s) => s.arm === "patch")?.measured },
+    },
     probeSha,
     rounds,
     parseCommand: "bun bench/parse.ts 40000 24 3",

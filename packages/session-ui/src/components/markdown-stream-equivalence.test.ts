@@ -106,6 +106,8 @@ const DOCUMENTS = {
   duplicateDefinitions: "[a][1]\n\n[1]: https://one\n\n[1]: https://two\n\nlive tail",
   fenceOpenerSplit: "Intro.\n\n```ts title=example",
   structuralCloser: "$$\n\n```ts\nvalue\n$$\n",
+  structuralCloserWithText: "$$\n\n```ts\nvalue\n$$\nmore words here",
+  tabIndentedFence: "\t```ts\nvalue here\n\nAfter.\n",
 } satisfies Record<string, string>
 
 function seeded(seed: number) {

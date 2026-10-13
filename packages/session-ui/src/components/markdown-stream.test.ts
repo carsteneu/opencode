@@ -270,6 +270,20 @@ describe("markdown stream tail reconciliation", () => {
     expect(next.blocks).toEqual(stream(next.text, true))
   })
 
+  test("does not extend an indented code tail as if it were a fence", () => {
+    const previous = project(undefined, "\t```ts\n", true)
+    const next = project(previous, "\t```ts\nvalue", true)
+
+    expect(next.blocks).toEqual(stream(next.text, true))
+  })
+
+  test("reprojects when an append closes a construct above the fence and carries on", () => {
+    const previous = project(undefined, "$$\n\n```ts\nvalue\n", true)
+    const next = project(previous, "$$\n\n```ts\nvalue\n$$\nmore", true)
+
+    expect(next.blocks).toEqual(stream(next.text, true))
+  })
+
   test("extends a code tail without reprojecting the blocks above it", () => {
     const previous = project(undefined, "# Plan\n\nIntro.\n\n```ts\nconst one = 1\n", true)
     const next = project(previous, `${previous.text}const two = 2`, true)
