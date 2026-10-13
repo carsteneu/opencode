@@ -5,20 +5,20 @@ measured, and both belong in the record:
 
 - **Run A - the incremental-region variant** (`1182ece213`), measured 2026-10-13 18:37-18:39.
   It carried a large win and was then **rejected in review for correctness**, see below.
-- **Run B - the shipped revision** (`b7c467f943`), measured 2026-10-13 19:29-19:32. It is a
+- **Run B - the shipped revision** (`6655623843`), measured 2026-10-13 19:45-19:48. It is a
   correctness fix without a performance claim.
 
 ## Provenance
 
-| | |
-| --- | --- |
-| baseline branch point | `cf5bf5fb91`, worktree `.yesmem/tmp/base-checkout` |
-| measured baseline file | `packages/session-ui/src/components/markdown-stream.ts`, sha256 `2569fcea2d60d6ef748154f07f51a8d47a5a1190fb9e2b39a47b1ee5e5c882cf` |
-| measured patch revision | `b7c467f943` (clean tree), same file, sha256 `541e1b8e3327476f68aad38706a80ac141cd88e196bfdd8b116df0dfcbdf3a70` |
-| probe | `bench/prose-tail-ram.ts`, sha256 `93f676ee31a346a5e9aa475ade715b259aa36aa1da286c1cb9f9c1b96b8285d7`, copied unchanged into both arms |
-| runner | `bun bench/prose-tail-ab.ts 5` - arms alternate inside one series (`b p b p b p b p b p`), 5 paired rounds |
-| raw data | `prose-tail-ab.ndjson` / `prose-tail-ab.json` (run B), `prose-tail-ab-regionpath.ndjson` / `.json` (run A) |
-| workload | `bench/stream.ts`, 40000 chars in 1667 deltas of 24 chars |
+|                         |                                                                                                                                       |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| baseline branch point   | `cf5bf5fb91`, worktree `.yesmem/tmp/base-checkout`                                                                                    |
+| measured baseline file  | `packages/session-ui/src/components/markdown-stream.ts`, sha256 `2569fcea2d60d6ef748154f07f51a8d47a5a1190fb9e2b39a47b1ee5e5c882cf`    |
+| measured patch revision | `6655623843` (clean tree), same file, sha256 `1c58b98475cab0874c65f4978fbb282a2c024318d482048fe2fd63688d5b1922`                       |
+| probe                   | `bench/prose-tail-ram.ts`, sha256 `93f676ee31a346a5e9aa475ade715b259aa36aa1da286c1cb9f9c1b96b8285d7`, copied unchanged into both arms |
+| runner                  | `bun bench/prose-tail-ab.ts 5` - arms alternate inside one series (`b p b p b p b p b p`), 5 paired rounds                            |
+| raw data                | `prose-tail-ab.ndjson` / `prose-tail-ab.json` (run B), `prose-tail-ab-regionpath.ndjson` / `.json` (run A)                            |
+| workload                | `bench/stream.ts`, 40000 chars in 1667 deltas of 24 chars                                                                             |
 
 The runner records both the sha256 of the file under test and the HEAD of each arm into the result
 file, so a result can be tied to the code it measured. Recreate the baseline worktree with
@@ -28,62 +28,65 @@ the RED proof); the file under test was verified by hash, the rest of that tree 
 
 ## Host load
 
-Run A ran at load **9.3-17.4**, run B at **5.74-7.48** (the fork runbook budget is <= 4), with a
+Run A ran at load **9.3-17.4**, run B at **5.06-8.50** (the fork runbook budget is <= 4), with a
 second yesloop agent on the same machine. **Every absolute number below is UNVERIFIED as a
 machine-independent figure**; the finding is the paired baseline/patch ratio, computed inside one
 series. `n`, load range and source command are given per row.
 
 ## Run B - the shipped revision (correctness fix, no performance claim)
 
-| metric | baseline | patch | ratio | n | load | source |
-| --- | --- | --- | --- | --- | --- | --- |
-| markdown projection CPU per 40 KB stream (median of 3 in-process runs) | 1562.7 ms [1558-2255] | 1732.4 ms [1601-2175] | 0.97 [0.72-1.04] | 5 | 5.7-7.5 | `bench/parse.ts` `current_full_relex.cpuMs` |
-| projection CPU per stream, own process | 2270.7 ms [1721-2346] | 1874.3 ms [1733-2332] | 1.22 [0.74-1.35] | 5 | 5.7-7.5 | `bench/prose-tail-ram.ts` `load.cpuMsPerStream` |
-| wall clock per stream | 2034.9 ms [1486-2111] | 1608.4 ms [1495-2091] | 1.27 [0.71-1.41] | 5 | 5.7-7.5 | `bench/prose-tail-ram.ts` `load.wallMs` |
-| CPU idle (400 ms window) | 0.3 ms | 0.3 ms | 1.18 [0.71-1.81] | 5 | 5.7-7.5 | `bench/prose-tail-ram.ts` `idle.idleCpuMs` |
-| process PSS idle | 44.17 MiB [43.5-45.6] | 44.42 MiB [43.9-44.6] | 1.00 [0.98-1.02] | 5 | 5.7-7.5 | `bench/prose-tail-ram.ts` `idle.pssKb` |
-| process PSS peak under streaming load | 71.44 MiB [70.7-72.9] | 71.90 MiB [70.7-72.2] | 1.00 [0.99-1.01] | 5 | 5.7-7.5 | `bench/prose-tail-ram.ts` `load.pssKbPeak` |
-| process PSS after the stream | 71.44 MiB | 71.90 MiB | 1.00 [0.99-1.01] | 5 | 5.7-7.5 | `bench/prose-tail-ram.ts` `load.pssKbEnd` |
-| harness arm: v1 same-line fast path | 387.1 ms [368-507] | 454.9 ms [389-570] | 0.94 [0.73-0.97] | 5 | 5.7-7.5 | `bench/parse.ts` `fastpath_v1_same_line.cpuMs` |
-| **negative control:** block lexer alone over the full text (identical code in both arms) | 1738.0 ms [1686-2323] | 1849.7 ms [1738-2408] | **0.97** [0.75-0.99] | 5 | 5.7-7.5 | `bench/parse.ts` `lexer_probe_full_lex.cpuMs` |
-| worker boundary, full-text protocol, round trip per stream | 1814.8 ms | 1828.2 ms | 0.99x | 1 | 6.6-7.0 | `bench/worker.ts` `proj-full.totalRoundTripMs` |
-| worker boundary, suffix protocol, round trip per stream | 689.6 ms | 778.0 ms | 0.89x | 1 | 6.6-7.0 | `bench/worker.ts` `proj-suffix.totalRoundTripMs` |
-| main thread post of the request payload (1667 deltas) | 18.6 ms | 17.0 ms | 1.09x | 1 | 6.6-7.0 | `bench/worker.ts` `proj-full.totalPostMs` |
+| metric                                                                                   | baseline              | patch                 | ratio                | n   | load    | source                                           |
+| ---------------------------------------------------------------------------------------- | --------------------- | --------------------- | -------------------- | --- | ------- | ------------------------------------------------ |
+| markdown projection CPU per 40 KB stream (median of 3 in-process runs)                   | 2130.6 ms [1592-2409] | 1900.0 ms [1593-2189] | 1.06 [0.73-1.33]     | 5   | 5.1-8.5 | `bench/parse.ts` `current_full_relex.cpuMs`      |
+| projection CPU per stream, own process                                                   | 2281.8 ms [1697-2416] | 1851.0 ms [1717-2642] | 1.25 [0.64-1.33]     | 5   | 5.1-8.5 | `bench/prose-tail-ram.ts` `load.cpuMsPerStream`  |
+| wall clock per stream                                                                    | 2045.9 ms [1465-2163] | 1591.6 ms [1474-2360] | 1.30 [0.62-1.39]     | 5   | 5.1-8.5 | `bench/prose-tail-ram.ts` `load.wallMs`          |
+| CPU idle (400 ms window)                                                                 | 0.4 ms                | 0.2 ms                | 1.50 [1.09-1.71]     | 5   | 5.1-8.5 | `bench/prose-tail-ram.ts` `idle.idleCpuMs`       |
+| process PSS idle                                                                         | 44.00 MiB [42.5-45.1] | 44.19 MiB [43.6-46.7] | 0.97 [0.94-1.03]     | 5   | 5.1-8.5 | `bench/prose-tail-ram.ts` `idle.pssKb`           |
+| process PSS peak under streaming load                                                    | 71.27 MiB [70.4-71.3] | 72.01 MiB [71.3-73.5] | 0.99 [0.97-1.00]     | 5   | 5.1-8.5 | `bench/prose-tail-ram.ts` `load.pssKbPeak`       |
+| process PSS after the stream                                                             | 71.27 MiB             | 72.01 MiB             | 0.99 [0.97-1.00]     | 5   | 5.1-8.5 | `bench/prose-tail-ram.ts` `load.pssKbEnd`        |
+| harness arm: v1 same-line fast path                                                      | 498.5 ms [361-582]    | 465.4 ms [419-552]    | 0.97 [0.66-1.25]     | 5   | 5.1-8.5 | `bench/parse.ts` `fastpath_v1_same_line.cpuMs`   |
+| **negative control:** block lexer alone over the full text (identical code in both arms) | 2360.7 ms [1702-2642] | 1983.4 ms [1723-2563] | **1.06** [0.68-1.36] | 5   | 5.1-8.5 | `bench/parse.ts` `lexer_probe_full_lex.cpuMs`    |
+| worker boundary, full-text protocol, round trip per stream                               | 1793.1 ms             | 1812.3 ms             | 0.99x                | 1   | 7.4     | `bench/worker.ts` `proj-full.totalRoundTripMs`   |
+| worker boundary, suffix protocol, round trip per stream                                  | 575.6 ms              | 616.6 ms              | 0.93x                | 1   | 7.4     | `bench/worker.ts` `proj-suffix.totalRoundTripMs` |
+| main thread post of the request payload (1667 deltas)                                    | 17.0 ms               | 17.7 ms               | 0.96x                | 1   | 7.4     | `bench/worker.ts` `proj-full.totalPostMs`        |
 
 **Reading:** nothing here is a change. The negative control exercises `stream()` only, which this
-revision does not touch at all, so its ratio *is* the noise floor of the series: 0.97 with a spread of
-0.75-0.99 at n=5 and load ~6. Every row sits inside that band, including the two rows that look like a
-22-27 % win (own-process CPU and wall clock, both with a spread that spans 0.7-1.4) and the row that
-looks like a 6 % loss (projection CPU, 0.97). RAM is identical: PSS idle 1.00, PSS peak and end
-1.00 with a spread of 0.99-1.01, i.e. within 0.7 MiB on a 72 MiB process. The honest statement is:
-the shipped change costs and saves nothing measurable, which is what a guard-only change should
-measure. The worker rows are n=1 and only show that the protocol bytes did not move
-(`responseBytesMedian` is identical in both arms).
+revision does not touch at all (the function region is byte-identical to the base), so its ratio _is_
+the noise floor of the series: **1.06 with a spread of 0.68-1.36** at n=5 and load ~6. Every other row
+sits inside that band - including the two rows that look like a 25-30 % win (own-process CPU and wall
+clock) and the row that looks like a 6 % loss (projection CPU, 1.06, the same number the control
+shows). Across the three series of this revision the control took 0.97, 1.06 and the projection 0.97,
+1.01, 1.06, i.e. the ordering has no consistent direction and the spread (±35 %) swallows the
+differences. RAM is identical: PSS idle 0.97, peak and end 0.99 with a spread of 0.97-1.00, i.e.
+within 0.8 MiB on a 72 MiB process.
 
-An earlier revision of run B (guarded, but with the `refs()` check on every delta) is in
-`prose-tail-ab-regionpath`-style files as `prose-tail-ab-refsfirst.*`; there the projection measured
-0.90 [0.71-1.04] and the fast-path arm 0.83 [0.69-0.98] against its own control at 0.94 [0.70-1.04].
-Those two ratios sit at or just outside the control's upper edge, and the mechanical argument for the
-placement (the check is an O(text) scan that only the code branch needs) is sound, but with n=5 and
-this load the measurement alone does not establish the causality. The change was made on the
-mechanical argument, and the two series together are consistent with it.
+The honest statement is: the shipped change costs and saves nothing measurable, which is what a
+guard-only change should measure. The worker rows are n=1 and only show that the protocol bytes did
+not move (`responseBytesMedian` is identical in both arms).
+
+The guards also bound their own cost: an earlier revision of this branch had two _quadratic_ scans in
+them (a `replace(/\n+$/, "")` and a per-delta `refs()` with a line-crossing label class), found by
+the security review; a fence body of 160 KB of blank lines cost 13.8 s _per delta_ against 0.1 ms on
+the base, and a body of unclosed brackets ~900x. Both are linear now, and two cost-guard tests pin
+them. That is the one row of this whole report where the patch was materially worse than the base,
+and it is fixed.
 
 ## Run A - the incremental-region variant (rejected)
 
-| metric | baseline | patch | ratio | n | load | source |
-| --- | --- | --- | --- | --- | --- | --- |
-| markdown projection CPU per 40 KB stream | 2204 ms [1842-2775] | 86 ms [67-105] | **27.5x** [20.3-37.7] | 5 | 9.3-17.4 | `bench/parse.ts` `current_full_relex.cpuMs` |
-| projection CPU per stream, own process | 2777.6 ms [2148-3681] | 146.4 ms [134-315] | **19.9x** [6.8-25.1] | 5 | 9.3-17.4 | `bench/prose-tail-ram.ts` `load.cpuMsPerStream` |
-| wall clock per stream | 2494.4 ms [1901-3315] | 98.0 ms [89-240] | **25.5x** [7.9-33.8] | 5 | 9.3-17.4 | `bench/prose-tail-ram.ts` `load.wallMs` |
-| CPU idle (400 ms window) | 0.5 ms | 2.4 ms | 0.19 [0.17-1.36] | 5 | 9.3-17.4 | `bench/prose-tail-ram.ts` `idle.idleCpuMs` |
-| process PSS idle | 36.19 MiB [35.3-45.0] | 38.35 MiB [38.1-38.6] | 0.94 [0.92-1.18] | 5 | 9.3-17.4 | `bench/prose-tail-ram.ts` `idle.pssKb` |
-| process PSS peak under streaming load | 63.39 MiB [62.8-71.5] | 61.04 MiB [59.8-63.1] | 1.05 [1.00-1.17] | 5 | 9.3-17.4 | `bench/prose-tail-ram.ts` `load.pssKbPeak` |
-| process PSS after the stream | 63.39 MiB | 60.94 MiB | 1.06 [1.03-1.17] | 5 | 9.3-17.4 | `bench/prose-tail-ram.ts` `load.pssKbEnd` |
-| harness arm: v1 same-line fast path | 505.8 ms | 77.2 ms | 7.6x [4.2-10.3] | 5 | 9.3-17.4 | `bench/parse.ts` `fastpath_v1_same_line.cpuMs` |
-| **negative control:** block lexer alone over the full text | 2296.8 ms [2070-2979] | 2927.7 ms [2136-4437] | **0.97** [0.52-1.27] | 5 | 9.3-17.4 | `bench/parse.ts` `lexer_probe_full_lex.cpuMs` |
-| worker boundary, full-text protocol, round trip per stream | 2434.0 ms | 285.0 ms | 8.5x | 1 | 9.3 | `bench/worker.ts` `proj-full.totalRoundTripMs` |
-| worker boundary, suffix protocol, round trip per stream | 706.7 ms | 268.6 ms | 2.6x | 1 | 9.3 | `bench/worker.ts` `proj-suffix.totalRoundTripMs` |
-| main thread post of the request payload (1667 deltas) | 25.4 ms | 15.5 ms | 1.6x | 1 | 9.3 | `bench/worker.ts` `proj-full.totalPostMs` |
+| metric                                                     | baseline              | patch                 | ratio                 | n   | load     | source                                           |
+| ---------------------------------------------------------- | --------------------- | --------------------- | --------------------- | --- | -------- | ------------------------------------------------ |
+| markdown projection CPU per 40 KB stream                   | 2204 ms [1842-2775]   | 86 ms [67-105]        | **27.5x** [20.3-37.7] | 5   | 9.3-17.4 | `bench/parse.ts` `current_full_relex.cpuMs`      |
+| projection CPU per stream, own process                     | 2777.6 ms [2148-3681] | 146.4 ms [134-315]    | **19.9x** [6.8-25.1]  | 5   | 9.3-17.4 | `bench/prose-tail-ram.ts` `load.cpuMsPerStream`  |
+| wall clock per stream                                      | 2494.4 ms [1901-3315] | 98.0 ms [89-240]      | **25.5x** [7.9-33.8]  | 5   | 9.3-17.4 | `bench/prose-tail-ram.ts` `load.wallMs`          |
+| CPU idle (400 ms window)                                   | 0.5 ms                | 2.4 ms                | 0.19 [0.17-1.36]      | 5   | 9.3-17.4 | `bench/prose-tail-ram.ts` `idle.idleCpuMs`       |
+| process PSS idle                                           | 36.19 MiB [35.3-45.0] | 38.35 MiB [38.1-38.6] | 0.94 [0.92-1.18]      | 5   | 9.3-17.4 | `bench/prose-tail-ram.ts` `idle.pssKb`           |
+| process PSS peak under streaming load                      | 63.39 MiB [62.8-71.5] | 61.04 MiB [59.8-63.1] | 1.05 [1.00-1.17]      | 5   | 9.3-17.4 | `bench/prose-tail-ram.ts` `load.pssKbPeak`       |
+| process PSS after the stream                               | 63.39 MiB             | 60.94 MiB             | 1.06 [1.03-1.17]      | 5   | 9.3-17.4 | `bench/prose-tail-ram.ts` `load.pssKbEnd`        |
+| harness arm: v1 same-line fast path                        | 505.8 ms              | 77.2 ms               | 7.6x [4.2-10.3]       | 5   | 9.3-17.4 | `bench/parse.ts` `fastpath_v1_same_line.cpuMs`   |
+| **negative control:** block lexer alone over the full text | 2296.8 ms [2070-2979] | 2927.7 ms [2136-4437] | **0.97** [0.52-1.27]  | 5   | 9.3-17.4 | `bench/parse.ts` `lexer_probe_full_lex.cpuMs`    |
+| worker boundary, full-text protocol, round trip per stream | 2434.0 ms             | 285.0 ms              | 8.5x                  | 1   | 9.3      | `bench/worker.ts` `proj-full.totalRoundTripMs`   |
+| worker boundary, suffix protocol, round trip per stream    | 706.7 ms              | 268.6 ms              | 2.6x                  | 1   | 9.3      | `bench/worker.ts` `proj-suffix.totalRoundTripMs` |
+| main thread post of the request payload (1667 deltas)      | 25.4 ms               | 15.5 ms               | 1.6x                  | 1   | 9.3      | `bench/worker.ts` `proj-full.totalPostMs`        |
 
 **Why it was rejected.** The win is real and large - 27.5x on the core metric, every paired round
 above 20x, far outside the control's 0.52-1.27 noise band - but the optimisation is not equivalent to

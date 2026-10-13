@@ -2,14 +2,14 @@
   "methodology": {
     "arms": {
       "baseline": {
-        "dir": "/home/chief/projects/opencode/.worktrees/yesloop-b2-prose-tail/bench/../.yesmem/tmp/base-checkout",
+        "dir": ".yesmem/tmp/base-checkout",
         "head": "cf5bf5fb91",
         "measured": "2569fcea2d60d6ef748154f07f51a8d47a5a1190fb9e2b39a47b1ee5e5c882cf"
       },
       "patch": {
-        "dir": "/home/chief/projects/opencode/.worktrees/yesloop-b2-prose-tail/bench/..",
-        "head": "b7c467f943",
-        "measured": "541e1b8e3327476f68aad38706a80ac141cd88e196bfdd8b116df0dfcbdf3a70"
+        "dir": ".",
+        "head": "6655623843",
+        "measured": "1c58b98475cab0874c65f4978fbb282a2c024318d482048fe2fd63688d5b1922"
       }
     },
     "probeSha": "93f676ee31a346a5e9aa475ade715b259aa36aa1da286c1cb9f9c1b96b8285d7",
@@ -23,16 +23,16 @@
     {
       "round": 1,
       "arm": "baseline",
-      "loadBefore": "5.74 6.19 7.39",
-      "loadAfter": "6.48 6.34 7.42",
+      "loadBefore": "5.06 5.37 6.22",
+      "loadAfter": "5.53 5.46 6.23",
       "measured": "2569fcea2d60d6ef748154f07f51a8d47a5a1190fb9e2b39a47b1ee5e5c882cf",
-      "parseCurrentCpuMs": 1664.6,
+      "parseCurrentCpuMs": 2317.3,
       "parseCurrentSpread": [
-        1563.9,
-        1738.4
+        2218.7,
+        2361.9
       ],
-      "parseFastPathCpuMs": 427.8,
-      "parseLexerProbeCpuMs": 1840.1,
+      "parseFastPathCpuMs": 537.6,
+      "parseLexerProbeCpuMs": 2499.2,
       "parseEquivalence": {
         "blockStructureMismatches": 0,
         "rawMismatches": 2,
@@ -42,27 +42,27 @@
         "sameLineDeltas": 1164,
         "newlineDeltas": 503
       },
-      "ramIdlePssKb": 46083,
-      "ramIdleCpuMs": 0.38100000000002865,
-      "ramLoadPssKbPeak": 73085,
-      "ramLoadPssKbEnd": 73085,
-      "ramCpuMsPerStream": 2288.362,
-      "ramWallMs": 2046.4216460000002,
+      "ramIdlePssKb": 45823,
+      "ramIdleCpuMs": 0.353999999999985,
+      "ramLoadPssKbPeak": 73061,
+      "ramLoadPssKbEnd": 73061,
+      "ramCpuMsPerStream": 2281.7850000000003,
+      "ramWallMs": 2045.898397,
       "ramBlocks": 276
     },
     {
       "round": 1,
       "arm": "patch",
-      "loadBefore": "6.48 6.34 7.42",
-      "loadAfter": "7.48 6.57 7.48",
-      "measured": "541e1b8e3327476f68aad38706a80ac141cd88e196bfdd8b116df0dfcbdf3a70",
-      "parseCurrentCpuMs": 1732.4,
+      "loadBefore": "5.53 5.46 6.23",
+      "loadAfter": "5.64 5.50 6.23",
+      "measured": "1c58b98475cab0874c65f4978fbb282a2c024318d482048fe2fd63688d5b1922",
+      "parseCurrentCpuMs": 2184.4,
       "parseCurrentSpread": [
-        1598.7,
-        1763.3
+        2169,
+        2185
       ],
-      "parseFastPathCpuMs": 454.9,
-      "parseLexerProbeCpuMs": 1849.7,
+      "parseFastPathCpuMs": 552.2,
+      "parseLexerProbeCpuMs": 2350.7,
       "parseEquivalence": {
         "blockStructureMismatches": 0,
         "rawMismatches": 2,
@@ -72,27 +72,27 @@
         "sameLineDeltas": 1164,
         "newlineDeltas": 503
       },
-      "ramIdlePssKb": 45488,
-      "ramIdleCpuMs": 0.21100000000001273,
-      "ramLoadPssKbPeak": 73710,
-      "ramLoadPssKbEnd": 73710,
-      "ramCpuMsPerStream": 1874.2600000000002,
-      "ramWallMs": 1608.350285,
+      "ramIdlePssKb": 45248,
+      "ramIdleCpuMs": 0.257000000000005,
+      "ramLoadPssKbPeak": 73742,
+      "ramLoadPssKbEnd": 73742,
+      "ramCpuMsPerStream": 1717.109,
+      "ramWallMs": 1474.3279040000002,
       "ramBlocks": 276
     },
     {
       "round": 2,
       "arm": "baseline",
-      "loadBefore": "7.48 6.57 7.48",
-      "loadAfter": "6.95 6.51 7.44",
+      "loadBefore": "5.64 5.50 6.23",
+      "loadAfter": "5.73 5.53 6.22",
       "measured": "2569fcea2d60d6ef748154f07f51a8d47a5a1190fb9e2b39a47b1ee5e5c882cf",
-      "parseCurrentCpuMs": 2255.2,
+      "parseCurrentCpuMs": 2130.6,
       "parseCurrentSpread": [
-        2226.1,
-        2282.3
+        2109.2,
+        2175.3
       ],
-      "parseFastPathCpuMs": 506.8,
-      "parseLexerProbeCpuMs": 2323.3,
+      "parseFastPathCpuMs": 498.5,
+      "parseLexerProbeCpuMs": 2360.7,
       "parseEquivalence": {
         "blockStructureMismatches": 0,
         "rawMismatches": 2,
@@ -102,27 +102,27 @@
         "sameLineDeltas": 1164,
         "newlineDeltas": 503
       },
-      "ramIdlePssKb": 46668,
-      "ramIdleCpuMs": 0.37000000000000455,
-      "ramLoadPssKbPeak": 74650,
-      "ramLoadPssKbEnd": 74650,
-      "ramCpuMsPerStream": 2270.731,
-      "ramWallMs": 2034.8773030000002,
+      "ramIdlePssKb": 45054,
+      "ramIdleCpuMs": 0.34600000000000364,
+      "ramLoadPssKbPeak": 72128,
+      "ramLoadPssKbEnd": 72128,
+      "ramCpuMsPerStream": 2307.208,
+      "ramWallMs": 2066.3001639999998,
       "ramBlocks": 276
     },
     {
       "round": 2,
       "arm": "patch",
-      "loadBefore": "6.95 6.51 7.44",
-      "loadAfter": "6.32 6.40 7.38",
-      "measured": "541e1b8e3327476f68aad38706a80ac141cd88e196bfdd8b116df0dfcbdf3a70",
-      "parseCurrentCpuMs": 2169.5,
+      "loadBefore": "5.73 5.53 6.22",
+      "loadAfter": "5.32 5.45 6.19",
+      "measured": "1c58b98475cab0874c65f4978fbb282a2c024318d482048fe2fd63688d5b1922",
+      "parseCurrentCpuMs": 1604.1,
       "parseCurrentSpread": [
-        2138,
-        2186.9
+        1603.2,
+        1615.6
       ],
-      "parseFastPathCpuMs": 569.7,
-      "parseLexerProbeCpuMs": 2407.8,
+      "parseFastPathCpuMs": 421.1,
+      "parseLexerProbeCpuMs": 1741.2,
       "parseEquivalence": {
         "blockStructureMismatches": 0,
         "rawMismatches": 2,
@@ -132,27 +132,27 @@
         "sameLineDeltas": 1164,
         "newlineDeltas": 503
       },
-      "ramIdlePssKb": 45671,
-      "ramIdleCpuMs": 0.313000000000045,
-      "ramLoadPssKbPeak": 73901,
-      "ramLoadPssKbEnd": 73901,
-      "ramCpuMsPerStream": 2326.59,
-      "ramWallMs": 2083.134868,
+      "ramIdlePssKb": 47643,
+      "ramIdleCpuMs": 0.22800000000000864,
+      "ramLoadPssKbPeak": 73821,
+      "ramLoadPssKbEnd": 73821,
+      "ramCpuMsPerStream": 1850.975,
+      "ramWallMs": 1591.635821,
       "ramBlocks": 276
     },
     {
       "round": 3,
       "arm": "baseline",
-      "loadBefore": "6.32 6.40 7.38",
-      "loadAfter": "6.58 6.45 7.38",
+      "loadBefore": "5.32 5.45 6.19",
+      "loadAfter": "5.64 5.53 6.20",
       "measured": "2569fcea2d60d6ef748154f07f51a8d47a5a1190fb9e2b39a47b1ee5e5c882cf",
-      "parseCurrentCpuMs": 1560.4,
+      "parseCurrentCpuMs": 1608,
       "parseCurrentSpread": [
-        1553.5,
-        1621.9
+        1598.5,
+        1628.4
       ],
-      "parseFastPathCpuMs": 387.1,
-      "parseLexerProbeCpuMs": 1738,
+      "parseFastPathCpuMs": 360.6,
+      "parseLexerProbeCpuMs": 1730.7,
       "parseEquivalence": {
         "blockStructureMismatches": 0,
         "rawMismatches": 2,
@@ -162,27 +162,27 @@
         "sameLineDeltas": 1164,
         "newlineDeltas": 503
       },
-      "ramIdlePssKb": 44505,
-      "ramIdleCpuMs": 0.3340000000000032,
-      "ramLoadPssKbPeak": 73159,
-      "ramLoadPssKbEnd": 73159,
-      "ramCpuMsPerStream": 2268.0190000000002,
-      "ramWallMs": 2028.829781,
+      "ramIdlePssKb": 45060,
+      "ramIdleCpuMs": 0.3720000000000141,
+      "ramLoadPssKbPeak": 72982,
+      "ramLoadPssKbEnd": 72982,
+      "ramCpuMsPerStream": 1697.3609999999999,
+      "ramWallMs": 1464.8007220000002,
       "ramBlocks": 276
     },
     {
       "round": 3,
       "arm": "patch",
-      "loadBefore": "6.58 6.45 7.38",
-      "loadAfter": "6.81 6.50 7.38",
-      "measured": "541e1b8e3327476f68aad38706a80ac141cd88e196bfdd8b116df0dfcbdf3a70",
-      "parseCurrentCpuMs": 2175.2,
+      "loadBefore": "5.64 5.53 6.20",
+      "loadAfter": "5.74 5.56 6.19",
+      "measured": "1c58b98475cab0874c65f4978fbb282a2c024318d482048fe2fd63688d5b1922",
+      "parseCurrentCpuMs": 2188.6,
       "parseCurrentSpread": [
-        2169.6,
-        2181.9
+        2128,
+        2372.6
       ],
-      "parseFastPathCpuMs": 527.8,
-      "parseLexerProbeCpuMs": 2319.7,
+      "parseFastPathCpuMs": 550,
+      "parseLexerProbeCpuMs": 2563.2,
       "parseEquivalence": {
         "blockStructureMismatches": 0,
         "rawMismatches": 2,
@@ -192,27 +192,27 @@
         "sameLineDeltas": 1164,
         "newlineDeltas": 503
       },
-      "ramIdlePssKb": 45497,
-      "ramIdleCpuMs": 0.2869999999999777,
-      "ramLoadPssKbPeak": 72935,
-      "ramLoadPssKbEnd": 72935,
-      "ramCpuMsPerStream": 1766.122,
-      "ramWallMs": 1529.8924499999998,
+      "ramIdlePssKb": 47846,
+      "ramIdleCpuMs": 0.21699999999998454,
+      "ramLoadPssKbPeak": 75236,
+      "ramLoadPssKbEnd": 75236,
+      "ramCpuMsPerStream": 2641.8179999999998,
+      "ramWallMs": 2360.39738,
       "ramBlocks": 276
     },
     {
       "round": 4,
       "arm": "baseline",
-      "loadBefore": "6.81 6.50 7.38",
-      "loadAfter": "6.78 6.51 7.37",
+      "loadBefore": "5.74 5.56 6.19",
+      "loadAfter": "5.89 5.60 6.20",
       "measured": "2569fcea2d60d6ef748154f07f51a8d47a5a1190fb9e2b39a47b1ee5e5c882cf",
-      "parseCurrentCpuMs": 1558.3,
+      "parseCurrentCpuMs": 2409.3,
       "parseCurrentSpread": [
-        1536.4,
-        1567.1
+        2407.8,
+        2509.5
       ],
-      "parseFastPathCpuMs": 368.1,
-      "parseLexerProbeCpuMs": 1722.7,
+      "parseFastPathCpuMs": 581.8,
+      "parseLexerProbeCpuMs": 2641.8,
       "parseEquivalence": {
         "blockStructureMismatches": 0,
         "rawMismatches": 2,
@@ -222,27 +222,27 @@
         "sameLineDeltas": 1164,
         "newlineDeltas": 503
       },
-      "ramIdlePssKb": 45062,
-      "ramIdleCpuMs": 0.33899999999999864,
-      "ramLoadPssKbPeak": 73536,
-      "ramLoadPssKbEnd": 73536,
-      "ramCpuMsPerStream": 2345.657,
-      "ramWallMs": 2110.5284359999996,
+      "ramIdlePssKb": 46137,
+      "ramIdleCpuMs": 0.35599999999999454,
+      "ramLoadPssKbPeak": 72991,
+      "ramLoadPssKbEnd": 72991,
+      "ramCpuMsPerStream": 2415.9750000000004,
+      "ramWallMs": 2163.052726,
       "ramBlocks": 276
     },
     {
       "round": 4,
       "arm": "patch",
-      "loadBefore": "6.78 6.51 7.37",
-      "loadAfter": "6.44 6.45 7.33",
-      "measured": "541e1b8e3327476f68aad38706a80ac141cd88e196bfdd8b116df0dfcbdf3a70",
-      "parseCurrentCpuMs": 1604.8,
+      "loadBefore": "5.89 5.60 6.20",
+      "loadAfter": "8.50 6.27 6.40",
+      "measured": "1c58b98475cab0874c65f4978fbb282a2c024318d482048fe2fd63688d5b1922",
+      "parseCurrentCpuMs": 1900,
       "parseCurrentSpread": [
-        1598,
-        1623.2
+        1849.1,
+        2651
       ],
-      "parseFastPathCpuMs": 389.2,
-      "parseLexerProbeCpuMs": 1745.7,
+      "parseFastPathCpuMs": 465.4,
+      "parseLexerProbeCpuMs": 1983.4,
       "parseEquivalence": {
         "blockStructureMismatches": 0,
         "rawMismatches": 2,
@@ -252,27 +252,27 @@
         "sameLineDeltas": 1164,
         "newlineDeltas": 503
       },
-      "ramIdlePssKb": 44936,
-      "ramIdleCpuMs": 0.25600000000002865,
-      "ramLoadPssKbPeak": 73630,
-      "ramLoadPssKbEnd": 73630,
-      "ramCpuMsPerStream": 1733.456,
-      "ramWallMs": 1495.1641090000003,
+      "ramIdlePssKb": 44652,
+      "ramIdleCpuMs": 0.23799999999999955,
+      "ramLoadPssKbPeak": 73014,
+      "ramLoadPssKbEnd": 73014,
+      "ramCpuMsPerStream": 2283.209,
+      "ramWallMs": 2045.3058079999996,
       "ramBlocks": 276
     },
     {
       "round": 5,
       "arm": "baseline",
-      "loadBefore": "6.44 6.45 7.33",
-      "loadAfter": "6.45 6.46 7.32",
+      "loadBefore": "8.50 6.27 6.40",
+      "loadAfter": "7.92 6.24 6.39",
       "measured": "2569fcea2d60d6ef748154f07f51a8d47a5a1190fb9e2b39a47b1ee5e5c882cf",
-      "parseCurrentCpuMs": 1562.7,
+      "parseCurrentCpuMs": 1591.9,
       "parseCurrentSpread": [
-        1509.7,
-        1586.1
+        1581.9,
+        1596.9
       ],
-      "parseFastPathCpuMs": 379.4,
-      "parseLexerProbeCpuMs": 1685.9,
+      "parseFastPathCpuMs": 369.7,
+      "parseLexerProbeCpuMs": 1702.2,
       "parseEquivalence": {
         "blockStructureMismatches": 0,
         "rawMismatches": 2,
@@ -282,27 +282,27 @@
         "sameLineDeltas": 1164,
         "newlineDeltas": 503
       },
-      "ramIdlePssKb": 45228,
-      "ramIdleCpuMs": 0.3140000000000214,
-      "ramLoadPssKbPeak": 72442,
-      "ramLoadPssKbEnd": 72442,
-      "ramCpuMsPerStream": 1721.2419999999997,
-      "ramWallMs": 1486.4897449999999,
+      "ramIdlePssKb": 43556,
+      "ramIdleCpuMs": 0.2669999999999959,
+      "ramLoadPssKbPeak": 72954,
+      "ramLoadPssKbEnd": 72954,
+      "ramCpuMsPerStream": 2278.5330000000004,
+      "ramWallMs": 2045.2913510000003,
       "ramBlocks": 276
     },
     {
       "round": 5,
       "arm": "patch",
-      "loadBefore": "6.45 6.46 7.32",
-      "loadAfter": "6.97 6.57 7.35",
-      "measured": "541e1b8e3327476f68aad38706a80ac141cd88e196bfdd8b116df0dfcbdf3a70",
-      "parseCurrentCpuMs": 1600.9,
+      "loadBefore": "7.92 6.24 6.39",
+      "loadAfter": "7.36 6.20 6.37",
+      "measured": "1c58b98475cab0874c65f4978fbb282a2c024318d482048fe2fd63688d5b1922",
+      "parseCurrentCpuMs": 1592.9,
       "parseCurrentSpread": [
         1584.9,
-        1682
+        1655.7
       ],
-      "parseFastPathCpuMs": 392.7,
-      "parseLexerProbeCpuMs": 1737.5,
+      "parseFastPathCpuMs": 418.7,
+      "parseLexerProbeCpuMs": 1722.6,
       "parseEquivalence": {
         "blockStructureMismatches": 0,
         "rawMismatches": 2,
@@ -312,117 +312,117 @@
         "sameLineDeltas": 1164,
         "newlineDeltas": 503
       },
-      "ramIdlePssKb": 45032,
-      "ramIdleCpuMs": 0.4399999999999977,
-      "ramLoadPssKbPeak": 72390,
-      "ramLoadPssKbEnd": 72390,
-      "ramCpuMsPerStream": 2331.959,
-      "ramWallMs": 2091.067258,
+      "ramIdlePssKb": 44848,
+      "ramIdleCpuMs": 0.2459999999999809,
+      "ramLoadPssKbPeak": 73318,
+      "ramLoadPssKbEnd": 73318,
+      "ramCpuMsPerStream": 1749.7019999999998,
+      "ramWallMs": 1514.5546680000002,
       "ramBlocks": 276
     }
   ],
   "worker": {
     "baseline": {
-      "loadBefore": "6.97 6.57 7.35",
-      "loadAfter": "6.58 6.49 7.32",
+      "loadBefore": "7.36 6.20 6.37",
+      "loadAfter": "7.36 6.20 6.37",
       "workload": {
         "targetChars": 40000,
         "deltaCount": 1667,
         "deltaSize": 24,
         "runs": 1,
-        "hostLoadavg": "6.97 6.57 7.35 2/2599 674451"
+        "hostLoadavg": "7.36 6.20 6.37 6/2600 709614"
       },
       "paired": {
-        "echo_suffix_over_full_post": "median 0.175 spread [0.175..0.175]",
-        "proj_suffix_over_full_roundtrip": "median 0.380 spread [0.380..0.380]",
-        "proj_suffix_over_full_post": "median 0.352 spread [0.352..0.352]"
+        "echo_suffix_over_full_post": "median 0.177 spread [0.177..0.177]",
+        "proj_suffix_over_full_roundtrip": "median 0.321 spread [0.321..0.321]",
+        "proj_suffix_over_full_post": "median 0.351 spread [0.351..0.351]"
       },
       "echo-full": {
-        "totalPostMs": "18.9",
-        "totalRoundTripMs": "36.9",
-        "postMedianUs": "8.9",
-        "postP95Us": "20.8",
-        "roundTripMedianMs": "0.018",
-        "roundTripP95Ms": "0.031",
+        "totalPostMs": "22.2",
+        "totalRoundTripMs": "44.1",
+        "postMedianUs": "11.4",
+        "postP95Us": "24.0",
+        "roundTripMedianMs": "0.023",
+        "roundTripP95Ms": "0.039",
         "responseBytesMedian": 25
       },
       "echo-suffix": {
-        "totalPostMs": "3.3",
-        "totalRoundTripMs": "17.1",
-        "postMedianUs": "1.8",
-        "postP95Us": "3.5",
-        "roundTripMedianMs": "0.010",
-        "roundTripP95Ms": "0.013",
-        "responseBytesMedian": 22
-      },
-      "proj-full": {
-        "totalPostMs": "18.6",
-        "totalRoundTripMs": "1814.8",
-        "postMedianUs": "8.1",
-        "postP95Us": "30.1",
-        "roundTripMedianMs": "1.006",
-        "roundTripP95Ms": "2.272",
-        "responseBytesMedian": 45956
-      },
-      "proj-suffix": {
-        "totalPostMs": "6.6",
-        "totalRoundTripMs": "689.6",
-        "postMedianUs": "2.9",
-        "postP95Us": "7.2",
-        "roundTripMedianMs": "0.146",
-        "roundTripP95Ms": "2.303",
-        "responseBytesMedian": 46024
-      }
-    },
-    "patch": {
-      "loadBefore": "6.58 6.49 7.32",
-      "loadAfter": "6.58 6.49 7.32",
-      "workload": {
-        "targetChars": 40000,
-        "deltaCount": 1667,
-        "deltaSize": 24,
-        "runs": 1,
-        "hostLoadavg": "6.58 6.49 7.32 3/2594 674528"
-      },
-      "paired": {
-        "echo_suffix_over_full_post": "median 0.196 spread [0.196..0.196]",
-        "proj_suffix_over_full_roundtrip": "median 0.426 spread [0.426..0.426]",
-        "proj_suffix_over_full_post": "median 0.394 spread [0.394..0.394]"
-      },
-      "echo-full": {
-        "totalPostMs": "18.0",
-        "totalRoundTripMs": "35.8",
-        "postMedianUs": "8.6",
-        "postP95Us": "20.3",
-        "roundTripMedianMs": "0.018",
-        "roundTripP95Ms": "0.030",
-        "responseBytesMedian": 25
-      },
-      "echo-suffix": {
-        "totalPostMs": "3.5",
-        "totalRoundTripMs": "17.7",
-        "postMedianUs": "1.9",
-        "postP95Us": "3.3",
-        "roundTripMedianMs": "0.010",
-        "roundTripP95Ms": "0.014",
+        "totalPostMs": "3.9",
+        "totalRoundTripMs": "19.6",
+        "postMedianUs": "2.1",
+        "postP95Us": "3.2",
+        "roundTripMedianMs": "0.011",
+        "roundTripP95Ms": "0.015",
         "responseBytesMedian": 22
       },
       "proj-full": {
         "totalPostMs": "17.0",
-        "totalRoundTripMs": "1828.2",
+        "totalRoundTripMs": "1793.1",
         "postMedianUs": "7.4",
-        "postP95Us": "23.7",
-        "roundTripMedianMs": "1.125",
-        "roundTripP95Ms": "2.135",
+        "postP95Us": "23.8",
+        "roundTripMedianMs": "1.007",
+        "roundTripP95Ms": "2.156",
         "responseBytesMedian": 45956
       },
       "proj-suffix": {
-        "totalPostMs": "6.7",
-        "totalRoundTripMs": "778.0",
-        "postMedianUs": "3.5",
-        "postP95Us": "7.6",
-        "roundTripMedianMs": "0.158",
-        "roundTripP95Ms": "2.433",
+        "totalPostMs": "6.0",
+        "totalRoundTripMs": "575.6",
+        "postMedianUs": "3.2",
+        "postP95Us": "6.7",
+        "roundTripMedianMs": "0.141",
+        "roundTripP95Ms": "1.667",
+        "responseBytesMedian": 46024
+      }
+    },
+    "patch": {
+      "loadBefore": "7.36 6.20 6.37",
+      "loadAfter": "7.49 6.25 6.39",
+      "workload": {
+        "targetChars": 40000,
+        "deltaCount": 1667,
+        "deltaSize": 24,
+        "runs": 1,
+        "hostLoadavg": "7.36 6.20 6.37 1/2566 709756"
+      },
+      "paired": {
+        "echo_suffix_over_full_post": "median 0.249 spread [0.249..0.249]",
+        "proj_suffix_over_full_roundtrip": "median 0.340 spread [0.340..0.340]",
+        "proj_suffix_over_full_post": "median 0.365 spread [0.365..0.365]"
+      },
+      "echo-full": {
+        "totalPostMs": "17.9",
+        "totalRoundTripMs": "34.8",
+        "postMedianUs": "8.3",
+        "postP95Us": "21.6",
+        "roundTripMedianMs": "0.017",
+        "roundTripP95Ms": "0.033",
+        "responseBytesMedian": 25
+      },
+      "echo-suffix": {
+        "totalPostMs": "4.4",
+        "totalRoundTripMs": "23.8",
+        "postMedianUs": "2.2",
+        "postP95Us": "4.8",
+        "roundTripMedianMs": "0.011",
+        "roundTripP95Ms": "0.018",
+        "responseBytesMedian": 22
+      },
+      "proj-full": {
+        "totalPostMs": "17.7",
+        "totalRoundTripMs": "1812.3",
+        "postMedianUs": "7.6",
+        "postP95Us": "26.7",
+        "roundTripMedianMs": "1.010",
+        "roundTripP95Ms": "2.195",
+        "responseBytesMedian": 45956
+      },
+      "proj-suffix": {
+        "totalPostMs": "6.5",
+        "totalRoundTripMs": "616.6",
+        "postMedianUs": "3.4",
+        "postP95Us": "6.8",
+        "roundTripMedianMs": "0.150",
+        "roundTripP95Ms": "1.821",
         "responseBytesMedian": 46024
       }
     }
