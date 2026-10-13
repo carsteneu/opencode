@@ -38,7 +38,7 @@ def arm_tokens_for_streams(arm, iso, rows):
     for r in rows:
         lo, hi = r["wall_start"] * 1000 - 2000, r["wall_end"] * 1000 + 5000
         out.append(sum(tok for ts, tok in timed if lo <= ts <= hi))
-    return out]
+    return out
 
 
 def sums(per_role):
