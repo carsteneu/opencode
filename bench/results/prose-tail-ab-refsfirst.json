@@ -1,0 +1,418 @@
+{
+  "methodology": {
+    "arms": {
+      "baseline": {
+        "dir": "/home/chief/projects/opencode/.worktrees/yesloop-b2-prose-tail/bench/../.yesmem/tmp/base-checkout",
+        "head": "cf5bf5fb91"
+      },
+      "patch": {
+        "dir": "/home/chief/projects/opencode/.worktrees/yesloop-b2-prose-tail/bench/..",
+        "head": "628e7afc7d"
+      }
+    },
+    "probeSha": "93f676ee31a346a5e9aa475ade715b259aa36aa1da286c1cb9f9c1b96b8285d7",
+    "rounds": 5,
+    "parseCommand": "bun bench/parse.ts 40000 24 3",
+    "ramCommand": "bun bench/prose-tail-ram.ts 40000 24",
+    "workerCommand": "bun bench/worker.ts 40000 24 1",
+    "note": "arms alternate inside one series; absolute ms are load dependent, the paired ratio is the finding"
+  },
+  "samples": [
+    {
+      "round": 1,
+      "arm": "baseline",
+      "loadBefore": "8.89 7.72 8.63",
+      "loadAfter": "9.21 7.87 8.66",
+      "parseCurrentCpuMs": 2674.9,
+      "parseCurrentSpread": [
+        2366.5,
+        2860.7
+      ],
+      "parseFastPathCpuMs": 562.9,
+      "parseLexerProbeCpuMs": 2777.4,
+      "parseEquivalence": {
+        "blockStructureMismatches": 0,
+        "rawMismatches": 2,
+        "srcMismatches": 0
+      },
+      "parseDeltaMix": {
+        "sameLineDeltas": 1164,
+        "newlineDeltas": 503
+      },
+      "ramIdlePssKb": 45038,
+      "ramIdleCpuMs": 0.285000000000025,
+      "ramLoadPssKbPeak": 74884,
+      "ramLoadPssKbEnd": 74884,
+      "ramCpuMsPerStream": 2128.4139999999998,
+      "ramWallMs": 1846.5923020000002,
+      "ramBlocks": 276
+    },
+    {
+      "round": 1,
+      "arm": "patch",
+      "loadBefore": "9.21 7.87 8.66",
+      "loadAfter": "9.19 7.96 8.67",
+      "parseCurrentCpuMs": 2636.4,
+      "parseCurrentSpread": [
+        2557.3,
+        2752.7
+      ],
+      "parseFastPathCpuMs": 676.5,
+      "parseLexerProbeCpuMs": 2862.3,
+      "parseEquivalence": {
+        "blockStructureMismatches": 0,
+        "rawMismatches": 2,
+        "srcMismatches": 0
+      },
+      "parseDeltaMix": {
+        "sameLineDeltas": 1164,
+        "newlineDeltas": 503
+      },
+      "ramIdlePssKb": 46947,
+      "ramIdleCpuMs": 0.4049999999999727,
+      "ramLoadPssKbPeak": 74357,
+      "ramLoadPssKbEnd": 74357,
+      "ramCpuMsPerStream": 2154.438,
+      "ramWallMs": 1853.640957,
+      "ramBlocks": 276
+    },
+    {
+      "round": 2,
+      "arm": "baseline",
+      "loadBefore": "9.19 7.96 8.67",
+      "loadAfter": "9.13 8.00 8.67",
+      "parseCurrentCpuMs": 1753.6,
+      "parseCurrentSpread": [
+        1727.8,
+        1788.1
+      ],
+      "parseFastPathCpuMs": 415.7,
+      "parseLexerProbeCpuMs": 2000.3,
+      "parseEquivalence": {
+        "blockStructureMismatches": 0,
+        "rawMismatches": 2,
+        "srcMismatches": 0
+      },
+      "parseDeltaMix": {
+        "sameLineDeltas": 1164,
+        "newlineDeltas": 503
+      },
+      "ramIdlePssKb": 46231,
+      "ramIdleCpuMs": 0.3410000000000082,
+      "ramLoadPssKbPeak": 73653,
+      "ramLoadPssKbEnd": 73653,
+      "ramCpuMsPerStream": 2562.411,
+      "ramWallMs": 2322.4112849999997,
+      "ramBlocks": 276
+    },
+    {
+      "round": 2,
+      "arm": "patch",
+      "loadBefore": "9.13 8.00 8.67",
+      "loadAfter": "9.28 8.10 8.68",
+      "parseCurrentCpuMs": 2031.5,
+      "parseCurrentSpread": [
+        2002.6,
+        2079.1
+      ],
+      "parseFastPathCpuMs": 506,
+      "parseLexerProbeCpuMs": 2125.1,
+      "parseEquivalence": {
+        "blockStructureMismatches": 0,
+        "rawMismatches": 2,
+        "srcMismatches": 0
+      },
+      "parseDeltaMix": {
+        "sameLineDeltas": 1164,
+        "newlineDeltas": 503
+      },
+      "ramIdlePssKb": 46219,
+      "ramIdleCpuMs": 0.30299999999999727,
+      "ramLoadPssKbPeak": 73889,
+      "ramLoadPssKbEnd": 73889,
+      "ramCpuMsPerStream": 2769.795,
+      "ramWallMs": 2485.665074,
+      "ramBlocks": 276
+    },
+    {
+      "round": 3,
+      "arm": "baseline",
+      "loadBefore": "9.28 8.10 8.68",
+      "loadAfter": "9.37 8.19 8.70",
+      "parseCurrentCpuMs": 1922.4,
+      "parseCurrentSpread": [
+        1875.5,
+        1985
+      ],
+      "parseFastPathCpuMs": 436.5,
+      "parseLexerProbeCpuMs": 2064.2,
+      "parseEquivalence": {
+        "blockStructureMismatches": 0,
+        "rawMismatches": 2,
+        "srcMismatches": 0
+      },
+      "parseDeltaMix": {
+        "sameLineDeltas": 1164,
+        "newlineDeltas": 503
+      },
+      "ramIdlePssKb": 45527,
+      "ramIdleCpuMs": 0.3860000000000241,
+      "ramLoadPssKbPeak": 74569,
+      "ramLoadPssKbEnd": 74569,
+      "ramCpuMsPerStream": 2647.6620000000003,
+      "ramWallMs": 2368.311696,
+      "ramBlocks": 276
+    },
+    {
+      "round": 3,
+      "arm": "patch",
+      "loadBefore": "9.37 8.19 8.70",
+      "loadAfter": "9.07 8.18 8.69",
+      "parseCurrentCpuMs": 1847.3,
+      "parseCurrentSpread": [
+        1677.6,
+        1909.5
+      ],
+      "parseFastPathCpuMs": 446.7,
+      "parseLexerProbeCpuMs": 1980.6,
+      "parseEquivalence": {
+        "blockStructureMismatches": 0,
+        "rawMismatches": 2,
+        "srcMismatches": 0
+      },
+      "parseDeltaMix": {
+        "sameLineDeltas": 1164,
+        "newlineDeltas": 503
+      },
+      "ramIdlePssKb": 45009,
+      "ramIdleCpuMs": 0.26400000000001,
+      "ramLoadPssKbPeak": 73075,
+      "ramLoadPssKbEnd": 73075,
+      "ramCpuMsPerStream": 2678.1459999999997,
+      "ramWallMs": 2401.6763229999997,
+      "ramBlocks": 276
+    },
+    {
+      "round": 4,
+      "arm": "baseline",
+      "loadBefore": "9.07 8.18 8.69",
+      "loadAfter": "9.26 8.28 8.71",
+      "parseCurrentCpuMs": 1800.9,
+      "parseCurrentSpread": [
+        1737.9,
+        1870.1
+      ],
+      "parseFastPathCpuMs": 419.5,
+      "parseLexerProbeCpuMs": 1941.8,
+      "parseEquivalence": {
+        "blockStructureMismatches": 0,
+        "rawMismatches": 2,
+        "srcMismatches": 0
+      },
+      "parseDeltaMix": {
+        "sameLineDeltas": 1164,
+        "newlineDeltas": 503
+      },
+      "ramIdlePssKb": 46166,
+      "ramIdleCpuMs": 0.41800000000000637,
+      "ramLoadPssKbPeak": 73772,
+      "ramLoadPssKbEnd": 73772,
+      "ramCpuMsPerStream": 2949.713,
+      "ramWallMs": 2698.188439,
+      "ramBlocks": 276
+    },
+    {
+      "round": 4,
+      "arm": "patch",
+      "loadBefore": "9.26 8.28 8.71",
+      "loadAfter": "9.24 8.35 8.73",
+      "parseCurrentCpuMs": 2550.9,
+      "parseCurrentSpread": [
+        2325,
+        2670.9
+      ],
+      "parseFastPathCpuMs": 605.7,
+      "parseLexerProbeCpuMs": 2765,
+      "parseEquivalence": {
+        "blockStructureMismatches": 0,
+        "rawMismatches": 2,
+        "srcMismatches": 0
+      },
+      "parseDeltaMix": {
+        "sameLineDeltas": 1164,
+        "newlineDeltas": 503
+      },
+      "ramIdlePssKb": 47069,
+      "ramIdleCpuMs": 0.3860000000000241,
+      "ramLoadPssKbPeak": 73647,
+      "ramLoadPssKbEnd": 73647,
+      "ramCpuMsPerStream": 1981.861,
+      "ramWallMs": 1707.8298140000002,
+      "ramBlocks": 276
+    },
+    {
+      "round": 5,
+      "arm": "baseline",
+      "loadBefore": "9.24 8.35 8.73",
+      "loadAfter": "9.24 8.40 8.74",
+      "parseCurrentCpuMs": 1653.7,
+      "parseCurrentSpread": [
+        1559.2,
+        1908.4
+      ],
+      "parseFastPathCpuMs": 415.3,
+      "parseLexerProbeCpuMs": 1829.1,
+      "parseEquivalence": {
+        "blockStructureMismatches": 0,
+        "rawMismatches": 2,
+        "srcMismatches": 0
+      },
+      "parseDeltaMix": {
+        "sameLineDeltas": 1164,
+        "newlineDeltas": 503
+      },
+      "ramIdlePssKb": 47560,
+      "ramIdleCpuMs": 0.5049999999999955,
+      "ramLoadPssKbPeak": 73870,
+      "ramLoadPssKbEnd": 73870,
+      "ramCpuMsPerStream": 2460.592,
+      "ramWallMs": 2237.4312959999997,
+      "ramBlocks": 276
+    },
+    {
+      "round": 5,
+      "arm": "patch",
+      "loadBefore": "9.24 8.40 8.74",
+      "loadAfter": "8.91 8.38 8.72",
+      "parseCurrentCpuMs": 1831.5,
+      "parseCurrentSpread": [
+        1784.7,
+        1834.7
+      ],
+      "parseFastPathCpuMs": 471.3,
+      "parseLexerProbeCpuMs": 2022,
+      "parseEquivalence": {
+        "blockStructureMismatches": 0,
+        "rawMismatches": 2,
+        "srcMismatches": 0
+      },
+      "parseDeltaMix": {
+        "sameLineDeltas": 1164,
+        "newlineDeltas": 503
+      },
+      "ramIdlePssKb": 46200,
+      "ramIdleCpuMs": 0.6159999999999854,
+      "ramLoadPssKbPeak": 74558,
+      "ramLoadPssKbEnd": 74558,
+      "ramCpuMsPerStream": 2599.928,
+      "ramWallMs": 2326.943133,
+      "ramBlocks": 276
+    }
+  ],
+  "worker": {
+    "baseline": {
+      "loadBefore": "8.91 8.38 8.72",
+      "loadAfter": "9.00 8.41 8.73",
+      "workload": {
+        "targetChars": 40000,
+        "deltaCount": 1667,
+        "deltaSize": 24,
+        "runs": 1,
+        "hostLoadavg": "8.91 8.38 8.72 1/2623 623376"
+      },
+      "paired": {
+        "echo_suffix_over_full_post": "median 0.198 spread [0.198..0.198]",
+        "proj_suffix_over_full_roundtrip": "median 0.407 spread [0.407..0.407]",
+        "proj_suffix_over_full_post": "median 0.323 spread [0.323..0.323]"
+      },
+      "echo-full": {
+        "totalPostMs": "18.4",
+        "totalRoundTripMs": "35.7",
+        "postMedianUs": "8.4",
+        "postP95Us": "20.5",
+        "roundTripMedianMs": "0.018",
+        "roundTripP95Ms": "0.031",
+        "responseBytesMedian": 25
+      },
+      "echo-suffix": {
+        "totalPostMs": "3.6",
+        "totalRoundTripMs": "18.2",
+        "postMedianUs": "1.9",
+        "postP95Us": "3.2",
+        "roundTripMedianMs": "0.010",
+        "roundTripP95Ms": "0.013",
+        "responseBytesMedian": 22
+      },
+      "proj-full": {
+        "totalPostMs": "22.5",
+        "totalRoundTripMs": "2120.4",
+        "postMedianUs": "9.3",
+        "postP95Us": "34.1",
+        "roundTripMedianMs": "1.168",
+        "roundTripP95Ms": "2.711",
+        "responseBytesMedian": 45956
+      },
+      "proj-suffix": {
+        "totalPostMs": "7.3",
+        "totalRoundTripMs": "863.7",
+        "postMedianUs": "3.7",
+        "postP95Us": "8.6",
+        "roundTripMedianMs": "0.174",
+        "roundTripP95Ms": "2.851",
+        "responseBytesMedian": 46024
+      }
+    },
+    "patch": {
+      "loadBefore": "9.00 8.41 8.73",
+      "loadAfter": "9.24 8.47 8.75",
+      "workload": {
+        "targetChars": 40000,
+        "deltaCount": 1667,
+        "deltaSize": 24,
+        "runs": 1,
+        "hostLoadavg": "9.00 8.41 8.73 2/2641 623514"
+      },
+      "paired": {
+        "echo_suffix_over_full_post": "median 0.253 spread [0.253..0.253]",
+        "proj_suffix_over_full_roundtrip": "median 0.323 spread [0.323..0.323]",
+        "proj_suffix_over_full_post": "median 0.301 spread [0.301..0.301]"
+      },
+      "echo-full": {
+        "totalPostMs": "21.5",
+        "totalRoundTripMs": "40.3",
+        "postMedianUs": "9.3",
+        "postP95Us": "24.9",
+        "roundTripMedianMs": "0.020",
+        "roundTripP95Ms": "0.038",
+        "responseBytesMedian": 25
+      },
+      "echo-suffix": {
+        "totalPostMs": "5.4",
+        "totalRoundTripMs": "25.5",
+        "postMedianUs": "2.9",
+        "postP95Us": "4.9",
+        "roundTripMedianMs": "0.014",
+        "roundTripP95Ms": "0.019",
+        "responseBytesMedian": 22
+      },
+      "proj-full": {
+        "totalPostMs": "21.6",
+        "totalRoundTripMs": "2109.3",
+        "postMedianUs": "9.0",
+        "postP95Us": "30.1",
+        "roundTripMedianMs": "1.184",
+        "roundTripP95Ms": "2.545",
+        "responseBytesMedian": 45956
+      },
+      "proj-suffix": {
+        "totalPostMs": "6.5",
+        "totalRoundTripMs": "681.4",
+        "postMedianUs": "3.4",
+        "postP95Us": "7.6",
+        "roundTripMedianMs": "0.165",
+        "roundTripP95Ms": "1.918",
+        "responseBytesMedian": 46024
+      }
+    }
+  }
+}

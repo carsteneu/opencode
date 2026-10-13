@@ -22,7 +22,10 @@ const lexer = new Marked(markdownMath)
 function refs(text: string) {
   if (!text.includes("]:")) return false
 
-  return /^[ \t]{0,3}\[[^\]]+\]:[ \t]*(?:\S+|\r?\n[ \t]+\S+)/m.test(text)
+  // The label class must not cross a line break: `[^\]]+` makes the engine retry and backtrack from
+  // every `[` in the text, which is quadratic on a body of unclosed brackets. A label that spans a
+  // line break is no longer treated as a definition, and `stream` makes the same decision.
+  return /^[ \t]{0,3}\[[^\]\n]+\]:[ \t]*(?:\S+|\r?\n[ \t]+\S+)/m.test(text)
 }
 
 function language(value: string | undefined) {
@@ -59,6 +62,45 @@ function closesFence(raw: string, suffix: string) {
 
 function heal(text: string) {
   return remend(text, { linkMode: "text-only" })
+}
+
+/**
+ * Every markdown construct that ends a block is a line made only of structure characters (a fence,
+ * a setext underline, a rule, a math delimiter, a table delimiter). A line that still holds a letter
+ * or a digit cannot turn into one, so a line like that is safe to extend. Trailing blank lines are
+ * ignored: they end constructs rather than complete them.
+ *
+ * The last non-blank line is found from the end on purpose. A forward pattern like `/\n+$/` retries
+ * at every position of a long run of newlines and backtracks it each time, which is quadratic and
+ * runs once per delta - a fence body of blank lines would stall the worker.
+ */
+function structuralLine(raw: string) {
+  let end = raw.length
+
+  while (end > 0 && raw[end - 1] === "\n") end--
+  const line = raw.slice(raw.lastIndexOf("\n", end - 1) + 1, end)
+
+  return !/[\p{L}\p{N}]/u.test(line)
+}
+
+/**
+ * A delta can carry several lines and any of them can end a construct that started above the tail,
+ * so all of them are checked. The last line is left to `structuralLine`, which owns the case of a
+ * line that is still being extended.
+ */
+function structuralSpan(text: string) {
+  return text
+    .split("\n")
+    .slice(0, -1)
+    .some((line) => line.trim() !== "" && structuralLine(line))
+}
+
+/**
+ * marked only allows spaces before a fence, while `open()` also accepts a tab - and a tab-indented
+ * line is an indented code block, whose raw has no fence to extend.
+ */
+function fenceLine(raw: string) {
+  return /^ {0,3}(`{3,}|~{3,})/.test(raw)
 }
 
 export function stream(text: string, live: boolean): Block[] {
@@ -136,18 +178,41 @@ export function project(previous: Projection | undefined, text: string, live: bo
   const tail = previous.blocks.at(-1)
   const suffix = text.slice(previous.text.length)
 
-  if (!suffix || tail?.mode !== "code" || tail.complete || closesFence(tail.raw, suffix))
-    return { text, blocks: stream(text, live) }
+  if (!suffix || !tail) return { text, blocks: stream(text, live) }
 
-  return {
-    text,
-    blocks: [
-      ...previous.blocks.slice(0, -1),
-      {
-        ...tail,
-        raw: tail.raw + suffix,
-        src: tail.src + suffix,
-      },
-    ],
-  }
+  // The lexer replaces carriage returns before it lexes, so a raw is never a byte-exact suffix of
+  // the text it came from. Appending across a CR, or onto text that is about to be normalized, has
+  // to go through the full path.
+  if (suffix.includes("\r") || previous.text.endsWith("\r")) return { text, blocks: stream(text, live) }
+
+  // A code tail is extended in place instead of re-lexed. Its opener line has to be closed for
+  // that: while the info string is still streaming, the suffix is language metadata rather than
+  // code content, and the tail has to be re-derived. The appended lines must not end a construct
+  // above the fence - neither on the line still being extended nor on any earlier line of the
+  // delta - and a reference definition collapses the whole text into a single block, so an append
+  // that completes one cannot be answered with a code block. That last check scans the whole text,
+  // so it is only paid when this branch would otherwise fire.
+  if (
+    tail.mode === "code" &&
+    !tail.complete &&
+    fenceLine(tail.raw) &&
+    tail.raw.includes("\n") &&
+    !structuralLine(tail.raw + suffix) &&
+    !structuralSpan(suffix) &&
+    !closesFence(tail.raw, suffix) &&
+    !refs(text)
+  )
+    return {
+      text,
+      blocks: [
+        ...previous.blocks.slice(0, -1),
+        {
+          ...tail,
+          raw: tail.raw + suffix,
+          src: tail.src + suffix,
+        },
+      ],
+    }
+
+  return { text, blocks: stream(text, live) }
 }

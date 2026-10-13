@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { canReusePendingBlock } from "./markdown-projection"
-import { project, stream } from "./markdown-stream"
+import { project, stream, type Block } from "./markdown-stream"
 
 describe("markdown stream", () => {
   test("heals incomplete emphasis while streaming", () => {
@@ -244,5 +244,138 @@ describe("markdown stream", () => {
       language: "ts",
       complete: true,
     })
+  })
+})
+
+// The in-place code-tail fast path, its guards, and the tail contract the full re-lex keeps.
+describe("markdown stream tail reconciliation", () => {
+  test("keeps a streamed fence's info string out of the code tail", () => {
+    const previous = project(undefined, "Before.\n\n```ts", true)
+    const next = project(previous, "Before.\n\n```ts t", true)
+
+    expect(next.blocks).toEqual(stream("Before.\n\n```ts t", true))
+  })
+
+  test("reprojects when an append completes a reference definition", () => {
+    const previous = project(undefined, "```ts\nvalue\n[a]:", true)
+    const next = project(previous, "```ts\nvalue\n[a]: /docs", true)
+
+    expect(next.blocks).toEqual(stream("```ts\nvalue\n[a]: /docs", true))
+  })
+
+  test("reprojects a code line that would close a construct above the fence", () => {
+    const previous = project(undefined, "$$\n\n```ts\nvalue\n", true)
+    const next = project(previous, `${previous.text}$$\n`, true)
+
+    expect(next.blocks).toEqual(stream(next.text, true))
+  })
+
+  // the guards run once per delta, so their cost has to stay proportional to the delta, not to the
+  // text: a fence body of blank lines and a body of unclosed brackets are the two shapes that made
+  // a whole-text scan quadratic
+  test.each([
+    ["blank lines in a fence body", "```text\n" + "\n".repeat(120_000) + "x"],
+    ["unclosed brackets in a fence body", "```text\n]:\n" + "[a".repeat(60_000)],
+  ])("stays linear on %s", (_name, text) => {
+    const started = performance.now()
+    const projection = project(undefined, text, true)
+    const elapsed = performance.now() - started
+
+    expect(projection.blocks).toEqual(stream(text, true))
+    // the same document costs seconds per delta without the linear scans
+    expect(elapsed).toBeLessThan(2000)
+  })
+
+  test("does not treat a label spanning a line break as a definition", () => {
+    const text = "see [a\nb]: https://example.com/guide"
+
+    expect(stream(text, true)).toEqual([{ raw: text, src: text, mode: "live" }] satisfies Block[])
+  })
+
+  test("does not extend an indented code tail as if it were a fence", () => {
+    const previous = project(undefined, "\t```ts\n", true)
+    const next = project(previous, "\t```ts\nvalue", true)
+
+    expect(next.blocks).toEqual(stream(next.text, true))
+  })
+
+  test("reprojects when an append closes a construct above the fence and carries on", () => {
+    const previous = project(undefined, "$$\n\n```ts\nvalue\n", true)
+    const next = project(previous, "$$\n\n```ts\nvalue\n$$\nmore", true)
+
+    expect(next.blocks).toEqual(stream(next.text, true))
+  })
+
+  test("extends a code tail without reprojecting the blocks above it", () => {
+    const previous = project(undefined, "# Plan\n\nIntro.\n\n```ts\nconst one = 1\n", true)
+    const next = project(previous, `${previous.text}const two = 2`, true)
+
+    expect(next.blocks[0]).toBe(previous.blocks[0])
+    expect(next.blocks[1]).toBe(previous.blocks[1])
+    expect(next.blocks.at(-1)).toEqual({
+      raw: "```ts\nconst one = 1\nconst two = 2",
+      src: "const one = 1\nconst two = 2",
+      mode: "code",
+      language: "ts",
+    })
+  })
+
+  test("re-derives the healed tail instead of appending to the healed text", () => {
+    const previous = project(undefined, "text **bo", true)
+
+    expect(previous.blocks.at(-1)).toEqual({ raw: "text **bo", src: "text **bo**", mode: "live" })
+
+    const next = project(previous, "text **bold** done", true)
+
+    expect(next.blocks.at(-1)).toEqual({ raw: "text **bold** done", src: "text **bold** done", mode: "live" })
+  })
+
+  test("freezes the tail and keeps a new block live when the append opens one", () => {
+    const previous = project(undefined, "paragraph", true)
+    const next = project(previous, "paragraph\n\n- item", true)
+
+    expect(next.blocks).toEqual([
+      { raw: "paragraph\n\n", src: "paragraph\n\n", mode: "full" },
+      { raw: "- item", src: "- item", mode: "live" },
+    ])
+  })
+
+  test("keeps a growing table in one live block", () => {
+    const previous = project(undefined, "| a | b |\n|---|", true)
+    const next = project(previous, `${previous.text}\n| 1 | 2 |`, true)
+
+    expect(next.blocks).toEqual([
+      { raw: "| a | b |\n|---|\n| 1 | 2 |", src: "| a | b |\n|---|\n| 1 | 2 |", mode: "live" },
+    ])
+  })
+
+  test("derives the tail from the current text even when the projection is reused", () => {
+    const reused = project(undefined, "# Plan\n\nFirst body\n\nshared tail", true)
+    const text = "# Plan\n\nFirst body\n\nshared tail for a different part"
+    const next = project(reused, text, true)
+
+    expect(next.blocks).toEqual(stream(text, true))
+  })
+
+  test("does not carry a normalized tail raw into the next projection", () => {
+    const previous = project(undefined, "- item ", true)
+
+    // the lexer rewrites a list item's trailing whitespace into a newline, so the tail raw is not
+    // the text suffix it came from
+    expect(previous.blocks.at(-1)).toEqual({ raw: "- item\n", src: "- item\n", mode: "live" })
+
+    const next = project(previous, "- item x", true)
+
+    expect(next.blocks).toEqual(stream("- item x", true))
+  })
+
+  test("keeps a normalized tail region correct while it keeps growing", () => {
+    let projection = project(undefined, "- item ", true)
+
+    for (const delta of ["x", " y", "\n- second", "\n  continued", "\n\nparagraph"]) {
+      const text = projection.text + delta
+      projection = project(projection, text, true)
+      expect(projection.blocks).toEqual(stream(text, true))
+    }
   })
 })
