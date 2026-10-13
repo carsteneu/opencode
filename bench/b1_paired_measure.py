@@ -38,6 +38,7 @@ def measure_stream(tui, sampler, drain, timeout):
     sampler.samples.clear()
     with tui.lock:
         offset = len(tui.raw)
+    wall_start = time.time()
     t0 = time.monotonic()
     tui.send(PROMPT)
     dt = tui.wait_quiet(3.0, timeout, offset=offset, start_threshold=200)
@@ -47,7 +48,9 @@ def measure_stream(tui, sampler, drain, timeout):
     roles = {k: dict(v, cpu_pct=100.0 * v["cpu_s"] / (t1 - t0)) for k, v in roles.items()}
     with tui.lock:
         term_bytes = len(tui.raw) - offset
+    # Wall-clock bounds so token counts can be matched to streams after the fact.
     return {"stream_s": dt, "window_s": t1 - t0, "terminal_bytes": term_bytes,
+            "wall_start": wall_start, "wall_end": time.time(),
             "load": os.getloadavg()[0], "per_role": roles}
 
 

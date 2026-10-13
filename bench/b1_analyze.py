@@ -10,7 +10,7 @@ import statistics
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from b1_tokens import rows_for, turns  # noqa: E402
+from b1_tokens import rows_for, turns, turns_timed  # noqa: E402
 
 
 def idx(s):
@@ -26,6 +26,19 @@ def arm_tokens(arm, iso, last):
     if not os.path.exists(db):
         return None
     return [t[0] for t in turns(rows_for(arm, db))[-last:]]
+
+
+def arm_tokens_for_streams(arm, iso, rows):
+    """Match each stream to its turn by wall-clock window (exact), or return None."""
+    db = os.path.join(iso, arm, "data", "opencode", "opencode.db")
+    if not os.path.exists(db) or any("wall_start" not in r for r in rows):
+        return None
+    timed = turns_timed(rows_for(arm, db))
+    out = []
+    for r in rows:
+        lo, hi = r["wall_start"] * 1000 - 2000, r["wall_end"] * 1000 + 5000
+        out.append(sum(tok for ts, tok in timed if lo <= ts <= hi))
+    return out]
 
 
 def sums(per_role):
@@ -124,18 +137,25 @@ def main():
     # --- normalisation per 1000 output tokens ---
     if last:
         print()
-        print(f"## CPU seconds per 1000 output tokens (last {last} turns per arm)")
+        print(f"## CPU seconds per 1000 output tokens")
         for arm in series:
-            tok = arm_tokens(arm, iso, last)
-            rows = [s for s in series[arm] if idx(s) >= 1]
-            if not tok or len(tok) < len(rows):
-                print(f"  {arm}: token data unavailable (turns={len(tok) if tok else 0}, streams={len(rows)})")
-                continue
-            tok = tok[-len(rows):]
-            print(f"  {arm}: output_tokens={tok}")
+            allrows = series[arm]
+            keep = [i for i, s in enumerate(allrows) if idx(s) >= 1]
+            rows = [allrows[i] for i in keep]
+            exact = arm_tokens_for_streams(arm, iso, allrows)
+            if exact is not None:
+                tok = [exact[i] for i in keep]
+                src = "matched by wall-clock window"
+            else:
+                t = arm_tokens(arm, iso, last)
+                if not t or len(t) < len(rows):
+                    print(f"  {arm}: token data unavailable (turns={len(t) if t else 0}, streams={len(rows)})")
+                    continue
+                tok = t[-len(rows):]
+                src = f"last {last} turns (approximate: result file has no wall bounds)"
+            print(f"  {arm}: output_tokens={tok}  [{src}]")
             for role in [r for r in roles_seen if r != "other"]:
                 cpus = [s["per_role"].get(role, {}).get("cpu_s", 0.0) for s in rows]
-                # cpu seconds per 1000 output tokens
                 per = [c / t * 1000 for c, t in zip(cpus, tok) if t]
                 if per:
                     print(f"    {role:8} {med(per):6.3f} s/1k tok  (med over {len(per)})")

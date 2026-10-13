@@ -58,6 +58,23 @@ def turns(rows):
     return [t for t in out if t[1] > 0]
 
 
+def turns_timed(rows):
+    """[(timestamp_ms, output_tokens)] so a turn can be matched to a measured window."""
+    out = []
+    for ts, typ, data in rows:
+        try:
+            d = json.loads(data)
+        except Exception:
+            continue
+        if typ == "user":
+            out.append([ts, 0])
+            continue
+        if not out:
+            out.append([ts, 0])
+        out[-1][1] += int((d.get("tokens") or {}).get("output") or 0)
+    return [(ts, tok) for ts, tok in out if tok > 0]
+
+
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
     ap = argparse.ArgumentParser()
