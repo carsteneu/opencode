@@ -247,20 +247,40 @@ describe("markdown stream", () => {
   })
 })
 
-// The live prose tail is reconciled incrementally: only the region from the last block
-// boundary on is re-lexed, the frozen blocks above it are carried over untouched.
-describe("markdown stream incremental tail", () => {
-  test("carries frozen blocks over when prose is appended", () => {
-    const previous = project(undefined, "# Plan\n\nFirst body.\n\nSecond body.\n\nlive tail", true)
-    const next = project(previous, `${previous.text} continues`, true)
+// The in-place code-tail fast path, its guards, and the tail contract the full re-lex keeps.
+describe("markdown stream tail reconciliation", () => {
+  test("keeps a streamed fence's info string out of the code tail", () => {
+    const previous = project(undefined, "Before.\n\n```ts", true)
+    const next = project(previous, "Before.\n\n```ts t", true)
 
-    expect(previous.blocks).toHaveLength(4)
+    expect(next.blocks).toEqual(stream("Before.\n\n```ts t", true))
+  })
+
+  test("reprojects when an append completes a reference definition", () => {
+    const previous = project(undefined, "```ts\nvalue\n[a]:", true)
+    const next = project(previous, "```ts\nvalue\n[a]: /docs", true)
+
+    expect(next.blocks).toEqual(stream("```ts\nvalue\n[a]: /docs", true))
+  })
+
+  test("reprojects a code line that would close a construct above the fence", () => {
+    const previous = project(undefined, "$$\n\n```ts\nvalue\n", true)
+    const next = project(previous, `${previous.text}$$\n`, true)
+
+    expect(next.blocks).toEqual(stream(next.text, true))
+  })
+
+  test("extends a code tail without reprojecting the blocks above it", () => {
+    const previous = project(undefined, "# Plan\n\nIntro.\n\n```ts\nconst one = 1\n", true)
+    const next = project(previous, `${previous.text}const two = 2`, true)
+
     expect(next.blocks[0]).toBe(previous.blocks[0])
     expect(next.blocks[1]).toBe(previous.blocks[1])
     expect(next.blocks.at(-1)).toEqual({
-      raw: "live tail continues",
-      src: "live tail continues",
-      mode: "live",
+      raw: "```ts\nconst one = 1\nconst two = 2",
+      src: "const one = 1\nconst two = 2",
+      mode: "code",
+      language: "ts",
     })
   })
 
@@ -293,20 +313,6 @@ describe("markdown stream incremental tail", () => {
     ])
   })
 
-  test("closes a fence that the append completes without re-lexing the prefix above it", () => {
-    const previous = project(undefined, "# Plan\n\nIntro.\n\n```ts\nconst x = 1\n``", true)
-    const next = project(previous, `${previous.text}\``, true)
-
-    expect(next.blocks[0]).toBe(previous.blocks[0])
-    expect(next.blocks.at(-1)).toEqual({
-      raw: "```ts\nconst x = 1\n```",
-      src: "const x = 1",
-      mode: "code",
-      language: "ts",
-      complete: true,
-    })
-  })
-
   test("derives the tail from the current text even when the projection is reused", () => {
     const reused = project(undefined, "# Plan\n\nFirst body\n\nshared tail", true)
     const text = "# Plan\n\nFirst body\n\nshared tail for a different part"
@@ -319,7 +325,7 @@ describe("markdown stream incremental tail", () => {
     const previous = project(undefined, "- item ", true)
 
     // the lexer rewrites a list item's trailing whitespace into a newline, so the tail raw is not
-    // the text suffix it came from - the region must be cut from the text, not from tail.raw
+    // the text suffix it came from
     expect(previous.blocks.at(-1)).toEqual({ raw: "- item\n", src: "- item\n", mode: "live" })
 
     const next = project(previous, "- item x", true)

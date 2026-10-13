@@ -91,15 +91,22 @@ const DOCUMENTS = {
     "Escapes \\*not bold\\* and entities &amp; stay put.",
   ].join("\n"),
   listContinuation: ["- item with a long paragraph", "", "  continuation indented by two", "", "Trailing."].join("\n"),
+  // Every document below was found by randomized or adversarial search to break an incremental
+  // tail: the constructs they carry either span several blocks once their terminator arrives, or a
+  // settled boundary in them is destroyed by the append that follows.
+  spanningMath: ["a", "", "$$", "# b", "", "c", "$$", "", "After."].join("\n"),
+  spanningMathQuote: ["$$", "", "> code in quote", "", "$$"].join("\n"),
+  splitCloser: ["$$", "x", "$"].join("\n"),
+  setextSwallowsRule: ["a", "***", "b", "===", "", "After."].join("\n"),
+  listAbsorbsParagraph: "12) paren\n\n12)\n\nAfter.\n",
+  emptyHeadingDestroyed: ["\\)", "######", "# not a heading"].join("\n"),
+  crlfProse: "line one\r\n\r\nline two\r\n\r\nlive tail",
+  crlfFence: "before\r\n\r\n```ts\r\nconst x = 1\r\n```\r\n\r\nafter\r\n",
+  leadingBlankLine: "  \na\n\na\n\nne",
+  duplicateDefinitions: "[a][1]\n\n[1]: https://one\n\n[1]: https://two\n\nlive tail",
+  fenceOpenerSplit: "Intro.\n\n```ts title=example",
+  structuralCloser: "$$\n\n```ts\nvalue\n$$\n",
 } satisfies Record<string, string>
-
-// Reference definitions collapse the whole text into one block, so every append takes the full path.
-const REFERENCES = ["references", "referenceLate"]
-
-// A construct can grow backwards over a boundary the previous text had, and then one append has to
-// re-lex everything: the display math block only becomes a block token once its closing delimiter
-// arrives, and that token starts above the boundary of the text before it.
-const FULL_PATH_APPENDS = { math: 1 } satisfies Record<string, number>
 
 function seeded(seed: number) {
   let state = seed >>> 0
@@ -172,14 +179,14 @@ function splits(text: string) {
 type Step = { index: number; text: string; previous: Projection | undefined; next: Projection }
 
 /**
- * Streams the document through project() and returns every step. A step where the first block is
- * rebuilt while the previous projection had at least three blocks took the full path.
+ * Streams the document through project() one delta at a time. Every append has to return exactly
+ * what a full re-lex of the same text returns - that is the contract the streaming path is held to,
+ * and the reason the tail falls back to the full re-lex whenever it cannot extend in place.
  */
-function streamDocument(name: string, text: string, deltas: string[]) {
+function streamDocument(text: string, deltas: string[]) {
   const steps: Step[] = []
   let previous: Projection | undefined
   let current = ""
-  let fullPath = 0
 
   for (const [index, delta] of deltas.entries()) {
     const before = previous
@@ -187,37 +194,26 @@ function streamDocument(name: string, text: string, deltas: string[]) {
     const next = project(before, current, true)
 
     expect(next.text, `lost text at step ${index}`).toBe(current)
-    // the incremental path must never disagree with a full re-lex
     expect(next.blocks, `diverged from the full re-lex at step ${index}`).toEqual(stream(current, true))
-
-    if (before && before.blocks.length > 2)
-      if (next.blocks[0] === before.blocks[0]) {
-        // the prefix above the seam is carried over by reference, block for block
-        for (let block = 0; block < before.blocks.length - 2; block++)
-          expect(next.blocks[block], `block ${block} was rebuilt at step ${index}`).toBe(before.blocks[block])
-      } else fullPath++
 
     steps.push({ index, text: current, previous: before, next })
     previous = next
   }
 
-  if (!REFERENCES.includes(name))
-    expect(fullPath, "unexpected full-path appends").toBeLessThanOrEqual(FULL_PATH_APPENDS[name] ?? 0)
-
   return steps
 }
 
-describe("markdown stream incremental equivalence", () => {
+describe("markdown stream equivalence", () => {
   for (const [name, text] of Object.entries(DOCUMENTS)) {
     describe(name, () => {
       for (const split of splits(text)) {
         test(`matches the full re-lex under ${split.name} deltas`, () => {
-          streamDocument(name, text, split.deltas)
+          streamDocument(text, split.deltas)
         })
       }
 
-      test("finalizes the incremental projection", () => {
-        const steps = streamDocument(name, text, fixedChunks(text, 5))
+      test("finalizes the projection", () => {
+        const steps = streamDocument(text, fixedChunks(text, 5))
         const last = steps.at(-1)!.next
         const final = project(last, last.text, false)
 
@@ -235,13 +231,4 @@ describe("markdown stream incremental equivalence", () => {
       })
     })
   }
-
-  test("stays incremental for every append of a document that cannot grow backwards", () => {
-    const steps = streamDocument("blocks", DOCUMENTS.blocks, fixedChunks(DOCUMENTS.blocks, 3))
-    const eligible = steps.filter((step) => step.previous && step.previous.blocks.length > 2)
-    const carried = eligible.filter((step) => step.next.blocks[0] === step.previous!.blocks[0])
-
-    expect(eligible.length).toBeGreaterThan(20)
-    expect(carried.length).toBe(eligible.length)
-  })
 })

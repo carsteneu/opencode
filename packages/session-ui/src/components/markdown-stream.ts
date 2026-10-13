@@ -61,38 +61,30 @@ function heal(text: string) {
   return remend(text, { linkMode: "text-only" })
 }
 
-function sameBlock(current: Block | undefined, next: Block | undefined) {
-  if (!current || !next) return false
+/**
+ * Every markdown construct that ends a block is a line made only of structure characters (a fence,
+ * a setext underline, a rule, a math delimiter, a table delimiter). A line that still holds a letter
+ * or a digit cannot turn into one, so a line like that is safe to extend. Trailing blank lines are
+ * ignored: they end constructs rather than complete them.
+ */
+function structuralLine(raw: string) {
+  const content = raw.replace(/\n+$/, "")
+  const line = content.slice(content.lastIndexOf("\n") + 1)
 
-  return (
-    current.mode === next.mode &&
-    current.raw === next.raw &&
-    current.src === next.src &&
-    current.language === next.language &&
-    current.complete === next.complete
-  )
+  return !/[\p{L}\p{N}]/u.test(line)
 }
 
 export function stream(text: string, live: boolean): Block[] {
   if (!live) return completedProjection(text).blocks
 
-  if (refs(text)) return [{ raw: text, src: heal(text), mode: "live" }]
-
-  return tailBlocks(lexer.lexer(text), text)
-}
-
-/**
- * Blocks for one lex run: every token before the final non-space token is frozen, that token and
- * the whitespace after it are the still-growing tail. `text` is the source of the run, and only
- * stands in for the tail when the run holds no token at all.
- */
-function tailBlocks(tokens: ReturnType<typeof lexer.lexer>, text: string): Block[] {
+  if (refs(text)) return [{ raw: text, src: heal(text), mode: "live" }] satisfies Block[]
+  const tokens = lexer.lexer(text)
   const tail = tokens.findLastIndex((token) => token.type !== "space")
 
-  if (tail < 0) return [{ raw: text, src: heal(text), mode: "live" }]
+  if (tail < 0) return [{ raw: text, src: heal(text), mode: "live" }] satisfies Block[]
   const last = tokens[tail]
 
-  if (!last) return [{ raw: text, src: heal(text), mode: "live" }]
+  if (!last) return [{ raw: text, src: heal(text), mode: "live" }] satisfies Block[]
 
   const result: Block[] = []
 
@@ -157,15 +149,26 @@ export function project(previous: Projection | undefined, text: string, live: bo
   const tail = previous.blocks.at(-1)
   const suffix = text.slice(previous.text.length)
 
-  // `refs` keeps reference definitions on the full path twice over: a definition collapses the
-  // whole text into one block, and a `def` token carries a normalized raw that would shift the
-  // frozen-prefix length below.
+  // A reference definition collapses the whole text into a single block, and one can be completed
+  // by an append whose label already streamed, so this check has to see the whole text.
   if (!suffix || !tail || refs(text)) return { text, blocks: stream(text, live) }
+
+  // The lexer replaces carriage returns before it lexes, so a raw is never a byte-exact suffix of
+  // the text it came from. Appending across a CR, or onto text that is about to be normalized, has
+  // to go through the full path.
+  if (suffix.includes("\r") || previous.text.endsWith("\r")) return { text, blocks: stream(text, live) }
 
   // A code tail is extended in place instead of re-lexed. Its opener line has to be closed for
   // that: while the info string is still streaming, the suffix is language metadata rather than
-  // code content, and the tail has to be re-derived.
-  if (tail.mode === "code" && !tail.complete && tail.raw.includes("\n") && !closesFence(tail.raw, suffix))
+  // code content, and the tail has to be re-derived. The appended lines must not end on a line of
+  // structure characters either, because such a line can close a construct above the fence.
+  if (
+    tail.mode === "code" &&
+    !tail.complete &&
+    tail.raw.includes("\n") &&
+    !structuralLine(tail.raw + suffix) &&
+    !closesFence(tail.raw, suffix)
+  )
     return {
       text,
       blocks: [
@@ -178,21 +181,5 @@ export function project(previous: Projection | undefined, text: string, live: bo
       ],
     }
 
-  // Everything above the last block boundary is settled, so only the region from there on has to
-  // be re-lexed. Two details decide how the region is cut:
-  //  - it is cut from the text and not from `tail.raw`, because the lexer normalizes a tail's
-  //    trailing whitespace, so a tail raw is not always the text suffix it came from;
-  //  - it starts one block further back, because a construct can grow backwards over a boundary
-  //    that held in the previous text (an unterminated html comment, a math block that only closes
-  //    later). The block at that seam is re-derived, and when it does not come out unchanged the
-  //    boundary is not settled and the full path takes over.
-  const carry = previous.blocks.slice(0, -2)
-  const seam = previous.blocks.at(-2)
-  const start = carry.reduce((length, block) => length + block.raw.length, 0)
-  const region = text.slice(start)
-  const blocks = tailBlocks(lexer.lexer(region), region)
-
-  if (seam && !sameBlock(blocks[0], seam)) return { text, blocks: stream(text, live) }
-
-  return { text, blocks: [...carry, ...blocks] }
+  return { text, blocks: stream(text, live) }
 }
