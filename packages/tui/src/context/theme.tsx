@@ -76,6 +76,13 @@ export const createThemeSource = (config: string): ThemeSource => ({
 
 const THEME_REFRESH_DELAYS = [250, 1000] as const
 
+// A session-only override from --theme or the OPENCODE_THEME env var outranks the configured theme
+// name. It is read here and never written back to the config or the storage.
+function sessionThemeOverride() {
+  const value = process.env.OPENCODE_THEME
+  return value ? value : undefined
+}
+
 type State = {
   mode: "dark" | "light"
   lock: "dark" | "light" | undefined
@@ -134,12 +141,20 @@ const themeContext = createSimpleContext({
         const mode = lock ?? renderer.themeMode ?? props.mode
         draft.mode = mode
         draft.lock = lock
-        draft.active = config.theme?.name ?? "opencode"
+        draft.active = sessionThemeOverride() ?? config.theme?.name ?? "opencode"
         draft.ready = false
       }),
     )
 
     createEffect(() => {
+      const override = sessionThemeOverride()
+      if (override) {
+        // --theme / OPENCODE_THEME outranks the configured theme name and is re-applied so a config
+        // change cannot replace it mid-session. Nothing is written back to the config or storage.
+        setStore("active", override)
+        if (override === "system") refreshPalette()
+        return
+      }
       const theme = config.theme?.name
       if (!theme) return
       setStore("active", theme)
