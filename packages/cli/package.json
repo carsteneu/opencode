@@ -21,6 +21,7 @@
     "build:patched": "bun run script/build-patched.ts",
     "build:node": "bun run script/build-node.ts",
     "dev": "bun run src/index.ts",
+    "release:patched": "bun run script/patched-release.ts",
     "test": "bun test --timeout 30000 --only-failures",
     "typecheck": "tsgo -b"
   },
