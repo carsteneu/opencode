@@ -24,6 +24,7 @@ import {
   isForkRelease,
   normalizeForkVersion,
   parseReleaseVersion,
+  reportedVersion,
   selectForkRelease,
   type ForkRelease,
   type Policy,
@@ -158,14 +159,6 @@ const ForkReleaseList = Schema.Array(
 )
 
 const decodeForkReleases = Schema.decodeUnknownOption(Schema.fromJsonString(ForkReleaseList))
-
-/** `opencode v1.2.3` on stdout, as `--version` prints it. */
-function reportedVersion(output: string) {
-  return output
-    .trim()
-    .replace(/^opencode\s+/, "")
-    .replace(/^v/, "")
-}
 
 const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem

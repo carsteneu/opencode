@@ -5,7 +5,7 @@ import { Global } from "@opencode/util/global"
 import { AppProcess } from "@opencode/util/process"
 import { expect, spyOn, test } from "bun:test"
 import { Effect, FileSystem, Layer, Stream } from "effect"
-import { ChildProcess, ChildProcessSpawner } from "effect/process"
+import { ChildProcessSpawner } from "effect/process"
 import { readFileSync, readdirSync, statSync } from "node:fs"
 import path from "node:path"
 import { Updater } from "../src/services/updater"
@@ -22,7 +22,8 @@ const REPOSITORY = "carsteneu/opencode"
 const RELEASES_URL = `https://api.github.com/repos/${REPOSITORY}/releases?per_page=30`
 const BINARY_URL = `https://github.com/${REPOSITORY}/releases/download/2.0.26-v2patched.2/${BINARY}`
 const CHECKSUM_URL = `${BINARY_URL}.sha256`
-const BYTES = Buffer.from("v2 fork release payload\n")
+const PAYLOAD = "v2 fork release payload\n"
+const BYTES = Buffer.from(PAYLOAD)
 const HASH = new Bun.CryptoHasher("sha256").update(BYTES).digest("hex")
 
 function releases(
@@ -67,7 +68,6 @@ function releases(
 function fixture(
   input: {
     releases?: unknown
-    bytes?: Buffer
     checksum?: string
     reported?: string
   } = {},
@@ -81,7 +81,6 @@ function fixture(
     yield* fs.makeDirectory(path.dirname(executable), { recursive: true })
     yield* fs.writeFileString(executable, "binary")
 
-    const bytes = input.bytes ?? BYTES
     const requests: string[] = []
     yield* Effect.acquireRelease(
       Effect.sync(() =>
@@ -95,7 +94,8 @@ function fixture(
                 return new Response(input.checksum ?? `${HASH}  ${BINARY}\n`, {
                   headers: { "content-type": "text/plain" },
                 })
-              if (url === BINARY_URL) return new Response(bytes, { headers: { "content-type": "application/octet-stream" } })
+              if (url === BINARY_URL)
+                return new Response(new Uint8Array(BYTES), { headers: { "content-type": "application/octet-stream" } })
               return new Response("not found", { status: 404 })
             },
             { preconnect: fetch.preconnect },
@@ -154,7 +154,7 @@ function fixture(
       ),
     )
     const leftovers = () => readdirSync(path.dirname(executable)).filter((name) => name.includes(".update-"))
-    return { updater, commands, requests, executable, leftovers, bytes }
+    return { updater, commands, requests, executable, leftovers }
   })
 }
 
@@ -186,7 +186,7 @@ if (forkRun) {
     Effect.gen(function* () {
       const test = yield* fixture()
       yield* test.updater.upgrade("curl", "2.0.26-v2patched.2")
-      expect(readFileSync(test.executable)).toEqual(test.bytes)
+      expect(readFileSync(test.executable, "utf8")).toBe(PAYLOAD)
       expect(statSync(test.executable).mode & 0o777).toBe(0o755)
       // The only command is the smoke test on the downloaded image.
       expect(test.commands).toHaveLength(1)

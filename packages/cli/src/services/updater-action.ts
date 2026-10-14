@@ -17,6 +17,14 @@ export function normalizeForkVersion(input: string): string {
   return value.match(FORK_RELEASE_PATTERN)?.[1] ?? value.replace(/^v/, "")
 }
 
+/** `opencode --version` prints `opencode v1.2.3`; the version is the whole string. */
+export function reportedVersion(output: string): string {
+  return output
+    .trim()
+    .replace(/^opencode\s+/, "")
+    .replace(/^v/, "")
+}
+
 /**
  * A fork build must only ever move to another fork prerelease. The official release
  * service must not replace a fork install: `action` below only compares versions for
