@@ -39,6 +39,7 @@ if (!argument)
       `(OPENCODE_RELEASE_BRANCH overrides ${releaseBranch})`,
   )
 const version = normalizeForkVersion(argument)
+if (!forkAssetName()) throw new Error("Fork releases are built for Linux x64 only")
 // `--draft` runs the publish path but stops after the draft has been verified, so the
 // uploaded assets can be inspected before they become visible to the update channel.
 const draft = process.argv.includes("--draft")
@@ -55,7 +56,7 @@ const packageVersion = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Str
 
 // Every guard runs before the build and before anything reaches the remote, so a refused
 // release costs no build and touches no shared state.
-const plan = planForkRelease({
+let plan = planForkRelease({
   version,
   publish,
   releaseBranch,
@@ -107,18 +108,31 @@ const built = reportedVersion((await run([binary, "--version"], packageDir)).tri
 if (built !== version) throw new Error(`Built ${built}, expected ${version}`)
 
 // The channel is compiled in from the environment. Without this assertion a build that
-// lost the defines would still look like a fork release and would silently resolve its
-// updates from the official release service instead.
-for (const marker of [repository, forkChannel]) {
-  if (!(await containsMarker(binary, marker)))
-    throw new Error(`The built binary does not carry the ${marker} channel marker; refusing to release`)
-}
+// lost the defines would still look like a fork release and would then resolve its
+// updates against an empty repository instead of the fork's releases. The repository is
+// the only marker that proves it: the version string carries `v2patched` by construction.
+if (!(await containsMarker(binary, repository)))
+  throw new Error(`The built binary does not carry the ${repository} channel marker; refusing to release`)
 
 await smoke(binary, path.join(packageDir, "dist/v2patched-smoke"))
 
 if (publish) {
   const builtStatus = (await run(["git", "status", "--short"], root)).trim()
   if (builtStatus) throw new Error(`Build changed the worktree; refusing to publish:\n${builtStatus}`)
+  // The plan was computed before the build; a release published meanwhile must not be
+  // written over by one that is no longer the newest, so re-confirm against fresh state.
+  plan = planForkRelease({
+    version,
+    publish,
+    releaseBranch,
+    branch,
+    worktree: builtStatus,
+    packageVersion,
+    releases: await knownReleases(),
+    existing: await knownDraft(),
+    head,
+  })
+  if (plan.action === "refuse") throw new Error(plan.reason)
 }
 
 console.log(`Prepared ${binary}`)

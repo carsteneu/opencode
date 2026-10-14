@@ -6,7 +6,7 @@ import { AppProcess } from "@opencode/util/process"
 import { expect, spyOn, test } from "bun:test"
 import { Effect, FileSystem, Layer, Stream } from "effect"
 import { ChildProcessSpawner } from "effect/process"
-import { readFileSync, readdirSync, statSync } from "node:fs"
+import { readFileSync, readdirSync, statSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { Updater } from "../src/services/updater"
 import { testEffect } from "../../core/test/lib/effect"
@@ -206,6 +206,49 @@ if (forkRun) {
     }),
   )
 
+  it.live("fork: pages until it finds an explicitly requested target", () =>
+    Effect.gen(function* () {
+      const test = yield* fixture({
+        pages: [
+          [
+            forkRelease("2.0.26-v2patched.3"),
+            ...Array.from({ length: 99 }, (_, index) => foreign(`1.18.34-patched.${400 + index}`)),
+          ],
+          [forkRelease("2.0.26-v2patched.2")],
+        ],
+      })
+      yield* test.updater.upgrade("curl", "2.0.26-v2patched.2")
+      expect(readFileSync(test.executable, "utf8")).toBe(PAYLOAD)
+      expect(test.requests).toEqual([
+        `${RELEASES_URL}?per_page=100&page=1`,
+        `${RELEASES_URL}?per_page=100&page=2`,
+        CHECKSUM_URL,
+        BINARY_URL,
+      ])
+    }),
+  )
+
+  it.live("fork: sweeps stale update images but leaves other files alone", () =>
+    Effect.gen(function* () {
+      const test = yield* fixture()
+      const directory = path.dirname(test.executable)
+      writeFileSync(path.join(directory, `${path.basename(test.executable)}.update-999-1`), "stale")
+      writeFileSync(path.join(directory, "neighbour"), "keep")
+      yield* test.updater.upgrade("curl", "2.0.26-v2patched.2")
+      expect(readdirSync(directory).sort()).toEqual(["neighbour", path.basename(test.executable)])
+      expect(readFileSync(path.join(directory, "neighbour"), "utf8")).toBe("keep")
+    }),
+  )
+
+  it.live("fork: replaces an official binary that sits at the install path", () =>
+    Effect.gen(function* () {
+      const test = yield* fixture({ installed: "2.0.27" })
+      yield* test.updater.upgrade("curl", "2.0.26-v2patched.2")
+      expect(readFileSync(test.executable, "utf8")).toBe(PAYLOAD)
+      expect(test.requests).toEqual([`${RELEASES_URL}?per_page=100&page=1`, CHECKSUM_URL, BINARY_URL])
+    }),
+  )
+
   it.live("fork: verifies the published checksum and swaps in the fork binary", () =>
     Effect.gen(function* () {
       const test = yield* fixture()
@@ -329,5 +372,5 @@ test("the fork channel resolves, verifies and refuses non-fork targets", async (
   )
   const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()])
   expect(code, stderr).toBe(0)
-  expect(stderr).toContain("12 pass")
+  expect(stderr).toContain("15 pass")
 })

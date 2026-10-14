@@ -349,8 +349,9 @@ const make = Effect.gen(function* () {
 
   // Fork builds resolve updates from the fork repository's own prereleases. The list is
   // cached for an hour because the automatic check runs every ten minutes and GitHub only
-  // allows 60 unauthenticated requests per hour per address. An explicit upgrade refreshes,
-  // so it never resolves a superseded prerelease.
+  // allows 60 unauthenticated requests per hour per address. A cached list therefore
+  // announces a new prerelease up to an hour late; the install path refetches, so the bytes
+  // it verifies are always the ones the release publishes at install time.
   const forkReleasePageSize = 100
   const forkReleasePageLimit = 10
   const forkReleaseCacheTtl = 60 * 60 * 1000
@@ -437,30 +438,35 @@ const make = Effect.gen(function* () {
 
   // The fork repository is shared with the v1 line, which releases often, so the newest v2
   // prerelease can fall off the first page. GitHub returns releases newest-first, so the
-  // first page that yields a usable fork release already carries the newest one.
-  const fetchForkReleases = Effect.fnUntraced(function* () {
+  // first page that yields a usable fork release already carries the newest one — except
+  // when a specific target is asked for, which may sit further down.
+  const fetchForkReleases = Effect.fnUntraced(function* (target?: string) {
     const collected: ForkRelease[] = []
     const asset = forkAssetName()
     for (let page = 1; page <= forkReleasePageLimit; page++) {
       const releases = yield* forkReleasePage(page)
       if (!releases.length) break
       collected.push(...releases)
-      if (selectForkRelease(collected, asset)) break
+      const found = target
+        ? collected.some((item) => normalizeForkVersion(item.tag_name) === target)
+        : selectForkRelease(collected, asset) !== undefined
+      if (found) break
       if (releases.length < forkReleasePageSize) break
     }
     return collected
   })
 
-  const forkReleases = Effect.fnUntraced(function* (refresh = false) {
+  const forkReleases = Effect.fnUntraced(function* (options: { refresh?: boolean; target?: string } = {}) {
     const cached = yield* Ref.get(releaseCache)
     const now = Date.now()
     if (
-      !refresh &&
+      !options.refresh &&
+      !options.target &&
       cached?.repository === OPENCODE_UPDATE_REPOSITORY &&
       now - cached.checkedAt < forkReleaseCacheTtl
     )
       return cached.releases
-    const releases = yield* fetchForkReleases()
+    const releases = yield* fetchForkReleases(options.target)
     yield* Ref.set(releaseCache, { repository: OPENCODE_UPDATE_REPOSITORY, checkedAt: now, releases })
     return releases
   })
@@ -590,11 +596,19 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         yield* flock.acquire("cli-upgrade", undefined, { timeoutMs: Duration.toMillis("15 minutes") })
         // Another process may have completed the same upgrade while this one waited for the
-        // lock. v1 read the installed binary's version here for the same reason.
+        // lock. v1 read the installed binary's version here for the same reason; unlike v1
+        // this only stands down for a fork build, so an official binary sitting at that path
+        // is still replaced instead of silently blocking the channel.
         const installed = yield* exec([executable, "--version"])
         const installedVersion = reportedVersion(installed.stdout)
-        if (installed.code === 0 && semver.valid(installedVersion) && semver.gte(installedVersion, target)) return
-        const releases = yield* forkReleases(true)
+        if (
+          installed.code === 0 &&
+          isForkRelease(installedVersion) &&
+          semver.valid(installedVersion) &&
+          semver.gte(installedVersion, target)
+        )
+          return
+        const releases = yield* forkReleases({ refresh: true, target })
         const release = releases.find((item) => normalizeForkVersion(item.tag_name) === target)
         if (!release || !selectForkRelease([release], asset))
           return yield* Effect.fail(
