@@ -10,7 +10,55 @@ export function action(current: string, latest: string, policy: Policy): Action 
   const currentVersion = parseReleaseVersion(current)
   const latestVersion = parseReleaseVersion(latest)
   if (!currentVersion || !latestVersion || sameRelease(currentVersion, latestVersion)) return "none"
+  // Major releases are never installed automatically; only the explicit
+  // transfer (`opencode upgrade --major`) crosses a major boundary.
+  if (currentVersion.major !== latestVersion.major) return "none"
   return policy
+}
+
+/** True when `latest` names a different release than `current`. */
+export function updates(current: string, latest: string) {
+  const currentVersion = parseReleaseVersion(current)
+  const latestVersion = parseReleaseVersion(latest)
+  if (!currentVersion || !latestVersion) return false
+  return !sameRelease(currentVersion, latestVersion)
+}
+
+/** True when the two versions belong to different major lines. */
+export function majorChange(current: string, latest: string) {
+  const currentVersion = parseReleaseVersion(current)
+  const latestVersion = parseReleaseVersion(latest)
+  if (!currentVersion || !latestVersion) return false
+  return currentVersion.major !== latestVersion.major
+}
+
+/** Ranks two release versions; undefined when either is not one. */
+export function compareRelease(left: string, right: string) {
+  const a = parseReleaseVersion(left)
+  const b = parseReleaseVersion(right)
+  if (!a || !b) return undefined
+  const components = (value: typeof a) => value.core.split(".").map(Number)
+  const [aCore, bCore] = [components(a), components(b)]
+  for (let index = 0; index < 3; index++) {
+    if (aCore[index] !== bCore[index]) return aCore[index] > bCore[index] ? 1 : -1
+  }
+  const length = Math.min(a.prerelease.length, b.prerelease.length)
+  for (let index = 0; index < length; index++) {
+    const [x, y] = [a.prerelease[index], b.prerelease[index]]
+    if (x === y) continue
+    const numeric = /^[0-9]+$/.test(x) && /^[0-9]+$/.test(y)
+    // semver coerces oversized numeric identifiers, and sameRelease does the
+    // same, so the ranking must not disagree with the equality check.
+    if (numeric) {
+      const [left, right] = [Number(x), Number(y)]
+      return left === right ? 0 : left > right ? 1 : -1
+    }
+    if (/^[0-9]+$/.test(x)) return -1
+    if (/^[0-9]+$/.test(y)) return 1
+    return x > y ? 1 : -1
+  }
+  if (a.prerelease.length !== b.prerelease.length) return a.prerelease.length > b.prerelease.length ? 1 : -1
+  return 0
 }
 
 export function parseReleaseVersion(input: string) {

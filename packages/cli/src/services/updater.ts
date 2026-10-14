@@ -1,14 +1,22 @@
 import { Global } from "@opencode/util/global"
 import { AppProcess } from "@opencode/util/process"
 import { EffectFlock } from "@opencode/util/effect-flock"
-import { OPENCODE_ARTIFACT, OPENCODE_CHANNEL, OPENCODE_LOCAL, OPENCODE_VERSION } from "../version"
+import { ForkRelease } from "@opencode/util/installation/fork-release"
+import {
+  OPENCODE_ARTIFACT,
+  OPENCODE_CHANNEL,
+  OPENCODE_LOCAL,
+  OPENCODE_UPDATE_CHANNEL,
+  OPENCODE_VERSION,
+} from "../version"
 import { Context, Duration, Effect, FileSystem, Layer, Option, Ref, Schema } from "effect"
 import { ChildProcess } from "effect/process"
+import { createHash, randomUUID } from "node:crypto"
 import { parse, type ParseError } from "jsonc-parser"
 import path from "node:path"
 import { stripVTControlCharacters } from "node:util"
 import { RetainedImage } from "./retained-image"
-import { action, parseReleaseVersion, type Policy } from "./updater-action"
+import { action, compareRelease, majorChange, parseReleaseVersion, updates, type Policy } from "./updater-action"
 import { errorMessage } from "../util/error"
 
 export const methods = ["curl", "npm", "pnpm", "bun", "yarn", "vp", "brew"] as const
@@ -54,6 +62,22 @@ const installNames: Record<Method, string> = {
   vp: "Vite+",
   brew: "Homebrew",
 }
+
+// Redirect hops keep the same policy as published asset URLs: https only, no
+// credentials. GitHub's asset URLs redirect to a signed object host.
+function hop(input: string, base: string) {
+  try {
+    const parsed = new URL(input, base)
+    if (parsed.protocol !== "https:") return
+    if (parsed.username || parsed.password) return
+    return parsed.toString()
+  } catch {
+    return
+  }
+}
+
+const checksumLimit = 4 * 1024
+const binaryLimit = 256 * 1024 * 1024
 
 function conciseDetail(input: string) {
   const lines = stripVTControlCharacters(input)
@@ -131,6 +155,18 @@ const make = Effect.gen(function* () {
   const flock = yield* EffectFlock.Service
   const installedVersion = yield* Ref.make(OPENCODE_VERSION)
   const channel = OPENCODE_CHANNEL.replace(/[^a-zA-Z0-9._-]/g, "-")
+  // A patched build is installed as a raw release asset, so it never reads the
+  // upstream release service and never installs through a package manager. The
+  // version shape counts too: a hand-built patched binary must not fall back to
+  // upstream just because its update channel was left at the default.
+  const fork = OPENCODE_UPDATE_CHANNEL === ForkRelease.channel || ForkRelease.version(OPENCODE_VERSION) !== undefined
+  const forkReleasesCache = yield* Ref.make<
+    | {
+        readonly at: number
+        readonly list: ReadonlyArray<ForkRelease.Release>
+      }
+    | undefined
+  >(undefined)
   const executable = yield* fs.realPath(process.execPath).pipe(Effect.orElseSucceed(() => process.execPath))
   const installedPackage = yield* Effect.gen(function* () {
     const directory = path.dirname(path.dirname(executable))
@@ -197,6 +233,8 @@ const make = Effect.gen(function* () {
   })
 
   const method = Effect.fnUntraced(function* () {
+    // A patched install is always the raw binary from the install script.
+    if (fork) return "curl" as Method
     if (path.resolve(process.execPath) === curlBinary) return "curl"
     if (installedFormula) return "brew"
     if (!installedPackage) return
@@ -306,11 +344,294 @@ const make = Effect.gen(function* () {
     return { package: packageName, version }
   })
 
-  const latest = (selected?: Method) =>
-    (selected ? Effect.succeed(selected) : method()).pipe(
-      Effect.flatMap(release),
-      Effect.map((data) => data.version),
+  const versioned = (list: ReadonlyArray<ForkRelease.Release>) =>
+    list.flatMap((release) => {
+      const version = ForkRelease.version(release.tag_name)
+      return version === undefined ? [] : [{ ...release, version }]
+    })
+
+  // GitHub's unauthenticated limit is 60 requests per hour per address, so an
+  // upgrade reuses the listing it resolved moments earlier.
+  const forkReleases = Effect.fnUntraced(function* () {
+    const cached = yield* Ref.get(forkReleasesCache)
+    const now = Date.now()
+    if (cached && now - cached.at < 60_000) return versioned(cached.list)
+    const response = yield* Effect.tryPromise({
+      try: (signal) =>
+        fetch(ForkRelease.releasesUrl(), { signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]) }),
+      catch: (cause) =>
+        new UpgradeError(
+          {
+            title: "Could not check for OpenCode updates",
+            detail: errorDetail(cause),
+            retry: "Check your network, then run opencode upgrade again.",
+          },
+          { cause },
+        ),
+    })
+    if (!response.ok)
+      return yield* Effect.fail(
+        new UpgradeError({
+          title: "Could not check for OpenCode updates",
+          detail: `The patched release service returned HTTP ${response.status}.`,
+          retry: "Try again in a few minutes.",
+        }),
+      )
+    const data: unknown = yield* Effect.tryPromise({
+      try: () => response.json(),
+      catch: (cause) =>
+        new UpgradeError(
+          {
+            title: "Could not read the patched release information",
+            detail: errorDetail(cause),
+            retry: "Try again in a few minutes.",
+          },
+          { cause },
+        ),
+    })
+    if (!Array.isArray(data))
+      return yield* Effect.fail(
+        new UpgradeError({
+          title: "Could not read the patched release information",
+          detail: "The patched release service returned an unexpected payload.",
+          retry: "Try again in a few minutes.",
+        }),
+      )
+    const list = ForkRelease.candidates(ForkRelease.releases(data))
+    yield* Ref.set(forkReleasesCache, { at: now, list })
+    return versioned(list)
+  })
+
+  const forkLatest = Effect.fnUntraced(function* () {
+    const newest = (yield* forkReleases()).sort((left, right) => compareRelease(right.version, left.version) ?? 0)[0]
+    if (newest) return newest
+    return yield* Effect.fail(
+      new UpgradeError({
+        title: "No patched release is available",
+        detail: `${ForkRelease.repository} has no complete patched release for ${process.platform}/${process.arch}.`,
+        retry: "Try again later.",
+      }),
     )
+  })
+
+  const latest = (selected?: Method) =>
+    fork
+      ? forkLatest().pipe(Effect.map((release) => release.version))
+      : (selected ? Effect.succeed(selected) : method()).pipe(
+          Effect.flatMap(release),
+          Effect.map((data) => data.version),
+        )
+
+  const download = Effect.fnUntraced(function* (url: string, label: string, limit: number) {
+    const failure = (detail: string, cause?: unknown) =>
+      new UpgradeError(
+        {
+          title: `Could not download ${label}`,
+          detail,
+          retry: "Check your network, then run opencode upgrade again.",
+        },
+        cause === undefined ? undefined : { cause },
+      )
+    const request = (target: string) =>
+      Effect.tryPromise({
+        try: (signal) =>
+          fetch(target, {
+            redirect: "manual",
+            signal: AbortSignal.any([signal, AbortSignal.timeout(Duration.toMillis("5 minutes"))]),
+          }),
+        catch: (cause) => failure(errorDetail(cause), cause),
+      })
+    // GitHub signs asset downloads behind a redirect, so hops are followed by
+    // hand: every one of them has to pass the same URL policy as the payload.
+    let response: Response | undefined
+    let current = url
+    for (let count = 0; count <= 5; count++) {
+      const answer = yield* request(current)
+      if (answer.status < 300 || answer.status >= 400) {
+        response = answer
+        break
+      }
+      const location = answer.headers.get("location")
+      const next = location === null ? undefined : hop(location, current)
+      if (!next)
+        return yield* Effect.fail(
+          new UpgradeError({
+            title: `Could not download ${label}`,
+            detail: "The release service redirected to an address that is not allowed.",
+            retry: "Try again later.",
+          }),
+        )
+      current = next
+    }
+    if (!response)
+      return yield* Effect.fail(
+        new UpgradeError({
+          title: `Could not download ${label}`,
+          detail: "The release service redirected too often.",
+          retry: "Try again later.",
+        }),
+      )
+    if (!response.ok)
+      return yield* Effect.fail(
+        new UpgradeError({
+          title: `Could not download ${label}`,
+          detail: `The release service returned HTTP ${response.status}.`,
+          retry: "Try again in a few minutes.",
+        }),
+      )
+    if (Number(response.headers.get("content-length") ?? "0") > limit)
+      return yield* Effect.fail(failure(`The download exceeds the ${limit} byte limit.`, undefined))
+    return yield* Effect.tryPromise({
+      // Reading in chunks keeps a lying or missing Content-Length from buffering
+      // an unbounded body.
+      try: async () => {
+        const reader = response.body?.getReader()
+        if (!reader) throw failure("The release service returned no body.")
+        const chunks: Array<Uint8Array> = []
+        let total = 0
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          total += value.length
+          if (total > limit) {
+            await reader.cancel()
+            throw failure(`The download exceeds the ${limit} byte limit.`)
+          }
+          chunks.push(value)
+        }
+        const bytes = new Uint8Array(total)
+        let offset = 0
+        for (const chunk of chunks) {
+          bytes.set(chunk, offset)
+          offset += chunk.length
+        }
+        return bytes
+      },
+      catch: (cause) => (cause instanceof UpgradeError ? cause : failure(errorDetail(cause), cause)),
+    })
+  })
+
+  // Downloads beside the target and renames over it only after the checksum and
+  // a version probe pass, so a failed update leaves the installed binary alone.
+  const upgradeFork = Effect.fnUntraced(
+    function* (target: string) {
+      const binary = ForkRelease.asset()
+      if (!binary)
+        return yield* Effect.fail(
+          new UpgradeError({
+            title: "Patched releases do not cover this platform",
+            detail: `${ForkRelease.repository} publishes no patched release for ${process.platform}/${process.arch}.`,
+            retry: "Install a standard OpenCode release for this platform.",
+          }),
+        )
+      // Only the binary the install script placed is ours to replace; a source
+      // checkout or a package manager install must survive untouched. Compare
+      // resolved paths because $HOME itself may be a symlink.
+      const installed = yield* fs.realPath(curlBinary).pipe(Effect.orElseSucceed(() => curlBinary))
+      if (executable !== installed)
+        return yield* Effect.fail(
+          new UpgradeError({
+            title: "This OpenCode is not a patched install",
+            detail: `Patched releases replace ${installed}, but OpenCode runs from ${executable}.`,
+            retry: "Install OpenCode with the install script, then run opencode upgrade again.",
+          }),
+        )
+      const current = yield* Ref.get(installedVersion)
+      const order = compareRelease(target, current)
+      if (order === 0) return
+      if (order === -1)
+        return yield* Effect.fail(
+          new UpgradeError({
+            title: "Patched release is not newer",
+            detail: `${target} is not newer than the installed ${current}.`,
+            retry: "Run opencode upgrade to install the newest patched release.",
+          }),
+        )
+
+      return yield* Effect.scoped(
+        Effect.gen(function* () {
+          // The same lock name the 1.x line uses: a 1.x background upgrade may
+          // still be running against this binary during the transfer.
+          yield* flock.acquire(`installation-upgrade:${executable}`, undefined, {
+            timeoutMs: Duration.toMillis("15 minutes"),
+          })
+          const release = (yield* forkReleases()).find((item) => item.version === target)
+          if (!release)
+            return yield* Effect.fail(
+              new UpgradeError({
+                title: "Patched release not found",
+                detail: `${target} has no complete asset pair in ${ForkRelease.repository}.`,
+                retry: "Check the version, then run opencode upgrade again.",
+              }),
+            )
+          const checksum = release.assets.find((item) => item.name === ForkRelease.checksumAsset(binary))
+          const asset = release.assets.find((item) => item.name === binary)
+          if (!checksum || !asset)
+            return yield* Effect.fail(
+              new UpgradeError({
+                title: "Patched release is incomplete",
+                detail: `${target} is missing ${binary} or ${ForkRelease.checksumAsset(binary)}.`,
+                retry: "Try again later.",
+              }),
+            )
+
+          const expected = ForkRelease.checksumDigest(
+            new TextDecoder().decode(
+              yield* download(checksum.browser_download_url, "the patched release checksum", checksumLimit),
+            ),
+          )
+          if (!expected)
+            return yield* Effect.fail(
+              new UpgradeError({
+                title: "Patched release checksum is invalid",
+                detail: `${ForkRelease.checksumAsset(binary)} does not start with a SHA-256 digest.`,
+                retry: "Try again later.",
+              }),
+            )
+
+          // A fresh name per attempt and exclusive creation: a leftover from a
+          // killed run cannot be followed through as a symlink.
+          const temporary = `${executable}.update-${randomUUID()}`
+          yield* Effect.gen(function* () {
+            const bytes = yield* download(asset.browser_download_url, `OpenCode ${target}`, binaryLimit)
+            if (createHash("sha256").update(bytes).digest("hex") !== expected)
+              return yield* Effect.fail(
+                new UpgradeError({
+                  title: "Patched release checksum does not match",
+                  detail: `The downloaded ${binary} does not match its published checksum.`,
+                  retry: "Try again later; the installed OpenCode was left unchanged.",
+                }),
+              )
+            yield* fs.writeFile(temporary, bytes, { flag: "wx" })
+            yield* fs.chmod(temporary, 0o755)
+            const probe = yield* exec([temporary, "--version"]).pipe(Effect.orElseSucceed(() => undefined))
+            const reported = probe?.stdout.trim().split(/\s+/).at(-1)?.replace(/^v/, "")
+            if (probe?.code !== 0 || reported !== target)
+              return yield* Effect.fail(
+                new UpgradeError({
+                  title: "Patched release binary failed verification",
+                  detail: `The downloaded binary reported ${reported ?? "no version"} instead of ${target}.`,
+                  retry: "Try again later; the installed OpenCode was left unchanged.",
+                }),
+              )
+            yield* fs.rename(temporary, executable)
+          }).pipe(Effect.ensuring(fs.remove(temporary, { force: true }).pipe(Effect.ignore)))
+        }),
+      )
+    },
+    Effect.mapError((cause) =>
+      cause instanceof UpgradeError
+        ? cause
+        : new UpgradeError(
+            {
+              title: "Could not install the patched release",
+              detail: errorDetail(cause),
+              retry: "Fix the issue above, then run opencode upgrade again.",
+            },
+            { cause },
+          ),
+    ),
+  )
 
   const temporaryDirectory = (prefix: string) =>
     Effect.acquireRelease(fs.makeTempDirectory({ directory: global.cache, prefix }), (directory) =>
@@ -367,6 +688,17 @@ const make = Effect.gen(function* () {
   const upgrade = Effect.fnUntraced(function* (method: Method, input: string) {
     if (!parseReleaseVersion(input)) return yield* Effect.fail(new Error(`Invalid version: ${input}`))
     const version = input.trim().replace(/^v/, "")
+    if (fork) {
+      if (!ForkRelease.version(version))
+        return yield* Effect.fail(
+          new UpgradeError({
+            title: "Not a patched OpenCode release",
+            detail: `${version} is not a release of ${ForkRelease.repository}. A patched build only installs patched releases.`,
+            retry: "Run opencode upgrade to use the newest patched release.",
+          }),
+        )
+      return yield* upgradeFork(version)
+    }
     const packageName =
       method === "brew" && installedFormula === "opencode" ? "opencode" : (yield* release(method)).package
     const target = `${packageName}@${version}`
@@ -475,7 +807,11 @@ const make = Effect.gen(function* () {
     })
     const next = action(current, version, policy)
     if (next === "none") {
-      yield* Effect.logInfo("update check done", { action: "up-to-date" })
+      // A major change is named as such: it is never applied automatically and
+      // needs the explicit transfer command.
+      yield* Effect.logInfo("update check done", {
+        action: majorChange(current, version) ? "major-requires-transfer" : "up-to-date",
+      })
       return undefined
     }
     yield* Effect.logInfo("OpenCode update available", { current, latest: version, action: next })
@@ -508,11 +844,9 @@ const make = Effect.gen(function* () {
     const version = yield* latest()
     if (!parseReleaseVersion(version)) return yield* Effect.fail(new Error(`Invalid version: ${version}`))
     const current = yield* Ref.get(installedVersion)
-    if (action(current, version, "auto") === "none") {
+    if (!updates(current, version)) {
       // An earlier check may have installed the update while this client is still running.
-      return action(OPENCODE_VERSION, current, "auto") === "none"
-        ? undefined
-        : { type: "installed" as const, version: current }
+      return updates(OPENCODE_VERSION, current) ? { type: "installed" as const, version: current } : undefined
     }
     return { type: "available" as const, version }
   })
@@ -535,4 +869,4 @@ const make = Effect.gen(function* () {
 export const layer = Layer.effect(Service, make)
 
 export * as Updater from "./updater"
-export { action, type Action, type Policy } from "./updater-action"
+export { action, majorChange, updates, type Action, type Policy } from "./updater-action"

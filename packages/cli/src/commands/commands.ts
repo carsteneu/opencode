@@ -69,6 +69,10 @@ const Root = Spec.make(typeof OPENCODE_CLI_NAME === "string" ? OPENCODE_CLI_NAME
           Argument.withDescription("Version to upgrade to (with or without a leading v)"),
           Argument.optional,
         ),
+        major: Flag.Boolean("major").pipe(
+          Flag.withDescription("Transfer to the newest patched release even when it changes the major version"),
+          Flag.withDefault(false),
+        ),
         method: Flag.Literals("method", Updater.methods).pipe(
           Flag.withAlias("m"),
           Flag.withDescription("Installation method to use"),

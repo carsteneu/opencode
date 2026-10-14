@@ -20,13 +20,25 @@ export default Runtime.handler(
         )
 
       log.info(`Using method: ${method}`)
-      const target = Option.getOrUndefined(input.target) ?? (yield* updater.latest(method))
+      const requested = Option.getOrUndefined(input.target)
+      const target = requested ?? (yield* updater.latest(method))
       const version = target.trim().replace(/^v/, "")
       if (version === OPENCODE_VERSION) {
         log.warn(`OpenCode upgrade skipped: ${version} is already installed`)
         outro("Done")
         return
       }
+      // A major change is never implicit: an automatically resolved target that
+      // crosses a major boundary needs the explicit transfer flag.
+      if (!requested && !input.major && Updater.majorChange(OPENCODE_VERSION, version))
+        return yield* Effect.fail(
+          new Updater.UpgradeError({
+            title: "A major OpenCode upgrade is available",
+            detail: `OpenCode ${version} is on a different major line than the installed ${OPENCODE_VERSION}.`,
+            command: "opencode upgrade --major",
+            retry: "Run opencode upgrade --major to transfer to the new line.",
+          }),
+        )
 
       log.info(`From ${OPENCODE_VERSION} → ${version}`)
       const progress = spinner()

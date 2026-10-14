@@ -651,11 +651,18 @@ To upgrade to a specific version.
 opencode upgrade v0.1.48
 ```
 
+A patched build (`x.y.z-patched.n`) only ever installs another patched release from the fork release channel. Major upgrades are never applied automatically, so moving to the next major line takes an explicit step: the `--major` flag here, or the install button in the update dialog.
+
+```bash
+opencode upgrade --major
+```
+
 #### Flags
 
-| Flag                                   | Short | Description                                                       |
-| -------------------------------------- | ----- | ----------------------------------------------------------------- |
-| <nobr><code>{"--method"}</code></nobr> | `-m`  | The installation method that was used; curl, npm, pnpm, bun, brew |
+| Flag                                   | Short | Description                                                                   |
+| -------------------------------------- | ----- | ----------------------------------------------------------------------------- |
+| <nobr><code>{"--method"}</code></nobr> | `-m`  | The installation method that was used; curl, npm, pnpm, bun, brew             |
+| <nobr><code>{"--major"}</code></nobr>  |       | Transfer to the newest patched release even when it changes the major version |
 
 ---
 
