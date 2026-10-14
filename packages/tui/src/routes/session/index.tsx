@@ -92,11 +92,7 @@ import { groupsReasoning, nextThinkingMode, type ThinkingMode } from "../../cont
 import { getScrollAcceleration } from "../../util/scroll"
 import { toolInputProgress } from "../../util/tool-input-progress"
 import { collapseShellOutput, collapseToolOutput } from "../../util/collapse-tool-output"
-import {
-  probeSessionImage,
-  sessionImagePreviewHeight,
-  type SessionImageProbe,
-} from "../../util/session-image-preview"
+import { probeSessionImage, sessionImagePreviewHeight, type SessionImageProbe } from "../../util/session-image-preview"
 import { textPartImageSources, type MarkdownImageSource } from "../../util/session-image-markdown"
 import { acquireImagePreview, releaseImagePreview } from "../../util/session-image-preview-cache"
 import { Keymap, type KeymapCommand } from "../../context/keymap"
@@ -1474,9 +1470,7 @@ export function Session(props: {
                   onMouseOut={() => setLatestHovered(false)}
                   onMouseUp={toBottom}
                 >
-                  <text
-                    fg={latestHovered() ? theme.text.action.secondary.hovered : theme.text.action.secondary.base}
-                  >
+                  <text fg={latestHovered() ? theme.text.action.secondary.hovered : theme.text.action.secondary.base}>
                     Jump to latest ↓
                   </text>
                 </box>
@@ -1525,12 +1519,7 @@ export function Session(props: {
                     }}
                   </Show>
                 </Match>
-                <Match
-                  when={
-                    session() &&
-                    currentLocation.error?.location.directory === session()!.location.directory
-                  }
-                >
+                <Match when={session() && currentLocation.error?.location.directory === session()!.location.directory}>
                   <SessionLocationMissing
                     directory={session()!.location.directory}
                     projectID={session()!.projectID}
@@ -2588,8 +2577,11 @@ function TextImages(props: { part: SessionMessageAssistantText; message: Session
     publish()
     if (pending.length === 0) return
 
-    void Promise.all(pending.map(async (image) => ({ image, uri: await acquireImagePreview(image.source) }))).then(
-      (loaded) => {
+    void Promise.all(pending.map(async (image) => ({ image, uri: await acquireImagePreview(image.source) })))
+      // The cache resolves rather than rejects, so this is a guard against a future narrowing of that.
+      .catch(() => undefined)
+      .then((loaded) => {
+        if (!loaded) return
         let failed = false
         loaded.forEach(({ image, uri }) => {
           // Only what this row still holds becomes a preview; a source released while loading stays gone.
@@ -2609,8 +2601,7 @@ function TextImages(props: { part: SessionMessageAssistantText; message: Session
           retried = true
           retry = setTimeout(() => setAttempt((value) => value + 1), RETRY_FAILED_SOURCE_MS)
         }
-      },
-    )
+      })
   })
 
   onCleanup(() => {
@@ -2932,9 +2923,7 @@ function BlockTool(props: BlockToolProps) {
               <Show
                 when={props.spinner}
                 fallback={
-                  <text
-                    fg={permission() ? theme.text.feedback.warning.base : (props.headerColor ?? theme.text.muted)}
-                  >
+                  <text fg={permission() ? theme.text.feedback.warning.base : (props.headerColor ?? theme.text.muted)}>
                     {title()}
                   </text>
                 }
@@ -3122,11 +3111,7 @@ function ShellDisplay(props: {
           <Show
             when={isRunning()}
             fallback={
-              <text
-                fg={theme.text.base}
-                wrapMode={expanded() ? "word" : "char"}
-                maxHeight={expanded() ? undefined : 2}
-              >
+              <text fg={theme.text.base} wrapMode={expanded() ? "word" : "char"} maxHeight={expanded() ? undefined : 2}>
                 {limitedInput()}
               </text>
             }
@@ -3232,7 +3217,9 @@ function Read(props: ToolProps) {
         Read {pathFormatter.format(stringValue(props.input.path))}
         <Show when={props.input.offset !== undefined || props.input.limit !== undefined}>
           :{finiteNumber(props.input.offset) || 1}-
-          {props.input.limit ? (finiteNumber(props.input.offset) || 1) + (finiteNumber(props.input.limit) || 0) - 1 : ""}
+          {props.input.limit
+            ? (finiteNumber(props.input.offset) || 1) + (finiteNumber(props.input.limit) || 0) - 1
+            : ""}
         </Show>
       </InlineTool>
       <For each={loaded()}>

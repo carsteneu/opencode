@@ -42,6 +42,9 @@ export async function localImageDataUri(path: string, signal?: AbortSignal): Pro
     if (!info.isFile() || info.size === 0 || info.size > MAX_LOCAL_IMAGE_BYTES) return
     const bytes = await readFile(path)
     signal?.throwIfAborted()
+    // Checked again on what was read: the file can grow between the stat and the read, and the cap is
+    // the whole reason the bytes may be held.
+    if (bytes.byteLength > MAX_LOCAL_IMAGE_BYTES) return
     const mime = sniffImageMime(bytes)
     if (!mime) return
     return `data:${mime};base64,${bytes.toString("base64")}`

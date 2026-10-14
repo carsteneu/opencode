@@ -80,10 +80,11 @@ export function textPartImageSources(input: {
   return images
 }
 
+// C0, DEL and C1 controls plus the bidi overrides: a label is a filename and a line of text, so a
+// character that can reorder or hide what surrounds it has no place in one.
+const labelControls = /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g
+
 function imageLabel(value: string | undefined, fallback: string) {
-  const label = value
-    ?.replace(/[\u0000-\u001f\u007f]/g, " ")
-    .trim()
-    .slice(0, 120)
+  const label = value?.replace(labelControls, " ").trim().slice(0, 120)
   return label || fallback
 }

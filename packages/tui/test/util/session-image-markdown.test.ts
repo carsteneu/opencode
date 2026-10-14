@@ -83,8 +83,14 @@ describe("markdown image sources", () => {
   })
 
   test("cleans the label and falls back when there is none", () => {
-    const images = sources(["![  spaced\u0007name\u001f  ](/tmp/out/a.png)", "![](/tmp/out/b.png)"].join("\n"))
-    expect(images.map((image) => image.label)).toEqual(["spaced name", "Image"])
+    const images = sources(
+      [
+        "![  spaced\u0007name\u001f  ](/tmp/out/a.png)",
+        "![a\u200eb\u202ec](/tmp/out/b.png)",
+        "![](/tmp/out/c.png)",
+      ].join("\n"),
+    )
+    expect(images.map((image) => image.label)).toEqual(["spaced name", "a b c", "Image"])
   })
 
   test("caps a long label at 120 characters", () => {
