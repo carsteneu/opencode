@@ -23,11 +23,14 @@ async function wait(fn: () => boolean) {
 // Mounts the real ThemeProvider over the TUI test fixtures with a recorded config service, so a
 // write to the config (persistence) would be observable. The config file is written because the
 // provider watches its directory.
-async function observe(input: {
-  root: string
-  env?: string
-  config?: { name?: string; mode?: "dark" | "light" | "system" }
-}) {
+async function observe(
+  input: {
+    root: string
+    env?: string
+    config?: { name?: string; mode?: "dark" | "light" | "system" }
+  },
+  act?: (themes: ReturnType<typeof useThemes>) => void,
+) {
   const writes: unknown[] = []
   const directory = path.join(input.root, "config")
   const configPath = path.join(directory, "cli.json")
@@ -76,6 +79,7 @@ async function observe(input: {
   try {
     await wait(() => themes?.ready === true)
     if (!themes) throw new Error("Theme provider is not mounted")
+    act?.(themes)
     return {
       selected: themes.selected,
       background: themes.currentTokens().background.base.toString(),
@@ -122,6 +126,15 @@ test("the built-in opencode theme applies when neither override nor config theme
   expect(plain.errors).toEqual([])
 })
 
+test("the system theme can be used as an override", async () => {
+  await using root = await tmpdir()
+  const themed = await observe({ root: root.path, env: "system", config: { name: "dracula" } })
+
+  expect(themed.selected).toBe("system")
+  expect(themed.errors).toEqual([])
+  expect(themed.writes).toBe(0)
+})
+
 test("the override leaves the configured mode untouched", async () => {
   await using root = await tmpdir()
   const light = await observe({ root: root.path, env: "dracula", config: { name: "catppuccin", mode: "light" } })
@@ -160,4 +173,44 @@ test("an unknown override name behaves exactly like an unknown configured name",
   expect(unknownOverride.selected).toBe(unknownConfig.selected)
   expect(unknownOverride.errors).toEqual(unknownConfig.errors)
   expect(unknownOverride.writes).toBe(0)
+})
+
+test("a name from the prototype chain behaves exactly like in the config path", async () => {
+  await using root = await tmpdir()
+  const baseline = await observe({ root: root.path })
+  const exoticConfig = await observe({ root: root.path, config: { name: "__proto__" } })
+  const exoticOverride = await observe({ root: root.path, env: "__proto__", config: { name: "dracula" } })
+
+  // Inherited keys are truthy in every theme lookup, so such a name reaches the loader and reports
+  // a theme error before falling back — with a flag exactly as with a configured name.
+  expect(exoticConfig.errors).toEqual(["__proto__"])
+  expect(exoticConfig.selected).toBe("opencode")
+  expect(exoticConfig.background).toBe(baseline.background)
+  expect(exoticOverride.background).toBe(exoticConfig.background)
+  expect(exoticOverride.selected).toBe(exoticConfig.selected)
+  expect(exoticOverride.errors).toEqual(exoticConfig.errors)
+  expect(exoticOverride.writes).toBe(0)
+})
+
+test("the picker changes the session theme without writing the config while an override is active", async () => {
+  await using root = await tmpdir()
+  const picked = await observe({ root: root.path, env: "dracula", config: { name: "catppuccin" } }, (themes) => {
+    expect(themes.set("gruvbox")).toBe(true)
+  })
+
+  expect(picked.selected).toBe("gruvbox")
+  expect(picked.background).not.toBe(RGBA.fromHex(DRACULA_DARK_BACKGROUND).toString())
+  expect(picked.writes).toBe(0)
+  expect(picked.contents).toBe(`${JSON.stringify({ theme: { name: "catppuccin" } }, null, 2)}\n`)
+})
+
+test("without an override the picker keeps persisting the chosen theme", async () => {
+  await using root = await tmpdir()
+  const picked = await observe({ root: root.path, config: { name: "catppuccin" } }, (themes) => {
+    expect(themes.set("dracula")).toBe(true)
+  })
+
+  expect(picked.selected).toBe("dracula")
+  expect(picked.background).toBe(RGBA.fromHex(DRACULA_DARK_BACKGROUND).toString())
+  expect(picked.writes).toBe(1)
 })
