@@ -499,8 +499,18 @@ const make = Effect.gen(function* () {
           retry: `Pass an x.y.z-${OPENCODE_UPDATE_CHANNEL}.n version.`,
         }),
       )
-    // v1 parity: an already current or newer install makes the fork upgrade a no-op.
-    if (semver.valid(OPENCODE_VERSION) && semver.gte(OPENCODE_VERSION, target)) return
+    // v1 returned silently when the installed binary was already at or above the target.
+    // Its version came from the executable, so that also covered a racing upgrade. This
+    // build's version is compiled in and the flock already serializes upgrades, so a
+    // target that cannot move forward is a refusal instead of a misleading "complete".
+    if (semver.valid(OPENCODE_VERSION) && !semver.gt(target, OPENCODE_VERSION))
+      return yield* Effect.fail(
+        new UpgradeError({
+          title: "Refusing to move backwards",
+          detail: `${OPENCODE_VERSION} is already at or above ${target}; ${OPENCODE_UPDATE_CHANNEL} builds only move forward.`,
+          retry: `Run opencode upgrade without a target to use the newest ${OPENCODE_UPDATE_CHANNEL} prerelease.`,
+        }),
+      )
 
     return yield* Effect.scoped(
       Effect.gen(function* () {

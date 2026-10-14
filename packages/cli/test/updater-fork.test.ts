@@ -240,10 +240,11 @@ if (forkRun) {
     }),
   )
 
-  it.live("fork: an equal fork target is a no-op", () =>
+  it.live("fork: refuses a target that cannot move forward instead of reporting success", () =>
     Effect.gen(function* () {
       const test = yield* fixture()
-      yield* test.updater.upgrade("curl", "2.0.26-v2patched.1")
+      const error = yield* test.updater.upgrade("curl", "2.0.26-v2patched.1").pipe(Effect.flip)
+      expect(error.message).toContain("already at or above 2.0.26-v2patched.1")
       expect(test.commands).toEqual([])
       expect(test.requests).toEqual([])
       expect(readFileSync(test.executable, "utf8")).toBe("binary")
