@@ -74,9 +74,10 @@ async function excursion(
   try {
     const previews = () => collectImages(setup.renderer.root).length
     // Settle without the harness wait helpers: their internal predicate reporting masks which
-    // observation actually failed.
+    // observation actually failed. Either signal proves the load settled - the tail row is on screen
+    // when the preview sits at the oldest end, and the preview itself when it sits at the newest end.
     const settled = async () => {
-      for (let attempt = 0; attempt < 60; attempt++) {
+      for (let attempt = 0; attempt < 80; attempt++) {
         await setup.waitForVisualIdle({ quietFrames: 2 })
         if (previews() > 0 || setup.captureCharFrame().includes(TAIL_MARKER)) return
       }
@@ -98,13 +99,21 @@ async function excursion(
           `previews=${mounted} markerVisible=${fixture.marker ? frame.includes(fixture.marker) : "n/a"}`,
       )
     }
-    const wheelUntil = async (direction: "up" | "down", reached: () => boolean) => {
-      for (let step = 1; step <= 250; step++) {
+    const maximum = () => Math.max(0, scroll.scrollHeight - scroll.viewport.height)
+    // Exact ends, deliberately: the transcript only re-tightens its mount window back to the tail when
+    // it truly reaches the bottom, so a tolerant comparison would leave an older row mounted and
+    // change what "back at the newest end" means. The budget is generous instead.
+    const atOldest = () => scroll.scrollTop <= 0
+    const atNewest = () => scroll.scrollTop >= maximum()
+    const wheelUntil = async (direction: "up" | "down", reached: () => boolean, phase: string) => {
+      for (let step = 1; step <= 700; step++) {
         await setup.mockMouse.scroll(scroll.viewport.x + 2, scroll.viewport.y + 2, direction)
         await setup.waitForVisualIdle({ quietFrames: 1 })
         if (reached()) return step
       }
-      throw new Error(`scrolling ${direction} never reached its end`)
+      throw new Error(
+        `scrolling ${direction} never reached the ${phase} end (scrollTop=${scroll.scrollTop}, maximum=${maximum()})`,
+      )
     }
     const wheel = async (direction: "up" | "down", times: number) => {
       for (let index = 0; index < times; index++) {
@@ -122,11 +131,11 @@ async function excursion(
       return outcome
     }
 
-    await wheelUntil("up", () => scroll.scrollTop <= 0)
+    await wheelUntil("up", atOldest, "oldest")
     record("at the oldest end")
-    await wheelUntil("down", () => scroll.scrollTop >= scroll.scrollHeight - scroll.viewport.height)
+    await wheelUntil("down", atNewest, "newest")
     record("back at the newest end")
-    await wheelUntil("up", () => scroll.scrollTop <= 0)
+    await wheelUntil("up", atOldest, "oldest")
     record("at the oldest end again")
     return outcome
   } finally {
