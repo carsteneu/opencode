@@ -2,14 +2,19 @@
 import { testRender } from "@opentui/solid"
 import { expect, test } from "bun:test"
 import { RGBA } from "@opentui/core"
-import { readFile } from "node:fs/promises"
+import { readdir, readFile } from "node:fs/promises"
+import { mkdir } from "node:fs/promises"
 import path from "node:path"
 import { createTuiResolvedConfig } from "../../fixture/tui-runtime"
 import { emptyThemeSource, tmpdir } from "../../fixture/fixture"
+import { TestTuiContexts } from "../../fixture/tui-environment"
 import { ConfigProvider } from "../../../src/config"
+import { TuiAppProvider } from "../../../src/context/runtime"
+import { StorageProvider, type Storage, useStorageOptional } from "../../../src/context/storage"
 import { ThemeProvider, type ThemeError, useThemes } from "../../../src/context/theme"
 
 const ENV = "OPENCODE_THEME"
+const CHANNEL = "theme-flag-test"
 const DRACULA_DARK_BACKGROUND = "#282a36"
 
 async function wait(fn: () => boolean) {
@@ -20,21 +25,23 @@ async function wait(fn: () => boolean) {
   }
 }
 
-// Mounts the real ThemeProvider over the TUI test fixtures with a recorded config service, so a
-// write to the config (persistence) would be observable. The config file is written because the
-// provider watches its directory.
+// Mounts the real ThemeProvider over the TUI test fixtures with a recording config service that
+// writes the file like the real one, so both a config write and its bytes are observable, plus the
+// real storage provider so a storage write would land on disk too.
 async function observe(
   input: {
     root: string
     env?: string
     config?: { name?: string; mode?: "dark" | "light" | "system" }
   },
-  act?: (themes: ReturnType<typeof useThemes>) => void,
+  act?: (themes: ReturnType<typeof useThemes>, storage: Storage | undefined) => void | Promise<void>,
 ) {
   const writes: unknown[] = []
+  const state = path.join(input.root, "state")
   const directory = path.join(input.root, "config")
   const configPath = path.join(directory, "cli.json")
   const contents = `${JSON.stringify({ theme: input.config }, null, 2)}\n`
+  await mkdir(state, { recursive: true })
   await Bun.write(configPath, contents)
 
   const previous = process.env[ENV]
@@ -42,51 +49,76 @@ async function observe(
   else process.env[ENV] = input.env
 
   let themes: ReturnType<typeof useThemes> | undefined
+  let storage: Storage | undefined
   const errors: ThemeError[] = []
   let unsubscribe: (() => void) | undefined
 
   function Probe() {
     const value = useThemes()
     themes = value
+    storage = useStorageOptional()
     unsubscribe = value.onError((error) => errors.push(error))
     return <text>{value.selected}</text>
   }
 
   const resolved = createTuiResolvedConfig({ theme: input.config })
-  const info = input.config ? { theme: input.config } : {}
+  let info: { theme?: { name?: string; mode?: "dark" | "light" | "system" } } = input.config
+    ? { theme: input.config }
+    : {}
   const app = await testRender(
     () => (
-      <ConfigProvider
-        config={resolved}
-        service={{
-          path: configPath,
-          get: async () => info,
-          update: async (update) => {
-            writes.push(update)
-            return info
-          },
-        }}
-      >
-        <ThemeProvider mode="dark" source={emptyThemeSource}>
-          <Probe />
-        </ThemeProvider>
-      </ConfigProvider>
+      <TestTuiContexts paths={{ state }}>
+        <TuiAppProvider value={{ name: "test", version: "test", channel: CHANNEL }}>
+          <StorageProvider>
+            <ConfigProvider
+              config={resolved}
+              service={{
+                path: configPath,
+                get: async () => info,
+                update: async (update) => {
+                  writes.push(update)
+                  info = structuredClone(info)
+                  update(info)
+                  await Bun.write(configPath, `${JSON.stringify(info, null, 2)}\n`)
+                  return info
+                },
+              }}
+            >
+              <ThemeProvider mode="dark" source={emptyThemeSource}>
+                <Probe />
+              </ThemeProvider>
+            </ConfigProvider>
+          </StorageProvider>
+        </TuiAppProvider>
+      </TestTuiContexts>
     ),
     { width: 20, height: 2 },
   )
   app.renderer.start()
 
+  let active: Storage | undefined
   try {
     await wait(() => themes?.ready === true)
     if (!themes) throw new Error("Theme provider is not mounted")
-    act?.(themes)
+    active = storage
+    await act?.(themes, storage)
+    const persisted = await readFile(configPath, "utf8")
+    await active?.flush().catch(() => {})
     return {
       selected: themes.selected,
       background: themes.currentTokens().background.base.toString(),
       mode: themes.mode(),
       errors: errors.map((error) => error.name),
       writes: writes.length,
-      contents: await readFile(configPath, "utf8"),
+      contents: persisted,
+      storage: async () => {
+        const root = path.join(state, CHANNEL, "tui")
+        const entries = await readdir(root).catch(() => [] as string[])
+        const files = await Promise.all(
+          entries.map(async (entry) => [entry, await readFile(path.join(root, entry), "utf8")] as const),
+        )
+        return Object.fromEntries(files)
+      },
     }
   } finally {
     unsubscribe?.()
@@ -204,6 +236,26 @@ test("the picker changes the session theme without writing the config while an o
   expect(picked.contents).toBe(`${JSON.stringify({ theme: { name: "catppuccin" } }, null, 2)}\n`)
 })
 
+test("the override never reaches the TUI storage either", async () => {
+  await using root = await tmpdir()
+  const observed = await observe(
+    { root: root.path, env: "dracula", config: { name: "catppuccin" } },
+    async (_themes, storage) => {
+      // Positive control: a real storage write in this harness does land on disk, so the absence
+      // check below is meaningful rather than vacuous.
+      await storage!.store("probe", { initial: { written: 0 } })[1]((draft) => {
+        draft.written = 1
+      })
+    },
+  )
+
+  const persisted = await observed.storage()
+  expect(Object.keys(persisted)).toEqual(["probe.json"])
+  expect(persisted["probe.json"]).toContain('"written":1')
+  expect(JSON.stringify(persisted)).not.toContain("dracula")
+  expect(observed.selected).toBe("dracula")
+})
+
 test("without an override the picker keeps persisting the chosen theme", async () => {
   await using root = await tmpdir()
   const picked = await observe({ root: root.path, config: { name: "catppuccin" } }, (themes) => {
@@ -213,4 +265,8 @@ test("without an override the picker keeps persisting the chosen theme", async (
   expect(picked.selected).toBe("dracula")
   expect(picked.background).toBe(RGBA.fromHex(DRACULA_DARK_BACKGROUND).toString())
   expect(picked.writes).toBe(1)
+  // Positive control for the byte check: a write in this harness does change the file, so the
+  // byte-identical assertions of the override tests detect persistence.
+  expect(picked.contents).not.toBe(`${JSON.stringify({ theme: { name: "catppuccin" } }, null, 2)}\n`)
+  expect(JSON.parse(picked.contents)).toEqual({ theme: { name: "dracula" } })
 })
