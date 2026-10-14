@@ -1,14 +1,33 @@
 import { Global } from "@opencode/util/global"
 import { AppProcess } from "@opencode/util/process"
 import { EffectFlock } from "@opencode/util/effect-flock"
-import { OPENCODE_ARTIFACT, OPENCODE_CHANNEL, OPENCODE_LOCAL, OPENCODE_VERSION } from "../version"
-import { Context, Duration, Effect, FileSystem, Layer, Option, Ref, Schema } from "effect"
+import {
+  OPENCODE_ARTIFACT,
+  OPENCODE_CHANNEL,
+  OPENCODE_FORK,
+  OPENCODE_LOCAL,
+  OPENCODE_UPDATE_CHANNEL,
+  OPENCODE_UPDATE_REPOSITORY,
+  OPENCODE_VERSION,
+} from "../version"
+import { Context, Duration, Effect, FileSystem, Layer, Option, Ref, Schema, Stream } from "effect"
 import { ChildProcess } from "effect/process"
 import { parse, type ParseError } from "jsonc-parser"
 import path from "node:path"
+import semver from "semver"
 import { stripVTControlCharacters } from "node:util"
 import { RetainedImage } from "./retained-image"
-import { action, parseReleaseVersion, type Policy } from "./updater-action"
+import {
+  action,
+  canUpgradeToTarget,
+  forkAssetName,
+  isForkRelease,
+  normalizeForkVersion,
+  parseReleaseVersion,
+  selectForkRelease,
+  type ForkRelease,
+  type Policy,
+} from "./updater-action"
 import { errorMessage } from "../util/error"
 
 export const methods = ["curl", "npm", "pnpm", "bun", "yarn", "vp", "brew"] as const
@@ -124,6 +143,30 @@ export function decodePolicy(text: string): Policy | undefined {
   if (input.autoupdate === true) return "auto"
 }
 
+const ForkReleaseList = Schema.Array(
+  Schema.Struct({
+    tag_name: Schema.String,
+    draft: Schema.Boolean,
+    prerelease: Schema.Boolean,
+    assets: Schema.Array(
+      Schema.Struct({
+        name: Schema.String,
+        browser_download_url: Schema.String,
+      }),
+    ),
+  }),
+)
+
+const decodeForkReleases = Schema.decodeUnknownOption(Schema.fromJsonString(ForkReleaseList))
+
+/** `opencode v1.2.3` on stdout, as `--version` prints it. */
+function reportedVersion(output: string) {
+  return output
+    .trim()
+    .replace(/^opencode\s+/, "")
+    .replace(/^v/, "")
+}
+
 const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const global = yield* Global.Service
@@ -131,6 +174,9 @@ const make = Effect.gen(function* () {
   const flock = yield* EffectFlock.Service
   const installedVersion = yield* Ref.make(OPENCODE_VERSION)
   const channel = OPENCODE_CHANNEL.replace(/[^a-zA-Z0-9._-]/g, "-")
+  // A fork build is recognised by its channel and by its version marker. Either one alone
+  // is enough to keep the official release service from touching this binary.
+  const fork = OPENCODE_FORK || isForkRelease(OPENCODE_VERSION)
   const executable = yield* fs.realPath(process.execPath).pipe(Effect.orElseSucceed(() => process.execPath))
   const installedPackage = yield* Effect.gen(function* () {
     const directory = path.dirname(path.dirname(executable))
@@ -197,6 +243,7 @@ const make = Effect.gen(function* () {
   })
 
   const method = Effect.fnUntraced(function* () {
+    if (fork) return "curl" as Method
     if (path.resolve(process.execPath) === curlBinary) return "curl"
     if (installedFormula) return "brew"
     if (!installedPackage) return
@@ -306,11 +353,248 @@ const make = Effect.gen(function* () {
     return { package: packageName, version }
   })
 
-  const latest = (selected?: Method) =>
-    (selected ? Effect.succeed(selected) : method()).pipe(
-      Effect.flatMap(release),
-      Effect.map((data) => data.version),
+  // Fork builds resolve updates from the fork repository's own prereleases. There is
+  // deliberately no cache: the official path has none either, and a cached release list
+  // would let a fresh upgrade resolve an already superseded prerelease.
+  const forkReleases = Effect.fnUntraced(function* () {
+    const response = yield* Effect.tryPromise({
+      try: (signal) =>
+        fetch(`https://api.github.com/repos/${OPENCODE_UPDATE_REPOSITORY}/releases?per_page=30`, {
+          headers: { Accept: "application/vnd.github+json" },
+          signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
+        }),
+      catch: (cause) =>
+        new UpgradeError(
+          {
+            title: "Could not check for fork updates",
+            detail: errorDetail(cause),
+            retry: "Check your network, then run opencode upgrade again.",
+          },
+          { cause },
+        ),
+    })
+    if (!response.ok)
+      return yield* Effect.fail(
+        new UpgradeError({
+          title: "Could not check for fork updates",
+          detail: `GitHub returned HTTP ${response.status} for ${OPENCODE_UPDATE_REPOSITORY}.`,
+          retry: "Try again in a few minutes.",
+        }),
+      )
+    const text = yield* Effect.tryPromise({
+      try: () => response.text(),
+      catch: (cause) =>
+        new UpgradeError(
+          {
+            title: "Could not read the fork release list",
+            detail: errorDetail(cause),
+            retry: "Try again in a few minutes.",
+          },
+          { cause },
+        ),
+    })
+    const decoded = decodeForkReleases(text)
+    if (Option.isNone(decoded))
+      return yield* Effect.fail(
+        new UpgradeError({
+          title: "Could not read the fork release list",
+          detail: `${OPENCODE_UPDATE_REPOSITORY} returned an unexpected release list.`,
+          retry: "Try again in a few minutes.",
+        }),
+      )
+    const list: ReadonlyArray<ForkRelease> = decoded.value
+    return list
+  })
+
+  const forkText = Effect.fnUntraced(function* (url: string, title: string) {
+    const response = yield* Effect.tryPromise({
+      try: (signal) =>
+        fetch(url, {
+          headers: { Accept: "application/octet-stream" },
+          signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
+        }),
+      catch: (cause) =>
+        new UpgradeError({ title, detail: errorDetail(cause), retry: "Check your network, then try again." }, { cause }),
+    })
+    if (!response.ok)
+      return yield* Effect.fail(
+        new UpgradeError({
+          title,
+          detail: `The download returned HTTP ${response.status}.`,
+          retry: "Check the release on GitHub, then try again.",
+        }),
+      )
+    return yield* Effect.tryPromise({
+      try: () => response.text(),
+      catch: (cause) =>
+        new UpgradeError({ title, detail: errorDetail(cause), retry: "Check your network, then try again." }, { cause }),
+    })
+  })
+
+  const forkChecksum = Effect.fnUntraced(function* (url: string) {
+    const text = yield* forkText(url, "Could not read the fork release checksum")
+    const hash = text.match(/^([a-fA-F0-9]{64})(?:\s|$)/)?.[1]?.toLowerCase()
+    if (!hash)
+      return yield* Effect.fail(
+        new UpgradeError({
+          title: "Fork release checksum was invalid",
+          detail: `${url} does not start with a SHA256 sum.`,
+          retry: "Report the invalid asset; the release must be re-published.",
+        }),
+      )
+    return hash
+  })
+
+  const forkDownload = Effect.fnUntraced(function* (url: string, target: string) {
+    const response = yield* Effect.tryPromise({
+      try: (signal) =>
+        fetch(url, {
+          headers: { Accept: "application/octet-stream" },
+          signal: AbortSignal.any([signal, AbortSignal.timeout(10 * 60_000)]),
+        }),
+      catch: (cause) =>
+        new UpgradeError(
+          {
+            title: "Could not download the fork release",
+            detail: errorDetail(cause),
+            retry: "Check your network, then run opencode upgrade again.",
+          },
+          { cause },
+        ),
+    })
+    const body = response.body
+    if (!response.ok || !body)
+      return yield* Effect.fail(
+        new UpgradeError({
+          title: "Could not download the fork release",
+          detail: `The download returned HTTP ${response.status} without a body.`,
+          retry: "Check the release on GitHub, then run opencode upgrade again.",
+        }),
+      )
+    yield* Stream.run(
+      Stream.fromReadableStream<Uint8Array, UpgradeError>({
+        evaluate: () => body,
+        onError: (cause) =>
+          new UpgradeError({
+            title: "Could not download the fork release",
+            detail: errorDetail(cause),
+            retry: "Check your network, then run opencode upgrade again.",
+          }),
+      }),
+      fs.sink(target, { flag: "wx", mode: 0o700 }),
     )
+  })
+
+  // The whole point of the fork channel: the binary is fetched from the fork's own
+  // prerelease, verified against its published checksum and only then swapped in.
+  const forkUpgrade = Effect.fnUntraced(function* (input: string) {
+    const asset = forkAssetName()
+    if (!asset)
+      return yield* Effect.fail(
+        new UpgradeError({
+          title: "This platform has no fork release",
+          detail: `${OPENCODE_UPDATE_REPOSITORY} publishes ${OPENCODE_UPDATE_CHANNEL} builds for Linux x64 only.`,
+          retry: "Build OpenCode from source on this platform.",
+        }),
+      )
+    const target = normalizeForkVersion(input)
+    if (!isForkRelease(target))
+      return yield* Effect.fail(
+        new UpgradeError({
+          title: "Refusing a non-fork target",
+          detail: `${input} is not a ${OPENCODE_UPDATE_CHANNEL} release.`,
+          retry: `Pass an x.y.z-${OPENCODE_UPDATE_CHANNEL}.n version.`,
+        }),
+      )
+    // v1 parity: an already current or newer install makes the fork upgrade a no-op.
+    if (semver.valid(OPENCODE_VERSION) && semver.gte(OPENCODE_VERSION, target)) return
+
+    return yield* Effect.scoped(
+      Effect.gen(function* () {
+        yield* flock.acquire("cli-upgrade", undefined, { timeoutMs: Duration.toMillis("15 minutes") })
+        const releases = yield* forkReleases()
+        const release = releases.find((item) => normalizeForkVersion(item.tag_name) === target)
+        if (!release || !selectForkRelease([release], asset))
+          return yield* Effect.fail(
+            new UpgradeError({
+              title: "Fork release assets were not found",
+              detail: `${OPENCODE_UPDATE_REPOSITORY} has no published prerelease ${target} carrying ${asset} and ${asset}.sha256.`,
+              retry: "Check the release on GitHub, then run opencode upgrade again.",
+            }),
+          )
+        const binary = release.assets.find((item) => item.name === asset)!
+        const checksum = release.assets.find((item) => item.name === `${asset}.sha256`)!
+        const expected = yield* forkChecksum(checksum.browser_download_url)
+        const temporary = `${executable}.update-${process.pid}-${Date.now()}`
+        yield* Effect.gen(function* () {
+          yield* forkDownload(binary.browser_download_url, temporary)
+          const hasher = new Bun.CryptoHasher("sha256")
+          yield* Stream.runForEach(fs.stream(temporary), (chunk) =>
+            Effect.sync(() => {
+              hasher.update(chunk)
+            }),
+          )
+          const actual = hasher.digest("hex")
+          if (actual !== expected)
+            return yield* Effect.fail(
+              new UpgradeError({
+                title: "Fork release checksum verification failed",
+                detail: `Expected ${expected}, got ${actual}.`,
+                retry: "Report the mismatch; the release must be re-published.",
+              }),
+            )
+          yield* fs.chmod(temporary, 0o755)
+          const smoke = yield* exec([temporary, "--version"])
+          if (smoke.code !== 0 || reportedVersion(smoke.stdout) !== target)
+            return yield* Effect.fail(
+              new UpgradeError({
+                title: "Fork release binary verification failed",
+                detail: `The downloaded binary reported ${JSON.stringify(smoke.stdout.trim())} instead of ${target}.`,
+                retry: "Report the mismatch; the release must be re-published.",
+              }),
+            )
+          yield* fs.rename(temporary, executable)
+        }).pipe(Effect.ensuring(fs.remove(temporary, { force: true }).pipe(Effect.ignore)))
+      }),
+    ).pipe(
+      Effect.mapError((cause) =>
+        cause instanceof UpgradeError
+          ? cause
+          : new UpgradeError(
+              {
+                title: "Could not prepare the fork upgrade",
+                detail: errorDetail(cause),
+                retry: "Fix the issue above, then run opencode upgrade again.",
+              },
+              { cause },
+            ),
+      ),
+      Effect.asVoid,
+    )
+  })
+
+  const latest = (selected?: Method) => {
+    if (!fork)
+      return (selected ? Effect.succeed(selected) : method()).pipe(
+        Effect.flatMap(release),
+        Effect.map((data) => data.version),
+      )
+    const asset = forkAssetName()
+    return forkReleases().pipe(
+      Effect.flatMap((releases) => {
+        const release = selectForkRelease(releases, asset)
+        if (!release)
+          return Effect.fail(
+            new UpgradeError({
+              title: "No fork release found",
+              detail: `${OPENCODE_UPDATE_REPOSITORY} has no published ${OPENCODE_UPDATE_CHANNEL} prerelease with a usable asset.`,
+              retry: "Publish a fork prerelease, then run opencode upgrade again.",
+            }),
+          )
+        return Effect.succeed(normalizeForkVersion(release.tag_name))
+      }),
+    )
+  }
 
   const temporaryDirectory = (prefix: string) =>
     Effect.acquireRelease(fs.makeTempDirectory({ directory: global.cache, prefix }), (directory) =>
@@ -367,6 +651,15 @@ const make = Effect.gen(function* () {
   const upgrade = Effect.fnUntraced(function* (method: Method, input: string) {
     if (!parseReleaseVersion(input)) return yield* Effect.fail(new Error(`Invalid version: ${input}`))
     const version = input.trim().replace(/^v/, "")
+    if (!canUpgradeToTarget(OPENCODE_VERSION, version))
+      return yield* Effect.fail(
+        new UpgradeError({
+          title: "Refusing to replace a fork build",
+          detail: `${OPENCODE_VERSION} only upgrades to ${OPENCODE_UPDATE_CHANNEL} prereleases from ${OPENCODE_UPDATE_REPOSITORY}, so ${version} cannot replace this binary.`,
+          retry: `Run opencode upgrade without a target to use the ${OPENCODE_UPDATE_CHANNEL} channel.`,
+        }),
+      )
+    if (fork) return yield* forkUpgrade(version)
     const packageName =
       method === "brew" && installedFormula === "opencode" ? "opencode" : (yield* release(method)).package
     const target = `${packageName}@${version}`

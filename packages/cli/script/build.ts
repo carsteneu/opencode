@@ -189,6 +189,10 @@ export default { path: file, version: ${JSON.stringify(opencodePty.version)}, sh
       OPENCODE_CLI_NAME: "'opencode'",
       OPENCODE_CHANNEL: `'${Script.channel}'`,
       OPENCODE_ARTIFACT: `'cli'`,
+      // A fork build resolves its updates from the fork's GitHub prereleases, never
+      // from the official release service. Both stay empty for stock builds.
+      OPENCODE_UPDATE_CHANNEL: JSON.stringify(process.env.OPENCODE_UPDATE_CHANNEL ?? ""),
+      OPENCODE_UPDATE_REPOSITORY: JSON.stringify(process.env.OPENCODE_UPDATE_REPOSITORY ?? ""),
       OPENCODE_LIBC: item.os === "linux" ? `'${item.abi ?? "glibc"}'` : "undefined",
       // FFF_LIBC selects the fff native lib variant: "musl" or "gnu".
       FFF_LIBC: item.os === "linux" ? `'${item.abi ?? "gnu"}'` : "undefined",
