@@ -16,10 +16,17 @@ import { OpenCode } from "@opencode/client/promise"
 import { findSession } from "../../session-target"
 import { errorMessage } from "../../util/error"
 
+// The TUI runs in this process, so --theme reaches it through the same env var a manual
+// OPENCODE_THEME uses; the flag deliberately outranks a value already in the environment.
+export function applyThemeOverride(theme: string | undefined, env: Record<string, string | undefined> = process.env) {
+  if (theme) env.OPENCODE_THEME = theme
+}
+
 export default Runtime.handler(Commands, (input) =>
   Effect.gen(function* () {
     const requestedDirectory = Option.getOrUndefined(input.directory)
     const requestedServer = Option.getOrUndefined(input.server)
+    applyThemeOverride(Option.getOrUndefined(input.theme))
     if (requestedDirectory !== undefined) process.chdir(requestedDirectory)
     const preflight = UpdatePreflight.make()
     yield* Effect.addFinalizer(() => Effect.promise(() => preflight.close()))
