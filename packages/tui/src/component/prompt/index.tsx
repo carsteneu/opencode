@@ -1607,7 +1607,8 @@ export function Prompt(props: PromptProps) {
       // No session yet: show where the next session will be created.
       return currentLocation.ref ?? data.location.default()
     }
-    if (status() !== "idle") return
+    // v1 kept the directory visible while a run was active; the label has its own row now, so
+    // nothing displaces it and the idle gate is no longer needed.
     return data.session.get(props.sessionID)?.location
   })
   const locationLabel = createMemo(() => {

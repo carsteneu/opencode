@@ -18,7 +18,7 @@ const session = {
   time: { created: 0, updated: 0 },
 }
 
-async function renderSession(statePath: string) {
+async function renderSession(statePath: string, running = false) {
   const setup = await createTestRenderer({
     width: TERMINAL_WIDTH,
     height: 34,
@@ -30,7 +30,7 @@ async function renderSession(statePath: string) {
     if (url.pathname === "/api/session") return json({ data: [session], cursor: {} })
     if (url.pathname === `/api/session/${session.id}`) return json({ data: session })
     if (url.pathname === `/api/session/${session.id}/message`) return json({ data: [], cursor: {} })
-    if (url.pathname === "/api/session/active") return json({ data: {} })
+    if (url.pathname === "/api/session/active") return json({ data: running ? { [session.id]: {} } : {} })
     if (url.pathname === `/api/session/${session.id}/inbox` || url.pathname === `/api/session/${session.id}/permission`)
       return json({ data: [] })
   }, createEventStream())
@@ -72,6 +72,26 @@ test("renders the working directory on its own footer line", async () => {
     expect(location[0]!.trim()).not.toContain(" ")
 
     expect(rows.some((row) => row.includes(directory) && row.includes("commands"))).toBe(false)
+  } finally {
+    setup.renderer.destroy()
+    await task
+    await server.stop()
+  }
+}, 20000)
+
+// v1's footer kept the directory on screen while the spinner ran; the path used to be an
+// either-or with the run status, so an active run hid it.
+test("keeps the working directory visible while the session runs", async () => {
+  await using state = await tmpdir()
+  const { setup, server, task } = await renderSession(state.path, true)
+  try {
+    await setup.waitForFrame((frame) => frame.includes(directory))
+    await setup.waitForVisualIdle({ quietFrames: 3 })
+    const rows = setup.captureCharFrame().split("\n")
+
+    const location = rows.filter((row) => row.includes(directory))
+    expect(location).toHaveLength(1)
+    expect(location[0]!.trim()).toStartWith(directory)
   } finally {
     setup.renderer.destroy()
     await task
