@@ -26,7 +26,7 @@ interface Config extends Sqlite.ClientConfig {
 // which classifySqliteError does not read, so a locked statement would surface as an unknown error.
 export function classifyNodeSqliteError(cause: unknown, message: string, operation: string) {
   const errcode =
-    typeof cause === "object" && cause !== null && "errcode" in cause ? Reflect.get(cause, "errcode") : undefined
+    typeof cause === "object" && cause !== null && "errcode" in cause ? cause.errcode : undefined
   if (typeof errcode === "number" && [5, 6].includes(errcode & 0xff))
     return new LockTimeoutError({ cause, message, operation })
   return classifySqliteError(cause, { message, operation })
