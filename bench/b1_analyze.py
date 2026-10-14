@@ -144,6 +144,41 @@ def main():
             if pss:
                 print(f"    {r}: pss={med(pss) / 1048576:.1f} MiB rss={med(rss) / 1048576:.1f} MiB")
 
+    # --- derived: totals and the v1 server+worker combination ---
+    print()
+    print("## derived (median of the per-stream value)")
+    for arm in series:
+        rows = [s for s in series[arm] if idx(s) >= 1]
+        totals = [sum(v.get("cpu_pct", 0.0) for v in s["per_role"].values()) for s in rows]
+        print(f"  {arm}: total = {med(totals):.2f}")
+        if arm == "v1" and "worker" in roles_seen:
+            both = [s["per_role"].get("server", {}).get("cpu_pct", 0.0)
+                    + s["per_role"].get("worker", {}).get("cpu_pct", 0.0) for s in rows]
+            print(f"  {arm}: server + worker = {med(both):.2f}")
+    print()
+
+    # --- gap decomposition (paired files only) ---
+    if set(series) == {"v1", "v2"}:
+        rows = {a: [s for s in series[a] if idx(s) >= 1] for a in series}
+        v2tot = [sum(v.get("cpu_pct", 0.0) for v in s["per_role"].values()) for s in rows["v2"]]
+        v1tot = [sum(v.get("cpu_pct", 0.0) for v in s["per_role"].values()) for s in rows["v1"]]
+        v2cli = [s["per_role"].get("client", {}).get("cpu_pct", 0.0) for s in rows["v2"]]
+        v1cli = [s["per_role"].get("client", {}).get("cpu_pct", 0.0) for s in rows["v1"]]
+        v2srv = [s["per_role"].get("server", {}).get("cpu_pct", 0.0) for s in rows["v2"]]
+        v1srvw = [s["per_role"].get("server", {}).get("cpu_pct", 0.0)
+                  + s["per_role"].get("worker", {}).get("cpu_pct", 0.0) for s in rows["v1"]]
+        gap = med(v2tot) - med(v1tot)
+        client = med(v2cli) - med(v1cli)
+        server = med(v2srv) - med(v1srvw)
+        print()
+        print("## gap decomposition (median of per-stream values; parts need not sum to 100 %)")
+        print(f"  total gap          : {gap:6.2f} pts of one core")
+        print(f"  client share       : {client:6.2f} pts = {client / gap * 100:5.1f} % of the gap")
+        print(f"  server-side share  : {server:6.2f} pts = {server / gap * 100:5.1f} % of the gap")
+        print(f"  v2 server alone    : {med(v2srv):6.2f} pts  (upper bound an isolation could relocate)")
+        print(f"  v1 server + worker : {med(v1srvw):6.2f} pts  (same work, already isolated in v1)")
+        print()
+
     # --- host load during streams ---
     print()
     print("## host load (1 min) during streams")
