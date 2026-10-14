@@ -1,8 +1,9 @@
 import { checksum } from "@opencode/util/encode"
+import { localImagePath } from "@opencode/util/path"
 import { parseSmallMarkdown } from "@opencode/ui/context/marked-base"
 import DOMPurify from "dompurify"
 import { MarkdownWorkerDisposedError, parseMarkdown } from "./markdown-worker"
-import { localImagePath, localLinkPath } from "./markdown-image"
+import { localLinkPath } from "./markdown-image"
 
 export type MarkdownCacheEntry = {
   raw: string
