@@ -99,7 +99,7 @@ export const settings: Setting[] = [
     default: false,
     values: [false, true],
     labels: ["off", "on"],
-    keywords: ["attachments", "images", "tool output"],
+    keywords: ["attachments", "images", "tool output", "markdown"],
   },
   {
     title: "TPS",
