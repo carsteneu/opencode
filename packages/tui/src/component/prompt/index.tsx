@@ -1872,18 +1872,34 @@ export function Prompt(props: PromptProps) {
             }
           />
         </box>
+        <Show when={locationLabelDisplay()}>
+          {(location) => (
+            <box
+              width="100%"
+              flexShrink={0}
+              onSizeChange={function (this: BoxRenderable) {
+                const width = this.width
+                queueMicrotask(() => setLocationWidth(width))
+              }}
+            >
+              <text
+                id="prompt.footer.location"
+                fg={locationActions.hovered() ? theme.text.base : theme.text.muted}
+                wrapMode="none"
+                truncate
+                onMouseOver={locationActions.onMouseOver}
+                onMouseOut={locationActions.onMouseOut}
+                onMouseUp={locationActions.onMouseUp}
+              >
+                {location()}
+              </text>
+            </box>
+          )}
+        </Show>
         <box width="100%" flexDirection="row" justifyContent="space-between" gap={2}>
           <Slot path="prompt.footer" input={footerInput()}>
             <Slot path="prompt.footer.status" input={footerInput()}>
-              <box
-                flexGrow={1}
-                flexShrink={1}
-                minWidth={0}
-                onSizeChange={function (this: BoxRenderable) {
-                  const width = this.width
-                  queueMicrotask(() => setLocationWidth(width))
-                }}
-              >
+              <box flexGrow={1} flexShrink={1} minWidth={0}>
                 <Switch>
                   <Match when={status() === "running"}>
                     <box flexDirection="row" gap={1} flexGrow={1} justifyContent="flex-start">
@@ -1920,23 +1936,7 @@ export function Prompt(props: PromptProps) {
                     </box>
                   </Match>
                   <Match when={true}>
-                    <Show when={locationLabelDisplay()} fallback={<text />}>
-                      {(location) => (
-                        <text
-                          id="prompt.footer.location"
-                          fg={locationActions.hovered() ? theme.text.base : theme.text.muted}
-                          wrapMode="none"
-                          truncate
-                          flexGrow={1}
-                          flexShrink={1}
-                          onMouseOver={locationActions.onMouseOver}
-                          onMouseOut={locationActions.onMouseOut}
-                          onMouseUp={locationActions.onMouseUp}
-                        >
-                          {location()}
-                        </text>
-                      )}
-                    </Show>
+                    <text />
                   </Match>
                 </Switch>
               </box>
