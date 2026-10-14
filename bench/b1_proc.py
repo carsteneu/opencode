@@ -56,8 +56,9 @@ def all_pids():
 def find_by_environ(marker, cmdline_contains=None):
     """Processes whose environment contains `marker` (and whose cmdline matches).
 
-    Used to locate an arm's server even when it is detached from the TUI that
-    started it, so CPU is attributed to the server, not to nothing.
+    Kept for ad-hoc inspection; the harnesses identify their own processes with
+    b1_common.our_processes, which compares normalised paths and the executable
+    instead of a raw substring.
     """
     found = []
     for pid in all_pids():
@@ -72,6 +73,38 @@ def find_by_environ(marker, cmdline_contains=None):
         if marker in env:
             found.append((pid, cmd))
     return found
+
+
+def read_environ_value(pid, key):
+    """Value of one environment variable of `pid`, or None."""
+    try:
+        with open(f"/proc/{pid}/environ", "rb") as fh:
+            raw = fh.read()
+    except OSError:
+        return None
+    prefix = key.encode() + b"="
+    for entry in raw.split(b"\0"):
+        if entry.startswith(prefix):
+            return entry[len(prefix):].decode("utf-8", "replace")
+    return None
+
+
+def read_starttime(pid):
+    """Process start time (field 22 of /proc/<pid>/stat) — a pid-reuse identity."""
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as fh:
+            raw = fh.read()
+    except OSError:
+        return None
+    after = raw[raw.rindex(b")") + 2:].split()
+    return int(after[19])  # field 22 overall, 19th after pid+comm
+
+
+def read_exe(pid):
+    try:
+        return os.readlink(f"/proc/{pid}/exe")
+    except OSError:
+        return None
 
 
 class Sampler(threading.Thread):
@@ -147,19 +180,26 @@ class Sampler(threading.Thread):
 
 
 def integrate(samples, t0, t1):
-    """Per-role CPU seconds and peak RSS/PSS over [t0, t1]."""
+    """Per-role CPU seconds and peak RSS/PSS over [t0, t1].
+
+    Samples outside the window only ever contribute as a delta baseline, never
+    as CPU or as a peak: the sampler stamps `t` before enumerating the tree, so
+    a sample taken just before t0 can still be appended after it.
+    """
     cpu, peak_rss, peak_pss, last = {}, {}, {}, {}
     for t, rec, _load in samples:
+        inside = t0 <= t <= t1
         for pid, (role, ticks, rss, pss) in rec.items():
             key = (role, pid)
-            if key in last and t >= t0:
-                cpu[key] = cpu.get(key, 0.0) + max(0, ticks - last[key]) / HZ
+            if key in last and inside:
+                cpu[key] = cpu.get(key, 0.0) + max(0, ticks - last[key][0]) / HZ
             else:
                 cpu.setdefault(key, 0.0)
-            last[key] = ticks
-            peak_rss[key] = max(peak_rss.get(key, 0), rss)
-            if pss is not None:
-                peak_pss[key] = max(peak_pss.get(key, 0), pss)
+            last[key] = (ticks, t)
+            if inside:
+                peak_rss[key] = max(peak_rss.get(key, 0), rss)
+                if pss is not None:
+                    peak_pss[key] = max(peak_pss.get(key, 0), pss)
     roles = {}
     for (role, pid), c in cpu.items():
         r = roles.setdefault(role, {"cpu_s": 0.0, "rss_peak": 0, "pss_peak": 0, "pids": []})

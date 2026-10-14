@@ -45,45 +45,80 @@ def md5_of(path):
 
 
 def data_home(arm, iso):
-    """The arm's XDG_DATA_HOME — also the marker that identifies its processes."""
+    """The arm's XDG_DATA_HOME (normalised) — identifies its processes."""
     return os.path.join(os.path.realpath(iso), arm, "data")
+
+
+def our_processes(arm, iso):
+    """[(pid, starttime, cmdline)] of processes that are unmistakably this arm's.
+
+    Matching a raw environment substring is spelling-sensitive — the path may be
+    recorded as `.../bench/../.yesmem/tmp/iso` — and, worse, would signal any
+    process that merely inherited the variable. So the candidate's own
+    XDG_DATA_HOME is normalised before comparison and the executable must be the
+    pinned binary of this arm.
+    """
+    from b1_proc import all_pids, read_cmdline, read_environ_value, read_exe, read_starttime
+
+    wanted_home = data_home(arm, iso)
+    wanted_exe = os.path.realpath(bin_for(arm))
+    found = []
+    for pid in all_pids():
+        home = read_environ_value(pid, "XDG_DATA_HOME")
+        if not home or os.path.realpath(home) != wanted_home:
+            continue
+        exe = read_exe(pid)
+        if not exe or os.path.realpath(exe) != wanted_exe:
+            continue
+        starttime = read_starttime(pid)
+        if starttime is None:
+            continue
+        found.append((pid, starttime, read_cmdline(pid)))
+    return found
 
 
 def clear_stale(arm, iso, wait=6.0):
     """Terminate leftover processes of this arm from an earlier run.
 
-    The v1 shared server detaches (ppid 1) and survives its TUI; a new TUI then
+    The v1 shared server detaches (ppid 1) and outlives its TUI; a new TUI then
     attaches to it, which would leave the server outside the TUI's process tree.
+    Each kill re-checks the recorded start time first, so a recycled pid is
+    never signalled.
     """
-    from b1_proc import find_by_environ
+    from b1_proc import read_starttime
 
-    marker = f"XDG_DATA_HOME={data_home(arm, iso)}"
-    killed = []
-    for pid, cmd in find_by_environ(marker):
+    targets = our_processes(arm, iso)
+    for pid, starttime, _cmd in targets:
+        if read_starttime(pid) != starttime:
+            continue  # pid was recycled between scan and kill
         try:
             os.kill(pid, signal.SIGTERM)
-            killed.append((pid, cmd))
         except OSError:
             pass
     deadline = time.monotonic() + wait
     while time.monotonic() < deadline:
-        if not find_by_environ(marker):
+        if not our_processes(arm, iso):
             break
         time.sleep(0.5)
-    for pid, _ in killed:
+    for pid, starttime, _cmd in our_processes(arm, iso):
+        if read_starttime(pid) != starttime:
+            continue
         try:
             os.kill(pid, signal.SIGKILL)
         except OSError:
             pass
     time.sleep(0.5)
-    return killed
+    return [{"pid": p, "cmd": c} for p, _s, c in targets]
 
 
 def find_servers(arm, iso):
-    """(pid, cmdline) of this arm's server processes, however they were started."""
-    from b1_proc import find_by_environ
+    """[(pid, starttime, cmdline)] of this arm's servers, newest first.
 
-    return find_by_environ(f"XDG_DATA_HOME={data_home(arm, iso)}", cmdline_contains="serve")
+    Detached servers are found because identification does not rely on the
+    process tree.
+    """
+    servers = [t for t in our_processes(arm, iso) if " serve" in t[2] or t[2].endswith("serve")]
+    return sorted(servers, key=lambda t: t[1], reverse=True)
 
 
 def arm_env(arm, iso):

@@ -29,15 +29,32 @@ def arm_tokens(arm, iso, last):
 
 
 def arm_tokens_for_streams(arm, iso, rows):
-    """Match each stream to its turn by wall-clock window (exact), or return None."""
+    """Match each stream to exactly one turn (nearest by start time).
+
+    Plain window containment is not enough: the arms alternate, so the same
+    arm's streams can be adjacent and a generous window then claims the
+    neighbour's turn as well. Each turn is consumed at most once.
+    """
     db = os.path.join(iso, arm, "data", "opencode", "opencode.db")
     if not os.path.exists(db) or any("wall_start" not in r for r in rows):
         return None
     timed = turns_timed(rows_for(arm, db))
+    used = set()
     out = []
     for r in rows:
-        lo, hi = r["wall_start"] * 1000 - 2000, r["wall_end"] * 1000 + 5000
-        out.append(sum(tok for ts, tok in timed if lo <= ts <= hi))
+        start = r["wall_start"] * 1000
+        best = None
+        for i, (ts, tok) in enumerate(timed):
+            if i in used:
+                continue
+            distance = abs(ts - start)
+            if distance <= 6000 and (best is None or distance < best[0]):
+                best = (distance, i, tok)
+        if best is None:
+            out.append(0)
+            continue
+        used.add(best[1])
+        out.append(best[2])
     return out
 
 
@@ -135,34 +152,39 @@ def main():
         print(f"  {arm}: {[round(s['load'], 1) for s in rows]}")
 
     # --- normalisation per 1000 output tokens ---
-    if last:
-        print()
-        print(f"## CPU seconds per 1000 output tokens")
-        for arm in series:
-            allrows = series[arm]
-            keep = [i for i, s in enumerate(allrows) if idx(s) >= 1]
-            rows = [allrows[i] for i in keep]
-            exact = arm_tokens_for_streams(arm, iso, allrows)
-            if exact is not None:
-                tok = [exact[i] for i in keep]
-                src = "matched by wall-clock window"
-            else:
-                t = arm_tokens(arm, iso, last)
-                if not t or len(t) < len(rows):
-                    print(f"  {arm}: token data unavailable (turns={len(t) if t else 0}, streams={len(rows)})")
-                    continue
-                tok = t[-len(rows):]
-                src = f"last {last} turns (approximate: result file has no wall bounds)"
-            print(f"  {arm}: output_tokens={tok}  [{src}]")
-            for role in [r for r in roles_seen if r != "other"]:
-                cpus = [s["per_role"].get(role, {}).get("cpu_s", 0.0) for s in rows]
-                per = [c / t * 1000 for c, t in zip(cpus, tok) if t]
-                if per:
-                    print(f"    {role:8} {med(per):6.3f} s/1k tok  (med over {len(per)})")
-            tot_cpu = [sum(v.get("cpu_s", 0.0) for v in s["per_role"].values()) for s in rows]
-            per = [c / t * 1000 for c, t in zip(tot_cpu, tok) if t]
+    print()
+    print("## CPU seconds per 1000 output tokens")
+    for arm in series:
+        allrows = series[arm]
+        keep = [i for i, s in enumerate(allrows) if idx(s) >= 1]
+        rows = [allrows[i] for i in keep]
+        exact = arm_tokens_for_streams(arm, iso, allrows)
+        if exact is not None:
+            tok = [exact[i] for i in keep]
+            src = "matched by wall-clock window"
+        elif last:
+            t = arm_tokens(arm, iso, last)
+            if not t or len(t) < len(rows):
+                print(f"  {arm}: token data unavailable (turns={len(t) if t else 0}, streams={len(rows)})")
+                continue
+            tok = t[-len(rows):]
+            src = f"APPROXIMATE: last {last} turns, result file has no wall bounds"
+        else:
+            print(f"  {arm}: skipped — result file has no wall bounds and no --last given")
+            continue
+        if not all(tok):
+            print(f"  {arm}: skipped — incomplete token match {tok}")
+            continue
+        print(f"  {arm}: output_tokens={tok}  [{src}]")
+        for role in [r for r in roles_seen if r != "other"]:
+            cpus = [s["per_role"].get(role, {}).get("cpu_s", 0.0) for s in rows]
+            per = [c / t * 1000 for c, t in zip(cpus, tok) if t]
             if per:
-                print(f"    {'TOTAL':8} {med(per):6.3f} s/1k tok")
+                print(f"    {role:8} {med(per):6.3f} s/1k tok  (med over {len(per)})")
+        tot_cpu = [sum(v.get("cpu_s", 0.0) for v in s["per_role"].values()) for s in rows]
+        per = [c / t * 1000 for c, t in zip(tot_cpu, tok) if t]
+        if per:
+            print(f"    {'TOTAL':8} {med(per):6.3f} s/1k tok")
 
 
 if __name__ == "__main__":

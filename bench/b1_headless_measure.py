@@ -17,6 +17,7 @@ Usage:
 import argparse
 import json
 import os
+import secrets
 import signal
 import subprocess
 import sys
@@ -30,7 +31,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def start_server(arm, env, cwd, logpath, port):
-    log = open(logpath, "wb")
+    fd = os.open(logpath, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    log = os.fdopen(fd, "wb")
     proc = subprocess.Popen([bin_for(arm), "serve", "--hostname", "127.0.0.1", "--port", str(port)],
                             env=env, cwd=cwd, stdout=log, stderr=subprocess.STDOUT,
                             stdin=subprocess.DEVNULL)
@@ -81,6 +83,9 @@ def main():
     cwd = os.path.abspath(args.cwd)
     port = PORTS[args.arm]
     env = arm_env(args.arm, args.iso)
+    # v1 leaves its server unsecured unless this is set; the harness holds a copy
+    # of the user's real provider credentials, so it must not be.
+    env["OPENCODE_SERVER_PASSWORD"] = secrets.token_urlsafe(32)
     results = {"mode": "headless", "arm": args.arm, "model": MODEL, "prompt": prompt,
                "lines": args.lines, "port": port, "cwd": cwd, "host_nproc": os.cpu_count(),
                "started": time.time(), "binary": bin_for(args.arm),
@@ -88,7 +93,7 @@ def main():
 
     stale = clear_stale(args.arm, args.iso)
     if stale:
-        results["stale_cleared"] = [{"pid": p, "cmd": c} for p, c in stale]
+        results["stale_cleared"] = stale
     server, password = start_server(args.arm, env, cwd, os.path.join(args.tmp, f"b1-head-{args.arm}.log"), port)
     results["server_pid"] = server.pid
     if password:

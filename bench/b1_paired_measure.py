@@ -7,7 +7,7 @@ alternates one stream per arm, so both arms see the same host conditions
 and after the streaming series.
 
 Usage:
-  python3 bench/b1-tui-paired.py --rounds 6 --out .yesmem/tmp/b1-paired.json
+  python3 bench/b1_paired_measure.py --rounds 7 --out .yesmem/tmp/b1-paired.json
 """
 
 import argparse
@@ -84,7 +84,7 @@ def main():
     for a in ("v2", "v1"):
         stale = clear_stale(a, args.iso)
         if stale:
-            results.setdefault("stale_cleared", {})[a] = [{"pid": p, "cmd": c} for p, c in stale]
+            results.setdefault("stale_cleared", {})[a] = stale
 
     tui = {a: Tui(a, arm_env(a, args.iso), cwd, args.rows, args.cols,
                   os.path.join(args.tmp, f"b1-paired-{a}.raw")) for a in ("v2", "v1")}
@@ -98,11 +98,13 @@ def main():
             # Root the sampler at the server: the v1 shared server detaches, so
             # the TUI is not necessarily its parent.
             servers = find_servers(a, args.iso)
+            if len(servers) > 1:
+                raise SystemExit(f"{a}: {len(servers)} servers found, expected exactly one: {servers}")
             if servers:
                 root_pid, root_role = servers[0][0], "server"
             else:
                 root_pid, root_role = t.proc.pid, "client"
-            results.setdefault("servers", {})[a] = [{"pid": p, "cmd": c} for p, c in servers]
+            results.setdefault("servers", {})[a] = [{"pid": p, "starttime": s, "cmd": c} for p, s, c in servers]
             results.setdefault("tui_pid", {})[a] = t.proc.pid
             sampler[a] = Sampler(root_pid, root_role=root_role, interval=0.1)
             sampler[a].extra_client_pids.add(t.proc.pid)
@@ -122,6 +124,12 @@ def main():
             for a in order:
                 rec = measure_stream(tui[a], sampler[a], args.drain, args.stream_timeout)
                 rec["round"] = r
+                if rec["stream_s"] is None:
+                    # A window that never saw a stream is mostly idle and would
+                    # silently drag that arm's medians down. Drop it.
+                    results.setdefault("failed_streams", []).append({"arm": a, "round": r})
+                    print(f"  r{r} {a}: NO STREAM DETECTED — record dropped", file=sys.stderr)
+                    continue
                 series[a].append(rec)
                 print(f"  r{r} {a}: stream={rec['stream_s']} win={rec['window_s']:.1f}s "
                       f"load={rec['load']:.1f} "
@@ -140,6 +148,8 @@ def main():
         for a in tui:
             clear_stale(a, args.iso)
 
+    results["power_profile_end"] = subprocess.run(
+        ["powerprofilesctl", "get"], capture_output=True, text=True).stdout.strip()
     with open(args.out, "w") as fh:
         json.dump(results, fh, indent=1)
     print(f"wrote {args.out}", file=sys.stderr)

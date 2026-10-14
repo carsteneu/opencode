@@ -13,7 +13,7 @@ to compute ("TALLY-" followed by the line count), so the marker cannot match
 the echoed prompt text.
 
 Usage:
-  python3 bench/b1-tui-measure.py --arm v2 --streams 5 --out .yesmem/tmp/b1-tui-v2.json
+  python3 bench/b1_tui_measure.py --arm v2 --streams 5 --out .yesmem/tmp/b1-tui-v2.json
 """
 
 import argparse
@@ -192,7 +192,9 @@ def main():
         # TUI is not necessarily its parent.
         servers = find_servers(args.arm, args.iso)
         root_pid, root_role = (servers[0][0], "server") if servers else (tui.proc.pid, "client")
-        results["servers"] = [{"pid": p, "cmd": c} for p, c in servers]
+        if len(servers) > 1:
+            raise SystemExit(f"{len(servers)} servers found, expected exactly one: {servers}")
+        results["servers"] = [{"pid": p, "starttime": st, "cmd": c} for p, st, c in servers]
         sampler = Sampler(root_pid, root_role=root_role, interval=0.1)
         sampler.extra_client_pids.add(tui.proc.pid)
         sampler.start()
