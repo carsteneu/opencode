@@ -153,6 +153,7 @@ const ForkReleaseList = Schema.Array(
       Schema.Struct({
         name: Schema.String,
         browser_download_url: Schema.String,
+        size: Schema.optional(Schema.Number),
       }),
     ),
   }),
@@ -346,16 +347,59 @@ const make = Effect.gen(function* () {
     return { package: packageName, version }
   })
 
-  // Fork builds resolve updates from the fork repository's own prereleases. There is
-  // deliberately no cache: the official path has none either, and a cached release list
-  // would let a fresh upgrade resolve an already superseded prerelease.
-  const forkReleases = Effect.fnUntraced(function* () {
+  // Fork builds resolve updates from the fork repository's own prereleases. The list is
+  // cached for an hour because the automatic check runs every ten minutes and GitHub only
+  // allows 60 unauthenticated requests per hour per address. An explicit upgrade refreshes,
+  // so it never resolves a superseded prerelease.
+  const forkReleasePageSize = 100
+  const forkReleasePageLimit = 10
+  const forkReleaseCacheTtl = 60 * 60 * 1000
+  const forkTextLimit = 4 * 1024 * 1024
+  const releaseCache = yield* Ref.make<
+    | {
+        readonly repository: string
+        readonly checkedAt: number
+        readonly releases: ReadonlyArray<ForkRelease>
+      }
+    | undefined
+  >(undefined)
+
+  const forkReadText = Effect.fnUntraced(function* (response: Response, title: string, limit = forkTextLimit) {
+    const announced = Number(response.headers.get("content-length") ?? "0")
+    if (announced > limit)
+      return yield* Effect.fail(
+        new UpgradeError({
+          title,
+          detail: `The response announced ${announced} bytes, above the ${limit} byte limit.`,
+          retry: "Check the release on GitHub, then try again.",
+        }),
+      )
+    const text = yield* Effect.tryPromise({
+      try: () => response.text(),
+      catch: (cause) =>
+        new UpgradeError({ title, detail: errorDetail(cause), retry: "Check your network, then try again." }, { cause }),
+    })
+    if (text.length > limit)
+      return yield* Effect.fail(
+        new UpgradeError({
+          title,
+          detail: `The response exceeded the ${limit} byte limit.`,
+          retry: "Check the release on GitHub, then try again.",
+        }),
+      )
+    return text
+  })
+
+  const forkReleasePage = Effect.fnUntraced(function* (page: number) {
     const response = yield* Effect.tryPromise({
       try: (signal) =>
-        fetch(`https://api.github.com/repos/${OPENCODE_UPDATE_REPOSITORY}/releases?per_page=30`, {
-          headers: { Accept: "application/vnd.github+json" },
-          signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
-        }),
+        fetch(
+          `https://api.github.com/repos/${OPENCODE_UPDATE_REPOSITORY}/releases?per_page=${forkReleasePageSize}&page=${page}`,
+          {
+            headers: { Accept: "application/vnd.github+json" },
+            signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
+          },
+        ),
       catch: (cause) =>
         new UpgradeError(
           {
@@ -370,22 +414,14 @@ const make = Effect.gen(function* () {
       return yield* Effect.fail(
         new UpgradeError({
           title: "Could not check for fork updates",
-          detail: `GitHub returned HTTP ${response.status} for ${OPENCODE_UPDATE_REPOSITORY}.`,
+          detail:
+            response.status === 403 || response.status === 429
+              ? `GitHub rate-limited the release list of ${OPENCODE_UPDATE_REPOSITORY} (HTTP ${response.status}).`
+              : `GitHub returned HTTP ${response.status} for ${OPENCODE_UPDATE_REPOSITORY}.`,
           retry: "Try again in a few minutes.",
         }),
       )
-    const text = yield* Effect.tryPromise({
-      try: () => response.text(),
-      catch: (cause) =>
-        new UpgradeError(
-          {
-            title: "Could not read the fork release list",
-            detail: errorDetail(cause),
-            retry: "Try again in a few minutes.",
-          },
-          { cause },
-        ),
-    })
+    const text = yield* forkReadText(response, "Could not read the fork release list")
     const decoded = decodeForkReleases(text)
     if (Option.isNone(decoded))
       return yield* Effect.fail(
@@ -397,6 +433,48 @@ const make = Effect.gen(function* () {
       )
     const list: ReadonlyArray<ForkRelease> = decoded.value
     return list
+  })
+
+  // The fork repository is shared with the v1 line, which releases often, so the newest v2
+  // prerelease can fall off the first page. GitHub returns releases newest-first, so the
+  // first page that yields a usable fork release already carries the newest one.
+  const fetchForkReleases = Effect.fnUntraced(function* () {
+    const collected: ForkRelease[] = []
+    const asset = forkAssetName()
+    for (let page = 1; page <= forkReleasePageLimit; page++) {
+      const releases = yield* forkReleasePage(page)
+      if (!releases.length) break
+      collected.push(...releases)
+      if (selectForkRelease(collected, asset)) break
+      if (releases.length < forkReleasePageSize) break
+    }
+    return collected
+  })
+
+  const forkReleases = Effect.fnUntraced(function* (refresh = false) {
+    const cached = yield* Ref.get(releaseCache)
+    const now = Date.now()
+    if (
+      !refresh &&
+      cached?.repository === OPENCODE_UPDATE_REPOSITORY &&
+      now - cached.checkedAt < forkReleaseCacheTtl
+    )
+      return cached.releases
+    const releases = yield* fetchForkReleases()
+    yield* Ref.set(releaseCache, { repository: OPENCODE_UPDATE_REPOSITORY, checkedAt: now, releases })
+    return releases
+  })
+
+  // A download interrupted by a signal leaves its temporary image next to the binary and
+  // nothing used to clean it up. The upgrade lock guarantees no other upgrade owns one.
+  const removeStaleImages = Effect.fnUntraced(function* () {
+    const directory = path.dirname(executable)
+    const prefix = `${path.basename(executable)}.update-`
+    const names = yield* fs.readDirectory(directory).pipe(Effect.orElseSucceed((): string[] => []))
+    yield* Effect.forEach(
+      names.filter((name) => name.startsWith(prefix)),
+      (name) => fs.remove(path.join(directory, name), { force: true }).pipe(Effect.ignore),
+    )
   })
 
   const forkText = Effect.fnUntraced(function* (url: string, title: string) {
@@ -417,11 +495,7 @@ const make = Effect.gen(function* () {
           retry: "Check the release on GitHub, then try again.",
         }),
       )
-    return yield* Effect.tryPromise({
-      try: () => response.text(),
-      catch: (cause) =>
-        new UpgradeError({ title, detail: errorDetail(cause), retry: "Check your network, then try again." }, { cause }),
-    })
+    return yield* forkReadText(response, title)
   })
 
   const forkChecksum = Effect.fnUntraced(function* (url: string) {
@@ -515,7 +589,12 @@ const make = Effect.gen(function* () {
     return yield* Effect.scoped(
       Effect.gen(function* () {
         yield* flock.acquire("cli-upgrade", undefined, { timeoutMs: Duration.toMillis("15 minutes") })
-        const releases = yield* forkReleases()
+        // Another process may have completed the same upgrade while this one waited for the
+        // lock. v1 read the installed binary's version here for the same reason.
+        const installed = yield* exec([executable, "--version"])
+        const installedVersion = reportedVersion(installed.stdout)
+        if (installed.code === 0 && semver.valid(installedVersion) && semver.gte(installedVersion, target)) return
+        const releases = yield* forkReleases(true)
         const release = releases.find((item) => normalizeForkVersion(item.tag_name) === target)
         if (!release || !selectForkRelease([release], asset))
           return yield* Effect.fail(
@@ -528,16 +607,27 @@ const make = Effect.gen(function* () {
         const binary = release.assets.find((item) => item.name === asset)!
         const checksum = release.assets.find((item) => item.name === `${asset}.sha256`)!
         const expected = yield* forkChecksum(checksum.browser_download_url)
+        yield* removeStaleImages()
         const temporary = `${executable}.update-${process.pid}-${Date.now()}`
         yield* Effect.gen(function* () {
           yield* forkDownload(binary.browser_download_url, temporary)
           const hasher = new Bun.CryptoHasher("sha256")
+          let received = 0
           yield* Stream.runForEach(fs.stream(temporary), (chunk) =>
             Effect.sync(() => {
               hasher.update(chunk)
+              received += chunk.length
             }),
           )
           const actual = hasher.digest("hex")
+          if (typeof binary.size === "number" && received !== binary.size)
+            return yield* Effect.fail(
+              new UpgradeError({
+                title: "Fork release download was incomplete",
+                detail: `Expected ${binary.size} bytes, received ${received}.`,
+                retry: "Run opencode upgrade again.",
+              }),
+            )
           if (actual !== expected)
             return yield* Effect.fail(
               new UpgradeError({
@@ -594,7 +684,11 @@ const make = Effect.gen(function* () {
               retry: "Publish a fork prerelease, then run opencode upgrade again.",
             }),
           )
-        return Effect.succeed(normalizeForkVersion(release.tag_name))
+        const candidate = normalizeForkVersion(release.tag_name)
+        // `action` only compares versions for equality, so without this a channel that is
+        // behind the running build would be announced as an update and then refused.
+        if (semver.valid(OPENCODE_VERSION) && !semver.gt(candidate, OPENCODE_VERSION)) return Effect.succeed(OPENCODE_VERSION)
+        return Effect.succeed(candidate)
       }),
     )
   }
@@ -659,7 +753,7 @@ const make = Effect.gen(function* () {
         new UpgradeError({
           title: "Refusing to replace a fork build",
           detail: `${OPENCODE_VERSION} only upgrades to ${OPENCODE_UPDATE_CHANNEL} prereleases from ${OPENCODE_UPDATE_REPOSITORY}, so ${version} cannot replace this binary.`,
-          retry: `Run opencode upgrade without a target to use the ${OPENCODE_UPDATE_CHANNEL} channel.`,
+          retry: `Run opencode upgrade without a target to use the ${OPENCODE_UPDATE_CHANNEL} channel, or uninstall this fork build and install the official release.`,
         }),
       )
     if (fork) return yield* forkUpgrade(version)

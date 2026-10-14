@@ -19,57 +19,49 @@ const it = testEffect(NodeServices.layer)
 const BINARY = "opencode-v2-linux-x64"
 const CHECKSUM = `${BINARY}.sha256`
 const REPOSITORY = "carsteneu/opencode"
-const RELEASES_URL = `https://api.github.com/repos/${REPOSITORY}/releases?per_page=30`
+const RELEASES_URL = `https://api.github.com/repos/${REPOSITORY}/releases`
 const BINARY_URL = `https://github.com/${REPOSITORY}/releases/download/2.0.26-v2patched.2/${BINARY}`
 const CHECKSUM_URL = `${BINARY_URL}.sha256`
+const INSTALLED = "2.0.26-v2patched.1"
 const PAYLOAD = "v2 fork release payload\n"
 const BYTES = Buffer.from(PAYLOAD)
 const HASH = new Bun.CryptoHasher("sha256").update(BYTES).digest("hex")
 
-function releases(
-  fork: Array<{ tag: string; assets: boolean }> = [
-    { tag: "2.0.26-v2patched.2", assets: true },
-    { tag: "2.0.26-v2patched.1", assets: true },
-  ],
-) {
-  return [
-    {
-      tag_name: "1.18.34-patched.220",
-      draft: false,
-      prerelease: true,
-      assets: [
-        { name: "opencode-linux-x64", browser_download_url: "https://example.invalid/v1/bin" },
-        { name: "opencode-linux-x64.sha256", browser_download_url: "https://example.invalid/v1/bin.sha256" },
-      ],
-    },
-    {
-      tag_name: "2.0.27",
-      draft: false,
-      prerelease: false,
-      assets: [
-        { name: BINARY, browser_download_url: "https://example.invalid/stable/bin" },
-        { name: CHECKSUM, browser_download_url: "https://example.invalid/stable/bin.sha256" },
-      ],
-    },
-    ...fork.map((item) => ({
-      tag_name: item.tag,
-      draft: false,
-      prerelease: true,
-      assets: item.assets
-        ? [
-            { name: BINARY, browser_download_url: BINARY_URL },
-            { name: CHECKSUM, browser_download_url: CHECKSUM_URL },
-          ]
-        : [],
-    })),
-  ]
+const asset = (name: string, url: string, size?: number) => ({ name, browser_download_url: url, size })
+
+function forkRelease(tag: string, options: { assets?: boolean; size?: number } = {}) {
+  return {
+    tag_name: tag,
+    draft: false,
+    prerelease: true,
+    assets:
+      options.assets === false
+        ? []
+        : [asset(BINARY, BINARY_URL, options.size ?? BYTES.length), asset(CHECKSUM, CHECKSUM_URL, 88)],
+  }
 }
+
+const foreign = (tag: string, prerelease = true) => ({
+  tag_name: tag,
+  draft: false,
+  prerelease,
+  assets: [asset("opencode-linux-x64", "https://example.invalid/v1/bin", 1)],
+})
+
+const defaultReleases = () => [
+  foreign("1.18.34-patched.220"),
+  foreign("2.0.27", false),
+  forkRelease("2.0.26-v2patched.2"),
+  forkRelease("2.0.26-v2patched.1"),
+]
 
 function fixture(
   input: {
     releases?: unknown
+    pages?: unknown[]
     checksum?: string
-    reported?: string
+    installed?: string
+    downloaded?: string
   } = {},
 ) {
   return Effect.gen(function* () {
@@ -89,7 +81,10 @@ function fixture(
             async (request: string | URL | Request) => {
               const url = request instanceof Request ? request.url : request.toString()
               requests.push(url)
-              if (url === RELEASES_URL) return Response.json(input.releases ?? releases())
+              if (url.startsWith(`${RELEASES_URL}?`)) {
+                const page = Number(new URL(url).searchParams.get("page") ?? "1")
+                return Response.json(input.pages?.[page - 1] ?? input.releases ?? defaultReleases())
+              }
               if (url === CHECKSUM_URL)
                 return new Response(input.checksum ?? `${HASH}  ${BINARY}\n`, {
                   headers: { "content-type": "text/plain" },
@@ -138,8 +133,12 @@ function fixture(
             Effect.suspend(() => {
               if (command._tag !== "StandardCommand") return Effect.die("Unexpected piped install command")
               commands.push([command.command, ...command.args])
-              const reported = input.reported ?? "2.0.26-v2patched.2"
-              const stdout = command.args.includes("--version") ? Buffer.from(`opencode v${reported}\n`) : Buffer.alloc(0)
+              // A downloaded image answers with the release version, the installed binary
+              // with the version currently on disk.
+              const image = command.command.startsWith(`${executable}.update-`)
+              const stdout = command.args.includes("--version")
+                ? Buffer.from(`opencode v${image ? (input.downloaded ?? "2.0.26-v2patched.2") : (input.installed ?? INSTALLED)}\n`)
+                : Buffer.alloc(0)
               return Effect.succeed({
                 command: command.command,
                 exitCode: 0,
@@ -164,21 +163,46 @@ if (forkRun) {
       const test = yield* fixture()
       expect(yield* test.updater.latest()).toBe("2.0.26-v2patched.2")
       expect(yield* test.updater.method()).toBe("curl")
-      expect(test.requests).toEqual([RELEASES_URL])
+      expect(test.requests).toEqual([`${RELEASES_URL}?per_page=100&page=1`])
     }),
   )
 
-  it.live("fork: ignores releases that are not fork prereleases or lack both assets", () =>
+  it.live("fork: caches the release list between checks", () =>
+    Effect.gen(function* () {
+      const test = yield* fixture()
+      expect(yield* test.updater.latest()).toBe("2.0.26-v2patched.2")
+      expect(yield* test.updater.latest()).toBe("2.0.26-v2patched.2")
+      expect(test.requests).toEqual([`${RELEASES_URL}?per_page=100&page=1`])
+    }),
+  )
+
+  it.live("fork: pages past a full page of foreign releases", () =>
     Effect.gen(function* () {
       const test = yield* fixture({
-        releases: releases([
-          { tag: "2.0.26-v2patched.9", assets: true },
-          { tag: "2.0.26-v2patched.4", assets: false },
-          { tag: "2.0.26-v2patched.3", assets: true },
-        ]),
+        pages: [Array.from({ length: 100 }, (_, index) => foreign(`1.18.34-patched.${300 + index}`)), [forkRelease("2.0.26-v2patched.2")]],
       })
-      expect(yield* test.updater.latest()).toBe("2.0.26-v2patched.9")
-      expect(test.requests).toEqual([RELEASES_URL])
+      expect(yield* test.updater.latest()).toBe("2.0.26-v2patched.2")
+      expect(test.requests).toEqual([
+        `${RELEASES_URL}?per_page=100&page=1`,
+        `${RELEASES_URL}?per_page=100&page=2`,
+      ])
+    }),
+  )
+
+  it.live("fork: ignores foreign, incomplete and unorderable releases", () =>
+    Effect.gen(function* () {
+      const test = yield* fixture({
+        releases: [
+          forkRelease("2.0.26-v2patched.02"),
+          forkRelease("2.0.26-v2patched.9", { assets: false }),
+          forkRelease("2.0.26-v2patched.8", { assets: true }),
+          { ...forkRelease("2.0.26-v2patched.7"), draft: true },
+          { ...forkRelease("2.0.26-v2patched.6"), prerelease: false },
+          foreign("1.18.34-patched.220"),
+          forkRelease("2.0.26-v2patched.2"),
+        ],
+      })
+      expect(yield* test.updater.latest()).toBe("2.0.26-v2patched.8")
     }),
   )
 
@@ -188,12 +212,37 @@ if (forkRun) {
       yield* test.updater.upgrade("curl", "2.0.26-v2patched.2")
       expect(readFileSync(test.executable, "utf8")).toBe(PAYLOAD)
       expect(statSync(test.executable).mode & 0o777).toBe(0o755)
-      // The only command is the smoke test on the downloaded image.
-      expect(test.commands).toHaveLength(1)
-      expect(test.commands[0][0]).toStartWith(test.executable)
-      expect(test.commands[0].slice(1)).toEqual(["--version"])
+      // The upgrade re-reads the installed version under the lock, then smoke-tests the image.
+      expect(test.commands).toHaveLength(2)
+      expect(test.commands[0]).toEqual([test.executable, "--version"])
+      expect(test.commands[1][0]).toStartWith(`${test.executable}.update-`)
+      expect(test.commands[1].slice(1)).toEqual(["--version"])
       expect(test.leftovers()).toEqual([])
-      expect(test.requests).toEqual([RELEASES_URL, CHECKSUM_URL, BINARY_URL])
+      expect(test.requests).toEqual([
+        `${RELEASES_URL}?per_page=100&page=1`,
+        CHECKSUM_URL,
+        BINARY_URL,
+      ])
+    }),
+  )
+
+  it.live("fork: skips the download when the installed binary is already at the target", () =>
+    Effect.gen(function* () {
+      const test = yield* fixture({ installed: "2.0.26-v2patched.2" })
+      yield* test.updater.upgrade("curl", "2.0.26-v2patched.2")
+      expect(test.commands).toEqual([[test.executable, "--version"]])
+      expect(test.requests).toEqual([])
+      expect(test.leftovers()).toEqual([])
+    }),
+  )
+
+  it.live("fork: refuses to replace the binary when the download is incomplete", () =>
+    Effect.gen(function* () {
+      const test = yield* fixture({ releases: [forkRelease("2.0.26-v2patched.2", { size: BYTES.length + 1 })] })
+      const error = yield* test.updater.upgrade("curl", "2.0.26-v2patched.2").pipe(Effect.flip)
+      expect(error.message).toContain(`Expected ${BYTES.length + 1} bytes, received ${BYTES.length}`)
+      expect(readFileSync(test.executable, "utf8")).toBe("binary")
+      expect(test.leftovers()).toEqual([])
     }),
   )
 
@@ -203,14 +252,13 @@ if (forkRun) {
       const error = yield* test.updater.upgrade("curl", "2.0.26-v2patched.2").pipe(Effect.flip)
       expect(error.message).toContain(`Expected ${"0".repeat(64)}`)
       expect(readFileSync(test.executable, "utf8")).toBe("binary")
-      expect(test.commands).toEqual([])
       expect(test.leftovers()).toEqual([])
     }),
   )
 
   it.live("fork: refuses to replace the binary when the image reports the wrong version", () =>
     Effect.gen(function* () {
-      const test = yield* fixture({ reported: "2.0.26-v2patched.9" })
+      const test = yield* fixture({ downloaded: "2.0.26-v2patched.9" })
       const error = yield* test.updater.upgrade("curl", "2.0.26-v2patched.2").pipe(Effect.flip)
       expect(error.message).toContain('reported "opencode v2.0.26-v2patched.9" instead of 2.0.26-v2patched.2')
       expect(readFileSync(test.executable, "utf8")).toBe("binary")
@@ -281,5 +329,5 @@ test("the fork channel resolves, verifies and refuses non-fork targets", async (
   )
   const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()])
   expect(code, stderr).toBe(0)
-  expect(stderr).toContain("8 pass")
+  expect(stderr).toContain("12 pass")
 })

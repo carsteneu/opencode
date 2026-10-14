@@ -3,11 +3,14 @@
 import { chmod, mkdir, rm } from "node:fs/promises"
 import path from "path"
 import { Schema } from "effect"
-import semver from "semver"
 import { FORK_RELEASE_PATTERN, forkAssetName, normalizeForkVersion, reportedVersion } from "../src/services/updater-action"
+import { planForkRelease, type KnownRelease } from "./patched-release-plan"
 
 const repository = "carsteneu/opencode"
-const releaseBranch = "v2-release-path"
+const forkChannel = "v2patched"
+// The branch that may publish. Overridable because this feature branch is not meant to
+// outlive the merge into the v2 release branch.
+const releaseBranch = process.env.OPENCODE_RELEASE_BRANCH?.trim() || "v2-release-path"
 const Release = Schema.Struct({
   assets: Schema.Array(Schema.Struct({ name: Schema.String, size: Schema.Number })),
   isDraft: Schema.Boolean,
@@ -23,33 +26,47 @@ const ReleaseList = Schema.Array(
     tagName: Schema.String,
   }),
 )
+const Draft = Schema.Struct({
+  isDraft: Schema.Boolean,
+  isPrerelease: Schema.Boolean,
+  targetCommitish: Schema.String,
+})
 
 const argument = process.argv.find((arg) => FORK_RELEASE_PATTERN.test(arg))
-if (!argument) throw new Error("Usage: bun run release:patched <x.y.z-v2patched.n> [--publish] [--draft]")
+if (!argument)
+  throw new Error(
+    `Usage: bun run release:patched <x.y.z-${forkChannel}.n> [--publish] [--draft] ` +
+      `(OPENCODE_RELEASE_BRANCH overrides ${releaseBranch})`,
+  )
 const version = normalizeForkVersion(argument)
 // `--draft` runs the publish path but stops after the draft has been verified, so the
 // uploaded assets can be inspected before they become visible to the update channel.
 const draft = process.argv.includes("--draft")
 const publish = process.argv.includes("--publish") || draft
-const asset = forkAssetName()
-if (!asset) throw new Error("Fork releases are built for Linux x64 only")
 
 const root = path.resolve(import.meta.dir, "../../..")
 const packageDir = path.join(root, "packages/cli")
 const head = (await run(["git", "rev-parse", "HEAD"], root)).trim()
 const branch = (await run(["git", "branch", "--show-current"], root)).trim()
-const status = (await run(["git", "status", "--short"], root)).trim()
+const worktree = (await run(["git", "status", "--short"], root)).trim()
 const packageVersion = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Struct({ version: Schema.String })))(
   await Bun.file(path.join(packageDir, "package.json")).text(),
 ).version
-const baseVersion = version.slice(0, version.indexOf("-v2patched."))
-if (baseVersion !== packageVersion) {
-  throw new Error(`Release base ${baseVersion} does not match packages/cli version ${packageVersion}`)
-}
-if (publish && branch !== releaseBranch) {
-  throw new Error(`Fork releases must be published from ${releaseBranch}, got ${branch}`)
-}
-if (publish && status) throw new Error(`Worktree must be clean before publishing:\n${status}`)
+
+// Every guard runs before the build and before anything reaches the remote, so a refused
+// release costs no build and touches no shared state.
+const plan = planForkRelease({
+  version,
+  publish,
+  releaseBranch,
+  branch,
+  worktree,
+  packageVersion,
+  releases: publish ? await knownReleases() : [],
+  existing: publish ? await knownDraft() : undefined,
+  head,
+})
+if (plan.action === "refuse") throw new Error(plan.reason)
 
 // buildAppArchive runs the web UI's own `bun run build`, which resolves `node` from PATH.
 // The bundled rolldown imports node:util.styleText (Node 20.12+), so fail loudly here
@@ -70,7 +87,7 @@ await run(["bun", "run", "build:patched", "--single", "--skip-install"], package
 })
 
 const output = path.join(packageDir, "dist/v2patched-release")
-const binary = path.join(output, asset)
+const binary = path.join(output, assetName())
 const checksum = `${binary}.sha256`
 await rm(output, { recursive: true, force: true })
 await mkdir(output, { recursive: true })
@@ -84,10 +101,18 @@ while (true) {
   if (chunk.done) break
   hash.update(chunk.value)
 }
-await Bun.write(checksum, `${hash.digest("hex")}  ${asset}\n`)
+await Bun.write(checksum, `${hash.digest("hex")}  ${assetName()}\n`)
 
 const built = reportedVersion((await run([binary, "--version"], packageDir)).trim())
 if (built !== version) throw new Error(`Built ${built}, expected ${version}`)
+
+// The channel is compiled in from the environment. Without this assertion a build that
+// lost the defines would still look like a fork release and would silently resolve its
+// updates from the official release service instead.
+for (const marker of [repository, forkChannel]) {
+  if (!(await containsMarker(binary, marker)))
+    throw new Error(`The built binary does not carry the ${marker} channel marker; refusing to release`)
+}
 
 await smoke(binary, path.join(packageDir, "dist/v2patched-smoke"))
 
@@ -103,31 +128,11 @@ if (!publish) {
   process.exit(0)
 }
 
-const releases = Schema.decodeUnknownSync(Schema.fromJsonString(ReleaseList))(
-  await run(
-    ["gh", "release", "list", "--repo", repository, "--limit", "100", "--json", "tagName,isDraft,isPrerelease"],
-    root,
-  ),
-)
-const latest = releases
-  .filter((release) => !release.isDraft && release.isPrerelease)
-  .map((release) => release.tagName.replace(/^v/, ""))
-  .filter((tag) => FORK_RELEASE_PATTERN.test(tag))
-  .sort(semver.rcompare)[0]
-if (latest && !semver.gt(version, latest)) {
-  throw new Error(`Release ${version} must be newer than the current fork prerelease ${latest}`)
-}
-
 await run(["git", "push", "fork", releaseBranch], root)
 const remote = (await run(["git", "rev-parse", `fork/${releaseBranch}`], root)).trim()
 if (remote !== head) throw new Error(`fork/${releaseBranch} is ${remote}, expected ${head}`)
 
-const existing = await getRelease(version)
-if (existing && !existing.isDraft) throw new Error(`Published release ${version} already exists`)
-if (existing && (existing.targetCommitish !== head || !existing.isPrerelease)) {
-  throw new Error(`Existing draft does not match this release: ${JSON.stringify(existing)}`)
-}
-if (!existing) {
+if (plan.action === "create") {
   const remoteTag = (await run(["git", "ls-remote", "--tags", "fork", `refs/tags/${version}`], root)).trim()
   if (remoteTag) throw new Error(`Remote tag ${version} already exists without a resumable draft release`)
   await run(
@@ -163,23 +168,23 @@ if (
   !staged.isPrerelease ||
   staged.tagName !== version ||
   staged.targetCommitish !== head ||
-  assets.get(asset) !== binarySize ||
-  assets.get(`${asset}.sha256`) !== checksumSize
+  assets.get(assetName()) !== binarySize ||
+  assets.get(`${assetName()}.sha256`) !== checksumSize
 ) {
   throw new Error(`Draft release verification failed: ${JSON.stringify(staged)}`)
 }
 const remoteChecksum = await run(
-  ["gh", "release", "download", version, "--repo", repository, "--pattern", `${asset}.sha256`, "--output", "-"],
+  ["gh", "release", "download", version, "--repo", repository, "--pattern", `${assetName()}.sha256`, "--output", "-"],
   root,
 )
 if (remoteChecksum !== (await Bun.file(checksum).text())) {
   throw new Error("Uploaded checksum asset does not match locally")
 }
+console.log(
+  `Verified draft: ${assetName()} (${binarySize} bytes) and ${assetName()}.sha256 (${checksumSize} bytes), checksum round-trip identical`,
+)
 if (draft) {
-  console.log(`Verified draft ${staged.url}`)
-  console.log(
-    `Draft holds ${asset} (${binarySize} bytes) and ${asset}.sha256 (${checksumSize} bytes), checksum round-trip identical`,
-  )
+  console.log(`Draft ${version} staged and verified; publish it with: gh release edit ${version} --repo ${repository} --draft=false --prerelease`)
   process.exit(0)
 }
 
@@ -190,6 +195,43 @@ if (!release || release.isDraft || !release.isPrerelease) {
 }
 console.log(release.url)
 
+function assetName() {
+  const asset = forkAssetName()
+  if (!asset) throw new Error("Fork releases are built for Linux x64 only")
+  return asset
+}
+
+async function knownReleases(): Promise<ReadonlyArray<KnownRelease>> {
+  return Schema.decodeUnknownSync(Schema.fromJsonString(ReleaseList))(
+    await run(
+      ["gh", "release", "list", "--repo", repository, "--limit", "100", "--json", "tagName,isDraft,isPrerelease"],
+      root,
+    ),
+  )
+}
+
+async function knownDraft() {
+  const result = await spawn(
+    ["gh", "release", "view", version, "--repo", repository, "--json", "isDraft,isPrerelease,targetCommitish"],
+    root,
+  )
+  if (result.code === 0) return Schema.decodeUnknownSync(Schema.fromJsonString(Draft))(result.stdout)
+  if (/release not found|HTTP 404/i.test(result.stderr)) return undefined
+  throw new Error(result.stderr.trim() || `Could not inspect release ${version}`)
+}
+
+async function containsMarker(file: string, marker: string) {
+  const reader = Bun.file(file).stream().getReader()
+  let trailing = ""
+  while (true) {
+    const chunk = await reader.read()
+    if (chunk.done) return false
+    const text = trailing + Buffer.from(chunk.value).toString("latin1")
+    if (text.includes(marker)) return true
+    trailing = text.slice(-(marker.length - 1))
+  }
+}
+
 /**
  * Boots the built binary in a pty with its own XDG directories and asserts it renders,
  * reconciles plugins and logs no errors. v1 ran the same check through Ghostty; a bare
@@ -197,28 +239,28 @@ console.log(release.url)
  */
 async function smoke(binary: string, directory: string) {
   await rm(directory, { recursive: true, force: true })
-  const data = path.join(directory, "data")
-  for (const name of ["data", "config", "cache", "state"]) await mkdir(path.join(directory, name), { recursive: true })
-  const transcript = path.join(directory, "transcript.io")
   const launcher = path.join(directory, "launch.sh")
+  const transcript = path.join(directory, "transcript.io")
+  await mkdir(directory, { recursive: true })
+  for (const name of ["data", "config", "cache", "state"]) await mkdir(path.join(directory, name), { recursive: true })
+  // Every path reaches the launcher through the environment: no path is ever interpolated
+  // into shell source, so a checkout below a directory with shell metacharacters cannot
+  // inject a command into the smoke test.
   await Bun.write(
     launcher,
-    [
-      "#!/bin/sh",
-      `export XDG_DATA_HOME=${JSON.stringify(data)}`,
-      `export XDG_CONFIG_HOME=${JSON.stringify(path.join(directory, "config"))}`,
-      `export XDG_CACHE_HOME=${JSON.stringify(path.join(directory, "cache"))}`,
-      `export XDG_STATE_HOME=${JSON.stringify(path.join(directory, "state"))}`,
-      "export TERM=xterm-256color",
-      "export OPENCODE_SHOW_TTFD=1",
-      `exec timeout 25 ${JSON.stringify(binary)} --standalone`,
-      "",
-    ].join("\n"),
+    ["#!/bin/sh", "set -u", 'exec timeout 25 "$OPENCODE_SMOKE_BINARY" --standalone', ""].join("\n"),
   )
   await chmod(launcher, 0o755)
-  const render = await spawn(["timeout", "45", "script", "-qfec", launcher, transcript], packageDir, {
+  const data = path.join(directory, "data")
+  const render = await spawn(["timeout", "45", "script", "-qfec", "./launch.sh", transcript], directory, {
     ...process.env,
     TERM: "xterm-256color",
+    XDG_DATA_HOME: data,
+    XDG_CONFIG_HOME: path.join(directory, "config"),
+    XDG_CACHE_HOME: path.join(directory, "cache"),
+    XDG_STATE_HOME: path.join(directory, "state"),
+    OPENCODE_SMOKE_BINARY: binary,
+    OPENCODE_SHOW_TTFD: "1",
   })
   const rendered = (await Bun.file(transcript).exists()) ? await Bun.file(transcript).text() : ""
   const applicationLog = Bun.file(path.join(data, "opencode/log/opencode.log"))

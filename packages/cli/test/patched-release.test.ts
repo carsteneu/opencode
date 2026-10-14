@@ -17,15 +17,21 @@ const V2_ASSET = "opencode-v2-linux-x64"
 
 /**
  * The v1 line refuses patched -> non-patched upgrades with its own pattern. v1 is
- * read-only, so this reads the real constant instead of copying it: the crossing
- * proof has to fail if v1's fence ever changes.
+ * read-only, so this reads the real constant instead of copying it: the crossing proof
+ * has to fail if v1's fence ever changes.
  */
 function v1PatchedPattern() {
-  const result = Bun.spawnSync(["git", "show", "working:packages/opencode/src/installation/index.ts"], {
+  const refs = ["working", "fork/working", "origin/working"]
+  const ref = refs.find(
+    (candidate) =>
+      Bun.spawnSync(["git", "rev-parse", "--verify", `${candidate}^{commit}`], { cwd: root }).exitCode === 0,
+  )
+  if (!ref) throw new Error(`Cannot find the v1 release branch; tried ${refs.join(", ")}`)
+  const result = Bun.spawnSync(["git", "show", `${ref}:packages/opencode/src/installation/index.ts`], {
     cwd: root,
   })
   if (result.exitCode !== 0)
-    throw new Error(`Cannot read the v1 fence from branch working: ${result.stderr.toString().trim()}`)
+    throw new Error(`Cannot read the v1 fence from ${ref}: ${result.stderr.toString().trim()}`)
   const line = result.stdout
     .toString()
     .split("\n")

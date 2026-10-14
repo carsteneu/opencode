@@ -14,5 +14,6 @@ export { version as OPENCODE_VERSION, channel as OPENCODE_CHANNEL, artifact as O
 export { updateChannel as OPENCODE_UPDATE_CHANNEL, updateRepository as OPENCODE_UPDATE_REPOSITORY }
 export const OPENCODE_LOCAL = channel === "local"
 // Fork builds resolve updates from the fork's GitHub prereleases instead of the
-// official release service, so an official release can never replace them.
-export const OPENCODE_FORK = updateChannel !== ""
+// official release service, so an official release can never replace them. Both
+// defines must be present: the channel alone would mean an empty repository.
+export const OPENCODE_FORK = updateChannel !== "" && updateRepository !== ""

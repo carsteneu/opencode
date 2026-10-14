@@ -6,10 +6,14 @@ export type Action = "none" | "notify" | "auto"
 // Fork releases are `x.y.z-v2patched.n` prereleases on carsteneu/opencode. Keep the
 // identifier a single token: `x.y.z-v2-patched.n` contains `-patched.` and would be
 // selected by the v1 fence `/^\d+\.\d+\.\d+-patched\.\d+$/`, crossing the two lines.
-export const FORK_RELEASE_PATTERN = /^v?(\d+\.\d+\.\d+-v2patched\.\d+)$/
+// The components are the canonical SemVer form (no leading zeros): an unorderable tag
+// like `2.0.26-v2patched.01` would make `semver` throw instead of failing a comparison.
+export const FORK_RELEASE_PATTERN =
+  /^v?((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)-v2patched\.(?:0|[1-9]\d*))$/
 
 export function isForkRelease(input: string): boolean {
-  return FORK_RELEASE_PATTERN.test(input.trim())
+  const value = input.trim()
+  return FORK_RELEASE_PATTERN.test(value) && semver.valid(value.replace(/^v/, "")) !== null
 }
 
 export function normalizeForkVersion(input: string): string {
@@ -35,7 +39,7 @@ export function canUpgradeToTarget(current: string, target: string): boolean {
   return isForkRelease(target)
 }
 
-export type ForkAsset = { readonly name: string; readonly browser_download_url: string }
+export type ForkAsset = { readonly name: string; readonly browser_download_url: string; readonly size?: number }
 export type ForkRelease = {
   readonly tag_name: string
   readonly draft: boolean
@@ -60,7 +64,9 @@ export function selectForkRelease(
   if (!asset) return undefined
   return releases
     .filter((release) => !release.draft && release.prerelease)
-    .filter((release) => FORK_RELEASE_PATTERN.test(release.tag_name))
+    // `isForkRelease` also rejects tags `semver` cannot order, so no invalid tag reaches
+    // the sort below (which throws instead of returning).
+    .filter((release) => isForkRelease(release.tag_name))
     .filter((release) => release.assets.some((item) => item.name === asset))
     .filter((release) => release.assets.some((item) => item.name === `${asset}.sha256`))
     .sort((a, b) => semver.rcompare(normalizeForkVersion(a.tag_name), normalizeForkVersion(b.tag_name)))[0]
