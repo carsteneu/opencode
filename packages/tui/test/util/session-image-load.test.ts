@@ -7,7 +7,6 @@ import {
   imageRedirect,
   isPublicImageAddress,
   publicImageAddress,
-  sessionImageIdentity,
   validSessionImageUri,
   type ImageResponse,
 } from "../../src/util/session-image-load"
@@ -245,25 +244,16 @@ describe("collectImageBytes", () => {
   })
 })
 
-describe("sessionImageIdentity", () => {
-  test("keeps a plain source verbatim and fingerprints a data uri", () => {
-    expect(sessionImageIdentity(PUBLIC)).toBe(PUBLIC)
-    expect(sessionImageIdentity("data:image/png;base64,aGVsbG8=")).toBe(
-      "data:30:data:image/png;base64,aGVsbG8=:data:image/png;base64,aGVsbG8=",
-    )
-  })
-})
+async function withDirectory(run: (directory: string) => Promise<void>) {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "opencode-image-load-"))
+  try {
+    await run(directory)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+}
 
 describe("localImageDataUri", () => {
-  async function withDirectory(run: (directory: string) => Promise<void>) {
-    const directory = await mkdtemp(path.join(os.tmpdir(), "opencode-image-load-"))
-    try {
-      await run(directory)
-    } finally {
-      await rm(directory, { recursive: true, force: true })
-    }
-  }
-
   test("reads an image file as a data url with the sniffed type", async () => {
     await withDirectory(async (directory) => {
       const target = path.join(directory, "chart.png")
@@ -330,25 +320,36 @@ describe("sniffImageMime", () => {
 
 describe("preview cache", () => {
   test("shares one load between concurrent consumers of the same source", async () => {
-    const first = acquireImagePreview(PUBLIC)
-    const second = acquireImagePreview(PUBLIC)
-    expect(second).toBe(first)
-    releaseImagePreview(PUBLIC)
-    releaseImagePreview(PUBLIC)
+    await withDirectory(async (directory) => {
+      const target = path.join(directory, "shared.png")
+      await writeFile(target, Buffer.from(sizedImage(96, 48).split(",")[1]!, "base64"))
+      const first = acquireImagePreview(target)
+      const second = acquireImagePreview(target)
+      expect(second).toBe(first)
+      expect(await first).toStartWith("data:image/png;base64,")
+      expect(await second).toBe(await first)
+      releaseImagePreview(target)
+      releaseImagePreview(target)
+    })
   })
 
-  test("keeps the result while a consumer still holds it and drops it once the last one leaves", async () => {
-    const source = "file:///nonexistent/preview-cache-test.png"
-    const held = acquireImagePreview(source)
-    acquireImagePreview(source)
-    releaseImagePreview(source)
-    expect(await held).toBeUndefined()
-    releaseImagePreview(source)
+  test("keeps the result while a consumer still holds it and loads again once the last one leaves", async () => {
+    await withDirectory(async (directory) => {
+      const target = path.join(directory, "held.png")
+      await writeFile(target, Buffer.from(sizedImage(96, 48).split(",")[1]!, "base64"))
+      const held = acquireImagePreview(target)
+      acquireImagePreview(target)
+      releaseImagePreview(target)
+      // Still held by the other consumer, so the same load answers.
+      expect(await held).toStartWith("data:image/png;base64,")
+      releaseImagePreview(target)
 
-    const again = acquireImagePreview(source)
-    expect(again).not.toBe(held)
-    expect(await again).toBeUndefined()
-    releaseImagePreview(source)
+      // The last consumer left, so the entry is gone and a later reader starts a fresh load.
+      const again = acquireImagePreview(target)
+      expect(again).not.toBe(held)
+      expect(await again).toStartWith("data:image/png;base64,")
+      releaseImagePreview(target)
+    })
   })
 
   test("returns an inline data uri unchanged and releases it without a fetch", async () => {
@@ -357,10 +358,18 @@ describe("preview cache", () => {
     releaseImagePreview(source)
   })
 
-  test("resolves an aborted source as no preview", async () => {
-    const source = "file:///nonexistent/aborted-preview.png"
-    const pending = acquireImagePreview(source)
-    releaseImagePreview(source)
-    expect(await pending).toBeUndefined()
+  test("resolves a source released while its load is in flight as no preview", async () => {
+    await withDirectory(async (directory) => {
+      const target = path.join(directory, "aborted.png")
+      await writeFile(target, Buffer.from(sizedImage(96, 48).split(",")[1]!, "base64"))
+      // The file is readable, so only the release can be responsible for the result.
+      const pending = acquireImagePreview(target)
+      releaseImagePreview(target)
+      expect(await pending).toBeUndefined()
+      // And the released load is not what a later reader is handed.
+      const after = acquireImagePreview(target)
+      expect(await after).toStartWith("data:image/png;base64,")
+      releaseImagePreview(target)
+    })
   })
 })

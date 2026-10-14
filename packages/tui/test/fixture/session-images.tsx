@@ -111,7 +111,7 @@ export async function renderSession(
     width?: number
     height?: number
     directory?: string
-    onRequest?: (url: URL) => void
+    onRequest?: (url: URL, request: Request) => void
   } = {},
 ) {
   const setup = await createTestRenderer({
@@ -124,8 +124,8 @@ export async function renderSession(
   Reflect.set(setup.renderer, "_resolution", { width: 800, height: 720 })
   setup.renderer.start()
   const session = sessionAt(options.directory ?? directory)
-  const calls = createFetch((url) => {
-    options.onRequest?.(url)
+  const calls = createFetch((url, request) => {
+    options.onRequest?.(url, request)
     if (url.pathname === "/api/session") return json({ data: [session], cursor: {} })
     if (url.pathname === `/api/session/${session.id}`) return json({ data: session })
     if (url.pathname === `/api/session/${session.id}/message`) return json({ data: messages.toReversed(), cursor: {} })

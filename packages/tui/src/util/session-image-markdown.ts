@@ -2,7 +2,7 @@ import path from "node:path"
 import type { SessionMessageAssistantText } from "@opencode/client"
 import { localImagePath } from "@opencode/util/path"
 import { Marked, type Tokens } from "marked"
-import { sessionImageIdentity, validSessionImageUri } from "./session-image-load"
+import { validSessionImageUri } from "./session-image-load"
 
 // v1 bounded one text part at this many sources.
 export const MARKDOWN_IMAGE_LIMIT = 24
@@ -14,7 +14,6 @@ const partSources = new WeakMap<
 >()
 
 export type MarkdownImageSource = {
-  key: string
   /** A validated remote or inline image URI, or an absolute local path. */
   source: string
   label: string
@@ -36,10 +35,11 @@ export function markdownImageSources(content: string, directory: string | undefi
     const image = token as Tokens.Image
     const source = imageSource(image.href, directory)
     if (!source) return
-    const identity = sessionImageIdentity(source)
-    if (seen.has(identity)) return
-    seen.add(identity)
-    images.push({ key: `markdown:${images.length}`, source, label: imageLabel(image.text, "Image") })
+    // Deduplicated on the whole source: two different inline payloads can share a length, a header and
+    // a tail, and a fingerprint over those would silently drop the second image.
+    if (seen.has(source)) return
+    seen.add(source)
+    images.push({ source, label: imageLabel(image.text, "Image") })
   })
   return images
 }

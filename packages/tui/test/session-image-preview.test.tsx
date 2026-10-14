@@ -240,11 +240,10 @@ test("gives a markdown image its own full-width line", async () => {
   await using state = await tmpdir()
   const target = await imageFile(state.path, "chart.png", 96, 48)
   const messages = [textMessage(markdownBody(target))]
-  const before = structuredClone(messages)
-  const requests: string[] = []
+  const requests: { method: string; url: string }[] = []
   const { setup, server, task } = await renderSession(state.path, messages, {
     directory: state.path,
-    onRequest: (url) => requests.push(url.href),
+    onRequest: (url, request) => requests.push({ method: request.method, url: url.href }),
   })
   try {
     await setup.waitForFrame((frame) => frame.includes("Shot:"))
@@ -257,10 +256,14 @@ test("gives a markdown image its own full-width line", async () => {
     // 96 x 48 at the fixture's 2.96:1 cell aspect needs one row per 5.93 columns.
     expect(images[0]!.height).toBe(17)
     expect(setup.captureCharFrame()).toContain("Shot:")
-    // The preview is display only: nothing it reads may be written back into the message, and neither
-    // the fetched bytes nor the file path may travel back out as a request.
-    expect(messages).toEqual(before)
-    expect(requests.filter((url) => url.includes("data:image") || url.includes(target))).toEqual([])
+    // The preview is display only. The fixture hands the app a JSON copy of the messages, so comparing
+    // those objects would prove nothing; what can fail is the outgoing side: no request may carry the
+    // payload or the path, and nothing may leave as anything but a read, which is the only shape a
+    // leaked preview could take.
+    expect(requests.filter((entry) => entry.url.includes("data:image") || entry.url.includes(target))).toEqual([])
+    expect(requests.filter((entry) => entry.method !== "GET")).toEqual([])
+    // And the resolved payload must not surface in the transcript text either.
+    expect(setup.captureCharFrame()).not.toContain("data:image")
   } finally {
     setup.renderer.destroy()
     await task
@@ -331,6 +334,31 @@ test("keeps No preview for a markdown image above the pixel budget", async () =>
     await server.stop()
   }
 }, 20000)
+
+test("previews a reference whose file only appears afterwards", async () => {
+  await using state = await tmpdir()
+  const target = path.join(state.path, "late.png")
+  const { setup, server, task } = await renderSession(state.path, [textMessage(markdownBody(target, "late"))], {
+    directory: state.path,
+  })
+  try {
+    await setup.waitForFrame((frame) => frame.includes("Shot:"))
+    await setup.waitForVisualIdle({ quietFrames: 3 })
+    // The file does not exist yet, which is a failure the row must not treat as final.
+    expect(collectImages(setup.renderer.root)).toHaveLength(0)
+
+    await writeFile(target, Buffer.from(sizedImage(96, 48).split(",")[1]!, "base64"))
+    for (let attempt = 0; attempt < 60 && collectImages(setup.renderer.root).length === 0; attempt++) {
+      await Bun.sleep(100)
+      await setup.waitForVisualIdle({ quietFrames: 1 })
+    }
+    expect(collectImages(setup.renderer.root)).toHaveLength(1)
+  } finally {
+    setup.renderer.destroy()
+    await task
+    await server.stop()
+  }
+}, 30000)
 
 test("ignores a markdown reference that is not an image", async () => {
   await using state = await tmpdir()

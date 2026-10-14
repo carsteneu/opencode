@@ -92,8 +92,12 @@ import { groupsReasoning, nextThinkingMode, type ThinkingMode } from "../../cont
 import { getScrollAcceleration } from "../../util/scroll"
 import { toolInputProgress } from "../../util/tool-input-progress"
 import { collapseShellOutput, collapseToolOutput } from "../../util/collapse-tool-output"
-import { probeSessionImage, sessionImagePreviewHeight } from "../../util/session-image-preview"
-import { textPartImageSources } from "../../util/session-image-markdown"
+import {
+  probeSessionImage,
+  sessionImagePreviewHeight,
+  type SessionImageProbe,
+} from "../../util/session-image-preview"
+import { textPartImageSources, type MarkdownImageSource } from "../../util/session-image-markdown"
 import { acquireImagePreview, releaseImagePreview } from "../../util/session-image-preview-cache"
 import { Keymap, type KeymapCommand } from "../../context/keymap"
 import { usePathFormatter } from "../../context/path-format"
@@ -2509,7 +2513,11 @@ function ToolImages(props: { parts: readonly SessionMessageAssistantTool[] }) {
   return <SessionImages images={images()} />
 }
 
-type SessionImagePreview = { uri: string; mention?: { text: string } }
+type SessionImagePreview = { uri: string; mention?: { text: string }; probe?: SessionImageProbe }
+
+// One retry for a source that failed to load: a file written a moment after the text that names it
+// still gets its preview, without polling a source that will never arrive.
+const RETRY_FAILED_SOURCE_MS = 2_000
 
 /**
  * The previews a markdown body declares, resolved against the session's own directory so a relative
@@ -2529,29 +2537,51 @@ function TextImages(props: { part: SessionMessageAssistantText; message: Session
       directory: directory(),
     }),
   )
-  const resolved = new Map<string, string>()
+  // One preview object per source, reused across publishes: the rows are keyed by reference, so a
+  // rebuilt object would drop the image element and decode the same payload again.
+  const previewsBySource = new Map<string, SessionImagePreview>()
   const held = new Set<string>()
   const [previews, setPreviews] = createSignal<readonly SessionImagePreview[]>([])
+  const [attempt, setAttempt] = createSignal(0)
+  let retry: ReturnType<typeof setTimeout> | undefined
+  let retried = false
 
   const publish = () => {
     setPreviews(
       sources().flatMap((image) => {
-        const uri = resolved.get(image.source)
-        return uri ? [{ uri, mention: { text: image.label } }] : []
+        const preview = previewsBySource.get(image.source)
+        return preview ? [preview] : []
       }),
     )
   }
 
   createEffect(() => {
+    attempt()
     const list = sources()
     const wanted = new Set(list.map((image) => image.source))
 
     for (const source of [...held]) {
       if (wanted.has(source)) continue
       held.delete(source)
-      resolved.delete(source)
+      previewsBySource.delete(source)
       releaseImagePreview(source)
     }
+
+    // A preview that cannot be decoded is a notice, not something to hold: the row stays, the bytes
+    // go, so the memory the pixel budget refuses to draw is not kept either.
+    const previewFor = (image: MarkdownImageSource, uri: string) => {
+      const probe = probeSessionImage(uri)
+      if (probe.status === "oversized") {
+        held.delete(image.source)
+        releaseImagePreview(image.source)
+        return { uri: "", probe, mention: { text: image.label } }
+      }
+      return { uri, mention: { text: image.label } }
+    }
+
+    // Nothing is loaded while the session streams: the previews are suspended then, so a fetch or a
+    // file read would be work for a row that is not drawn.
+    if (ctx.sessionRunning()) return
 
     const pending = list.filter((image) => !held.has(image.source))
     pending.forEach((image) => held.add(image.source))
@@ -2560,19 +2590,34 @@ function TextImages(props: { part: SessionMessageAssistantText; message: Session
 
     void Promise.all(pending.map(async (image) => ({ image, uri: await acquireImagePreview(image.source) }))).then(
       (loaded) => {
+        let failed = false
         loaded.forEach(({ image, uri }) => {
           // Only what this row still holds becomes a preview; a source released while loading stays gone.
-          if (uri && held.has(image.source)) resolved.set(image.source, uri)
+          if (!held.has(image.source)) return
+          if (!uri) {
+            failed = true
+            held.delete(image.source)
+            releaseImagePreview(image.source)
+            return
+          }
+          previewsBySource.set(image.source, previewFor(image, uri))
         })
         publish()
+        // A source that fails once is not poisoned forever: a file written a moment later still gets
+        // its preview, and a later reader is not handed the settled failure.
+        if (failed && !retried) {
+          retried = true
+          retry = setTimeout(() => setAttempt((value) => value + 1), RETRY_FAILED_SOURCE_MS)
+        }
       },
     )
   })
 
   onCleanup(() => {
+    if (retry) clearTimeout(retry)
     held.forEach((source) => releaseImagePreview(source))
     held.clear()
-    resolved.clear()
+    previewsBySource.clear()
   })
 
   return <SessionImages images={previews()} />
@@ -2587,8 +2632,9 @@ function SessionImages(props: { images: readonly SessionImagePreview[]; paddingL
   // previews until the runner idles so the two do not compete for the same frame budget.
   const visible = createMemo(() => (ctx.sessionRunning() ? [] : images()))
   // The probe is width-independent, so it belongs to the image list rather than to the geometry:
-  // a resize must not re-decode a payload that can run to the whole inline budget.
-  const probes = createMemo(() => visible().map((image) => probeSessionImage(image.uri)))
+  // a resize must not re-decode a payload that can run to the whole inline budget. A caller that
+  // already probed its payload hands the verdict in, so it is read at most once.
+  const probes = createMemo(() => visible().map((image) => image.probe ?? probeSessionImage(image.uri)))
   // The image renderable sizes itself with the renderer's cell aspect ratio, so a row height
   // derived from anything else would letterbox the glyphs inside their own box. Read lazily
   // rather than through a memo: the resolution arrives without a dimension change, so a memo
@@ -2643,6 +2689,8 @@ function SessionImages(props: { images: readonly SessionImagePreview[]; paddingL
                   onMouseUp={(event: MouseEvent) => {
                     if (event.button !== 0) return
                     event.stopPropagation()
+                    // A row whose payload was refused has no source left to show in the dialog.
+                    if (preview().oversized) return
                     dialog.replace(() => <DialogImagePreview images={images()} initial={index()} />)
                   }}
                 >

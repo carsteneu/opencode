@@ -54,11 +54,6 @@ export function isSessionDataImageUri(value: string) {
   return dataImagePrefix.test(value)
 }
 
-export function sessionImageIdentity(value: string) {
-  if (!isSessionDataImageUri(value)) return value
-  return `data:${value.length}:${value.slice(0, 64)}:${value.slice(-64)}`
-}
-
 /**
  * The address to connect to, or nothing when the host may not be used. Every address the host
  * resolves to is checked, not just the one that would be chosen: a host that answers with both a
@@ -282,9 +277,17 @@ async function loadRemoteImage(
         void loadRemoteImage(redirect, signal, redirects + 1).then(finish, finish)
         return
       }
-      const declared = (header(response, "content-type") ?? "").split(";", 1)[0]?.trim().toLowerCase() ?? ""
       collectImageBytes(response, signal).then(
-        (bytes) => finish({ bytes, mime: sniffImageMime(bytes) ?? declared }),
+        (bytes) => {
+          // The bytes decide, exactly as they do for a local file: an allowlisted response header is
+          // only a claim, and a body that is not one of the decodable formats is refused.
+          const mime = sniffImageMime(bytes)
+          if (!mime) {
+            finish(new Error("Image response body is not a decodable image"))
+            return
+          }
+          finish({ bytes, mime })
+        },
         (error: Error) => {
           response.destroy()
           finish(error)

@@ -162,7 +162,8 @@ export const Info = Schema.Struct({
         description: "Transcript detail level: low summarizes each run of tools and thoughts, high opens exploration and instruction groups",
       }),
       image_preview: Schema.optional(Schema.Boolean).annotate({
-        description: "Show user attachment and tool-result images in the session transcript",
+        description:
+          "Show image previews in the session transcript: user attachments, tool results, and markdown image references (local files and remote https links)",
       }),
       tps: Schema.optional(Schema.Boolean).annotate({
         description: "Show average tokens per second",

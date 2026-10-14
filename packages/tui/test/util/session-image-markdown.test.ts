@@ -57,14 +57,24 @@ describe("markdown image sources", () => {
     ])
   })
 
-  test("removes duplicates, bounds the result, and numbers the keys by position", () => {
+  test("removes duplicates and bounds the result", () => {
     const accepted = Array.from({ length: 30 }, (_, index) => `![Image ${index}](/tmp/out/${index}.png)`)
     const images = sources(["![Duplicate](/tmp/out/0.png)", ...accepted].join("\n"))
 
     expect(images).toHaveLength(MARKDOWN_IMAGE_LIMIT)
     expect(new Set(images.map((image) => image.source)).size).toBe(MARKDOWN_IMAGE_LIMIT)
-    expect(images[0]!.source).toBe("/tmp/out/0.png")
-    expect(images.map((image) => image.key).slice(0, 3)).toEqual(["markdown:0", "markdown:1", "markdown:2"])
+    // Order of appearance, with the duplicate collapsed into the first mention.
+    expect(images.map((image) => image.source).slice(0, 2)).toEqual(["/tmp/out/0.png", "/tmp/out/1.png"])
+  })
+
+  test("keeps two inline payloads that share a length and their head and tail", () => {
+    const payload = "A".repeat(200)
+    const one = `data:image/png;base64,${payload}`
+    const two = `data:image/png;base64,${payload.slice(0, 100)}B${payload.slice(101)}`
+    expect(one).not.toBe(two)
+    expect(one.length).toBe(two.length)
+    // A fingerprint over length plus head and tail would merge these into one image.
+    expect(sources(`![one](${one})\n![two](${two})`).map((image) => image.source)).toEqual([one, two])
   })
 
   test("deduplicates the same remote source written twice", () => {
