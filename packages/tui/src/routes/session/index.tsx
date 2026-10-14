@@ -92,6 +92,7 @@ import { groupsReasoning, nextThinkingMode, type ThinkingMode } from "../../cont
 import { getScrollAcceleration } from "../../util/scroll"
 import { toolInputProgress } from "../../util/tool-input-progress"
 import { collapseShellOutput, collapseToolOutput } from "../../util/collapse-tool-output"
+import { probeSessionImage, sessionImagePreviewHeight } from "../../util/session-image-preview"
 import { Keymap, type KeymapCommand } from "../../context/keymap"
 import { usePathFormatter } from "../../context/path-format"
 import { useLocation } from "../../context/location"
@@ -2508,62 +2509,87 @@ function ToolImages(props: { parts: readonly SessionMessageAssistantTool[] }) {
 function SessionImages(props: { images: readonly { uri: string }[]; paddingLeft?: number }) {
   const ctx = use()
   const dialog = useDialog()
+  const renderer = useRenderer()
   const images = createMemo(() => (ctx.config.session?.image_preview ? props.images : []))
-  const height = createMemo(() => Math.max(4, Math.min(8, Math.floor(ctx.terminal.height / 4))))
-  // Image glyphs repaint the whole row every frame while streaming text advances; suspend the
+  // Image glyphs repaint every shown line each frame while streaming text advances; suspend the
   // previews until the runner idles so the two do not compete for the same frame budget.
-  const visible = createMemo(() => (ctx.sessionRunning() ? [] : images().slice(0, 3)))
+  const visible = createMemo(() => (ctx.sessionRunning() ? [] : images()))
+  // The probe is width-independent, so it belongs to the image list rather than to the geometry:
+  // a resize must not re-decode a payload that can run to the whole inline budget.
+  const probes = createMemo(() => visible().map((image) => probeSessionImage(image.uri)))
+  // The image renderable sizes itself with the renderer's cell aspect ratio, so a row height
+  // derived from anything else would letterbox the glyphs inside their own box. Read lazily
+  // rather than through a memo: the resolution arrives without a dimension change, so a memo
+  // would hold the fallback ratio until the next resize instead of the next row recompute.
+  const cellAspectRatio = () => {
+    const resolution = renderer.resolution
+    if (!resolution || renderer.terminalWidth <= 0 || renderer.terminalHeight <= 0) return 2
+    const cellWidth = resolution.width / renderer.terminalWidth
+    const cellHeight = resolution.height / renderer.terminalHeight
+    return cellWidth > 0 && cellHeight > 0 ? cellHeight / cellWidth : 2
+  }
+  const geometry = createMemo(() => {
+    const sizes = probes()
+    if (sizes.length === 0) return
+    // ctx.width is the transcript row already. What is left to take off is this row's own padding
+    // plus the border column a user message reserves - the same 5 columns v1 sized a preview from.
+    const columns = Math.max(1, ctx.width - 5)
+    return sizes.map((probe) => {
+      const size = probe.status === "measured" ? probe : undefined
+      return {
+        oversized: probe.status === "oversized",
+        height: sessionImagePreviewHeight(ctx.terminal.height, columns, size?.width, size?.height, cellAspectRatio()),
+      }
+    })
+  })
 
   return (
-    <Show when={visible().length > 0}>
-      <box
-        flexDirection="row"
-        flexShrink={0}
-        paddingTop={1}
-        paddingLeft={props.paddingLeft ?? 3}
-        paddingRight={2}
-        paddingBottom={1}
-        gap={1}
-      >
-        <For each={visible()}>
-          {(image, index) => {
-            const [failed, setFailed] = createSignal(false)
-            return (
-              <box
-                width={height() * 2}
-                height={height()}
-                flexBasis={height() * 2}
-                flexShrink={1}
-                alignItems="center"
-                justifyContent="center"
-                onMouseUp={(event: MouseEvent) => {
-                  if (event.button !== 0) return
-                  event.stopPropagation()
-                  dialog.replace(() => <DialogImagePreview images={images()} initial={index()} />)
-                }}
-              >
-                <Show when={!failed()} fallback={<text>No preview</text>}>
-                  <image
-                    source={image.uri}
-                    fit="cover"
-                    protocol="auto"
-                    width="100%"
-                    height="100%"
-                    onError={() => setFailed(true)}
-                  />
-                </Show>
-              </box>
-            )
-          }}
-        </For>
-        <Show when={images().length > visible().length}>
-          <box width={8} height={height()} flexShrink={1} alignItems="center" justifyContent="center">
-            <text wrapMode="none" truncate>
-              +{images().length - visible().length} more
-            </text>
-          </box>
-        </Show>
-      </box>
+    <Show when={geometry()}>
+      {(value) => (
+        <box
+          flexDirection="column"
+          flexShrink={0}
+          paddingTop={1}
+          paddingLeft={props.paddingLeft ?? 3}
+          paddingRight={2}
+          paddingBottom={1}
+          gap={1}
+        >
+          <For each={visible()}>
+            {(image, index) => {
+              const [failed, setFailed] = createSignal(false)
+              // Read through the index so a resize re-sizes the box without re-keying the row:
+              // a keyed re-render would drop the image element and decode the source again.
+              const preview = () => value()[index()]
+              return (
+                <box
+                  width="100%"
+                  height={preview().height}
+                  flexShrink={0}
+                  alignItems="center"
+                  justifyContent="center"
+                  onMouseUp={(event: MouseEvent) => {
+                    if (event.button !== 0) return
+                    event.stopPropagation()
+                    dialog.replace(() => <DialogImagePreview images={images()} initial={index()} />)
+                  }}
+                >
+                  <Show when={!preview().oversized && !failed()} fallback={<text>No preview</text>}>
+                    <image
+                      source={image.uri}
+                      fit="fit"
+                      protocol="auto"
+                      width="100%"
+                      height="100%"
+                      onError={() => setFailed(true)}
+                    />
+                  </Show>
+                </box>
+              )
+            }}
+          </For>
+        </box>
+      )}
     </Show>
   )
 }
