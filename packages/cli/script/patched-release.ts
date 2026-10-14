@@ -25,9 +25,12 @@ const ReleaseList = Schema.Array(
 )
 
 const argument = process.argv.find((arg) => FORK_RELEASE_PATTERN.test(arg))
-if (!argument) throw new Error("Usage: bun run release:patched <x.y.z-v2patched.n> [--publish]")
+if (!argument) throw new Error("Usage: bun run release:patched <x.y.z-v2patched.n> [--publish] [--draft]")
 const version = normalizeForkVersion(argument)
-const publish = process.argv.includes("--publish")
+// `--draft` runs the publish path but stops after the draft has been verified, so the
+// uploaded assets can be inspected before they become visible to the update channel.
+const draft = process.argv.includes("--draft")
+const publish = process.argv.includes("--publish") || draft
 const asset = forkAssetName()
 if (!asset) throw new Error("Fork releases are built for Linux x64 only")
 
@@ -171,6 +174,13 @@ const remoteChecksum = await run(
 )
 if (remoteChecksum !== (await Bun.file(checksum).text())) {
   throw new Error("Uploaded checksum asset does not match locally")
+}
+if (draft) {
+  console.log(`Verified draft ${staged.url}`)
+  console.log(
+    `Draft holds ${asset} (${binarySize} bytes) and ${asset}.sha256 (${checksumSize} bytes), checksum round-trip identical`,
+  )
+  process.exit(0)
 }
 
 await run(["gh", "release", "edit", version, "--repo", repository, "--draft=false", "--prerelease"], root)
