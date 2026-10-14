@@ -19,7 +19,16 @@ import {
 import { generateSystem, terminalMode } from "../theme/system"
 import { discoverThemes } from "../theme/discovery"
 import { createComponentTheme, type ComponentTheme } from "../theme/component"
-import { createEffect, createMemo, createSignal, onCleanup, onMount, type Accessor, type ParentProps } from "solid-js"
+import {
+  createEffect,
+  createMemo,
+  createSignal,
+  onCleanup,
+  onMount,
+  untrack,
+  type Accessor,
+  type ParentProps,
+} from "solid-js"
 import { createStore, produce } from "solid-js/store"
 import { createSimpleContext } from "./helper"
 import { useConfig } from "../config"
@@ -75,6 +84,13 @@ export const createThemeSource = (config: string): ThemeSource => ({
 })
 
 const THEME_REFRESH_DELAYS = [250, 1000] as const
+
+// A session-only override from --theme or the OPENCODE_THEME env var outranks the configured theme
+// name. It is read here and never written back to the config or the storage.
+function sessionThemeOverride() {
+  const value = process.env.OPENCODE_THEME
+  return value ? value : undefined
+}
 
 type State = {
   mode: "dark" | "light"
@@ -134,12 +150,21 @@ const themeContext = createSimpleContext({
         const mode = lock ?? renderer.themeMode ?? props.mode
         draft.mode = mode
         draft.lock = lock
-        draft.active = config.theme?.name ?? "opencode"
+        draft.active = sessionThemeOverride() ?? config.theme?.name ?? "opencode"
         draft.ready = false
       }),
     )
 
     createEffect(() => {
+      const override = sessionThemeOverride()
+      if (override) {
+        // --theme / OPENCODE_THEME outranks the configured theme name and is applied at start; the
+        // early return keeps the effect free of a config dependency, so a config change cannot
+        // replace the override during the session. Nothing is written back to the config or storage.
+        setStore("active", override)
+        if (override === "system") untrack(refreshPalette)
+        return
+      }
       const theme = config.theme?.name
       if (!theme) return
       setStore("active", theme)
@@ -333,6 +358,10 @@ const themeContext = createSimpleContext({
         if (!hasTheme(theme)) return false
         setStore("active", theme)
         if (theme === "system") refreshPalette()
+        // While a session-only override is active the picker changes this session only: its
+        // restore-on-cancel and hover previews would otherwise write the override (or a previewed
+        // name) into the config.
+        if (sessionThemeOverride()) return true
         void configState
           .update((draft) => {
             draft.theme = { ...draft.theme, name: theme }
