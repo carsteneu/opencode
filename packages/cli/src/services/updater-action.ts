@@ -61,6 +61,26 @@ export function compareRelease(left: string, right: string) {
   return 0
 }
 
+/**
+ * True only when `latest` is strictly newer than `current`. "Different" is not
+ * "newer": a release on an older line is not an update, and announcing it would
+ * offer a download the installer then refuses.
+ */
+export function newerRelease(current: string, latest: string) {
+  const order = compareRelease(latest, current)
+  return order !== undefined && order > 0
+}
+
+/**
+ * The version a binary reports for itself: `opencode --version` prints `opencode v1.2.3`,
+ * so the version is the last token without its leading `v`. The release pipeline and the
+ * updater have to read it the same way, or the pipeline can publish a binary the updater
+ * then refuses.
+ */
+export function reportedVersion(output: string) {
+  return output.trim().split(/\s+/).at(-1)?.replace(/^v/, "") ?? ""
+}
+
 export function parseReleaseVersion(input: string) {
   if (input.length > 256) return
   const match = input.trim().match(versionPattern)

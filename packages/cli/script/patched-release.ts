@@ -4,6 +4,7 @@ import { chmod, mkdir, rm } from "node:fs/promises"
 import path from "path"
 import { Schema } from "effect"
 import { ForkRelease } from "@opencode/util/installation/fork-release"
+import { reportedVersion } from "../src/services/updater-action"
 import { planForkRelease, type KnownRelease } from "./patched-release-plan"
 
 // The branch that may publish. Overridable because this feature branch is not meant to
@@ -55,8 +56,8 @@ const packageVersion = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Str
   await Bun.file(path.join(packageDir, "package.json")).text(),
 ).version
 
-// Every guard runs before the build and before anything reaches the remote, so a refused
-// release costs no build and touches no shared state.
+// These guards run before the build and before anything reaches the remote, so a refusal
+// here costs no build and touches no shared state.
 let plan = planForkRelease({
   version,
   publish,
@@ -210,11 +211,6 @@ if (!release || release.isDraft || !release.isPrerelease) {
   throw new Error(`Published release verification failed: ${JSON.stringify(release)}`)
 }
 console.log(release.url)
-
-/** `opencode --version` prints `opencode v1.2.3`; the version is the last token. */
-function reportedVersion(output: string) {
-  return output.trim().split(/\s+/).at(-1)?.replace(/^v/, "") ?? ""
-}
 
 async function knownReleases(): Promise<ReadonlyArray<KnownRelease>> {
   return Schema.decodeUnknownSync(Schema.fromJsonString(ReleaseList))(

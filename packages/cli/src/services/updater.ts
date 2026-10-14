@@ -16,7 +16,7 @@ import { parse, type ParseError } from "jsonc-parser"
 import path from "node:path"
 import { stripVTControlCharacters } from "node:util"
 import { RetainedImage } from "./retained-image"
-import { action, compareRelease, majorChange, parseReleaseVersion, updates, type Policy } from "./updater-action"
+import { action, compareRelease, majorChange, newerRelease, parseReleaseVersion, reportedVersion, updates, type Policy } from "./updater-action"
 import { errorMessage } from "../util/error"
 
 export const methods = ["curl", "npm", "pnpm", "bun", "yarn", "vp", "brew"] as const
@@ -605,7 +605,7 @@ const make = Effect.gen(function* () {
             yield* fs.writeFile(temporary, bytes, { flag: "wx" })
             yield* fs.chmod(temporary, 0o755)
             const probe = yield* exec([temporary, "--version"]).pipe(Effect.orElseSucceed(() => undefined))
-            const reported = probe?.stdout.trim().split(/\s+/).at(-1)?.replace(/^v/, "")
+            const reported = probe === undefined ? undefined : reportedVersion(probe.stdout)
             if (probe?.code !== 0 || reported !== target)
               return yield* Effect.fail(
                 new UpgradeError({
@@ -807,8 +807,10 @@ const make = Effect.gen(function* () {
     })
     const next = action(current, version, policy)
     if (next === "none") {
-      // A major change is named as such: it is never applied automatically and
-      // needs the explicit transfer command.
+      // A major change is never applied automatically: only the explicit transfer
+      // installs it. A `notify` install still gets told, otherwise the one update
+      // that needs a deliberate step would be the only one never announced.
+      if (policy === "notify" && newerRelease(current, version)) return { policy, version }
       yield* Effect.logInfo("update check done", {
         action: majorChange(current, version) ? "major-requires-transfer" : "up-to-date",
       })
@@ -844,7 +846,9 @@ const make = Effect.gen(function* () {
     const version = yield* latest()
     if (!parseReleaseVersion(version)) return yield* Effect.fail(new Error(`Invalid version: ${version}`))
     const current = yield* Ref.get(installedVersion)
-    if (!updates(current, version)) {
+    // Only a strictly newer release is an update. Testing for inequality would offer
+    // the older line as an "available" download that the installer then refuses.
+    if (!newerRelease(current, version)) {
       // An earlier check may have installed the update while this client is still running.
       return updates(OPENCODE_VERSION, current) ? { type: "installed" as const, version: current } : undefined
     }

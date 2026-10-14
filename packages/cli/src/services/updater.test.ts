@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { action, compareRelease, majorChange, updates } from "./updater-action"
+import { action, compareRelease, majorChange, newerRelease, reportedVersion, updates } from "./updater-action"
 import { decodePolicy } from "./updater"
 
 describe("updater", () => {
@@ -49,6 +49,24 @@ describe("updater", () => {
     expect(compareRelease("2.0.26-patched.9007199254740993", "2.0.26-patched.9007199254740992")).toBe(0)
     expect(compareRelease("2.0.26-patched.9007199254740991", "2.0.26-patched.9007199254740992")).toBe(-1)
     expect(compareRelease("nonsense", "2.0.26-patched.1")).toBeUndefined()
+  })
+
+  test("treats only a strictly newer release as an update", () => {
+    expect(newerRelease("2.0.26-patched.0", "2.0.26-patched.1")).toBe(true)
+    expect(newerRelease("1.18.34-patched.220", "2.0.26-patched.1")).toBe(true)
+    expect(newerRelease("2.0.26-patched.1", "2.0.26-patched.1")).toBe(false)
+    // A release on the older line is different, but it is not an update: offering it
+    // would announce a download the installer refuses with "not newer".
+    expect(newerRelease("2.0.26-patched.1", "1.18.34-patched.220")).toBe(false)
+    expect(newerRelease("2.0.26-patched.1", "nonsense")).toBe(false)
+    expect(newerRelease("local", "2.0.26-patched.1")).toBe(false)
+  })
+
+  test("reads the version a binary reports the same way the release pipeline does", () => {
+    expect(reportedVersion("opencode v2.0.26-patched.1\n")).toBe("2.0.26-patched.1")
+    expect(reportedVersion("2.0.26-patched.1")).toBe("2.0.26-patched.1")
+    expect(reportedVersion("opencode v1.18.34-patched.219")).toBe("1.18.34-patched.219")
+    expect(reportedVersion("")).toBe("")
   })
 
   test("automatically installs every available release when enabled", () => {
