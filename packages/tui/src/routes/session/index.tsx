@@ -93,6 +93,8 @@ import { getScrollAcceleration } from "../../util/scroll"
 import { toolInputProgress } from "../../util/tool-input-progress"
 import { collapseShellOutput, collapseToolOutput } from "../../util/collapse-tool-output"
 import { probeSessionImage, sessionImagePreviewHeight } from "../../util/session-image-preview"
+import { textPartImageSources } from "../../util/session-image-markdown"
+import { acquireImagePreview, releaseImagePreview } from "../../util/session-image-preview-cache"
 import { Keymap, type KeymapCommand } from "../../context/keymap"
 import { usePathFormatter } from "../../context/path-format"
 import { useLocation } from "../../context/location"
@@ -1882,6 +1884,7 @@ function SessionPartView(props: {
               message={message() as SessionMessageAssistant}
               last={false}
             />
+            <TextImages part={item() as SessionMessageAssistantText} message={message() as SessionMessageAssistant} />
           </Match>
           <Match when={item().type === "reasoning"}>
             <ReasoningPart
@@ -2506,7 +2509,76 @@ function ToolImages(props: { parts: readonly SessionMessageAssistantTool[] }) {
   return <SessionImages images={images()} />
 }
 
-function SessionImages(props: { images: readonly { uri: string }[]; paddingLeft?: number }) {
+type SessionImagePreview = { uri: string; mention?: { text: string } }
+
+/**
+ * The previews a markdown body declares, resolved against the session's own directory so a relative
+ * reference means the same file the session means. A source is held only while this row is mounted,
+ * and released with it, so scrolling the row away abandons its request instead of keeping it.
+ */
+function TextImages(props: { part: SessionMessageAssistantText; message: SessionMessageAssistant }) {
+  const ctx = use()
+  const data = useData()
+  const directory = createMemo(() => data.session.get(ctx.sessionID)?.location.directory)
+  const sources = createMemo(() =>
+    textPartImageSources({
+      part: props.part,
+      completed: props.message.time.completed !== undefined,
+      // The toggle gates the load, not only the drawing: with previews off no remote image is fetched.
+      enabled: ctx.config.session?.image_preview === true,
+      directory: directory(),
+    }),
+  )
+  const resolved = new Map<string, string>()
+  const held = new Set<string>()
+  const [previews, setPreviews] = createSignal<readonly SessionImagePreview[]>([])
+
+  const publish = () => {
+    setPreviews(
+      sources().flatMap((image) => {
+        const uri = resolved.get(image.source)
+        return uri ? [{ uri, mention: { text: image.label } }] : []
+      }),
+    )
+  }
+
+  createEffect(() => {
+    const list = sources()
+    const wanted = new Set(list.map((image) => image.source))
+
+    for (const source of [...held]) {
+      if (wanted.has(source)) continue
+      held.delete(source)
+      resolved.delete(source)
+      releaseImagePreview(source)
+    }
+
+    const pending = list.filter((image) => !held.has(image.source))
+    pending.forEach((image) => held.add(image.source))
+    publish()
+    if (pending.length === 0) return
+
+    void Promise.all(pending.map(async (image) => ({ image, uri: await acquireImagePreview(image.source) }))).then(
+      (loaded) => {
+        loaded.forEach(({ image, uri }) => {
+          // Only what this row still holds becomes a preview; a source released while loading stays gone.
+          if (uri && held.has(image.source)) resolved.set(image.source, uri)
+        })
+        publish()
+      },
+    )
+  })
+
+  onCleanup(() => {
+    held.forEach((source) => releaseImagePreview(source))
+    held.clear()
+    resolved.clear()
+  })
+
+  return <SessionImages images={previews()} />
+}
+
+function SessionImages(props: { images: readonly SessionImagePreview[]; paddingLeft?: number }) {
   const ctx = use()
   const dialog = useDialog()
   const renderer = useRenderer()
