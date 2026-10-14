@@ -40,6 +40,18 @@ function delta(text: string) {
   } as never
 }
 
+// Reasoning streams over its own event in v2, so a meter wired to the text event alone
+// reads 0 for a model that is only thinking.
+function reasoning(text: string) {
+  sequence += 1
+  return {
+    id: `evt_${sequence}`,
+    created: sequence,
+    type: "session.reasoning.delta",
+    data: { sessionID: "ses_test", assistantMessageID: "msg_1", ordinal: 0, delta: text },
+  } as never
+}
+
 test(
   "renders a client-side tok/s estimate from text deltas and keeps the cell at 0 when the stream stops",
   async () => {
@@ -74,6 +86,29 @@ test(
   },
   30_000,
 )
+
+test("counts reasoning deltas in the output rate", async () => {
+  await using setup = await createAppFixture({
+    config: { animations: false, tabs: { mode: "off" }, plugins: [pluginDirectory] },
+    args: { sessionID: "ses_test" },
+    fetch,
+  })
+  await setup.ready
+  await Bun.sleep(3500)
+  await setup.renderOnce()
+  expect(setup.captureCharFrame()).toMatch(/out ~0 tk\/s/)
+
+  // Only thinking, no answer text yet: the cell still has to move.
+  await setup.waitFor(
+    async () => {
+      setup.events.emit(reasoning("thinking about the answer "))
+      await Bun.sleep(60)
+      await setup.renderOnce()
+      return /out ~[1-9]\d* tk\/s/.test(setup.captureCharFrame())
+    },
+    { maxPasses: 100 },
+  )
+}, 30_000)
 
 test("loads as an external plugin that appends to the prompt footer", async () => {
   const module = (await Host.load(pluginEntry.href)) as { default: Plugin.Definition }

@@ -7,9 +7,11 @@ import { createEffect, createSignal, on, onCleanup, Show } from "solid-js"
 // its assistant-footer cell stays empty. v1 counted client-side from the text
 // stream instead; this plugin adds that live estimate to the prompt footer
 // without touching the core counter. Port of v1 util/token-rate.ts as wired in
-// v1 routes/session/footer.tsx (window and refresh both 1000ms there), counting
-// only text deltas like v1 did (`field === "text"`): it is an "out" estimate, so
-// on reasoning models it reads below the core cell, and the two cells are
+// v1 routes/session/footer.tsx (window and refresh both 1000ms there). It counts
+// answer text and reasoning, like v1's cell before the client-side port
+// (`output + reasoning`): v2 splits thinking into its own event, so a
+// text-only meter would read 0 on a model that is thinking. It stays an
+// estimate, so it reads below a provider-reported cell, and the two cells are
 // independent. Like v1's footer the cell is permanent and idle it reads
 // `out ~0 tk/s`, so the meter never moves in and out of the layout.
 const WINDOW_MS = 1000
@@ -88,7 +90,9 @@ function TokensPerSecond(props: { context: Plugin.Context; sessionID?: string; s
     timer = setTimeout(refresh, Math.min(REFRESH_MS, remaining + 1))
   }
 
-  const unsubscribe = props.context.data.on("session.text.delta", (event) => {
+  // v2 streams thinking and answer text over separate events, so the meter has to take both:
+  // v1's cell counted output plus reasoning, and a text-only meter reads 0 while a model thinks.
+  const count = (event: { data: { sessionID: string; assistantMessageID: string; delta: string } }) => {
     if (event.data.sessionID !== props.sessionID) return
     if (event.data.assistantMessageID !== messageID) {
       messageID = event.data.assistantMessageID
@@ -102,7 +106,12 @@ function TokensPerSecond(props: { context: Plugin.Context; sessionID?: string; s
     meter.add(characters / 4, now)
     latestDeltaAt = now
     if (!timer) timer = setTimeout(refresh, REFRESH_MS)
-  })
+  }
+
+  const unsubscribe = [
+    props.context.data.on("session.text.delta", count),
+    props.context.data.on("session.reasoning.delta", count),
+  ]
 
   createEffect(
     on(
@@ -116,7 +125,7 @@ function TokensPerSecond(props: { context: Plugin.Context; sessionID?: string; s
     ),
   )
   onCleanup(() => {
-    unsubscribe()
+    unsubscribe.forEach((release) => release())
     if (timer) clearTimeout(timer)
   })
 
