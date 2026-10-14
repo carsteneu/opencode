@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { action, compareRelease, majorChange, newerRelease, reportedVersion, updates } from "./updater-action"
+import { action, automaticAction, compareRelease, majorChange, newerRelease, reportedVersion, updates } from "./updater-action"
 import { decodePolicy } from "./updater"
 
 describe("updater", () => {
@@ -67,6 +67,23 @@ describe("updater", () => {
     expect(reportedVersion("2.0.26-patched.1")).toBe("2.0.26-patched.1")
     expect(reportedVersion("opencode v1.18.34-patched.219")).toBe("1.18.34-patched.219")
     expect(reportedVersion("")).toBe("")
+  })
+
+  test("decides what an automatic check may do with a release", () => {
+    expect(automaticAction("2.0.26-patched.1", "2.0.26-patched.2", "auto")).toBe("install")
+    expect(automaticAction("2.0.26-patched.1", "2.0.26-patched.2", "notify")).toBe("announce")
+    expect(automaticAction("2.0.26-patched.1", "2.0.26-patched.2", "disable")).toBe("none")
+    // A major change is never installed automatically. A notify install is still told,
+    // otherwise the one update that needs a deliberate step is the only one never shown.
+    expect(automaticAction("1.18.34-patched.220", "2.0.26-patched.1", "auto")).toBe("none")
+    expect(automaticAction("1.18.34-patched.220", "2.0.26-patched.1", "notify")).toBe("announce")
+    // An older release is not an update at all: announcing it would offer a download the
+    // installer then refuses. This is the case the notification path used to get wrong.
+    expect(automaticAction("2.0.26-patched.2", "2.0.26-patched.1", "auto")).toBe("none")
+    expect(automaticAction("2.0.26-patched.2", "2.0.26-patched.1", "notify")).toBe("none")
+    expect(automaticAction("2.0.26-patched.2", "1.18.34-patched.220", "notify")).toBe("none")
+    expect(automaticAction("2.0.26-patched.1", "2.0.26-patched.1", "notify")).toBe("none")
+    expect(automaticAction("local", "2.0.26-patched.1", "notify")).toBe("none")
   })
 
   test("automatically installs every available release when enabled", () => {

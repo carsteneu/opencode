@@ -16,7 +16,7 @@ import { parse, type ParseError } from "jsonc-parser"
 import path from "node:path"
 import { stripVTControlCharacters } from "node:util"
 import { RetainedImage } from "./retained-image"
-import { action, compareRelease, majorChange, newerRelease, parseReleaseVersion, reportedVersion, updates, type Policy } from "./updater-action"
+import { automaticAction, compareRelease, majorChange, newerRelease, parseReleaseVersion, reportedVersion, updates, type Policy } from "./updater-action"
 import { errorMessage } from "../util/error"
 
 export const methods = ["curl", "npm", "pnpm", "bun", "yarn", "vp", "brew"] as const
@@ -538,8 +538,10 @@ const make = Effect.gen(function* () {
         )
       const current = yield* Ref.get(installedVersion)
       const order = compareRelease(target, current)
+      // An unparsable installed version is refused too: falling through would hand the
+      // download path a target that never passed the ordering check.
       if (order === 0) return
-      if (order === -1)
+      if (order === undefined || order === -1)
         return yield* Effect.fail(
           new UpgradeError({
             title: "Patched release is not newer",
@@ -805,18 +807,18 @@ const make = Effect.gen(function* () {
       current,
       latest: version,
     })
-    const next = action(current, version, policy)
+    const next = automaticAction(current, version, policy)
     if (next === "none") {
-      // A major change is never applied automatically: only the explicit transfer
-      // installs it. A `notify` install still gets told, otherwise the one update
-      // that needs a deliberate step would be the only one never announced.
-      if (policy === "notify" && newerRelease(current, version)) return { policy, version }
       yield* Effect.logInfo("update check done", {
         action: majorChange(current, version) ? "major-requires-transfer" : "up-to-date",
       })
       return undefined
     }
-    yield* Effect.logInfo("OpenCode update available", { current, latest: version, action: next })
+    yield* Effect.logInfo("OpenCode update available", {
+      current,
+      latest: version,
+      action: next === "install" ? "auto" : "notify",
+    })
     return { policy, version }
   })
 

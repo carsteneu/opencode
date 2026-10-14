@@ -81,6 +81,22 @@ export function reportedVersion(output: string) {
   return output.trim().split(/\s+/).at(-1)?.replace(/^v/, "") ?? ""
 }
 
+/**
+ * What an automatic check may do with `latest`:
+ * - `none` when it is not a strictly newer release - an older release announced as
+ *   available is a download the installer then refuses - or when the policy forbids it;
+ * - `install` only under the auto policy and only within the same major line;
+ * - `announce` otherwise, so a `notify` install is still told about the major change it
+ *   has to move through deliberately, instead of that being the one update never shown.
+ */
+export function automaticAction(current: string, latest: string, policy: Policy): "none" | "announce" | "install" {
+  if (!newerRelease(current, latest)) return "none"
+  const decision = action(current, latest, policy)
+  if (decision === "auto") return "install"
+  if (decision === "notify") return "announce"
+  return policy === "notify" ? "announce" : "none"
+}
+
 export function parseReleaseVersion(input: string) {
   if (input.length > 256) return
   const match = input.trim().match(versionPattern)

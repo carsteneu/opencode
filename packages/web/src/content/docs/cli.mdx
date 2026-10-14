@@ -651,7 +651,7 @@ To upgrade to a specific version.
 opencode upgrade v0.1.48
 ```
 
-A patched build (`x.y.z-patched.n`) only ever installs another patched release from the fork release channel. This 2.x client never applies a major upgrade automatically, so moving to the next major line takes an explicit step: the `--major` flag here, or the install button in the update dialog. The 1.x line publishes into and updates from the same channel, with its own update policy: a 1.x install selects the newest release on that channel by itself and is not governed by the rules on this page.
+A patched build (`x.y.z-patched.n`) only ever installs another patched release from the fork release channel. This 2.x client never applies a major upgrade automatically, so moving to the next major line takes an explicit step: the `--major` flag here, or the install button in the update dialog. The 1.x line publishes into and updates from the same channel, under its own update policy rather than the rules on this page: a 1.x install selects the newest release on that channel by itself. A 1.x install cannot currently complete a transfer to a 2.x release, because its version probe only accepts the version format the 1.x line prints for itself.
 
 ```bash
 opencode upgrade --major
