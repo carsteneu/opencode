@@ -11,6 +11,7 @@ import { usePlugin } from "../../plugin/context"
 import { useDialog } from "../../ui/dialog"
 import { useToast } from "../../ui/toast"
 import { getScrollAcceleration } from "../../util/scroll"
+import { withDefaultFenceLanguage } from "../../util/markdown-fence"
 
 // session.generate exposes the session's tools but runs no tool loop, so a
 // tool call would surface as an empty answer.
@@ -149,7 +150,7 @@ export function Answer(props: {
           <markdown
             syntaxStyle={syntax()}
             renderNode={props.markdown()}
-            content={props.answer}
+            content={withDefaultFenceLanguage(props.answer)}
             conceal
             internalBlockMode="top-level"
             tableOptions={{ style: "grid", cellPaddingX: 1 }}

@@ -71,6 +71,7 @@ import { DialogFork } from "./dialog-fork"
 import { DialogTimeline } from "./dialog-timeline"
 import { Composer } from "./composer"
 import { filetype } from "../../util/filetype"
+import { withDefaultFenceLanguage } from "../../util/markdown-fence"
 import parsers from "../../parsers-config"
 import { errorMessage } from "../../util/error"
 import { useToast } from "../../ui/toast"
@@ -2101,7 +2102,7 @@ function CompactionMessage(props: { message: Extract<SessionMessageInfo, { type:
             renderNode={plugins.markdown()}
             streaming={true}
             internalBlockMode="top-level"
-            content={content()}
+            content={withDefaultFenceLanguage(content())}
             tableOptions={{ style: "grid", cellPaddingX: 1 }}
             conceal={ctx.markdownMode() === "rendered"}
             fg={theme.markdown.text}
