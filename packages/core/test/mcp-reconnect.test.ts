@@ -282,8 +282,9 @@ it.live(
   () =>
     withTempDir((tmp) =>
       Effect.gen(function* () {
+        const marker = path.join(tmp.path, "available")
         const mcp = yield* Mcp.Service
-        yield* mcp.add("abandoned", local({ MCP_RECONNECT_MARKER: path.join(tmp.path, "available") }))
+        yield* mcp.add("abandoned", local({ MCP_RECONNECT_MARKER: marker }))
 
         const hinted = yield* until(mcp, "abandoned", retrying)
         expect(attempt(hinted)).toBeGreaterThanOrEqual(1)
@@ -294,6 +295,12 @@ it.live(
 
         const logs = yield* TestConsole.logLines
         expect(logs.some((line) => JSON.stringify(line).includes("MCP reconnect abandoned"))).toBe(true)
+
+        // Recovery needs no restart: the user reconnects the fixed server from /mcps.
+        yield* Effect.promise(() => Bun.write(marker, "yes"))
+        yield* mcp.connect("abandoned")
+        yield* until(mcp, "abandoned", (status) => status.status === "connected")
+        expect(yield* toolNames(mcp)).toEqual(["current_directory"])
       }).pipe(
         Effect.provide(reconnectLayer({ ...reconnect, maxAttempts: 3 })),
       ),
