@@ -19,7 +19,7 @@ function context(version: string) {
 }
 
 describe("sidebar footer identity plugin", () => {
-  test("ships as a built-in plugin definition", async () => {
+  test("ships as a built-in plugin definition", () => {
     expect(Identity.id).toBe("opencode.sidebar.footer.identity")
     expect(typeof Identity.setup).toBe("function")
   })

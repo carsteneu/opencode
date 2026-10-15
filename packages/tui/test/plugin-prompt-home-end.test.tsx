@@ -25,7 +25,7 @@ function harness() {
 }
 
 describe("prompt home/end plugin", () => {
-  test("ships as a built-in plugin definition", async () => {
+  test("ships as a built-in plugin definition", () => {
     expect(HomeEnd.id).toBe("opencode.prompt.home-end")
     expect(typeof HomeEnd.setup).toBe("function")
   })
