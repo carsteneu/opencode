@@ -106,8 +106,12 @@ while (true) {
 }
 await Bun.write(checksum, ForkRelease.checksumFile(hash.digest("hex"), asset))
 
-const built = reportedVersion((await run([binary, "--version"], packageDir)).trim())
-if (built !== version) throw new Error(`Built ${built}, expected ${version}`)
+const built = (await run([binary, "--version"], packageDir)).trim()
+if (reportedVersion(built) !== version) throw new Error(`Built ${reportedVersion(built)}, expected ${version}`)
+// `reportedVersion` takes the last token, so it cannot see a banner. The frozen 1.x installer
+// compares the probe output verbatim, so a prefix would abort a transfer after the download and
+// the checksum: refuse to publish a binary that reports anything but the bare version.
+if (built !== version) throw new Error(`Built binary reports ${JSON.stringify(built)}, expected exactly ${version}`)
 
 // The repository is a constant of the release contract, so this scan proves the contract is
 // compiled into the artifact. The channel itself is proven above: a build that lost the

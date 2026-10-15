@@ -13,6 +13,19 @@ export * as ForkRelease from "./fork-release.js"
  *   tag         v<x.y.z>-patched.<n>          e.g. v2.0.26-patched.1
  *   assets      opencode-linux-x64            raw binary
  *               opencode-linux-x64.sha256     "<hex>  opencode-linux-x64"
+ *
+ * Sharing the channel and ordering it by version has two consequences that are
+ * accepted deliberately, not oversights:
+ *
+ *   - The 1.x auto-update path takes the newest prerelease in the channel and has
+ *     no major-version consent step - only 2.x asks for one - so publishing the
+ *     first 2.x prerelease moves every 1.x patched install on the default policy
+ *     to 2.x.
+ *   - The frozen 1.x release script refuses to publish unless its own version is
+ *     newer than the newest published patched prerelease, which it ranks across the
+ *     whole channel. While a 2.x prerelease is the newest entry, the 1.x line can
+ *     still build and stage a release locally, but it cannot create or publish one.
+ *     That line is frozen, so this is the intended end state.
  */
 
 export const repository = "carsteneu/opencode"

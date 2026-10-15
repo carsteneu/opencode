@@ -9,7 +9,7 @@ export const binaryAsset = ForkRelease.asset()!
 const digest = (body: string | Uint8Array) => createHash("sha256").update(body).digest("hex")
 
 /** Runs standalone and reports a version, like the real release asset does. */
-export const executable = (version: string) => `#!/bin/sh\necho "opencode v${version}"\n`
+export const executable = (version: string) => `#!/bin/sh\necho "${version}"\n`
 
 export type Release = {
   readonly tag: string
