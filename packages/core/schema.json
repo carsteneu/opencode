@@ -711,6 +711,16 @@
       "table": "project"
     },
     {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_archived",
+      "entityType": "columns",
+      "table": "project"
+    },
+    {
       "type": "text",
       "notNull": true,
       "autoincrement": false,
