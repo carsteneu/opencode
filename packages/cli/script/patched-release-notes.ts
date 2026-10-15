@@ -73,12 +73,19 @@ const groupOf = (commit: ReleaseCommit) => {
   return parsed && groups.includes(parsed.type) ? parsed.type : "other"
 }
 
+/**
+ * A commit subject is repository text that ends up on a published page, so it stays literal:
+ * no link, image, raw HTML or mention may be built out of it, and it must not close the code
+ * span that carries the hash.
+ */
+const literal = (text: string) => text.replace(/[\\`*_[\]<>@|#]/g, (character) => `\\${character}`)
+
 function entry(group: string, commit: ReleaseCommit) {
   const parsed = parse(commit.subject)
-  if (group === "other" || !parsed) return `- ${commit.subject} (\`${commit.hash}\`)`
+  if (group === "other" || !parsed) return `- ${literal(commit.subject)} (\`${commit.hash}\`)`
   return parsed.scope === undefined
-    ? `- ${parsed.description} (\`${commit.hash}\`)`
-    : `- **${parsed.scope}**: ${parsed.description} (\`${commit.hash}\`)`
+    ? `- ${literal(parsed.description)} (\`${commit.hash}\`)`
+    : `- **${literal(parsed.scope)}**: ${literal(parsed.description)} (\`${commit.hash}\`)`
 }
 
 export function composeReleaseNotes(input: ReleaseNotesInput): string {
@@ -155,11 +162,42 @@ function finish(lines: string[], input: ReleaseNotesInput) {
 }
 
 /**
- * Content of a handwritten notes file, or undefined when there is no such file — the normal
- * case, not an error, and an empty file counts as none.
+ * Content of the handwritten notes for a release, or undefined when there are none — the normal
+ * case, not an error. A file may carry one section per prerelease; the section for this version
+ * wins, and a file that is sectioned for other releases has no notes for this one. A file without
+ * version sections is used whole. `required` is for a path the caller named itself, where a
+ * missing file is a mistake rather than the normal case.
  */
-export async function readNotes(file: string): Promise<string | undefined> {
-  if (!(await Bun.file(file).exists())) return undefined
+export async function readNotes(file: string, version: string, required = false): Promise<string | undefined> {
+  if (!(await Bun.file(file).exists())) {
+    if (required) throw new Error(`The notes file ${file} does not exist`)
+    return undefined
+  }
   const text = (await Bun.file(file).text()).trim()
-  return text === "" ? undefined : text
+  if (text === "") return undefined
+  const section = sectioned(text, version)
+  if (section === undefined) return text
+  return section === "" ? undefined : section
+}
+
+/**
+ * The section for `version`, "" when the file is sectioned but not for this version, or undefined
+ * when the file carries no version sections at all.
+ */
+function sectioned(text: string, version: string) {
+  const lines = text.split("\n")
+  const headings = lines.flatMap((line, index) => {
+    const heading = line.match(/^#{1,6}\s+(.*\S)\s*$/)?.[1]
+    if (heading === undefined) return []
+    return [{ index, version: ForkRelease.version(heading.split(/[\s:—–]+/)[0] ?? "") }]
+  })
+  const releases = headings.filter((heading) => heading.version !== undefined)
+  if (releases.length === 0) return undefined
+  const ours = releases.find((heading) => heading.version === version)
+  if (!ours) return ""
+  const next = releases.find((heading) => heading.index > ours.index)
+  return lines
+    .slice(ours.index + 1, next?.index ?? lines.length)
+    .join("\n")
+    .trim()
 }

@@ -5,7 +5,8 @@ import path from "path"
 import { Schema } from "effect"
 import { ForkRelease } from "@opencode/util/installation/fork-release"
 import { reportedVersion } from "../src/services/updater-action"
-import { composeReleaseNotes, readNotes, type ReleaseCommit } from "./patched-release-notes"
+import { composeReleaseNotes, readNotes } from "./patched-release-notes"
+import { releaseCommits } from "./patched-release-commits"
 import { newestPublished, planForkRelease, releaseBase, type KnownRelease } from "./patched-release-plan"
 
 // The branch that may publish. Overridable for a local run; the v2 line publishes from
@@ -50,15 +51,21 @@ const draft = process.argv.includes("--draft")
 // carry instead of creating a draft or publishing anything.
 const dryRun = process.argv.includes("--dry-run")
 const publish = !dryRun && (process.argv.includes("--publish") || draft)
-const notesArgument = process.argv.indexOf("--notes-file")
-if (notesArgument !== -1 && !process.argv[notesArgument + 1])
-  throw new Error("--notes-file needs the path of the notes file")
+const notesArgument = process.argv.find((argument) => argument.startsWith("--notes-file"))
+const notesValue =
+  notesArgument === undefined
+    ? undefined
+    : notesArgument.includes("=")
+      ? notesArgument.slice(notesArgument.indexOf("=") + 1)
+      : process.argv[process.argv.indexOf(notesArgument) + 1]
+if (notesArgument !== undefined && !notesValue) throw new Error("--notes-file needs the path of the notes file")
 
 const root = path.resolve(import.meta.dir, "../../..")
 const packageDir = path.join(root, "packages/cli")
-// Handwritten notes are optional in both directions: the file may be absent, and its path
-// may be pointed elsewhere for a release with notes of its own.
-const notesFile = notesArgument === -1 ? path.join(root, "RELEASE_NOTES.md") : process.argv[notesArgument + 1]!
+// Handwritten notes ship with the release, so a file inside the repository has to be committed
+// before publishing — the body is composed from the release commit. A file named on the command
+// line may point anywhere; without either, the body carries no Notes section at all.
+const notesFile = notesValue ?? path.join(root, "RELEASE_NOTES.md")
 const head = (await run(["git", "rev-parse", "HEAD"], root)).trim()
 const branch = (await run(["git", "branch", "--show-current"], root)).trim()
 // A tag push is the publishing route: GitHub resolves it to refs/tags/<name>, checks that
@@ -173,6 +180,7 @@ if (!publish) {
     console.log(`Body for ${version} (dry run: nothing was created or published):`)
     console.log("")
     console.log(await notes())
+    console.log("")
   }
   console.log(`Re-run with --publish after committing this exact source to ${releaseBranch}`)
   process.exit(0)
@@ -300,44 +308,18 @@ async function notes() {
     version,
     baseVersion: base,
     previous,
-    commits: await ourCommits(previous, base),
+    commits: await releaseCommits(git, { previous, base, head }),
     assets: [
       { name: asset!, size: Bun.file(binary).size },
       { name: checksumAsset, size: Bun.file(checksum).size },
     ],
-    notes: await readNotes(notesFile),
+    notes: await readNotes(notesFile, version, notesArgument !== undefined),
   })
 }
 
-/**
- * Our own commits since the previous prerelease. Everything the upstream merge of a base
- * change brought in is dropped, because that wave is not what this fork's body describes: the
- * commit upstream released our base with sits in the fork's own history, so excluding its
- * ancestry is enough. While the base is unchanged that wave is older than `previous` and the
- * exclusion changes nothing.
- */
-async function ourCommits(previous: string | undefined, base: string): Promise<ReadonlyArray<ReleaseCommit>> {
-  if (!previous) return []
-  const pattern = `^release: v${base.replaceAll(".", "\\.")}$`
-  const upstream = (await run(["git", "rev-list", "--max-count=1", "--grep", pattern, head], root)).trim()
-  const log = await run(
-    [
-      "git",
-      "log",
-      "--no-merges",
-      "--pretty=format:%h%x09%s",
-      `${previous}..${head}`,
-      ...(upstream ? ["--not", upstream] : []),
-    ],
-    root,
-  )
-  return log
-    .split("\n")
-    .filter((line) => line !== "")
-    .map((line) => {
-      const [hash, ...subject] = line.split("\t")
-      return { hash: hash!, subject: subject.join("\t") }
-    })
+/** The git side of the release: every command runs in the repository root. */
+function git(command: ReadonlyArray<string>) {
+  return run(["git", ...command], root)
 }
 
 /** Commit the fork's tag for this release points at, or undefined when the tag is absent. */

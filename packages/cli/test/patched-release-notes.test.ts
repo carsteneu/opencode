@@ -163,6 +163,21 @@ Updates come from the fork channel \`${ForkRelease.repository}\`, channel \`${ch
     expect(body).not.toContain("left out")
   })
 
+  test("keeps a commit subject literal on the published page", () => {
+    const body = notes({
+      commits: [
+        commit("aaaaaaaaaa", "fix: read the token from [here](https://evil.example) before asking @everyone"),
+        commit("bbbbbbbbbb", "fix(tui): end the span with a backtick ` here"),
+        commit("cccccccccc", "<img src=x onerror=alert(1)>"),
+      ],
+    })
+    expect(body).toContain(
+      "- read the token from \\[here\\](https://evil.example) before asking \\@everyone (`aaaaaaaaaa`)",
+    )
+    expect(body).toContain("- **tui**: end the span with a backtick \\` here (`bbbbbbbbbb`)")
+    expect(body).toContain("- \\<img src=x onerror=alert(1)\\> (`cccccccccc`)")
+  })
+
   test("has no Notes section without handwritten notes", () => {
     expect(notes()).not.toContain("## Notes")
   })
@@ -176,20 +191,50 @@ Updates come from the fork channel \`${ForkRelease.repository}\`, channel \`${ch
 describe("readNotes", () => {
   test("has no notes when the notes file does not exist", async () => {
     await using directory = await tmpdir()
-    expect(await readNotes(path.join(directory.path, "RELEASE_NOTES.md"))).toBeUndefined()
+    expect(await readNotes(path.join(directory.path, "RELEASE_NOTES.md"), `2.0.29-${channel}.2`)).toBeUndefined()
+  })
+
+  test("refuses to skip a notes file that was named explicitly", async () => {
+    await using directory = await tmpdir()
+    const file = path.join(directory.path, "missing.md")
+    expect(readNotes(file, `2.0.29-${channel}.2`, true)).rejects.toThrow(`The notes file ${file} does not exist`)
   })
 
   test("reads the notes file when it exists", async () => {
     await using directory = await tmpdir()
     const file = path.join(directory.path, "RELEASE_NOTES.md")
     await Bun.write(file, "Handwritten note.\n")
-    expect(await readNotes(file)).toBe("Handwritten note.")
+    expect(await readNotes(file, `2.0.29-${channel}.2`)).toBe("Handwritten note.")
   })
 
   test("treats an empty notes file as no notes", async () => {
     await using directory = await tmpdir()
     const file = path.join(directory.path, "RELEASE_NOTES.md")
     await Bun.write(file, "\n  \n")
-    expect(await readNotes(file)).toBeUndefined()
+    expect(await readNotes(file, `2.0.29-${channel}.2`)).toBeUndefined()
+  })
+
+  test("takes the section for this version out of a sectioned file", async () => {
+    await using directory = await tmpdir()
+    const file = path.join(directory.path, "RELEASE_NOTES.md")
+    await Bun.write(
+      file,
+      `# Fork prereleases\n\n## 2.0.29-${channel}.2\n\nThe session picker remembers its filter.\n\n## 2.0.29-${channel}.1\n\nAn older note.\n`,
+    )
+    expect(await readNotes(file, `2.0.29-${channel}.2`)).toBe("The session picker remembers its filter.")
+  })
+
+  test("has no notes when a sectioned file has no section for this version", async () => {
+    await using directory = await tmpdir()
+    const file = path.join(directory.path, "RELEASE_NOTES.md")
+    await Bun.write(file, `## 2.0.29-${channel}.1\n\nAn older note.\n`)
+    expect(await readNotes(file, `2.0.29-${channel}.2`)).toBeUndefined()
+  })
+
+  test("takes the whole file when it carries no version sections", async () => {
+    await using directory = await tmpdir()
+    const file = path.join(directory.path, "RELEASE_NOTES.md")
+    await Bun.write(file, "# These builds are unofficial\n\nInstall at your own risk.\n")
+    expect(await readNotes(file, `2.0.29-${channel}.2`)).toBe("# These builds are unofficial\n\nInstall at your own risk.")
   })
 })
