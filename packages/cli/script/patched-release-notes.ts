@@ -109,7 +109,7 @@ export function composeReleaseNotes(input: ReleaseNotesInput): string {
 
   if (input.previous === undefined) {
     lines.push(
-      `No prerelease of the ${input.baseVersion} line stands behind this commit, so there is no commit list to show against one. What this build carries:`,
+      `The newest published prerelease does not stand behind this commit, so there is no commit list to show against one. What this build carries:`,
       "",
       `- Checksum-verified self-update channel from \`${ForkRelease.repository}\`, channel \`${ForkRelease.channel}\`.`,
       "- One Linux x64 binary and its `.sha256` sidecar, verified against the digest before it is installed.",

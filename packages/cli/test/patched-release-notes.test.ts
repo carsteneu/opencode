@@ -147,7 +147,7 @@ Updates come from the fork channel \`${ForkRelease.repository}\`, channel \`${ch
   test("shows the fork's own core points instead of commits without a previous release", () => {
     const body = notes({ previous: undefined, commits: [] })
     expect(body).toContain(
-      "No prerelease of the 2.0.29 line stands behind this commit, so there is no commit list to show against one. What this build carries:",
+      "The newest published prerelease does not stand behind this commit, so there is no commit list to show against one. What this build carries:",
     )
     expect(body).toContain(`- Checksum-verified self-update channel from \`${ForkRelease.repository}\`, channel \`${channel}\`.`)
     expect(body).toContain("- One Linux x64 binary and its `.sha256` sidecar, verified against the digest before it is installed.")
