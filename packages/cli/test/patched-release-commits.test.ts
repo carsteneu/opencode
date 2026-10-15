@@ -7,8 +7,8 @@ const channel = ForkRelease.channel
 
 /**
  * The selection under test decides what the release body claims to list, so it runs against a
- * throwaway repository that mirrors the fork's shape: upstream's release commits, the fork's own
- * line, and the merge that brings a new base in.
+ * throwaway repository that mirrors the fork's shape: upstream's release commits on its tagged
+ * line and on its dev line, the fork's own line, and the merge that brings a new base in.
  */
 async function repository(directory: string) {
   const git: Git = async (command) => {
@@ -48,10 +48,67 @@ describe("releaseCommits", () => {
     await git(["merge", "--quiet", "--no-ff", "upstream", "-m", "merge: upstream v2.0.29 into the fork v2 line"])
     await commit("docs: our commit after the base change")
 
-    expect(await releaseCommits(git, { previous: `2.0.26-${channel}.4`, base: "2.0.29", head: "HEAD" })).toEqual([
-      { hash: expect.any(String), subject: "docs: our commit after the base change" },
-      { hash: expect.any(String), subject: "fix(cli): our commit after the previous release" },
-    ])
+    expect(await releaseCommits(git, { previous: `2.0.26-${channel}.4`, base: "2.0.29", head: "HEAD" })).toEqual({
+      previous: `2.0.26-${channel}.4`,
+      commits: [
+        { hash: expect.any(String), subject: "docs: our commit after the base change" },
+        { hash: expect.any(String), subject: "fix(cli): our commit after the previous release" },
+      ],
+    })
+  })
+
+  test("lists nothing when the previous prerelease belongs to another line", async () => {
+    await using directory = await tmpdir()
+    const { git, commit } = await repository(directory.path)
+    const start = await commit("release: v1.18.34")
+    // The 1.x line publishes into the same channel, so the newest published prerelease can be
+    // one of its own. It shares no commit range with a 2.x release.
+    await git(["checkout", "--quiet", "-b", "v1", start])
+    await commit("fix(cli): a commit on the frozen 1.x line")
+    await git(["tag", `1.18.34-${channel}.220`])
+    await git(["checkout", "--quiet", "-"])
+    await commit("feat(cli): the first commit of the 2.x line")
+
+    expect(await releaseCommits(git, { previous: `1.18.34-${channel}.220`, base: "2.0.29", head: "HEAD" })).toEqual({
+      previous: undefined,
+      commits: [],
+    })
+  })
+
+  test("lists nothing when the previous prerelease has no history in common", async () => {
+    await using directory = await tmpdir()
+    const { git, commit } = await repository(directory.path)
+    await commit("release: v1.18.34")
+    await git(["tag", `1.18.34-${channel}.220`])
+    // The 2.x line does not share a history with the frozen 1.x line: git reports no merge base,
+    // which is a release from another line and not a broken repository.
+    await git(["checkout", "--quiet", "--orphan", "v2"])
+    await commit("feat(cli): the first commit of the unrelated 2.x line")
+
+    expect(await releaseCommits(git, { previous: `1.18.34-${channel}.220`, base: "2.0.29", head: "HEAD" })).toEqual({
+      previous: undefined,
+      commits: [],
+    })
+  })
+
+  test("excludes the wave of a base change that arrived from upstream's dev line", async () => {
+    await using directory = await tmpdir()
+    const { git, commit } = await repository(directory.path)
+    const base = await commit("release: v2.0.26")
+    await commit("feat(cli): our commit before the previous release")
+    await git(["tag", `2.0.26-${channel}.4`])
+    await git(["checkout", "--quiet", "-b", "upstream", base])
+    await commit("chore: an upstream chore (#55001)")
+    // Upstream's dev line names its version bump differently from its tagged line.
+    await commit("sync release versions for v2.0.29 [skip ci]")
+    await git(["checkout", "--quiet", "-"])
+    await git(["merge", "--quiet", "--no-ff", "upstream", "-m", "merge: upstream v2.0.29 into the fork v2 line"])
+    await commit("fix(cli): our commit after the base change")
+
+    expect(await releaseCommits(git, { previous: `2.0.26-${channel}.4`, base: "2.0.29", head: "HEAD" })).toEqual({
+      previous: `2.0.26-${channel}.4`,
+      commits: [{ hash: expect.any(String), subject: "fix(cli): our commit after the base change" }],
+    })
   })
 
   test("excludes nothing while the base stays the same", async () => {
@@ -62,9 +119,10 @@ describe("releaseCommits", () => {
     await git(["tag", `2.0.29-${channel}.1`])
     await commit("fix(cli): a commit since the previous prerelease")
 
-    expect(await releaseCommits(git, { previous: `2.0.29-${channel}.1`, base: "2.0.29", head: "HEAD" })).toEqual([
-      { hash: expect.any(String), subject: "fix(cli): a commit since the previous prerelease" },
-    ])
+    expect(await releaseCommits(git, { previous: `2.0.29-${channel}.1`, base: "2.0.29", head: "HEAD" })).toEqual({
+      previous: `2.0.29-${channel}.1`,
+      commits: [{ hash: expect.any(String), subject: "fix(cli): a commit since the previous prerelease" }],
+    })
   })
 
   test("has nothing to list without a previous prerelease", async () => {
@@ -72,7 +130,10 @@ describe("releaseCommits", () => {
     const { git, commit } = await repository(directory.path)
     await commit("feat(cli): the first commit of the line")
 
-    expect(await releaseCommits(git, { previous: undefined, base: "2.0.29", head: "HEAD" })).toEqual([])
+    expect(await releaseCommits(git, { previous: undefined, base: "2.0.29", head: "HEAD" })).toEqual({
+      previous: undefined,
+      commits: [],
+    })
   })
 
   test("refuses a base change whose upstream release commit is not in this history", async () => {
@@ -96,7 +157,7 @@ describe("releaseCommits", () => {
     await commit("feat(cli): a commit")
 
     expect(releaseCommits(git, { previous: `2.0.29-${channel}.9`, base: "2.0.29", head: "HEAD" })).rejects.toThrow(
-      `Cannot read the commits since 2.0.29-${channel}.9`,
+      `Cannot read 2.0.29-${channel}.9: is that tag in this clone?`,
     )
   })
 })

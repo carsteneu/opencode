@@ -51,7 +51,7 @@ const draft = process.argv.includes("--draft")
 // carry instead of creating a draft or publishing anything.
 const dryRun = process.argv.includes("--dry-run")
 const publish = !dryRun && (process.argv.includes("--publish") || draft)
-const notesArgument = process.argv.find((argument) => argument.startsWith("--notes-file"))
+const notesArgument = process.argv.find((argument) => argument === "--notes-file" || argument.startsWith("--notes-file="))
 const notesValue =
   notesArgument === undefined
     ? undefined
@@ -102,6 +102,11 @@ let plan = planForkRelease({
 })
 if (plan.action === "refuse") throw new Error(plan.reason)
 
+// The body's inputs are read before the build: a release tag this clone does not carry, a base
+// change that cannot be told apart from the upstream wave, or a notes file that is not there must
+// not cost a build and a smoke test.
+const inputs = publish || dryRun ? await bodyInputs() : undefined
+
 // buildAppArchive runs the web UI's own `bun run build`, which resolves `node` from PATH.
 // The bundled rolldown imports node:util.styleText (Node 20.12+), so fail loudly here
 // instead of dying inside vite.
@@ -136,6 +141,19 @@ while (true) {
   hash.update(chunk.value)
 }
 await Bun.write(checksum, ForkRelease.checksumFile(hash.digest("hex"), asset))
+
+// Only the asset sizes need the build; everything else was read before it.
+const body =
+  inputs === undefined
+    ? undefined
+    : composeReleaseNotes({
+        version,
+        ...inputs,
+        assets: [
+          { name: asset!, size: Bun.file(binary).size },
+          { name: checksumAsset, size: Bun.file(checksum).size },
+        ],
+      })
 
 const built = (await run([binary, "--version"], packageDir)).trim()
 if (reportedVersion(built) !== version) throw new Error(`Built ${reportedVersion(built)}, expected ${version}`)
@@ -179,7 +197,7 @@ if (!publish) {
     console.log("")
     console.log(`Body for ${version} (dry run: nothing was created or published):`)
     console.log("")
-    console.log(await notes())
+    console.log(body!)
     console.log("")
   }
   console.log(`Re-run with --publish after committing this exact source to ${releaseBranch}`)
@@ -216,7 +234,7 @@ if (plan.action === "create") {
       "--title",
       `OpenCode ${version}`,
       "--notes",
-      await notes(),
+      body!,
       "--prerelease",
       "--draft",
     ],
@@ -264,7 +282,7 @@ if (plan.action === "resume") {
   // The plan resumes only a draft that belongs to this release, so refreshing its body writes
   // to our own draft and never over somebody else's release. A published release does not get
   // this far: the plan refuses it before the build.
-  await run(["gh", "release", "edit", version, "--repo", ForkRelease.repository, "--notes", await notes()], root)
+  await run(["gh", "release", "edit", version, "--repo", ForkRelease.repository, "--notes", body!], root)
   console.log(`Refreshed the body of the draft ${version}`)
 }
 if (draft) {
@@ -300,21 +318,16 @@ async function knownDraft() {
   throw new Error(result.stderr.trim() || `Could not inspect release ${version}`)
 }
 
-/** The body the release carries: our commits since the previous prerelease, its assets and the notes. */
-async function notes() {
+/**
+ * Everything the body needs except the asset sizes, which only exist once the build has staged
+ * them. Read before the build so a broken input costs no build.
+ */
+async function bodyInputs() {
+  const notes = await readNotes(notesFile, version, notesArgument !== undefined)
   const previous = newestPublished(await knownReleases())
   const base = releaseBase(version)
-  return composeReleaseNotes({
-    version,
-    baseVersion: base,
-    previous,
-    commits: await releaseCommits(git, { previous, base, head }),
-    assets: [
-      { name: asset!, size: Bun.file(binary).size },
-      { name: checksumAsset, size: Bun.file(checksum).size },
-    ],
-    notes: await readNotes(notesFile, version, notesArgument !== undefined),
-  })
+  const selection = await releaseCommits(git, { previous, base, head })
+  return { baseVersion: base, previous: selection.previous, commits: selection.commits, notes }
 }
 
 /** The git side of the release: every command runs in the repository root. */

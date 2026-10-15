@@ -74,11 +74,14 @@ const groupOf = (commit: ReleaseCommit) => {
 }
 
 /**
- * A commit subject is repository text that ends up on a published page, so it stays literal:
- * no link, image, raw HTML or mention may be built out of it, and it must not close the code
- * span that carries the hash.
+ * A commit subject is repository text that ends up on a published page, so it stays literal: no
+ * Markdown structure — link, image, emphasis, raw HTML — may be built out of it, and it must not
+ * close the code span that carries the hash. Escaping `&` also breaks entities, so `&commat;`
+ * cannot stand in for a character that was escaped. What this cannot stop is the renderer's own
+ * pass over the finished text: a bare URL still becomes a link, and `@name` still becomes a
+ * mention however it is escaped.
  */
-const literal = (text: string) => text.replace(/[\\`*_[\]<>@|#]/g, (character) => `\\${character}`)
+const literal = (text: string) => text.replace(/[\\`*_[\]<>@|#&]/g, (character) => `\\${character}`)
 
 function entry(group: string, commit: ReleaseCommit) {
   const parsed = parse(commit.subject)
@@ -174,10 +177,27 @@ export async function readNotes(file: string, version: string, required = false)
     return undefined
   }
   const text = (await Bun.file(file).text()).trim()
-  if (text === "") return undefined
+  if (text === "") {
+    if (required) throw new Error(`The notes file ${file} is empty`)
+    return undefined
+  }
   const section = sectioned(text, version)
   if (section === undefined) return text
-  return section === "" ? undefined : section
+  if (section === "") {
+    // Sectioned for other prereleases and not for this one: naming such a file explicitly is a
+    // mistake, not a release that has no notes.
+    if (required) throw new Error(`The notes file ${file} has no section for ${version}`)
+    return undefined
+  }
+  return section
+}
+
+/** The fork version a heading names, wherever in the heading it appears, or undefined. */
+function headingVersion(heading: string) {
+  return heading
+    .split(/[\s:—–]+/)
+    .map((token) => ForkRelease.version(token))
+    .find((version) => version !== undefined)
 }
 
 /**
@@ -189,7 +209,7 @@ function sectioned(text: string, version: string) {
   const headings = lines.flatMap((line, index) => {
     const heading = line.match(/^#{1,6}\s+(.*\S)\s*$/)?.[1]
     if (heading === undefined) return []
-    return [{ index, version: ForkRelease.version(heading.split(/[\s:—–]+/)[0] ?? "") }]
+    return [{ index, version: headingVersion(heading) }]
   })
   const releases = headings.filter((heading) => heading.version !== undefined)
   if (releases.length === 0) return undefined

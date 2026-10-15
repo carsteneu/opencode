@@ -5,27 +5,42 @@ import type { ReleaseCommit } from "./patched-release-notes"
  * can be exercised against a throwaway repository. */
 export type Git = (command: ReadonlyArray<string>) => Promise<string>
 
+export type ReleaseSelection = {
+  /** The previous prerelease the commit list is read against, or undefined when there is none. */
+  readonly previous: string | undefined
+  readonly commits: ReadonlyArray<ReleaseCommit>
+}
+
 /**
- * Our own commits since the previous published prerelease.
+ * Which commits a release body lists: ours since the previous prerelease of this line, or none at
+ * all when there is no such release to list against.
  *
- * The range is everything since that release minus the upstream wave a base change brought in.
- * Upstream's release commit for our base (`release: v2.0.29`) sits in the fork's own history
- * once the base has been merged, so excluding its ancestry is enough; while the base stays the
- * same that wave is older than `previous` and the exclusion changes nothing.
+ * The channel carries more than one line — the frozen 1.x prereleases and the 2.x ones share it,
+ * and a release is ranked across the whole channel — so the previous published prerelease can
+ * belong to the other line. Such a release shares no commit range with this one: there is nothing
+ * to list, and the body says this is the first prerelease of the line instead of presenting the
+ * other line's commits as ours. Ancestry decides that, not the version number.
  *
- * The two ways that exclusion can fail are loud rather than silent: the range cannot be read,
- * or a base change has no upstream release commit to exclude. A release body that lists the
- * upstream wave while stating that it lists only our commits would be worse than no body.
+ * The rest is everything since that release minus the upstream wave a base change brought in.
+ * Upstream's commit for our base sits in the fork's own history once the base has been merged —
+ * `release: v2.0.29` from its tagged line, `sync release versions for v2.0.26 [skip ci]` from its
+ * dev line — so excluding that commit's ancestry is enough. While the base stays the same, the
+ * wave is older than `previous` and the exclusion changes nothing.
+ *
+ * A base change whose upstream commit cannot be found fails loudly instead of composing a body
+ * that lists the upstream wave while claiming to list only our commits. What still degrades
+ * silently is an upstream merge inside an unchanged base: nothing marks such a wave, so it is
+ * listed as ours. In this repository upstream has so far only been merged as a base change.
  */
 export async function releaseCommits(
   git: Git,
   input: { readonly previous: string | undefined; readonly base: string; readonly head: string },
-): Promise<ReadonlyArray<ReleaseCommit>> {
-  if (input.previous === undefined) return []
+): Promise<ReleaseSelection> {
+  if (input.previous === undefined) return { previous: undefined, commits: [] }
+  if (!(await onThisLine(git, input.previous, input.head))) return { previous: undefined, commits: [] }
 
-  const pattern = `^release: v${input.base.replaceAll(".", "\\.")}$`
-  const upstream = (await git(["rev-list", "--max-count=1", "--grep", pattern, input.head])).trim()
-  if (upstream === "" && releaseBase(input.previous) !== input.base)
+  const upstream = await upstreamRelease(git, input)
+  if (upstream === undefined && releaseBase(input.previous) !== input.base)
     throw new Error(
       `Cannot find upstream's release commit for ${input.base} in this history, so the commits since ` +
         `${input.previous} cannot be told apart from the upstream wave`,
@@ -38,12 +53,38 @@ export async function releaseCommits(
       "--no-merges",
       "--pretty=format:%h%x09%s",
       `${input.previous}..${input.head}`,
-      ...(upstream === "" ? [] : ["--not", upstream]),
+      ...(upstream === undefined ? [] : ["--not", upstream]),
     ])
   } catch (cause) {
     throw new Error(`Cannot read the commits since ${input.previous}: is that tag in this clone?`, { cause })
   }
 
+  return { previous: input.previous, commits: parse(log) }
+}
+
+/** The commit upstream released `base` with, from either of the two lines it publishes on. */
+async function upstreamRelease(git: Git, input: { readonly base: string; readonly head: string }) {
+  const base = input.base.replaceAll(".", "\\.")
+  const subjects = [`^release: v${base}$`, `^sync release versions for v${base}`]
+  const found = (await git(["rev-list", "--max-count=1", ...subjects.flatMap((subject) => ["--grep", subject]), input.head])).trim()
+  return found === "" ? undefined : found
+}
+
+/** Whether a release is an ancestor of the head, which is what puts it on the same line. */
+async function onThisLine(git: Git, previous: string, head: string) {
+  let commit: string
+  try {
+    commit = (await git(["rev-parse", `${previous}^{commit}`])).trim()
+  } catch (cause) {
+    throw new Error(`Cannot read ${previous}: is that tag in this clone?`, { cause })
+  }
+  // Two releases with no common ancestor exit 1 with no output — the lines in this channel do not
+  // all share a history. Both revisions are resolved by now, so a failure here cannot be an
+  // unknown ref.
+  return (await git(["merge-base", commit, head]).catch(() => "")).trim() === commit
+}
+
+function parse(log: string): ReadonlyArray<ReleaseCommit> {
   return log
     .split("\n")
     .filter((line) => line !== "")

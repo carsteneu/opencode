@@ -169,6 +169,7 @@ Updates come from the fork channel \`${ForkRelease.repository}\`, channel \`${ch
         commit("aaaaaaaaaa", "fix: read the token from [here](https://evil.example) before asking @everyone"),
         commit("bbbbbbbbbb", "fix(tui): end the span with a backtick ` here"),
         commit("cccccccccc", "<img src=x onerror=alert(1)>"),
+        commit("dddddddddd", "fix: &commat;everyone should not become a mention"),
       ],
     })
     expect(body).toContain(
@@ -176,6 +177,7 @@ Updates come from the fork channel \`${ForkRelease.repository}\`, channel \`${ch
     )
     expect(body).toContain("- **tui**: end the span with a backtick \\` here (`bbbbbbbbbb`)")
     expect(body).toContain("- \\<img src=x onerror=alert(1)\\> (`cccccccccc`)")
+    expect(body).toContain("- \\&commat;everyone should not become a mention (`dddddddddd`)")
   })
 
   test("has no Notes section without handwritten notes", () => {
@@ -222,6 +224,30 @@ describe("readNotes", () => {
       `# Fork prereleases\n\n## 2.0.29-${channel}.2\n\nThe session picker remembers its filter.\n\n## 2.0.29-${channel}.1\n\nAn older note.\n`,
     )
     expect(await readNotes(file, `2.0.29-${channel}.2`)).toBe("The session picker remembers its filter.")
+  })
+
+  test("finds the version behind a heading that says more than the version", async () => {
+    await using directory = await tmpdir()
+    const file = path.join(directory.path, "RELEASE_NOTES.md")
+    await Bun.write(file, `## Notes for 2.0.29-${channel}.2\n\nThe session picker remembers its filter.\n`)
+    expect(await readNotes(file, `2.0.29-${channel}.2`)).toBe("The session picker remembers its filter.")
+  })
+
+  test("refuses a sectioned notes file that has no section for this version", async () => {
+    await using directory = await tmpdir()
+    const file = path.join(directory.path, "RELEASE_NOTES.md")
+    await Bun.write(file, `## 2.0.29-${channel}.1\n\nAn older note.\n`)
+    expect(await readNotes(file, `2.0.29-${channel}.2`)).toBeUndefined()
+    expect(readNotes(file, `2.0.29-${channel}.2`, true)).rejects.toThrow(
+      `The notes file ${file} has no section for 2.0.29-${channel}.2`,
+    )
+  })
+
+  test("refuses an empty notes file that was named explicitly", async () => {
+    await using directory = await tmpdir()
+    const file = path.join(directory.path, "RELEASE_NOTES.md")
+    await Bun.write(file, "\n")
+    expect(readNotes(file, `2.0.29-${channel}.2`, true)).rejects.toThrow(`The notes file ${file} is empty`)
   })
 
   test("has no notes when a sectioned file has no section for this version", async () => {
