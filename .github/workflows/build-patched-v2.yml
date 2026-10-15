@@ -2,21 +2,27 @@ name: build-patched-v2
 
 # Builds — and optionally publishes — a patched fork prerelease for Linux x64.
 #
-# The pipeline deliberately owns no release logic. Guards, artifact verification,
-# version check, draft verification, the checksum round-trip and the publish step all
-# live in the repository (packages/cli/script/patched-release.ts and
-# patched-release-plan.ts) and the channel contract lives in
-# packages/util/src/installation/fork-release.ts, so the tag shape, the ordering rule
-# and the asset names cannot drift between the pipeline and the updater.
+# The pipeline deliberately owns no release logic and no release constants. The guards,
+# the artifact verification, the version check, the draft verification, the checksum
+# round-trip and the publish step all live in the repository
+# (packages/cli/script/patched-release.ts and patched-release-plan.ts) and the channel
+# contract lives in packages/util/src/installation/fork-release.ts, so the tag shape,
+# the ordering rule and the asset names cannot drift between the pipeline and the
+# updater. This file only decides which of those entry points runs.
 #
 # Dispatch route (GitHub resolves workflow_dispatch by filename against the default
-# branch, so this file has to exist on `dev` as well as on the branch it runs):
+# branch, so this file has to exist on `dev` as well as on the branch it runs; a run
+# dispatched from `dev` is refused by the guard below, the copy there exists only so
+# that the event can be dispatched at all):
 #
 #   gh workflow run build-patched-v2.yml --repo carsteneu/opencode --ref v2-ci-release \
 #     -f version=2.0.26-patched.4 -f publish=true
 #
-# publish defaults to false, the path that touches nothing shared: the job builds,
-# verifies and uploads the action artifacts but creates no release.
+# publish defaults to false, the path that touches no shared state: the job builds,
+# verifies and uploads the action artifact but creates no release. The checksum
+# round-trip belongs to the publishing path and runs there, inside the script.
+
+run-name: build patched ${{ inputs.version }} (publish=${{ inputs.publish }})
 
 on:
   workflow_dispatch:
@@ -31,13 +37,6 @@ on:
         type: boolean
         default: false
 
-permissions:
-  contents: read
-
-concurrency:
-  group: build-patched-v2-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
   build-patched:
     name: Build patched OpenCode (linux-x64)
@@ -45,31 +44,39 @@ jobs:
     timeout-minutes: 90
     permissions:
       contents: write
-      # The safe path re-downloads its own uploaded artifact; the explicit block
-      # replaces the defaults, so actions: read has to be listed to keep that step.
-      actions: read
     env:
-      GH_TOKEN: ${{ github.token }}
       VERSION: ${{ inputs.version }}
-      # patched-release-plan.ts refuses --publish from any other branch. Keep this in
-      # step with the release branch of the v2 line.
+      # patched-release-plan.ts refuses --publish from any other branch, and the guard
+      # below refuses a run dispatched from any other ref. Move this constant together
+      # with the release branch of the v2 line.
       OPENCODE_RELEASE_BRANCH: v2-ci-release
+    # Same version, same intent: serialize. Different versions stay independent, so a
+    # queued run cannot silently displace another version's pending run.
+    concurrency:
+      group: build-patched-v2-${{ inputs.version }}
+      cancel-in-progress: false
     steps:
+      - name: Assert the release repository and branch
+        # Runs before checkout and before any dependency install, so a dispatch from a
+        # copy of the fork or from a feature branch costs nothing. carsteneu/opencode is
+        # a guard against building in the wrong repository here; the authoritative
+        # repository constant stays ForkRelease.repository in the release contract.
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REPOSITORY" != "carsteneu/opencode" ]; then
+            echo "This workflow builds and publishes only from carsteneu/opencode, not $GITHUB_REPOSITORY"
+            exit 1
+          fi
+          if [ "$GITHUB_REF_NAME" != "$OPENCODE_RELEASE_BRANCH" ]; then
+            echo "Dispatch this workflow on $OPENCODE_RELEASE_BRANCH, not $GITHUB_REF_NAME"
+            exit 1
+          fi
+
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Setup Bun
         uses: ./.github/actions/setup-bun
-
-      - name: Assert the release repository
-        # The release contract pins carsteneu/opencode and the runner's own token is what
-        # pushes and publishes; a run anywhere else has to stop here instead of trying.
-        run: |
-          set -euo pipefail
-          if [ "$GITHUB_REPOSITORY" != "carsteneu/opencode" ]; then
-            echo "This workflow publishes only from carsteneu/opencode, not $GITHUB_REPOSITORY"
-            exit 1
-          fi
 
       - name: Add the fork remote
         # patched-release.ts pushes the release branch to a remote named `fork` and
@@ -78,6 +85,10 @@ jobs:
 
       - name: Build, verify and publish
         working-directory: packages/cli
+        # Scoped to this step: it is the only one that calls gh, which keeps a
+        # repository-write token away from the dependency install above.
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           if [ "${{ inputs.publish }}" = "true" ]; then
@@ -92,15 +103,3 @@ jobs:
           name: patched-binaries-${{ inputs.version }}
           path: packages/cli/dist/patched-release/
           if-no-files-found: error
-
-      - name: Round-trip the uploaded artifacts
-        # The publish path re-downloads its checksum from the release; without a release
-        # this is the same check against the uploaded artifact: the sidecar has to hash
-        # the binary that travelled with it.
-        if: ${{ !inputs.publish }}
-        run: |
-          set -euo pipefail
-          mkdir -p round-trip
-          gh run download "$GITHUB_RUN_ID" --name "patched-binaries-$VERSION" --dir round-trip
-          cd round-trip
-          sha256sum --check opencode-linux-x64.sha256
