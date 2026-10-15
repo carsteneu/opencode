@@ -210,11 +210,13 @@ export const layer = (options?: Options) =>
       // Automatic-reconnect schedulers, at most one per server.
       const episodes = new Map<ServerName, ReconnectEpisode>()
       let disposed = false
+      const requested = options?.reconnect
       const retry = {
-        maxAttempts: options?.reconnect?.maxAttempts ?? RECONNECT_MAX_ATTEMPTS,
-        bands: options?.reconnect?.bands ?? RECONNECT_BANDS,
-        bandSize: options?.reconnect?.bandSize ?? RECONNECT_BAND_SIZE,
-        jitter: options?.reconnect?.jitter ?? RECONNECT_JITTER,
+        maxAttempts: requested?.maxAttempts ?? RECONNECT_MAX_ATTEMPTS,
+        // An empty band list would mean "no attempts at all", which is never what a caller means.
+        bands: requested?.bands?.length ? requested.bands : RECONNECT_BANDS,
+        bandSize: requested?.bandSize ?? RECONNECT_BAND_SIZE,
+        jitter: requested?.jitter ?? RECONNECT_JITTER,
       }
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
@@ -453,7 +455,7 @@ export const layer = (options?: Options) =>
         yield* Effect.logWarning("MCP reconnect abandoned", { server: name, attempts: retry.maxAttempts })
       })
 
-      const reconnectLoop = Effect.fnUntraced(function* (name: ServerName, episode: ReconnectEpisode) {
+      const retryServer = Effect.fnUntraced(function* (name: ServerName, episode: ReconnectEpisode) {
         while (true) {
           if (disposed || episodes.get(name) !== episode) return
           const attempt = episode.attempt + 1
@@ -474,6 +476,9 @@ export const layer = (options?: Options) =>
               status: "failed",
               error: `${episode.error} — retry ${attempt}/${retry.maxAttempts} in ${formatDelay(wait)}`,
             }
+            // The hint is the only signal that retries continue, so it has to reach the subscribers
+            // that drive the sidebar and the /mcps dialog rather than sit unread until the attempt ends.
+            yield* bus.publish(McpEvent.StatusChanged, { server: name })
           }
           yield* Effect.sleep(wait)
           if (disposed || episodes.get(name) !== episode) return
@@ -509,6 +514,18 @@ export const layer = (options?: Options) =>
           episode.error = settled.status.error
         }
       })
+
+      // A defect or an interruption must not leave the registry entry behind: `startEpisode` refuses
+      // to arm a second scheduler for a name, so a stale entry would silently end automatic
+      // reconnection for that server. The identity check leaves a replacement episode intact.
+      const reconnectLoop = (name: ServerName, episode: ReconnectEpisode) =>
+        retryServer(name, episode).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              if (episodes.get(name) === episode) episodes.delete(name)
+            }),
+          ),
+        )
 
       const startEpisode = Effect.fnUntraced(function* (name: ServerName, error: string) {
         if (disposed || episodes.has(name)) return
@@ -582,9 +599,14 @@ export const layer = (options?: Options) =>
       const startServer = (name: ServerName, entry: ServerEntry) =>
         Effect.gen(function* () {
           // Announce the handshake so connect() and credential reconnects don't show a stale
-          // disabled/failed status for the duration of the connection attempt.
-          entry.status = { status: "pending" }
-          yield* bus.publish(McpEvent.StatusChanged, { server: name })
+          // disabled/failed status for the duration of the connection attempt. An automatic-retry
+          // episode is the exception: the status keeps its retry hint there, because the hint is what
+          // tells the user retries continue, and a flip to "pending" would also clear the TUI's
+          // failure alert so every single attempt raised it again.
+          if (!episodes.has(name)) {
+            entry.status = { status: "pending" }
+            yield* bus.publish(McpEvent.StatusChanged, { server: name })
+          }
           const scope = yield* Scope.fork(root)
           entry.scope = scope
           const authProvider = yield* connectProvider(entry)

@@ -9,6 +9,7 @@ import { Integration } from "@opencode/core/integration"
 import { Location } from "@opencode/core/location"
 import { Mcp } from "@opencode/core/mcp/index"
 import { AbsolutePath } from "@opencode/core/schema"
+import { State } from "@opencode/core/state"
 import { Context, Effect, Exit, Layer, Schedule, Scope, Stream } from "effect"
 import { TestConsole } from "effect/testing"
 import { it } from "./lib/effect"
@@ -25,6 +26,8 @@ const reconnect: Mcp.Reconnect = { bands: [250, 60], bandSize: 1, maxAttempts: 1
 const local = (environment: Record<string, string>) =>
   new ConfigMCP.Local({ type: "local", command: [process.execPath, fixture], environment })
 
+const unusedIntegration = () => Effect.die("unused integration service")
+
 function reconnectLayer(options?: Mcp.Reconnect) {
   return Mcp.layer({ reconnect: options }).pipe(
     Layer.provideMerge(Form.layer),
@@ -39,7 +42,30 @@ function reconnectLayer(options?: Mcp.Reconnect) {
           publish: (definition, data) =>
             Effect.succeed({ id: ID.create(), type: definition.type, data } as Payload<typeof definition>),
         }),
-        Layer.mock(Integration.Service, {}),
+        Layer.mock(Integration.Service, {
+          revision: () => 0,
+          connection: {
+            active: unusedIntegration,
+            resolve: unusedIntegration,
+            key: unusedIntegration,
+            external: unusedIntegration,
+            activate: unusedIntegration,
+            update: unusedIntegration,
+            remove: unusedIntegration,
+            status: unusedIntegration,
+          },
+          oauth: {
+            connect: unusedIntegration,
+            status: unusedIntegration,
+            complete: unusedIntegration,
+            cancel: unusedIntegration,
+          },
+          command: {
+            connect: unusedIntegration,
+            status: unusedIntegration,
+            cancel: unusedIntegration,
+          },
+        }),
         Layer.mock(Credential.Service, {}),
         hostEnvironmentLayer,
       ),
@@ -87,6 +113,14 @@ const kill = (pidFile: string) =>
   )
 
 const read = (file: string) => Effect.promise(() => Bun.file(file).text())
+
+// Signal 0 only asks whether a pid can still be signalled, which is how a test tells a respawn from
+// a process that is really gone.
+const alive = (pid: string) =>
+  Effect.try({ try: () => process.kill(Number(pid), 0), catch: (cause) => cause }).pipe(
+    Effect.as(true),
+    Effect.orElseSucceed(() => false),
+  )
 
 it.live(
   "reconnects on its own after the server process is killed",
@@ -165,6 +199,38 @@ it.live(
 )
 
 it.live(
+  "applies a configuration corrected mid-episode from inside its own episode",
+  () =>
+    withTempDir((tmp) =>
+      Effect.gen(function* () {
+        const pidFile = path.join(tmp.path, "server.pid")
+        const marker = path.join(tmp.path, "available")
+        const mcp = yield* Mcp.Service
+        yield* mcp.add("self-corrected", local({ MCP_RECONNECT_PID_FILE: pidFile, MCP_RECONNECT_MARKER: marker }))
+        yield* until(mcp, "self-corrected", retrying)
+
+        // A State transform invalidates the resolved configuration without notifying, so during this
+        // batch nothing but the running episode can apply the correction: its next attempt has to
+        // replace the very server it is retrying, from inside its own fiber. Interrupting that fiber
+        // the way a plain cancel would would deadlock it, so the episode would never connect here.
+        yield* State.batch(
+          Effect.gen(function* () {
+            yield* mcp.transform((editor) => {
+              editor.update("self-corrected", (config) => {
+                if (config.type === "local") config.environment = { MCP_RECONNECT_PID_FILE: pidFile }
+              })
+            })
+            yield* until(mcp, "self-corrected", (status) => status.status === "connected")
+          }),
+        )
+
+        expect(yield* toolNames(mcp)).toEqual(["current_directory"])
+      }).pipe(Effect.provide(reconnectLayer(reconnect))),
+    ),
+  45_000,
+)
+
+it.live(
   "gives up after the configured attempts with the original error and without the retry hint",
   () =>
     withTempDir((tmp) =>
@@ -195,7 +261,8 @@ it.live(
       Effect.gen(function* () {
         const pidFile = path.join(tmp.path, "server.pid")
         const root = yield* Scope.make()
-        const context = yield* Layer.buildWithScope(reconnectLayer(reconnect), root)
+        // Long first band so the episode cannot respawn before the disposal under test.
+        const context = yield* Layer.buildWithScope(reconnectLayer({ ...reconnect, bands: [2_000, 60] }), root)
         const mcp = Context.get(context, Mcp.Service)
 
         yield* mcp.add("disposed", local({ MCP_RECONNECT_PID_FILE: pidFile }))
@@ -203,13 +270,14 @@ it.live(
 
         yield* kill(pidFile)
         yield* until(mcp, "disposed", retrying)
-        const before = yield* read(pidFile)
+        const crashed = (yield* read(pidFile)).trim()
 
         // Disposal must end the episode: a scheduler that survives keeps respawning the server.
         yield* Scope.close(root, Exit.void)
         yield* Effect.sleep("1 second")
 
-        expect(yield* read(pidFile)).toBe(before)
+        expect((yield* read(pidFile)).trim()).toBe(crashed)
+        expect(yield* alive(crashed)).toBe(false)
         const found = (yield* mcp.servers()).find((server) => server.name === "disposed")
         expect(found?.status.status).not.toBe("connected")
       }),
