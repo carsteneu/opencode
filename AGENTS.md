@@ -6,6 +6,24 @@
 - Default new branches and worktrees to `v2`, or `origin/v2` when the local `v2` ref is unavailable, and default pull requests to target `v2`. Use another base or target branch when the requester explicitly instructs it.
 - Local `main` ref may not exist; use `v2` or `origin/v2` for diffs.
 
+## Fork release and deploy
+
+This checkout is the fork `carsteneu/opencode`. Releases come from the fork's own GitHub prereleases;
+upstream's update service is never the target of a fork build.
+
+- Releases are built by CI on a **tag push**, not locally:
+  `git tag -f <x.y.z-patched.n> <commit> && git push fork refs/tags/<x.y.z-patched.n>`.
+  `.github/workflows/build-patched-v2.yml` triggers on `tags: ["*-patched.*"]`, calls the repository's own
+  `release:patched` path, creates the draft, verifies size and the checksum round-trip, and only then
+  publishes. GitHub reads the workflow file from the tagged commit, so that commit must contain it.
+- The channel contract lives in exactly one place, `packages/util/src/installation/fork-release.ts`
+  (repository, channel `patched`, tag shape, asset names). Do not repeat those values elsewhere.
+- A local `release:patched` run is the fallback when CI is unavailable and the way to build a test
+  candidate. It is not the normal release path.
+- Release checklist and the verified route: `yesdocs/patched-release-verification.md` (section 16 covers the
+  v2 route and the account-level outage that can silently stop every workflow run). `yesdocs/` is fork-local
+  and not committed.
+
 ## Live V2 TUI Testing
 
 - Run `bun run dev:live` from a development worktree to test its TUI against the currently elected `opencode` background server and live sessions.
