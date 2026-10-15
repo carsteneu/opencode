@@ -66,9 +66,10 @@ const packageVersion = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Str
 // here costs no build and touches no shared state.
 // The contract's version parser tolerates a leading v, but every use of the tag on this route
 // wants the bare name: the fork tag it binds the commit to, the release it creates and the tag
-// it verifies afterwards. Refuse that form here rather than letting it fail in that lookup
-// once the build and the smoke test are already paid for.
-if (pushedTag !== undefined && tag !== pushedTag)
+// it verifies afterwards. Refuse that form here, before the build, instead of letting it fail in
+// that lookup once the build and the smoke test are already paid for. Any other tag that does
+// not carry the release shape is refused by the plan below, with its own message.
+if (pushedTag?.startsWith("v") && tag !== pushedTag)
   throw new Error(`Tag the release without the v prefix, not ${pushedTag}`)
 let plan = planForkRelease({
   version,
@@ -271,14 +272,14 @@ async function knownDraft() {
 /** Commit the fork's tag for this release points at, or undefined when the tag is absent. */
 async function forkTagCommit() {
   const ref = `refs/tags/${version}`
-  const lines = (await run(["git", "ls-remote", "--tags", "fork", ref], root)).split("\n")
-  // An annotated tag is listed twice: the tag object under the plain ref and the commit it
-  // peels to under `<ref>^{}`. Release tags are created lightweight, so the plain ref is the
-  // commit; reading the peeled line when it exists keeps an annotated one from being mistaken
-  // for a tag that points somewhere else.
-  const peeled = lines.find((line) => line.trim().endsWith(`${ref}^{}`))
-  const plain = lines.find((line) => line.trim().endsWith(ref))
-  return (peeled ?? plain)?.split(/\s+/)[0]
+  // Both refs are asked for in one call: with a pattern, --tags answers only the ref that was
+  // named, and for an annotated tag that is the tag object rather than the commit it points at.
+  const lines = (await run(["git", "ls-remote", "--tags", "fork", ref, `${ref}^{}`], root))
+    .split("\n")
+    .map((line) => line.trim().split(/\s+/))
+  const peeled = lines.find(([, name]) => name === `${ref}^{}`)
+  const plain = lines.find(([, name]) => name === ref)
+  return (peeled ?? plain)?.[0]
 }
 
 async function containsMarker(file: string, marker: string) {

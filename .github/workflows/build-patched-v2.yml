@@ -22,6 +22,12 @@ name: build-patched-v2
 # constant plays no part, because a tag push checks out a detached HEAD and the tag stands
 # in for the branch as the release identity (patched-release-plan.ts).
 #
+# The tagged commit is not checked for lineage: whatever commit carries this file and gets a
+# release tag is built and published, whether or not it descends from the release branch.
+# The branch constant is a convention on this route, not a guard - on this route whoever can
+# push a tag decides what ships. Both checks - an ancestry assertion and an approval
+# environment - are things this file deliberately does not have, not oversights.
+#
 # The tag filter is a GitHub glob, not a regex, and it cannot express the major version,
 # so the frozen 1.x tags (1.18.34-patched.n) match it as well. Such a run can only happen
 # if this file exists at that tag, which the 1.x line does not carry; should one appear,
@@ -111,12 +117,13 @@ jobs:
       # below refuses a dispatch from any other ref. Move this constant together with the
       # release branch of the v2 line.
       OPENCODE_RELEASE_BRANCH: v2-ci-release
-      # The two values every step below acts on, resolved once. The event decides the route,
-      # not the ref type: a dispatch can be pointed at a tag (`gh workflow run --ref <tag>`)
-      # and must not be mistaken for the publishing route, and a tag push neither carries
-      # inputs nor needs them. No step has to ask which event it came from.
-      VERSION: ${{ github.event_name == 'push' && github.ref_name || inputs.version }}
-      PUBLISH: ${{ github.event_name == 'push' || inputs.publish }}
+      # The two values every step below acts on, resolved once, and the route is one thing
+      # only: a push of a tag. Both halves of that are asked for, because either one alone
+      # admits a run that must not publish - a dispatch can be pointed at a tag ref
+      # (`gh workflow run --ref <tag>`), and a push can arrive on a branch if this workflow
+      # ever gains a branches filter. A dispatch keeps its input and its opt-in.
+      VERSION: ${{ github.event_name == 'push' && github.ref_type == 'tag' && github.ref_name || inputs.version }}
+      PUBLISH: ${{ github.event_name == 'push' && github.ref_type == 'tag' || inputs.publish }}
     # One group for the whole workflow: two runs of THIS workflow that both publish must
     # not overlap, because the "newer than the newest published" rule is checked before
     # the build and the channel changes only at the publish step (patched-release.ts
@@ -159,6 +166,14 @@ jobs:
               echo "Tag push: building and publishing $VERSION"
               ;;
             refs/heads/"$OPENCODE_RELEASE_BRANCH")
+              # ...and the mirror image: a push on a branch is not a publishing route, whatever
+              # the branch is called. Today only the tags filter can start this workflow, so this
+              # case can only be reached by a dispatch - it is here so that adding a branches
+              # filter later cannot silently turn a branch push into a publish.
+              if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+                echo "A branch push is not a publishing route; push a release tag instead"
+                exit 1
+              fi
               echo "Dispatch on $OPENCODE_RELEASE_BRANCH: building $VERSION with publish=$PUBLISH"
               ;;
             *)
