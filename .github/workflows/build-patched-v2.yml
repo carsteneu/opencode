@@ -1,0 +1,149 @@
+name: build-patched-v2
+
+# Builds — and optionally publishes — a patched fork prerelease for Linux x64.
+#
+# The pipeline deliberately owns no release logic. The guards, the artifact
+# verification, the version check, the draft verification, the checksum round-trip and
+# the publish step all live in the repository (packages/cli/script/patched-release.ts
+# and patched-release-plan.ts) and the channel contract lives in
+# packages/util/src/installation/fork-release.ts, so the tag shape, the ordering rule
+# and the asset names cannot drift between the pipeline and the updater. This file only
+# decides which of those entry points runs; the two constants it does carry — the
+# release repository and the release branch — are the ones it has to compare itself
+# against, and the branch is handed to the script as its documented override.
+#
+# Dispatch route (GitHub resolves workflow_dispatch by filename against the default
+# branch, so this file has to exist on `dev` as well as on the branch it runs; a run
+# dispatched from `dev` is refused by the guard below, the copy there exists only so
+# that the event can be dispatched at all):
+#
+#   gh workflow run build-patched-v2.yml --repo carsteneu/opencode --ref v2-ci-release \
+#     -f version=2.0.26-patched.4 -f publish=true
+#
+# publish defaults to false, the path that touches no shared state: the job builds,
+# verifies and uploads the action artifact but creates no release. The checksum
+# round-trip belongs to the publishing path and runs there, inside the script.
+#
+# A publish run that dies after it created the draft leaves the draft behind: the next
+# run resumes a draft that points at the same commit, and refuses one that points
+# elsewhere (patched-release-plan.ts). Clear a stale draft before re-dispatching that
+# version:
+#
+#   gh release delete <version> --repo carsteneu/opencode --cleanup-tag --yes
+
+run-name: build patched ${{ inputs.version }} (publish=${{ inputs.publish }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Patched version to build, e.g. 2.0.26-patched.4"
+        required: true
+        type: string
+      publish:
+        description: "true = create the draft release, verify the checksum round-trip and publish it"
+        required: false
+        type: boolean
+        default: false
+
+# Baseline for any job added later: the job below replaces it with the write access the
+# publishing path needs.
+permissions:
+  contents: read
+
+jobs:
+  build-patched:
+    name: Build patched OpenCode (linux-x64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ inputs.version }}
+      # patched-release-plan.ts refuses --publish from any other branch, and the guard
+      # below refuses a run dispatched from any other ref. Move this constant together
+      # with the release branch of the v2 line.
+      OPENCODE_RELEASE_BRANCH: v2-ci-release
+    # One group for the whole workflow: two runs of THIS workflow that both publish must
+    # not overlap, because the "newer than the newest published" rule is checked before
+    # the build and the channel changes only at the publish step (patched-release.ts
+    # re-reads it, but not atomically). The group serializes this workflow only — the 1.x
+    # matrix workflow carries its own group and can be dispatched to the same channel
+    # independently. A run queued behind another can be displaced; for a publishing
+    # pipeline serialization is the safer side of that trade.
+    concurrency:
+      group: build-patched-v2
+      cancel-in-progress: false
+    steps:
+      - name: Assert the release repository and branch
+        # Runs before checkout and before any dependency install, so a dispatch from a
+        # copy of the fork or from a feature branch costs nothing. carsteneu/opencode is
+        # a guard against building in the wrong repository here; the authoritative
+        # repository constant stays ForkRelease.repository in the release contract.
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REPOSITORY" != "carsteneu/opencode" ]; then
+            echo "This workflow builds and publishes only from carsteneu/opencode, not $GITHUB_REPOSITORY"
+            exit 1
+          fi
+          case "$VERSION" in
+            *[[:space:]]*) echo "version must not contain whitespace"; exit 1 ;;
+          esac
+          # The ref type matters: a tag of the same name would otherwise check out a
+          # detached commit and build a version that no branch claims.
+          if [ "$GITHUB_REF" != "refs/heads/$OPENCODE_RELEASE_BRANCH" ]; then
+            echo "Dispatch this workflow on refs/heads/$OPENCODE_RELEASE_BRANCH, not $GITHUB_REF"
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          # No credential in the workspace: the release branch push gets its token from
+          # the fork remote below, so the dependency install that follows runs without.
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - name: Add the fork remote
+        # Only the publishing path touches the remote: with publish=false the script
+        # exits before it reaches the `fork` remote (the git calls before that point are
+        # local reads, patched-release.ts:52-54 vs the exit at :145-148). patched-release.ts
+        # pushes the release branch to a remote named `fork` and re-reads it before it
+        # creates the draft. GH_TOKEN enters the environment only for this step; the
+        # credential it writes lives in .git/config for the rest of the job because the
+        # later push and ls-remote depend on it, and the remote URL itself stays
+        # token-free.
+        if: ${{ inputs.publish }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git remote add fork "https://github.com/${GITHUB_REPOSITORY}.git"
+          git config --local "http.https://github.com/.extraheader" \
+            "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+
+      - name: Build, verify and publish
+        working-directory: packages/cli
+        # A repository-write credential is set only where it is used: this step calls gh,
+        # the fork remote above needs it for the git push. On the default path the script
+        # never reaches gh (patched-release.ts:68-69), so the token is empty there. The
+        # inputs go in through the environment rather than into shell source.
+        env:
+          GH_TOKEN: ${{ inputs.publish && github.token || '' }}
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          set -euo pipefail
+          if [ "$PUBLISH" = "true" ]; then
+            bun run release:patched "$VERSION" --publish
+          else
+            bun run release:patched "$VERSION"
+          fi
+
+      - name: Upload patched binaries
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: patched-binaries-${{ inputs.version }}
+          path: packages/cli/dist/patched-release/
+          if-no-files-found: error
