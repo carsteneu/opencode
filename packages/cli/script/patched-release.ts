@@ -67,9 +67,9 @@ const packageVersion = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Str
 // The contract's version parser tolerates a leading v, but every use of the tag on this route
 // wants the bare name: the fork tag it binds the commit to, the release it creates and the tag
 // it verifies afterwards. Refuse that form here, before the build, instead of letting it fail in
-// that lookup once the build and the smoke test are already paid for. Any other tag that does
-// not carry the release shape is refused by the plan below, with its own message.
-if (pushedTag?.startsWith("v") && tag !== pushedTag)
+// that lookup once the build and the smoke test are already paid for. A tag carrying no release
+// shape at all never reaches this point - the argument guard above refuses it first.
+if (pushedTag?.startsWith("v"))
   throw new Error(`Tag the release without the v prefix, not ${pushedTag}`)
 let plan = planForkRelease({
   version,

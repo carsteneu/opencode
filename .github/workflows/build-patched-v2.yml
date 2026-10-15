@@ -35,32 +35,34 @@ name: build-patched-v2
 # 2.x release outranks every 1.x release — the same rule that keeps the frozen line from
 # publishing while a 2.x release is the newest entry.
 #
-# Publishing is reachable with a tag push and nothing else: the job holds contents: write
-# and no approval environment stands in front of the publish step, so anyone who can push a
-# tag to this repository can publish to the channel every installed client follows. That is
-# the deliberate trade for a trigger that works on this fork, and the place to put a gate
-# back is an `environment:` with required reviewers on this job.
+# Publishing needs no approval: a tag push publishes on its own, and a dispatch that asks for
+# it does too. The job holds contents: write and no environment stands in front of the publish
+# step, so anyone who can push a tag to this repository can publish to the channel every
+# installed client follows. That is the deliberate trade for a trigger that works on this fork,
+# and the place to put a gate back is an `environment:` with required reviewers on this job.
 #
 # A publish run that dies after it created the draft leaves the draft behind: the next
 # run resumes a draft that belongs to the same release and refuses one that does not
 # (patched-release-plan.ts). Re-run a failed run with `gh run rerun <run-id>`, which
-# reuses the ref it was triggered from, and on the tag route re-checks that the tag still
-# points at the commit being built.
+# reuses the ref it was triggered from.
 #
-# Clear a stale draft before re-running that version; which command that takes depends on
-# what is actually there. The release, and with --cleanup-tag the tag as well:
+# The two routes need different repairs, because the tag means opposite things to them. On
+# the publishing route the tag has to exist and point at the commit being built, so it stays
+# where it is and only the release is removed before a re-run:
+#
+#   gh release delete <version> --repo carsteneu/opencode --yes
+#
+# A run that died before it created the draft leaves nothing to remove there, and re-running
+# it is enough. On the manual route gh creates the tag itself and a leftover tag is what the
+# script refuses to publish over, so that route needs the tag gone as well:
 #
 #   gh release delete <version> --repo carsteneu/opencode --cleanup-tag --yes
 #
-# A version whose tag exists but whose release does not — the state left by a run that
-# never got as far as creating the draft — has nothing for `gh release delete` to remove,
-# and the tag is what the script refuses to publish over, so only the tag unblocks it:
+# And when only the tag is there - the state left by a run that never created its draft, seen
+# on the manual route - there is nothing for gh release delete to remove, so the tag itself
+# is all that can be cleared:
 #
 #   git push fork :refs/tags/<version>
-#
-# On the publishing route, deleting just the release and re-running is usually the shorter
-# way back: the tag there is what triggered the run, so removing it means pushing it again
-# to get another one.
 #
 # Manual route, for a build without publishing and for a hand-run release:
 #
@@ -82,7 +84,7 @@ name: build-patched-v2
 # published tag before it is used again; otherwise the next manual release would publish
 # the older code under a higher version number.
 
-run-name: build patched ${{ github.event_name == 'push' && github.ref_name || inputs.version }} (publish=${{ github.event_name == 'push' || inputs.publish }})
+run-name: build patched ${{ github.event_name == 'push' && github.ref_type == 'tag' && github.ref_name || inputs.version }} (publish=${{ github.event_name == 'push' && github.ref_type == 'tag' || inputs.publish }})
 
 on:
   push:
@@ -195,7 +197,7 @@ jobs:
       - name: Add the fork remote
         # Only the publishing path touches the remote: with publish=false the script
         # exits before it reaches the `fork` remote (the git calls before that point are
-        # local reads, patched-release.ts:52-60 vs the exit at :153-155). On the tag route
+        # local reads, patched-release.ts:52-60 vs the exit at :160-163). On the tag route
         # the remote is read before the draft is created, to bind the pushed tag to the
         # checked-out commit; on the manual route it is pushed to. GH_TOKEN enters the
         # environment only for this step; the credential it writes lives in .git/config for
@@ -214,7 +216,7 @@ jobs:
         working-directory: packages/cli
         # A repository-write credential is set only where it is used: this step calls gh,
         # the fork remote above needs it for the git push. On the default path the script
-        # never reaches gh (patched-release.ts:75-76), so the token is empty there. The
+        # never reaches gh (patched-release.ts:82-83), so the token is empty there. The
         # inputs go in through the environment rather than into shell source.
         env:
           GH_TOKEN: ${{ env.PUBLISH == 'true' && github.token || '' }}
