@@ -188,6 +188,7 @@ export default { path: file, version: ${JSON.stringify(opencodePty.version)}, sh
       OPENCODE_VERSION: `'${Script.version}'`,
       OPENCODE_CLI_NAME: "'opencode'",
       OPENCODE_CHANNEL: `'${Script.channel}'`,
+      OPENCODE_UPDATE_CHANNEL: `'${Script.updateChannel}'`,
       OPENCODE_ARTIFACT: `'cli'`,
       OPENCODE_LIBC: item.os === "linux" ? `'${item.abi ?? "glibc"}'` : "undefined",
       // FFF_LIBC selects the fff native lib variant: "musl" or "gnu".

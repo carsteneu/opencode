@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { action } from "./updater-action"
+import { action, automaticAction, compareRelease, majorChange, newerRelease, reportedVersion, updates } from "./updater-action"
 import { decodePolicy } from "./updater"
 
 describe("updater", () => {
@@ -19,8 +19,71 @@ describe("updater", () => {
   test("reports every available release", () => {
     expect(action("1.2.3", "1.2.4", "notify")).toBe("notify")
     expect(action("1.2.3", "1.3.0", "notify")).toBe("notify")
-    expect(action("1.2.3", "2.0.0", "notify")).toBe("notify")
+    expect(action("1.2.3", "2.0.0", "notify")).toBe("none")
     expect(action("1.2.3", "1.2.3", "notify")).toBe("none")
+  })
+
+  test("never installs a major release automatically", () => {
+    expect(action("1.18.34", "2.0.0", "auto")).toBe("none")
+    expect(action("1.18.34", "2.0.26-patched.1", "auto")).toBe("none")
+    expect(action("1.18.34", "1.18.35", "auto")).toBe("auto")
+    expect(action("2.0.25-patched.1", "2.0.26-patched.1", "auto")).toBe("auto")
+  })
+
+  test("separates availability from the update policy", () => {
+    expect(majorChange("1.18.34", "2.0.26-patched.1")).toBe(true)
+    expect(majorChange("2.0.26-patched.0", "2.0.26-patched.1")).toBe(false)
+    expect(updates("1.18.34", "2.0.26-patched.1")).toBe(true)
+    expect(updates("2.0.26-patched.1", "2.0.26-patched.1")).toBe(false)
+    expect(updates("2.0.26-patched.1", "local")).toBe(false)
+  })
+
+  test("ranks patched releases", () => {
+    expect(compareRelease("2.0.26-patched.1", "2.0.26-patched.0")).toBe(1)
+    expect(compareRelease("2.0.26-patched.0", "2.0.26-patched.1")).toBe(-1)
+    expect(compareRelease("2.0.26-patched.1", "2.0.26-patched.1")).toBe(0)
+    expect(compareRelease("2.0.26-patched.10", "2.0.26-patched.9")).toBe(1)
+    expect(compareRelease("2.1.0-patched.1", "2.0.26-patched.9")).toBe(1)
+    expect(compareRelease("1.18.34", "2.0.26-patched.1")).toBe(-1)
+    // Oversized numeric identifiers coerce, exactly like sameRelease does.
+    expect(compareRelease("2.0.26-patched.9007199254740993", "2.0.26-patched.9007199254740992")).toBe(0)
+    expect(compareRelease("2.0.26-patched.9007199254740991", "2.0.26-patched.9007199254740992")).toBe(-1)
+    expect(compareRelease("nonsense", "2.0.26-patched.1")).toBeUndefined()
+  })
+
+  test("treats only a strictly newer release as an update", () => {
+    expect(newerRelease("2.0.26-patched.0", "2.0.26-patched.1")).toBe(true)
+    expect(newerRelease("1.18.34-patched.220", "2.0.26-patched.1")).toBe(true)
+    expect(newerRelease("2.0.26-patched.1", "2.0.26-patched.1")).toBe(false)
+    // A release on the older line is different, but it is not an update: offering it
+    // would announce a download the installer refuses with "not newer".
+    expect(newerRelease("2.0.26-patched.1", "1.18.34-patched.220")).toBe(false)
+    expect(newerRelease("2.0.26-patched.1", "nonsense")).toBe(false)
+    expect(newerRelease("local", "2.0.26-patched.1")).toBe(false)
+  })
+
+  test("reads the version a binary reports the same way the release pipeline does", () => {
+    expect(reportedVersion("opencode v2.0.26-patched.1\n")).toBe("2.0.26-patched.1")
+    expect(reportedVersion("2.0.26-patched.1")).toBe("2.0.26-patched.1")
+    expect(reportedVersion("opencode v1.18.34-patched.219")).toBe("1.18.34-patched.219")
+    expect(reportedVersion("")).toBe("")
+  })
+
+  test("decides what an automatic check may do with a release", () => {
+    expect(automaticAction("2.0.26-patched.1", "2.0.26-patched.2", "auto")).toBe("install")
+    expect(automaticAction("2.0.26-patched.1", "2.0.26-patched.2", "notify")).toBe("announce")
+    expect(automaticAction("2.0.26-patched.1", "2.0.26-patched.2", "disable")).toBe("none")
+    // A major change is never installed automatically. A notify install is still told,
+    // otherwise the one update that needs a deliberate step is the only one never shown.
+    expect(automaticAction("1.18.34-patched.220", "2.0.26-patched.1", "auto")).toBe("none")
+    expect(automaticAction("1.18.34-patched.220", "2.0.26-patched.1", "notify")).toBe("announce")
+    // An older release is not an update at all: announcing it would offer a download the
+    // installer then refuses. This is the case the notification path used to get wrong.
+    expect(automaticAction("2.0.26-patched.2", "2.0.26-patched.1", "auto")).toBe("none")
+    expect(automaticAction("2.0.26-patched.2", "2.0.26-patched.1", "notify")).toBe("none")
+    expect(automaticAction("2.0.26-patched.2", "1.18.34-patched.220", "notify")).toBe("none")
+    expect(automaticAction("2.0.26-patched.1", "2.0.26-patched.1", "notify")).toBe("none")
+    expect(automaticAction("local", "2.0.26-patched.1", "notify")).toBe("none")
   })
 
   test("automatically installs every available release when enabled", () => {
@@ -71,8 +134,8 @@ describe("updater", () => {
   })
 
   test("handles numeric limits without losing precision", () => {
-    expect(action("9007199254740991.0.0", "9007199254740991.0.1", "notify")).toBe("notify")
-    expect(action("9007199254740990.0.0", "9007199254740991.0.0", "notify")).toBe("notify")
+    expect(action("1.9007199254740991.0", "1.9007199254740991.1", "notify")).toBe("notify")
+    expect(action("1.9007199254740990.0", "1.9007199254740991.0", "notify")).toBe("notify")
   })
 
   test("preserves equality for oversized numeric prerelease identifiers", () => {

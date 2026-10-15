@@ -19,6 +19,7 @@ if (!semver.satisfies(process.versions.bun, expectedBunVersionRange)) {
 
 const env = {
   OPENCODE_CHANNEL: process.env["OPENCODE_CHANNEL"],
+  OPENCODE_UPDATE_CHANNEL: process.env["OPENCODE_UPDATE_CHANNEL"],
   OPENCODE_BUMP: process.env["OPENCODE_BUMP"],
   OPENCODE_VERSION: process.env["OPENCODE_VERSION"],
   OPENCODE_RELEASE: process.env["OPENCODE_RELEASE"],
@@ -73,6 +74,9 @@ const team = [
 export const Script = {
   get channel() {
     return CHANNEL
+  },
+  get updateChannel() {
+    return env.OPENCODE_UPDATE_CHANNEL ?? "stable"
   },
   get version() {
     return VERSION
