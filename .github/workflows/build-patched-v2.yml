@@ -14,7 +14,7 @@ name: build-patched-v2
 #
 # Publishing route, the normal one: push the release tag.
 #
-#   git tag 2.0.26-patched.4 && git push fork 2.0.26-patched.4
+#   git tag 2.0.29-patched.1 && git push fork 2.0.29-patched.1
 #
 # GitHub takes this file from the tagged commit, so the tag has to be on a commit that
 # already carries it, and the tagged commit is what gets built. The tag names the version
@@ -67,7 +67,7 @@ name: build-patched-v2
 # Manual route, for a build without publishing and for a hand-run release:
 #
 #   gh workflow run build-patched-v2.yml --repo carsteneu/opencode --ref v2-ci-release \
-#     -f version=2.0.26-patched.4 -f publish=true
+#     -f version=2.0.29-patched.1 -f publish=true
 #
 # GitHub resolves a dispatch by filename against the default branch, so this file has to
 # exist on `dev` as well as on the ref it runs against; the dispatch route stays usable
@@ -93,7 +93,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Patched version to build, e.g. 2.0.26-patched.4"
+        description: "Patched version to build, e.g. 2.0.29-patched.1"
         required: true
         type: string
       publish:
