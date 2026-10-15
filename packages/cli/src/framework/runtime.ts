@@ -1,5 +1,5 @@
 import { Effect, FileSystem, Scope } from "effect"
-import { Command } from "effect/cli"
+import { CliOutput, Command } from "effect/cli"
 import { PrintLogs } from "../commands/commands"
 import { Spec } from "./spec"
 import { Global } from "@opencode/util/global"
@@ -81,12 +81,23 @@ export function handlers<const Root extends Spec.Any>(root: Root, handlers: Hand
   return result
 }
 
+/**
+ * The version is reported as the bare version string, without the `opencode v` banner the
+ * effect/cli default formatter prints. The frozen 1.x installer verifies a downloaded patched
+ * release by running it and comparing the output verbatim with the release version
+ * (1.x: `smoke.stdout.trim().replace(/^v/, "") !== normalizedTarget`), so a prefix aborts a
+ * transfer that has already downloaded and checksummed the binary. Only the version path
+ * changes: every other formatter method stays the default, so help and errors render as before.
+ */
+const bareVersion = (formatter: CliOutput.Formatter): CliOutput.Formatter => ({
+  ...formatter,
+  formatVersion: (_name, version) => version,
+})
+
 export function run(commands: Spec.Any, handlers: ReadonlyArray<LazyHandler>, options: { readonly version: string }) {
-  return Command.run(provide(commands, handlers).pipe(Command.withGlobalFlags([PrintLogs])), options) as Effect.Effect<
-    void,
-    unknown,
-    Command.Environment
-  >
+  return Command.run(provide(commands, handlers).pipe(Command.withGlobalFlags([PrintLogs])), options).pipe(
+    Effect.provide(CliOutput.layer(bareVersion(CliOutput.defaultFormatter()))),
+  ) as Effect.Effect<void, unknown, Command.Environment>
 }
 
 function provide(node: Spec.Any, handlers: ReadonlyArray<LazyHandler>): ProvidedCommand {

@@ -138,13 +138,13 @@ describe.skipIf(ref === undefined)(`the shared channel against the frozen 1.x li
     expect(v1Source()).toContain('smoke.stdout.trim().replace(/^v/, "") !== normalizedTarget')
   })
 
-  test("the 2.x version banner does not satisfy the 1.x probe (known blocker)", () => {
+  test("the version the 2.x CLI reports satisfies the 1.x probe", () => {
     // 1.x accepts the bare version it prints itself...
     expect(v1ProbeAccepts("1.18.34-patched.219", "1.18.34-patched.219")).toBe(true)
-    // ...but the 2.x CLI renders "opencode v2.0.26-patched.1", so the transfer reaches
-    // its last step and fails with "Patched release binary verification failed.".
-    // This test fails the moment the 2.x banner becomes consumable by 1.x - which is
-    // the signal that the blocker is resolved and the docs must drop the caveat.
-    expect(v1ProbeAccepts("opencode v2.0.26-patched.1", "2.0.26-patched.1")).toBe(false)
+    // ...and the 2.x CLI reports that same bare shape, so the transfer's last step passes.
+    // cli-version.test.ts runs the real CLI and asserts this against its actual output; the
+    // banner shape it used to print stays rejected, which is what made the transfer fail.
+    expect(v1ProbeAccepts("2.0.26-patched.2", "2.0.26-patched.2")).toBe(true)
+    expect(v1ProbeAccepts("opencode v2.0.26-patched.2", "2.0.26-patched.2")).toBe(false)
   })
 })
