@@ -10,7 +10,7 @@ export * as ForkRelease from "./fork-release.js"
  *
  *   repository  carsteneu/opencode
  *   channel     patched
- *   tag         v<x.y.z>-patched.<n>          e.g. v2.0.26-patched.1
+ *   tag         <x.y.z>-patched.<n>           e.g. 2.0.26-patched.1
  *   assets      opencode-linux-x64            raw binary
  *               opencode-linux-x64.sha256     "<hex>  opencode-linux-x64"
  *
