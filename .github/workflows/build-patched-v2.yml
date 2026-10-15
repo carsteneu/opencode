@@ -29,20 +29,32 @@ name: build-patched-v2
 # 2.x release outranks every 1.x release — the same rule that keeps the frozen line from
 # publishing while a 2.x release is the newest entry.
 #
+# Publishing is reachable with a tag push and nothing else: the job holds contents: write
+# and no approval environment stands in front of the publish step, so anyone who can push a
+# tag to this repository can publish to the channel every installed client follows. That is
+# the deliberate trade for a trigger that works on this fork, and the place to put a gate
+# back is an `environment:` with required reviewers on this job.
+#
 # A publish run that dies after it created the draft leaves the draft behind: the next
 # run resumes a draft that belongs to the same release and refuses one that does not
 # (patched-release-plan.ts). Re-run a failed run with `gh run rerun <run-id>`, which
 # reuses the ref it was triggered from, and on the tag route re-checks that the tag still
-# points at the commit being built. Clear a stale draft before re-running that version:
+# points at the commit being built.
 #
-#   gh release delete <version> --repo carsteneu/opencode --yes
-#
-# No --cleanup-tag on the publishing route: the tag there is what triggers the run, so
-# deleting it costs the run its own ref. The manual route is the case that needs it — gh
-# creates the tag itself there and the script refuses to reuse one that is already on the
-# fork, so a manual re-run after deleting the release has to delete the tag as well:
+# Clear a stale draft before re-running that version; which command that takes depends on
+# what is actually there. The release, and with --cleanup-tag the tag as well:
 #
 #   gh release delete <version> --repo carsteneu/opencode --cleanup-tag --yes
+#
+# A version whose tag exists but whose release does not — the state left by a run that
+# never got as far as creating the draft — has nothing for `gh release delete` to remove,
+# and the tag is what the script refuses to publish over, so only the tag unblocks it:
+#
+#   git push fork :refs/tags/<version>
+#
+# On the publishing route, deleting just the release and re-running is usually the shorter
+# way back: the tag there is what triggered the run, so removing it means pushing it again
+# to get another one.
 #
 # Manual route, for a build without publishing and for a hand-run release:
 #
@@ -142,14 +154,6 @@ jobs:
               # exists to avoid.
               if [ "$GITHUB_EVENT_NAME" != "push" ]; then
                 echo "A dispatch is not a publishing route whatever its ref says; dispatch on refs/heads/$OPENCODE_RELEASE_BRANCH"
-                exit 1
-              fi
-              # The contract's tag pattern tolerates a leading v, but everything the release
-              # does with a tag uses the bare name: the fork tag it binds to the commit, the
-              # release it creates and the tag name it verifies afterwards. Refuse that form
-              # here, before anything is built, rather than after the build in that lookup.
-              if [ "${VERSION#v}" != "$VERSION" ]; then
-                echo "Tag the release without the v prefix, not $VERSION"
                 exit 1
               fi
               echo "Tag push: building and publishing $VERSION"
