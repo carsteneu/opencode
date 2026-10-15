@@ -106,7 +106,7 @@ export function nextForkVersion(version: string): string {
 }
 
 /** The upstream base a patched release is cut from: `2.0.26` for `2.0.26-patched.3`. */
-function releaseBase(version: string) {
+export function releaseBase(version: string) {
   const marker = `-${ForkRelease.channel}.`
   if (!version.includes(marker)) return version
   return version.slice(0, version.indexOf(marker))
