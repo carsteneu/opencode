@@ -16,25 +16,25 @@ call sites.
 
 ## Layout
 
-| File                 | Origin                          | Role                                                                                                                     |
-| -------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `index.ts`           | new (v2 adapter)                | Entrypoint. Registers every hook through one `Plugin.define`.                                                            |
-| `rpc.ts`             | port of v1 `rpc.ts`             | Daemon client (transport rewritten, see Deviations).                                                                     |
-| `types.ts`           | copy of v1 `types.ts`           | `RPCResponse`.                                                                                                           |
-| `context.ts`         | port of v1 `context.ts`         | Per-call session/cwd context for `yesmem_*` tools.                                                                       |
-| `code_nav.ts`        | port of v1 `code_nav.ts`        | Blocks shell/read navigation on files the YesMem index covers.                                                           |
-| `rule_guard.ts`      | port of v1 `rule_guard.ts`      | Pre-tool RULES.md check (small model), BLOCK/SUGGEST.                                                                    |
-| `failure_learn.ts`   | port of v1 `failure_learn.ts`   | Error → `remember`, plus a `hybrid_search` assist note.                                                                  |
-| `auto_resolve.ts`    | port of v1 `auto_resolve.ts`    | `git commit -m` → `resolve_by_text`.                                                                                     |
-| `session.ts`         | new                             | Session tracking + `register_pid` (v1 used the `session.created` hook).                                                  |
-| `messages.ts`        | new                             | Message helpers + the human-turn predicate shared by the nudges.                                                         |
-| `http.ts`            | new                             | Response reader with a byte budget (v1 read bodies unbounded).                                                           |
-| `skill_nudge.ts`     | port of v1 `skill_nudge.ts`     | Staged skill suggestion on the terminal user message.                                                                    |
-| `ledger_nudge.ts`    | port of v1 `ledger_nudge.ts`    | Appends the active plan as a live ledger block.                                                                          |
-| `idle_reminder.ts`   | port of v1 `idle_reminder.ts`   | Invisible yesmem reminder every Nth user turn.                                                                           |
-| `shell.ts`           | port of v1 `shell.env`          | Exports the yesmem environment to spawned shells.                                                                        |
+| File | Origin | Role |
+|---|---|---|
+| `index.ts` | new (v2 adapter) | Entrypoint. Registers every hook through one `Plugin.define`. |
+| `rpc.ts` | port of v1 `rpc.ts` | Daemon client (transport rewritten, see Deviations). |
+| `types.ts` | copy of v1 `types.ts` | `RPCResponse`. |
+| `context.ts` | port of v1 `context.ts` | Per-call session/cwd context for `yesmem_*` tools. |
+| `code_nav.ts` | port of v1 `code_nav.ts` | Blocks shell/read navigation on files the YesMem index covers. |
+| `rule_guard.ts` | port of v1 `rule_guard.ts` | Pre-tool RULES.md check (small model), BLOCK/SUGGEST. |
+| `failure_learn.ts` | port of v1 `failure_learn.ts` | Error → `remember`, plus a `hybrid_search` assist note. |
+| `auto_resolve.ts` | port of v1 `auto_resolve.ts` | `git commit -m` → `resolve_by_text`. |
+| `session.ts` | new | Session tracking + `register_pid` (v1 used the `session.created` hook). |
+| `messages.ts` | new | Message helpers + the human-turn predicate shared by the nudges. |
+| `http.ts` | new | Response reader with a byte budget (v1 read bodies unbounded). |
+| `skill_nudge.ts` | port of v1 `skill_nudge.ts` | Staged skill suggestion on the terminal user message. |
+| `ledger_nudge.ts` | port of v1 `ledger_nudge.ts` | Appends the active plan as a live ledger block. |
+| `idle_reminder.ts` | port of v1 `idle_reminder.ts` | Invisible yesmem reminder every Nth user turn. |
+| `shell.ts` | port of v1 `shell.env` | Exports the yesmem environment to spawned shells. |
 | `skill_whitelist.ts` | port of v1 `skill_whitelist.ts` | Installed-skill set used to filter ghost suggestions (roots are resolved per call, so `YESMEM_SKILL_ROOTS` is honoured). |
-| `log.ts`             | new                             | v1 duplicated this logger in four modules.                                                                               |
+| `log.ts` | new | v1 duplicated this logger in four modules. |
 
 `RULES.md` from the v1 directory is **project data**, not plugin source, and is not copied.
 
@@ -68,13 +68,13 @@ Every other hook still runs plain async code, lifted with `Effect.tryPromise` in
 
 ## Hook mapping (v1 → v2)
 
-| v1 hook                                | v2 mechanism                                                  | Notes                                                                                                                                                                                                                                                                                                                                               |
-| -------------------------------------- | ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `tool.execute.before`                  | `ctx.tool.hook("execute.before", e)`                          | `e.input` and `e.tool` are mutable; failing with `Tool.Error` rejects the call. code_nav runs first, then rule_guard, then the tool-context injection.                                                                                                                                                                                              |
-| `tool.execute.after`                   | `ctx.tool.hook("execute.after", e)`                           | `status: "completed"` exposes a mutable `e.result`; `status: "error"` a mutable `e.error`. rule_guard's directive is injected first, then failure_learn, then auto_resolve.                                                                                                                                                                         |
-| `shell.env`                            | `ctx.shell.hook("create.before", e)`                          | Mutable `e.env`.                                                                                                                                                                                                                                                                                                                                    |
-| `session.created`                      | `ctx.event.subscribe()` → `session.created`, `data.sessionID` | Registers the process with the daemon; mirrors the id into `process.env.YESMEM_SESSION_ID`.                                                                                                                                                                                                                                                         |
-| `experimental.chat.messages.transform` | `ctx.session.hook("context", e)`                              | Four handlers in registration order: read-only conversation capture for the guard, then the three nudges (`skill_nudge`, `ledger_nudge`, `idle_reminder`). Every nudge only patches the **last message the human actually wrote** (see below), keeps a marker guard against double patching, and produces identical bytes for every step of a turn. |
+| v1 hook | v2 mechanism | Notes |
+|---|---|---|
+| `tool.execute.before` | `ctx.tool.hook("execute.before", e)` | `e.input` and `e.tool` are mutable; failing with `Tool.Error` rejects the call. code_nav runs first, then rule_guard, then the tool-context injection. |
+| `tool.execute.after` | `ctx.tool.hook("execute.after", e)` | `status: "completed"` exposes a mutable `e.result`; `status: "error"` a mutable `e.error`. rule_guard's directive is injected first, then failure_learn, then auto_resolve. |
+| `shell.env` | `ctx.shell.hook("create.before", e)` | Mutable `e.env`. |
+| `session.created` | `ctx.event.subscribe()` → `session.created`, `data.sessionID` | Registers the process with the daemon; mirrors the id into `process.env.YESMEM_SESSION_ID`. |
+| `experimental.chat.messages.transform` | `ctx.session.hook("context", e)` | Four handlers in registration order: read-only conversation capture for the guard, then the three nudges (`skill_nudge`, `ledger_nudge`, `idle_reminder`). Every nudge only patches the **last message the human actually wrote** (see below), keeps a marker guard against double patching, and produces identical bytes for every step of a turn. |
 
 `role === "user"` is not the human: v2 lowers several history entries to user-role messages. A message counts
 as human only when it has metadata, does not open with one of the frames the core builds (shell results
@@ -107,7 +107,7 @@ SKILL.md body would pass — no core path produces one today.
    process.)
 6. **`log.ts`.** v1 duplicated the file logger in every module. The log is `plugin-v2.log` (mode `0600`) so a
    running v1 plugin keeps its own, and `YESMEM_LOG_FILE` overrides the path.
-7. **Human-turn targeting, sanitization and caps (v2-only hardening).** v1 had the message _types_ available
+7. **Human-turn targeting, sanitization and caps (v2-only hardening).** v1 had the message *types* available
    and could rule out synthetic turns directly; the v2 hook only sees lowered messages, so `messages.ts`
    recognises the non-human frames above. v1 also injected daemon/model text verbatim: the ledger block is now
    bounded (40 lines, 4000 chars) and stripped of control characters with its delimiters neutralized, a skill
@@ -120,11 +120,11 @@ SKILL.md body would pass — no core path produces one today.
    caps parsing but not buffering.
 9. **`auto_resolve` checks the outcome.** v1 resolved tasks from a `git commit -m "..."` regardless of whether
    the commit succeeded. A failed commit (rejected hook, failing test) is now ignored.
-10. **Guard request hardening.** Redirects are refused (`redirect: "error"`), the response body is capped, the
-    cached decision is keyed on the full prompt instead of a 32-bit hash, expired entries are evicted, and a
-    timeout is no longer retried — a dead guard endpoint cost two full timeouts (about 30 s) per call before.
-11. **RPC hardening.** The response buffer is capped (1 MiB), and daemon bytes are no longer echoed back inside
-    error strings, because callers render those strings into model-visible text.
+8. **Guard request hardening.** Redirects are refused (`redirect: "error"`), the response body is capped, the
+   cached decision is keyed on the full prompt instead of a 32-bit hash, expired entries are evicted, and a
+   timeout is no longer retried — a dead guard endpoint cost two full timeouts (about 30 s) per call before.
+9. **RPC hardening.** The response buffer is capped (1 MiB), and daemon bytes are no longer echoed back inside
+   error strings, because callers render those strings into model-visible text.
 
 ## Known gaps (not built here)
 
@@ -147,7 +147,7 @@ SKILL.md body would pass — no core path produces one today.
   daemon keeps one mapping per PID — with several concurrent sessions the last shell wins. This is v1
   behaviour, kept for parity.
 - **Session id is per process.** The plugin tracks one current session (last `session.created`) and exports it
-  to spawned shells; `execute.before` still injects the _per-call_ session into `yesmem_` tool arguments, which
+  to spawned shells; `execute.before` still injects the *per-call* session into `yesmem_` tool arguments, which
   is the value the MCP tools use.
 - **Trust.** `RULES.md`, `.git`/`HEAD` and the guard's answer are treated as data, not as trusted input: the
   violated-rule text is capped and labelled, learned snippets are capped, and file paths are stripped of

@@ -248,9 +248,11 @@ const pre = [
   WebSearchTool.Plugin,
   WriteTool.Plugin,
   WarmingPlugin.Plugin,
-  // Last of the internal plugins on purpose: configured and instance plugins activate between the pre and
-  // post lists, so the tail of pre is where this fork plugin used to register its hooks when it was loaded
-  // from a plugin directory, keeping the hook order of pre -> this plugin -> post unchanged.
+  // Fork plugin. It used to be loaded from a plugin directory, which lands a plugin in the "packages" group
+  // that the supervisor activates after the pre list; for a built-in, the tail of pre is the equivalent
+  // position as long as nothing contributes SDK or instance plugins (the CLI and the server contribute
+  // none), so the hook order stays pre -> this plugin -> configured plugins -> post. With SDK- or
+  // instance-contributed plugins in play this one registers before them, not after.
   YesMemPlugin,
 ] as const satisfies readonly InternalPlugin[]
 

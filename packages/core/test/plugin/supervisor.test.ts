@@ -166,6 +166,34 @@ describe("PluginSupervisor", () => {
     }),
   )
 
+  it.effect("lets a config remove operation switch the built-in yesmem plugin off", () =>
+    Effect.gen(function* () {
+      source.operations = [{ type: "remove", target: "opencode.yesmem" }]
+      const directory = yield* tmpdirScoped()
+      const locations = yield* LocationServiceMap.Service
+      const inventory = yield* Effect.gen(function* () {
+        const plugins = yield* Plugin.Service
+        yield* plugins.awaitActivation
+        return yield* plugins.list()
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(locations.get(Location.Ref.make({ directory: AbsolutePath.make(directory.path) }))),
+      )
+      // `opencode.yesmem` is not in PluginInternal.guarded, so a `-opencode.yesmem` entry removes it.
+      expect(inventory.some((plugin) => plugin.id === "opencode.yesmem")).toBe(false)
+      // Other builtins are untouched by the removal.
+      expect(
+        inventory.some((plugin) => plugin.id === "opencode.config.agent" && plugin.state.status === "active"),
+      ).toBe(true)
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          source.operations = []
+        }),
+      ),
+    ),
+  )
+
   it.effect("activates the initial generation without waiting for the reload debounce", () =>
     Effect.gen(function* () {
       source.activations = 0

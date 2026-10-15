@@ -40,9 +40,11 @@ The plugin is a **server** plugin and ships as a built-in of the core server: it
 entry of the `pre` list. The plugin supervisor activates it with every other internal plugin
 (`source: { type: "builtin" }`) — there is no config document entry, no plugin directory and no install step.
 
-The tail of `pre` is deliberate: configured and instance plugins activate between the `pre` and `post` lists,
-so the tail of `pre` is where this plugin registered its hooks while it was still loaded from a plugin
-directory. `pre -> this plugin -> post` keeps the hook order it had before the move.
+The tail of `pre` is deliberate: a plugin loaded from a plugin directory lands in the supervisor's
+"packages" group, which activates after the whole `pre` list, so the tail of `pre` is the equivalent position
+for a built-in — as long as nothing contributes SDK or instance plugins, which the CLI and the server do not.
+The hook order `pre -> this plugin -> configured plugins -> post` is therefore the same as before the move;
+with SDK- or instance-contributed plugins this one registers before them instead of after.
 
 ### Migration from the plugin directory
 
