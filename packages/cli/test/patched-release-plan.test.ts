@@ -11,6 +11,7 @@ function plan(overrides: Partial<Parameters<typeof planForkRelease>[0]> = {}) {
     publish: true,
     releaseBranch: "v2-release-align",
     branch: "v2-release-align",
+    tag: undefined,
     worktree: "",
     packageVersion: "2.0.26",
     releases: [],
@@ -65,6 +66,46 @@ describe("planForkRelease", () => {
   test("refuses to publish from another branch or a dirty worktree", () => {
     expect(refusal({ branch: "working" })).toContain("must be published from v2-release-align")
     expect(refusal({ worktree: " M packages/cli/src/index.ts" })).toContain("Worktree must be clean")
+  })
+
+  test("publishes from the tag it names, where the branch is a detached HEAD", () => {
+    // The tag-push route: GitHub reads the workflow from the tagged commit and checks that
+    // commit out, so there is no branch to compare - the tag naming this exact version is
+    // the release identity instead.
+    expect(plan({ tag: `2.0.26-${channel}.4`, branch: "" })).toEqual({ action: "create" })
+  })
+
+  test("refuses to publish one version from another version's tag", () => {
+    expect(refusal({ tag: `2.0.26-${channel}.3`, branch: "" })).toContain(
+      `must be published from v2-release-align or from the tag 2.0.26-${channel}.4`,
+    )
+    // A dispatch from a feature branch has no tag either, so it stays refused.
+    expect(refusal({ branch: "feature" })).toContain("must be published from v2-release-align")
+  })
+
+  test("resumes a tag-driven draft without comparing target_commitish", () => {
+    // GitHub documents target_commitish as unused when the tag already exists, so for a
+    // tag-driven release it can name the default branch rather than the tagged commit. The
+    // commit binding comes from the tag itself in that mode, not from this field.
+    expect(
+      plan({
+        tag: `2.0.26-${channel}.4`,
+        branch: "",
+        existing: { isDraft: true, isPrerelease: true, targetCommitish: "dev" },
+      }),
+    ).toEqual({ action: "resume" })
+    // ...and the branch route keeps refusing a draft that belongs to another commit.
+    expect(plan({ existing: { isDraft: true, isPrerelease: true, targetCommitish: "dev" } }).action).toBe("refuse")
+  })
+
+  test("a tag-driven draft still has to carry the prerelease flag", () => {
+    // The tag replaces the commit binding only; the release flags stay checked in both modes.
+    expect(
+      plan({ tag: `2.0.26-${channel}.4`, branch: "", existing: { isDraft: true, isPrerelease: false, targetCommitish: head } }),
+    ).toEqual({
+      action: "refuse",
+      reason: `Existing draft does not match this release: ${JSON.stringify({ isDraft: true, isPrerelease: false, targetCommitish: head })}`,
+    })
   })
 
   test("publishes from the configured branch when it is overridden", () => {

@@ -51,6 +51,12 @@ const root = path.resolve(import.meta.dir, "../../..")
 const packageDir = path.join(root, "packages/cli")
 const head = (await run(["git", "rev-parse", "HEAD"], root)).trim()
 const branch = (await run(["git", "branch", "--show-current"], root)).trim()
+// A tag push is the publishing route: GitHub resolves it to refs/tags/<name>, checks that
+// commit out (a detached HEAD, so `branch` is empty) and reads this script from the tagged
+// commit. The tag then names the release and stands in for the branch as its identity; a
+// local run carries no such ref and keeps publishing from the release branch.
+const pushedTag = process.env.GITHUB_REF?.match(/^refs\/tags\/(.+)$/)?.[1]
+const tag = pushedTag ? ForkRelease.version(pushedTag) : undefined
 const worktree = (await run(["git", "status", "--short"], root)).trim()
 const packageVersion = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Struct({ version: Schema.String })))(
   await Bun.file(path.join(packageDir, "package.json")).text(),
@@ -58,11 +64,19 @@ const packageVersion = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Str
 
 // These guards run before the build and before anything reaches the remote, so a refusal
 // here costs no build and touches no shared state.
+// The contract's version parser tolerates a leading v, but every use of the tag on this route
+// wants the bare name: the fork tag it binds the commit to, the release it creates and the tag
+// it verifies afterwards. Refuse that form here, before the build, instead of letting it fail in
+// that lookup once the build and the smoke test are already paid for. A tag carrying no release
+// shape at all never reaches this point - the argument guard above refuses it first.
+if (pushedTag?.startsWith("v"))
+  throw new Error(`Tag the release without the v prefix, not ${pushedTag}`)
 let plan = planForkRelease({
   version,
   publish,
   releaseBranch,
   branch,
+  tag,
   worktree,
   packageVersion,
   releases: publish ? await knownReleases() : [],
@@ -131,6 +145,7 @@ if (publish) {
     publish,
     releaseBranch,
     branch,
+    tag,
     worktree: builtStatus,
     packageVersion,
     releases: await knownReleases(),
@@ -147,13 +162,23 @@ if (!publish) {
   process.exit(0)
 }
 
-await run(["git", "push", "fork", releaseBranch], root)
-const remote = (await run(["git", "rev-parse", `fork/${releaseBranch}`], root)).trim()
-if (remote !== head) throw new Error(`fork/${releaseBranch} is ${remote}, expected ${head}`)
+if (!tag) {
+  await run(["git", "push", "fork", releaseBranch], root)
+  const remote = (await run(["git", "rev-parse", `fork/${releaseBranch}`], root)).trim()
+  if (remote !== head) throw new Error(`fork/${releaseBranch} is ${remote}, expected ${head}`)
+} else {
+  // The tag is what triggered this run, so it has to be on the fork and point at the commit
+  // that was checked out - the same remote-to-head binding the branch push gives above, and
+  // the only one available once the tag pre-exists. Checked on the resume path too: a re-run
+  // of a tag that has been moved would otherwise publish an older build under it.
+  const remoteTag = await forkTagCommit()
+  if (remoteTag !== head) throw new Error(`fork tag ${version} is ${remoteTag ?? "missing"}, expected ${head}`)
+}
 
 if (plan.action === "create") {
-  const remoteTag = (await run(["git", "ls-remote", "--tags", "fork", `refs/tags/${version}`], root)).trim()
-  if (remoteTag) throw new Error(`Remote tag ${version} already exists without a resumable draft release`)
+  // gh creates the tag from this commit below on the branch route, so it must not be there yet.
+  if (!tag && (await forkTagCommit()))
+    throw new Error(`Remote tag ${version} already exists without a resumable draft release`)
   await run(
     [
       "gh",
@@ -182,11 +207,20 @@ if (!staged) throw new Error(`Draft release ${version} disappeared after upload`
 const binarySize = Bun.file(binary).size
 const checksumSize = Bun.file(checksum).size
 const assets = new Map(staged.assets.map((item) => [item.name, item.size]))
+// GitHub documents target_commitish as unused when the tag already exists, so on the tag
+// route it can name something other than this commit even though the release is bound to
+// it through the tag (proven against the fork above). Its value is reported instead of
+// compared there; on the branch route it still has to be this commit.
+const commitishIsHead = tag ? true : staged.targetCommitish === head
+if (tag)
+  console.log(
+    `Tag-driven draft reports target_commitish ${JSON.stringify(staged.targetCommitish)} (not compared; the tag binds the release to ${head})`,
+  )
 if (
   !staged.isDraft ||
   !staged.isPrerelease ||
   staged.tagName !== version ||
-  staged.targetCommitish !== head ||
+  !commitishIsHead ||
   assets.get(asset) !== binarySize ||
   assets.get(checksumAsset) !== checksumSize
 ) {
@@ -233,6 +267,19 @@ async function knownDraft() {
   if (result.code === 0) return Schema.decodeUnknownSync(Schema.fromJsonString(Draft))(result.stdout)
   if (/release not found|HTTP 404/i.test(result.stderr)) return undefined
   throw new Error(result.stderr.trim() || `Could not inspect release ${version}`)
+}
+
+/** Commit the fork's tag for this release points at, or undefined when the tag is absent. */
+async function forkTagCommit() {
+  const ref = `refs/tags/${version}`
+  // Both refs are asked for in one call: with a pattern, --tags answers only the ref that was
+  // named, and for an annotated tag that is the tag object rather than the commit it points at.
+  const lines = (await run(["git", "ls-remote", "--tags", "fork", ref, `${ref}^{}`], root))
+    .split("\n")
+    .map((line) => line.trim().split(/\s+/))
+  const peeled = lines.find(([, name]) => name === `${ref}^{}`)
+  const plain = lines.find(([, name]) => name === ref)
+  return (peeled ?? plain)?.[0]
 }
 
 async function containsMarker(file: string, marker: string) {
