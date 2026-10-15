@@ -3,7 +3,6 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { createServer } from "node:http"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { Host } from "@opencode/plugin/host"
 import {
   fakeContext,
   loadPlugin,
@@ -121,7 +120,7 @@ async function mockModel(reply: string) {
 
 describe("skill_nudge catalog", () => {
   test("parses the skill catalog and orders MUST first", async () => {
-    const module = (await Host.load(yesmemEntry("skill_nudge.ts"))) as NudgeModule
+    const module = (await import(yesmemEntry("skill_nudge.ts"))) as NudgeModule
     const entries = module.parseSkillCatalog(CATALOG)
 
     expect(entries.map((entry) => entry.skill)).toEqual(["mustskill", "myskill"])
@@ -129,7 +128,7 @@ describe("skill_nudge catalog", () => {
   })
 
   test("rejects skill names that are not names", async () => {
-    const module = (await Host.load(yesmemEntry("skill_nudge.ts"))) as NudgeModule
+    const module = (await import(yesmemEntry("skill_nudge.ts"))) as NudgeModule
 
     // A skill name is injected into the user's message, so only name-shaped values may pass — regardless of
     // what a directory or the stage-2 model returns.
@@ -149,7 +148,7 @@ describe("skill_nudge catalog", () => {
   })
 
   test("parses the generated catalogue shape (nested under rules:)", async () => {
-    const module = (await Host.load(yesmemEntry("skill_nudge.ts"))) as NudgeModule
+    const module = (await import(yesmemEntry("skill_nudge.ts"))) as NudgeModule
     const entries = module.parseSkillCatalog(GENERATED_CATALOG)
 
     expect(entries.map((entry) => entry.skill)).toEqual(["generated-must", "generated-low"])
@@ -543,7 +542,7 @@ describe("ledger_nudge", () => {
   })
 
   test("renders a bounded ledger", async () => {
-    const module = (await Host.load(yesmemEntry("ledger_nudge.ts"))) as NudgeModule
+    const module = (await import(yesmemEntry("ledger_nudge.ts"))) as NudgeModule
     expect(module.renderLedger("")).toBeNull()
     expect(module.renderLedger("   ")).toBeNull()
 

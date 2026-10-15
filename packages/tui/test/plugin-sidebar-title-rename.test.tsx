@@ -2,20 +2,11 @@
 import { describe, expect, test } from "bun:test"
 import { RGBA } from "@opentui/core"
 import { testRender } from "@opentui/solid"
-import type { JSX } from "solid-js"
-import { Host } from "@opencode/plugin/host"
 import type { Plugin } from "@opencode/plugin/tui"
 import type { SlotPath } from "@opencode/plugin/tui/context"
-import "../src/plugin/runtime-plugin-support.bun"
+import RenamePencil, { SessionRenamePencil } from "../src/feature-plugins/sidebar/title-rename"
 
 const actionsSlot: SlotPath = "sidebar.title.actions"
-
-const entry = new URL("../../../.opencode/plugin-suite/rename-pencil/tui.tsx", import.meta.url)
-
-type PencilModule = {
-  default: Plugin.Definition
-  SessionRenamePencil: (props: { context: Plugin.Context; sessionID: string; title: string }) => JSX.Element
-}
 
 type Recorded = {
   answer?: string
@@ -52,11 +43,10 @@ function context(record: Recorded) {
 }
 
 async function renderPencil(record: Recorded, title = "Fix broken tests") {
-  const module = (await Host.load(entry.href)) as PencilModule
   const app = await testRender(
     () => (
       <box width={38}>
-        <module.SessionRenamePencil context={context(record)} sessionID="ses_abc123" title={title} />
+        <SessionRenamePencil context={context(record)} sessionID="ses_abc123" title={title} />
       </box>
     ),
     { width: 38, height: 3 },
@@ -73,9 +63,8 @@ async function click(app: Awaited<ReturnType<typeof renderPencil>>) {
 }
 
 describe("sidebar title rename pencil plugin", () => {
-  test("loads as an external plugin module through the host loader", async () => {
-    const module = (await Host.load(entry.href)) as PencilModule
-    expect(module.default.id).toBe("opencode.sidebar.title.rename")
+  test("ships as a built-in plugin definition that claims the sidebar title actions slot", async () => {
+    expect(RenamePencil.id).toBe("opencode.sidebar.title.rename")
     let placed: { append?: string } | undefined
     const fake = {
       ui: {
@@ -85,7 +74,7 @@ describe("sidebar title rename pencil plugin", () => {
         },
       },
     } as unknown as Plugin.Context
-    await module.default.setup(fake)
+    await RenamePencil.setup(fake)
     expect(placed?.append).toBe(actionsSlot)
   })
 

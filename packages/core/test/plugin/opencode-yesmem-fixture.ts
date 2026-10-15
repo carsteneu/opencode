@@ -1,8 +1,8 @@
 // Shared harness for the opencode-yesmem plugin tests.
 //
-// The plugin lives outside every tsconfig project (deliberate: plugin sources are runtime files), so tests
-// load it through the real host loader and describe its exports with local type declarations — the same
-// pattern packages/tui/test/plugin-*.test.tsx uses.
+// The plugin is a built-in of the core server (packages/core/src/plugin/yesmem, registered in
+// packages/core/src/plugin/internal.ts), so tests import its modules straight from the source tree. The
+// module shapes are still described with local type declarations where a test only touches part of one.
 //
 // The plugin uses the Effect plugin API, so the fake context registers Effect-returning hooks and `fire`
 // runs them through the Effect runtime, exactly like the core hook dispatcher does.
@@ -11,19 +11,12 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { createServer, type Server, type Socket } from "node:net"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { Host } from "@opencode/plugin/host"
-import { ensurePluginRuntime } from "@opencode/plugin/runtime"
 import { Cause, Effect, Exit, Fiber, PubSub, Stream } from "effect"
-
-// External plugins import `effect` and `@opencode/plugin` from the host; the CLI installs that mapping at
-// startup (packages/cli/src/index.ts) and the core plugin tests install it the same way.
-ensurePluginRuntime()
 
 // The plugin resolves its debug log file at call time; keep test runs out of the live yesmem install.
 process.env.YESMEM_LOG_FILE ??= path.join(tmpdir(), "yesmem-plugin-test.log")
 
-export const yesmemEntry = (file: string) =>
-  new URL(`../../../../.opencode/plugin-suite/opencode-yesmem/${file}`, import.meta.url).href
+export const yesmemEntry = (file: string) => new URL(`../../src/plugin/yesmem/${file}`, import.meta.url).href
 
 export type RpcResponse = { ok: boolean; result?: any; error?: string }
 
@@ -178,14 +171,14 @@ type ResettableModule = { _resetCaches?: () => void }
 /** The plugin keeps process-lifetime caches; a test must not inherit another test's answers. */
 async function resetPluginCaches() {
   for (const file of ["skill_nudge.ts"]) {
-    const pluginModule = (await Host.load(yesmemEntry(file))) as ResettableModule
+    const pluginModule = (await import(yesmemEntry(file))) as ResettableModule
     pluginModule._resetCaches?.()
   }
 }
 
 export async function loadPlugin(recorder: HookRecorder, options: { keepAlive?: boolean } = {}) {
   await resetPluginCaches()
-  const module = (await Host.load(yesmemEntry("index.ts"))) as EffectPluginModule
+  const module = (await import(yesmemEntry("index.ts"))) as EffectPluginModule
   const setup = module.default.effect(recorder.context) as Effect.Effect<unknown>
   if (!options.keepAlive) {
     // The plugin registers its hooks inside a scope; the host supplies it for the plugin's lifetime.

@@ -1,14 +1,9 @@
 /** @jsxImportSource @opentui/solid */
 import { expect, test } from "bun:test"
-import path from "node:path"
-import { Host } from "@opencode/plugin/host"
 import type { Plugin } from "@opencode/plugin/tui"
-import "../src/plugin/runtime-plugin-support.bun"
+import TokensPerSecond from "../src/feature-plugins/prompt/tokens-per-second"
 import { createAppFixture } from "./fixture/app"
 import { directory, json, type FetchHandler } from "./fixture/tui-client"
-
-const pluginDirectory = path.join(import.meta.dir, "../../../.opencode/plugin-suite/tokens-per-second")
-const pluginEntry = new URL("../../../.opencode/plugin-suite/tokens-per-second/tui.tsx", import.meta.url)
 
 const session = {
   id: "ses_test",
@@ -52,44 +47,40 @@ function reasoning(text: string) {
   } as never
 }
 
-test(
-  "renders a client-side tok/s estimate from text deltas and keeps the cell at 0 when the stream stops",
-  async () => {
-    await using setup = await createAppFixture({
-      config: { animations: false, tabs: { mode: "off" }, plugins: [pluginDirectory] },
-      args: { sessionID: "ses_test" },
-      fetch,
-    })
-    await setup.ready
-    // Session load plus the ~3s startup overlay that covers the footer.
-    await Bun.sleep(3500)
-    await setup.renderOnce()
+test("renders a client-side tok/s estimate from text deltas and keeps the cell at 0 when the stream stops", async () => {
+  await using setup = await createAppFixture({
+    config: { animations: false, tabs: { mode: "off" } },
+    args: { sessionID: "ses_test" },
+    fetch,
+  })
+  await setup.ready
+  // Session load plus the ~3s startup overlay that covers the footer.
+  await Bun.sleep(3500)
+  await setup.renderOnce()
 
-    // The cell is permanent, exactly like v1's footer: idle it reads 0.
-    expect(setup.captureCharFrame()).toMatch(/out ~0 tk\/s/)
+  // The cell is permanent, exactly like v1's footer: idle it reads 0.
+  expect(setup.captureCharFrame()).toMatch(/out ~0 tk\/s/)
 
-    // Feed deltas until the meter reads a live rate.
-    await setup.waitFor(
-      async () => {
-        setup.events.emit(delta("assistant output chunk "))
-        await Bun.sleep(60)
-        await setup.renderOnce()
-        return /out ~[1-9]\d* tk\/s/.test(setup.captureCharFrame())
-      },
-      { maxPasses: 100 },
-    )
+  // Feed deltas until the meter reads a live rate.
+  await setup.waitFor(
+    async () => {
+      setup.events.emit(delta("assistant output chunk "))
+      await Bun.sleep(60)
+      await setup.renderOnce()
+      return /out ~[1-9]\d* tk\/s/.test(setup.captureCharFrame())
+    },
+    { maxPasses: 100 },
+  )
 
-    // No further deltas: the sliding window empties and the cell falls back to 0.
-    await Bun.sleep(2200)
-    await setup.renderOnce()
-    expect(setup.captureCharFrame()).toMatch(/out ~0 tk\/s/)
-  },
-  30_000,
-)
+  // No further deltas: the sliding window empties and the cell falls back to 0.
+  await Bun.sleep(2200)
+  await setup.renderOnce()
+  expect(setup.captureCharFrame()).toMatch(/out ~0 tk\/s/)
+}, 30_000)
 
 test("counts reasoning deltas in the output rate", async () => {
   await using setup = await createAppFixture({
-    config: { animations: false, tabs: { mode: "off" }, plugins: [pluginDirectory] },
+    config: { animations: false, tabs: { mode: "off" } },
     args: { sessionID: "ses_test" },
     fetch,
   })
@@ -110,9 +101,8 @@ test("counts reasoning deltas in the output rate", async () => {
   )
 }, 30_000)
 
-test("loads as an external plugin that appends to the prompt footer", async () => {
-  const module = (await Host.load(pluginEntry.href)) as { default: Plugin.Definition }
-  expect(module.default.id).toBe("opencode.prompt.tokens-per-second")
+test("ships as a built-in plugin that appends to the prompt footer", async () => {
+  expect(TokensPerSecond.id).toBe("opencode.prompt.tokens-per-second")
   let claim: { append?: string; render?: unknown } | undefined
   const fake = {
     ui: {
@@ -122,7 +112,7 @@ test("loads as an external plugin that appends to the prompt footer", async () =
       },
     },
   } as unknown as Plugin.Context
-  await module.default.setup(fake)
+  await TokensPerSecond.setup(fake)
   expect(claim?.append).toBe("prompt.footer")
   expect(typeof claim?.render).toBe("function")
 })

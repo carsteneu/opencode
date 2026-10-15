@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test"
-import { Host } from "@opencode/plugin/host"
 import { yesmemEntry } from "./opencode-yesmem-fixture"
 
 type MessagesModule = {
@@ -10,7 +9,7 @@ type MessagesModule = {
   patchTarget: (message: any) => any
 }
 
-const module = (await Host.load(yesmemEntry("messages.ts"))) as MessagesModule
+const module = (await import(yesmemEntry("messages.ts"))) as MessagesModule
 
 // Frames below are copied from the core that builds them
 // (packages/core/src/session/runner/to-llm-message.ts, packages/core/src/skill.ts).
