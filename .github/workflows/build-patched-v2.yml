@@ -66,7 +66,7 @@ name: build-patched-v2
 #
 # Manual route, for a build without publishing and for a hand-run release:
 #
-#   gh workflow run build-patched-v2.yml --repo carsteneu/opencode --ref v2-ci-release \
+#   gh workflow run build-patched-v2.yml --repo carsteneu/opencode --ref workingv2 \
 #     -f version=2.0.29-patched.1 -f publish=true
 #
 # GitHub resolves a dispatch by filename against the default branch, so this file has to
@@ -118,7 +118,7 @@ jobs:
       # patched-release-plan.ts refuses --publish from any other branch, and the guard
       # below refuses a dispatch from any other ref. Move this constant together with the
       # release branch of the v2 line.
-      OPENCODE_RELEASE_BRANCH: v2-ci-release
+      OPENCODE_RELEASE_BRANCH: workingv2
       # The two values every step below acts on, resolved once, and the route is one thing
       # only: a push of a tag. Both halves of that are asked for, because either one alone
       # admits a run that must not publish - a dispatch can be pointed at a tag ref

@@ -7,9 +7,9 @@ import { ForkRelease } from "@opencode/util/installation/fork-release"
 import { reportedVersion } from "../src/services/updater-action"
 import { planForkRelease, type KnownRelease } from "./patched-release-plan"
 
-// The branch that may publish. Overridable because this feature branch is not meant to
-// outlive the merge into the v2 release branch.
-const releaseBranch = process.env.OPENCODE_RELEASE_BRANCH?.trim() || "v2-release-align"
+// The branch that may publish. Overridable for a local run; the v2 line publishes from
+// workingv2, and a tag push does not need it at all (the tag is the release identity).
+const releaseBranch = process.env.OPENCODE_RELEASE_BRANCH?.trim() || "workingv2"
 const Release = Schema.Struct({
   assets: Schema.Array(Schema.Struct({ name: Schema.String, size: Schema.Number })),
   isDraft: Schema.Boolean,
