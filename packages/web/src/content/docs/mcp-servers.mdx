@@ -395,6 +395,29 @@ MCP server tools are registered with server name as prefix, so to disable all to
 
 ---
 
+## Reconnect
+
+A server that drops — a crashed process, a closed stream, a restarted host — is retried automatically. Failed
+attempts are grouped into episodes, and an episode retries on a piecewise schedule:
+
+| Failed attempts | Interval          |
+| --------------- | ----------------- |
+| 1–10            | every 10 seconds  |
+| 11–20           | every 100 seconds |
+| 21–30           | every 10 minutes  |
+| 31–40           | every hour        |
+| 41–100          | every 6 hours     |
+
+Retries are jittered so that many servers do not reconnect in lockstep. Every attempt re-resolves your config, so a
+fix you make while a server is down takes effect on the next attempt. While an episode is running, the server status
+shows the failure together with `retry N/100 in Xs`. A successful connect ends the episode and resets the counter.
+
+After 100 failed attempts OpenCode stops retrying and keeps the original error, without the retry hint. To run an
+episode again, fix the config (a config change reloads MCP servers) or use `/mcps`, which also disconnects a server
+without waiting for an episode to end.
+
+---
+
 ## Examples
 
 Below are examples of some common MCP servers. You can submit a PR if you want to document other servers.
