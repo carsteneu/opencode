@@ -51,6 +51,12 @@ const root = path.resolve(import.meta.dir, "../../..")
 const packageDir = path.join(root, "packages/cli")
 const head = (await run(["git", "rev-parse", "HEAD"], root)).trim()
 const branch = (await run(["git", "branch", "--show-current"], root)).trim()
+// A tag push is the publishing route: GitHub resolves it to refs/tags/<name>, checks that
+// commit out (a detached HEAD, so `branch` is empty) and reads this script from the tagged
+// commit. The tag then names the release and stands in for the branch as its identity; a
+// local run carries no such ref and keeps publishing from the release branch.
+const pushedTag = process.env.GITHUB_REF?.match(/^refs\/tags\/(.+)$/)?.[1]
+const tag = pushedTag ? ForkRelease.version(pushedTag) : undefined
 const worktree = (await run(["git", "status", "--short"], root)).trim()
 const packageVersion = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Struct({ version: Schema.String })))(
   await Bun.file(path.join(packageDir, "package.json")).text(),
@@ -63,6 +69,7 @@ let plan = planForkRelease({
   publish,
   releaseBranch,
   branch,
+  tag,
   worktree,
   packageVersion,
   releases: publish ? await knownReleases() : [],
@@ -131,6 +138,7 @@ if (publish) {
     publish,
     releaseBranch,
     branch,
+    tag,
     worktree: builtStatus,
     packageVersion,
     releases: await knownReleases(),
@@ -147,13 +155,23 @@ if (!publish) {
   process.exit(0)
 }
 
-await run(["git", "push", "fork", releaseBranch], root)
-const remote = (await run(["git", "rev-parse", `fork/${releaseBranch}`], root)).trim()
-if (remote !== head) throw new Error(`fork/${releaseBranch} is ${remote}, expected ${head}`)
+if (!tag) {
+  await run(["git", "push", "fork", releaseBranch], root)
+  const remote = (await run(["git", "rev-parse", `fork/${releaseBranch}`], root)).trim()
+  if (remote !== head) throw new Error(`fork/${releaseBranch} is ${remote}, expected ${head}`)
+}
 
 if (plan.action === "create") {
-  const remoteTag = (await run(["git", "ls-remote", "--tags", "fork", `refs/tags/${version}`], root)).trim()
-  if (remoteTag) throw new Error(`Remote tag ${version} already exists without a resumable draft release`)
+  // On the branch route the tag must not exist yet: gh creates it from this commit below.
+  // On the tag route it is what triggered the run, so it has to be on the fork and point at
+  // the commit that was checked out - the same remote-to-head binding the branch push gives
+  // above, and the only binding available once the tag pre-exists.
+  const remoteTag = await forkTagCommit()
+  if (tag) {
+    if (remoteTag !== head) throw new Error(`fork tag ${version} is ${remoteTag ?? "missing"}, expected ${head}`)
+  } else if (remoteTag) {
+    throw new Error(`Remote tag ${version} already exists without a resumable draft release`)
+  }
   await run(
     [
       "gh",
@@ -182,11 +200,17 @@ if (!staged) throw new Error(`Draft release ${version} disappeared after upload`
 const binarySize = Bun.file(binary).size
 const checksumSize = Bun.file(checksum).size
 const assets = new Map(staged.assets.map((item) => [item.name, item.size]))
+// GitHub documents target_commitish as unused when the tag already exists, so on the tag
+// route it can name something other than this commit even though the release is bound to
+// it through the tag (proven against the fork above). Its value is reported instead of
+// compared there; on the branch route it still has to be this commit.
+const commitishIsHead = tag ? true : staged.targetCommitish === head
+if (tag) console.log(`Tag-driven draft reports target_commitish ${JSON.stringify(staged.targetCommitish)}`)
 if (
   !staged.isDraft ||
   !staged.isPrerelease ||
   staged.tagName !== version ||
-  staged.targetCommitish !== head ||
+  !commitishIsHead ||
   assets.get(asset) !== binarySize ||
   assets.get(checksumAsset) !== checksumSize
 ) {
@@ -233,6 +257,15 @@ async function knownDraft() {
   if (result.code === 0) return Schema.decodeUnknownSync(Schema.fromJsonString(Draft))(result.stdout)
   if (/release not found|HTTP 404/i.test(result.stderr)) return undefined
   throw new Error(result.stderr.trim() || `Could not inspect release ${version}`)
+}
+
+/** Commit the fork's tag for this release points at, or undefined when the tag is absent. */
+async function forkTagCommit() {
+  const ref = `refs/tags/${version}`
+  const lines = (await run(["git", "ls-remote", "--tags", "fork", ref], root)).split("\n")
+  // ls-remote lists an annotated tag twice, the second time as `<ref>^{}` for the commit it
+  // peels to; the release tags are created lightweight, so the plain ref is the one to read.
+  return lines.find((line) => line.trim().endsWith(ref))?.split(/\s+/)[0]
 }
 
 async function containsMarker(file: string, marker: string) {
