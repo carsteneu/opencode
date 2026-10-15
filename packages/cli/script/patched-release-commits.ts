@@ -65,23 +65,35 @@ export async function releaseCommits(
 /** The commit upstream released `base` with, from either of the two lines it publishes on. */
 async function upstreamRelease(git: Git, input: { readonly base: string; readonly head: string }) {
   const base = input.base.replaceAll(".", "\\.")
-  const subjects = [`^release: v${base}$`, `^sync release versions for v${base}`]
-  const found = (await git(["rev-list", "--max-count=1", ...subjects.flatMap((subject) => ["--grep", subject]), input.head])).trim()
-  return found === "" ? undefined : found
+  const markers = [`^release: v${base}$`, `^sync release versions for v${base}`]
+  // git matches every line of a commit message, and a body line would move the boundary this
+  // exclusion rests on. Upstream names these commits in the subject, and only a subject counts.
+  const candidates = await git([
+    "log",
+    "--max-count=50",
+    "--pretty=format:%H%x09%s",
+    ...markers.flatMap((marker) => ["--grep", marker]),
+    input.head,
+  ])
+  for (const line of candidates.split("\n")) {
+    const [hash, ...subject] = line.split("\t")
+    if (hash === undefined) continue
+    if (markers.some((marker) => new RegExp(marker).test(subject.join("\t")))) return hash
+  }
+  return undefined
 }
 
 /** Whether a release is an ancestor of the head, which is what puts it on the same line. */
 async function onThisLine(git: Git, previous: string, head: string) {
-  let commit: string
+  let counts: string
   try {
-    commit = (await git(["rev-parse", `${previous}^{commit}`])).trim()
+    counts = await git(["rev-list", "--left-right", "--count", `${previous}...${head}`])
   } catch (cause) {
     throw new Error(`Cannot read ${previous}: is that tag in this clone?`, { cause })
   }
-  // Two releases with no common ancestor exit 1 with no output — the lines in this channel do not
-  // all share a history. Both revisions are resolved by now, so a failure here cannot be an
-  // unknown ref.
-  return (await git(["merge-base", commit, head]).catch(() => "")).trim() === commit
+  // No commit of that release is missing from the head: it stands behind the head, so it is on
+  // this line. Two lines with nothing in common report commits on both sides instead of failing.
+  return counts.trim().split(/\s+/)[0] === "0"
 }
 
 function parse(log: string): ReadonlyArray<ReleaseCommit> {

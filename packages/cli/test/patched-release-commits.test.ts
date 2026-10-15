@@ -136,6 +136,28 @@ describe("releaseCommits", () => {
     })
   })
 
+  test("only a subject marks the upstream commit, not a line in a body", async () => {
+    await using directory = await tmpdir()
+    const { git, commit } = await repository(directory.path)
+    await commit("release: v2.0.29")
+    await commit("feat(cli): an older commit")
+    await git(["tag", `2.0.29-${channel}.1`])
+    await commit("fix(cli): a commit since the previous prerelease")
+    // git matches every line of a message, so a body line naming the base would move the boundary
+    // the exclusion rests on and drop our own older commits from the list.
+    await git(["commit", "--quiet", "--allow-empty", "-m", "fix(cli): port it", "-m", "release: v2.0.29"])
+    await commit("docs: a later commit")
+
+    expect(await releaseCommits(git, { previous: `2.0.29-${channel}.1`, base: "2.0.29", head: "HEAD" })).toEqual({
+      previous: `2.0.29-${channel}.1`,
+      commits: [
+        { hash: expect.any(String), subject: "docs: a later commit" },
+        { hash: expect.any(String), subject: "fix(cli): port it" },
+        { hash: expect.any(String), subject: "fix(cli): a commit since the previous prerelease" },
+      ],
+    })
+  })
+
   test("refuses a base change whose upstream release commit is not in this history", async () => {
     await using directory = await tmpdir()
     const { git, commit } = await repository(directory.path)
