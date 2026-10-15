@@ -37,6 +37,10 @@ on:
         type: boolean
         default: false
 
+# Baseline for any job added later; the job below widens it for the publishing path.
+permissions:
+  contents: read
+
 jobs:
   build-patched:
     name: Build patched OpenCode (linux-x64)
@@ -67,26 +71,41 @@ jobs:
             echo "This workflow builds and publishes only from carsteneu/opencode, not $GITHUB_REPOSITORY"
             exit 1
           fi
-          if [ "$GITHUB_REF_NAME" != "$OPENCODE_RELEASE_BRANCH" ]; then
-            echo "Dispatch this workflow on $OPENCODE_RELEASE_BRANCH, not $GITHUB_REF_NAME"
+          case "$VERSION" in
+            *[[:space:]]*) echo "version must not contain whitespace"; exit 1 ;;
+          esac
+          # The ref type matters: a tag of the same name would otherwise check out a
+          # detached commit and build a version that no branch claims.
+          if [ "$GITHUB_REF" != "refs/heads/$OPENCODE_RELEASE_BRANCH" ]; then
+            echo "Dispatch this workflow on refs/heads/$OPENCODE_RELEASE_BRANCH, not $GITHUB_REF"
             exit 1
           fi
 
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          # No credential in the workspace: the release branch push gets its token from
+          # the fork remote below, so the dependency install above runs without one.
+          persist-credentials: false
 
       - name: Setup Bun
         uses: ./.github/actions/setup-bun
 
       - name: Add the fork remote
         # patched-release.ts pushes the release branch to a remote named `fork` and
-        # re-reads it before it creates the draft.
-        run: git remote add fork "$(git remote get-url origin)"
+        # re-reads it before it creates the draft. The credential is scoped to this
+        # step and to github.com, and the remote URL stays token-free.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git remote add fork "https://github.com/${GITHUB_REPOSITORY}.git"
+          git config --local "http.https://github.com/.extraheader" \
+            "AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
 
       - name: Build, verify and publish
         working-directory: packages/cli
-        # Scoped to this step: it is the only one that calls gh, which keeps a
-        # repository-write token away from the dependency install above.
+        # Scoped to this step: it is the only one that calls gh.
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
