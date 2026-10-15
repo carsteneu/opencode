@@ -12,6 +12,7 @@ import { reasoningSummary } from "../../context/thinking"
 import { usePlugin } from "../../plugin/context"
 import { SplitBorder } from "../../ui/border"
 import { Locale } from "../../util/locale"
+import { withDefaultFenceLanguage } from "../../util/markdown-fence"
 import { use } from "./render-context"
 import { generateThinkingSyntax } from "./thinking-syntax"
 import { canonicalToolName } from "../../util/tool-display"
@@ -90,7 +91,7 @@ export function ReasoningPart(props: {
                 drawUnstyledText={false}
                 streaming={true}
                 syntaxStyle={thinkingSyntax()}
-                content={summary().body}
+                content={ctx.markdownMode() === "rendered" ? withDefaultFenceLanguage(summary().body) : summary().body}
                 conceal={ctx.markdownMode() === "rendered"}
                 fg={theme.text.muted}
               />
@@ -161,7 +162,7 @@ export function TextPart(props: {
         <markdown
           syntaxStyle={syntax()}
           renderNode={plugins.markdown()}
-          content={props.part.text.trim()}
+          content={withDefaultFenceLanguage(props.part.text.trim())}
           streaming={props.message.time.completed === undefined}
           internalBlockMode="top-level"
           tableOptions={{ style: "grid", cellPaddingX: 1 }}

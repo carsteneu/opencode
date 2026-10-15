@@ -6,6 +6,7 @@ import { createSyntaxStyleMemo, useTheme, useThemes } from "../../context/theme"
 import { groupsReasoning, reasoningSummary } from "../../context/thinking"
 import { SplitBorder } from "../../ui/border"
 import { Locale } from "../../util/locale"
+import { withDefaultFenceLanguage } from "../../util/markdown-fence"
 import { EntryAnchor, GroupAnchor, visitEntries } from "./anchor-view"
 import { groupID } from "./anchors"
 import { instructionPaths, type PartRef, type SessionEntry, type SessionGroup, type SessionNode } from "./grouping/session"
@@ -390,7 +391,7 @@ function ThoughtEntry(props: { entry: SessionEntry; message: Renderers["message"
             drawUnstyledText={false}
             streaming={part()?.time?.completed === undefined && message()?.time.completed === undefined}
             syntaxStyle={thinkingSyntax()}
-            content={content()}
+            content={ctx.markdownMode() === "rendered" ? withDefaultFenceLanguage(content()) : content()}
             conceal={ctx.markdownMode() === "rendered"}
             fg={theme.text.muted}
           />
