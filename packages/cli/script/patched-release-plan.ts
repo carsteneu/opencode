@@ -27,12 +27,21 @@ export type ReleasePlan =
  * contract, so the pipeline cannot drift from what the clients select. Ordering uses the
  * client's own comparator for the same reason: a release the pipeline ranks as newer has
  * to be one the clients would install.
+ *
+ * A publish has two admissible identities: the release branch (a manual run) and the tag
+ * that names exactly the version being released (the tag-push route).
  */
 export function planForkRelease(input: {
   readonly version: string
   readonly publish: boolean
   readonly releaseBranch: string
   readonly branch: string
+  /**
+   * The release tag this run is checked out at, normalised through the contract, or
+   * undefined when the run is not driven by a tag. A tag push checks out a detached HEAD,
+   * so the tag in its own right - not a branch - is the release identity there.
+   */
+  readonly tag: string | undefined
   readonly worktree: string
   readonly packageVersion: string
   readonly releases: ReadonlyArray<KnownRelease>
@@ -44,8 +53,11 @@ export function planForkRelease(input: {
   const base = releaseBase(input.version)
   if (base !== input.packageVersion)
     return refuse(`Release base ${base} does not match packages/cli version ${input.packageVersion}`)
-  if (input.publish && input.branch !== input.releaseBranch)
-    return refuse(`Fork releases must be published from ${input.releaseBranch}, got ${input.branch}`)
+  if (input.publish && input.branch !== input.releaseBranch && input.tag !== input.version)
+    return refuse(
+      `Fork releases must be published from ${input.releaseBranch} or from the tag ${input.version}, ` +
+        `got ${input.branch || "a detached HEAD"}`,
+    )
   if (input.publish && input.worktree)
     return refuse(`Worktree must be clean before publishing:\n${input.worktree}`)
 
@@ -59,7 +71,11 @@ export function planForkRelease(input: {
         `Published release ${input.version} already exists. Publish ${nextForkVersion(input.version)} instead: ` +
           `installs only move forward by version number, so reusing one leaves every client that already has it behind.`,
       )
-    if (input.existing.targetCommitish !== input.head || !input.existing.isPrerelease)
+    if (!input.existing.isPrerelease)
+      return refuse(`Existing draft does not match this release: ${JSON.stringify(input.existing)}`)
+    // A tag-driven release is bound to its commit by the tag itself, which the release
+    // script proves against the fork, so the commitish field adds nothing there.
+    if (!input.tag && input.existing.targetCommitish !== input.head)
       return refuse(`Existing draft does not match this release: ${JSON.stringify(input.existing)}`)
     return { action: "resume" }
   }
