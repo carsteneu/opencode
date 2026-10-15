@@ -1,0 +1,103 @@
+name: build-patched-v2
+
+# Builds — and optionally publishes — a patched fork prerelease for Linux x64.
+#
+# The pipeline deliberately owns no release logic. Guards, artifact verification,
+# version check, draft verification, the checksum round-trip and the publish step all
+# live in the repository (packages/cli/script/patched-release.ts and
+# patched-release-plan.ts) and the channel contract lives in
+# packages/util/src/installation/fork-release.ts, so the tag shape, the ordering rule
+# and the asset names cannot drift between the pipeline and the updater.
+#
+# Dispatch route (GitHub resolves workflow_dispatch by filename against the default
+# branch, so this file has to exist on `dev` as well as on the branch it runs):
+#
+#   gh workflow run build-patched-v2.yml --repo carsteneu/opencode --ref v2-ci-release \
+#     -f version=2.0.26-patched.4 -f publish=true
+#
+# publish defaults to false, the path that touches nothing shared: the job builds,
+# verifies and uploads the action artifacts but creates no release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Patched version to build (x.y.z-patched.n)"
+        required: true
+        type: string
+      publish:
+        description: "true = create the draft release, verify the checksum round-trip and publish it"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-patched-v2-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-patched:
+    name: Build patched OpenCode (linux-x64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ inputs.version }}
+      # patched-release-plan.ts refuses --publish from any other branch. Keep this in
+      # step with the release branch of the v2 line.
+      OPENCODE_RELEASE_BRANCH: v2-ci-release
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - name: Assert the release repository
+        # The release contract pins carsteneu/opencode and the runner's own token is what
+        # pushes and publishes; a run anywhere else has to stop here instead of trying.
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REPOSITORY" != "carsteneu/opencode" ]; then
+            echo "This workflow publishes only from carsteneu/opencode, not $GITHUB_REPOSITORY"
+            exit 1
+          fi
+
+      - name: Add the fork remote
+        # patched-release.ts pushes the release branch to a remote named `fork` and
+        # re-reads it before it creates the draft.
+        run: git remote add fork "$(git remote get-url origin)"
+
+      - name: Build, verify and publish
+        working-directory: packages/cli
+        run: |
+          set -euo pipefail
+          if [ "${{ inputs.publish }}" = "true" ]; then
+            bun run release:patched "$VERSION" --publish
+          else
+            bun run release:patched "$VERSION"
+          fi
+
+      - name: Upload patched binaries
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: patched-binaries-${{ inputs.version }}
+          path: packages/cli/dist/patched-release/
+          if-no-files-found: error
+
+      - name: Round-trip the uploaded artifacts
+        # The publish path re-downloads its checksum from the release; without a release
+        # this is the same check against the uploaded artifact: the sidecar has to hash
+        # the binary that travelled with it.
+        if: ${{ !inputs.publish }}
+        run: |
+          set -euo pipefail
+          mkdir -p round-trip
+          gh run download "$GITHUB_RUN_ID" --name "patched-binaries-$VERSION" --dir round-trip
+          cd round-trip
+          sha256sum --check opencode-linux-x64.sha256
