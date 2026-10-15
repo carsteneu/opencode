@@ -138,12 +138,12 @@ describe.skipIf(ref === undefined)(`the shared channel against the frozen 1.x li
     expect(v1Source()).toContain('smoke.stdout.trim().replace(/^v/, "") !== normalizedTarget')
   })
 
-  test("the version the 2.x CLI reports satisfies the 1.x probe", () => {
+  test("the 1.x probe takes the bare shape the 2.x CLI reports and rejects the banner", () => {
     // 1.x accepts the bare version it prints itself...
     expect(v1ProbeAccepts("1.18.34-patched.219", "1.18.34-patched.219")).toBe(true)
-    // ...and the 2.x CLI reports that same bare shape, so the transfer's last step passes.
-    // cli-version.test.ts runs the real CLI and asserts this against its actual output; the
-    // banner shape it used to print stays rejected, which is what made the transfer fail.
+    // ...and the 2.x CLI reports that same bare shape. This test only models the comparison:
+    // cli-version.test.ts runs the real CLI to prove the output, and the release script
+    // refuses a build whose binary reports anything other than the bare version.
     expect(v1ProbeAccepts("2.0.26-patched.2", "2.0.26-patched.2")).toBe(true)
     expect(v1ProbeAccepts("opencode v2.0.26-patched.2", "2.0.26-patched.2")).toBe(false)
   })

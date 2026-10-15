@@ -114,7 +114,7 @@ describe.skipIf(!supported)("fork update channel", () => {
       `/assets/${patched}/${binaryAsset}`,
     ])
     const version = Bun.spawnSync([result.binary])
-    expect(version.stdout.toString().trim()).toBe(`opencode v${patched}`)
+    expect(version.stdout.toString().trim()).toBe(patched)
   })
 
   test("picks the newest release and ignores drafts, published and incomplete ones", async () => {

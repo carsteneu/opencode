@@ -22,10 +22,10 @@ export * as ForkRelease from "./fork-release.js"
  *     first 2.x prerelease moves every 1.x patched install on the default policy
  *     to 2.x.
  *   - The frozen 1.x release script refuses to publish unless its own version is
- *     newer than the newest published patched prerelease, which it ranks across
- *     the whole channel. While a 2.x prerelease is the newest entry, the 1.x line
- *     can only stage drafts. That line is frozen, so this is the intended end
- *     state.
+ *     newer than the newest published patched prerelease, which it ranks across the
+ *     whole channel. While a 2.x prerelease is the newest entry, the 1.x line can
+ *     still build and stage a release locally, but it cannot create or publish one.
+ *     That line is frozen, so this is the intended end state.
  */
 
 export const repository = "carsteneu/opencode"
