@@ -45,6 +45,9 @@ jobs:
     timeout-minutes: 90
     permissions:
       contents: write
+      # The safe path re-downloads its own uploaded artifact; the explicit block
+      # replaces the defaults, so actions: read has to be listed to keep that step.
+      actions: read
     env:
       GH_TOKEN: ${{ github.token }}
       VERSION: ${{ inputs.version }}
