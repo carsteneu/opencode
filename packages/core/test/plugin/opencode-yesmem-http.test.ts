@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test"
 import { createServer } from "node:http"
-import { Host } from "@opencode/plugin/host"
 import { yesmemEntry } from "./opencode-yesmem-fixture"
 
 type HttpModule = { readBodyCapped: (response: Response, maxChars?: number) => Promise<string> }
@@ -28,7 +27,7 @@ async function streamingServer(chunkCount: number) {
 
 describe("capped body reader", () => {
   test("stops reading at the budget instead of buffering the whole body", async () => {
-    const module = (await Host.load(yesmemEntry("http.ts"))) as HttpModule
+    const module = (await import(yesmemEntry("http.ts"))) as HttpModule
     const server = await streamingServer(200) // ~12 MiB available
     try {
       const response = await fetch(server.url)
@@ -41,7 +40,7 @@ describe("capped body reader", () => {
   })
 
   test("returns the whole body when it fits", async () => {
-    const module = (await Host.load(yesmemEntry("http.ts"))) as HttpModule
+    const module = (await import(yesmemEntry("http.ts"))) as HttpModule
     const server = await streamingServer(0)
     try {
       const response = await fetch(server.url)

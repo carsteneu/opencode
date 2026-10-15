@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test"
-import { Host } from "@opencode/plugin/host"
 import {
   fakeContext,
   loadPlugin,
@@ -250,7 +249,7 @@ describe("code_nav read blocking", () => {
 
 describe("code_nav file classification", () => {
   test("separates source files from documentation and build metadata", async () => {
-    const module = (await Host.load(yesmemEntry("code_nav.ts"))) as CodeNavModule
+    const module = (await import(yesmemEntry("code_nav.ts"))) as CodeNavModule
 
     for (const file of [
       "LICENSE",

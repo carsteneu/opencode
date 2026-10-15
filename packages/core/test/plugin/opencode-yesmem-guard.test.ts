@@ -3,7 +3,6 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { createServer } from "node:http"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { Host } from "@opencode/plugin/host"
 import {
   fakeContext,
   loadPlugin,
@@ -257,7 +256,7 @@ describe("rule_guard", () => {
 
 describe("rule_guard config scan", () => {
   test("reads the extraction model and provider targets without a YAML dependency", async () => {
-    const module = (await Host.load(yesmemEntry("rule_guard.ts"))) as GuardModule
+    const module = (await import(yesmemEntry("rule_guard.ts"))) as GuardModule
 
     const config = module.parseGuardConfig(`# yesmem config
 proxy:
@@ -278,7 +277,7 @@ extraction:
   })
 
   test("returns nothing for a missing or unrelated document", async () => {
-    const module = (await Host.load(yesmemEntry("rule_guard.ts"))) as GuardModule
+    const module = (await import(yesmemEntry("rule_guard.ts"))) as GuardModule
     expect(module.parseGuardConfig("")).toEqual({ providerTargets: {} })
     expect(module.parseGuardConfig("other:\n  key: value\n")).toEqual({ providerTargets: {} })
   })

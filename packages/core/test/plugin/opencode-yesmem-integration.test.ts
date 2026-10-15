@@ -1,20 +1,16 @@
-import { fileURLToPath } from "node:url"
 import { expect } from "bun:test"
 import { Agent } from "@opencode/core/agent"
 import { Plugin } from "@opencode/core/plugin"
-import { PluginModule } from "@opencode/core/plugin/module"
 import { Tool } from "@opencode/core/tool"
-import { Watcher } from "@opencode/core/filesystem/watcher"
 import { Session } from "@opencode/schema/session"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Cause, Effect, Exit, Schema } from "effect"
+import yesmem from "../../src/plugin/yesmem/index"
 import { testEffect } from "../lib/effect"
 import { PluginTestLayer } from "./fixture"
 import { mockDaemon, type DaemonRequest } from "./opencode-yesmem-fixture"
 
 const it = testEffect(PluginTestLayer)
-
-const pluginDirectory = fileURLToPath(new URL("../../../../.opencode/plugin-suite/opencode-yesmem", import.meta.url))
 
 const daemonHandler = (request: DaemonRequest) => {
   if (request.method === "search_code_index") return { result: { text: "Found 12 matches" } }
@@ -37,8 +33,9 @@ const firstFailure = (cause: Cause.Cause<unknown>) => {
 let previousSocket: string | undefined
 
 /**
- * Drives the plugin through the real core plugin host: the same module loader, the same hook dispatcher,
- * the same tool execution path the server uses.
+ * Drives the plugin through the real core plugin host: the same registry, the same hook dispatcher, the
+ * same tool execution path the server uses. `internal.ts` hands the supervisor exactly this definition
+ * (same object, tagged as the built-in revision), so this is the built-in activation path.
  */
 function scenario(filePath: string) {
   return Effect.gen(function* () {
@@ -51,10 +48,7 @@ function scenario(filePath: string) {
     process.env.YESMEM_SOCKET = daemon.socketPath
 
     const plugins = yield* Plugin.Service
-    const modules = yield* PluginModule.make().pipe(Effect.provide(Watcher.testLayer))
-    const definition = yield* modules.load({ type: "add", target: pluginDirectory, options: {} })
-    if ("pending" in definition || "blocked" in definition) return yield* Effect.die("plugin was not loaded")
-    yield* plugins.activate([definition])
+    yield* plugins.activate([{ ...yesmem, revision: "internal", source: { type: "builtin" as const } }])
 
     // A tool named `read` whose executor records that it ran.
     const tools = yield* Tool.Service

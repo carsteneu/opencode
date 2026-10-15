@@ -104,6 +104,7 @@ import { VcsGitPlugin } from "./vcs/git.js"
 import { VerbosityPlugin } from "./verbosity.js"
 import { WarmingPlugin } from "./warming.js"
 import { WellKnownPlugin } from "../wellknown/plugin.js"
+import YesMemPlugin from "./yesmem/index.js"
 
 const services = [
   Agent.Service,
@@ -247,6 +248,10 @@ const pre = [
   WebSearchTool.Plugin,
   WriteTool.Plugin,
   WarmingPlugin.Plugin,
+  // Last of the internal plugins on purpose: configured and instance plugins activate between the pre and
+  // post lists, so the tail of pre is where this fork plugin used to register its hooks when it was loaded
+  // from a plugin directory, keeping the hook order of pre -> this plugin -> post unchanged.
+  YesMemPlugin,
 ] as const satisfies readonly InternalPlugin[]
 
 const post = [
