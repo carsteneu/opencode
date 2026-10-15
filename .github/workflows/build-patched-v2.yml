@@ -104,11 +104,14 @@ jobs:
         uses: ./.github/actions/setup-bun
 
       - name: Add the fork remote
-        # patched-release.ts pushes the release branch to a remote named `fork` and
-        # re-reads it before it creates the draft. GH_TOKEN enters the environment only
-        # for this step; the credential it writes lives in .git/config for the rest of
-        # the job because the later push and ls-remote depend on it, and the remote URL
-        # itself stays token-free.
+        # Only the publishing path touches the remote: with publish=false the script
+        # exits before any git call, so the credential is never written on the default
+        # path. patched-release.ts pushes the release branch to a remote named `fork`
+        # and re-reads it before it creates the draft. GH_TOKEN enters the environment
+        # only for this step; the credential it writes lives in .git/config for the rest
+        # of the job because the later push and ls-remote depend on it, and the remote
+        # URL itself stays token-free.
+        if: ${{ inputs.publish }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -120,12 +123,14 @@ jobs:
       - name: Build, verify and publish
         working-directory: packages/cli
         # A repository-write credential is set only where it is used: this step calls gh,
-        # the fork remote above needs it for the git push.
+        # the fork remote above needs it for the git push. The inputs go in through the
+        # environment rather than into shell source.
         env:
           GH_TOKEN: ${{ github.token }}
+          PUBLISH: ${{ inputs.publish }}
         run: |
           set -euo pipefail
-          if [ "${{ inputs.publish }}" = "true" ]; then
+          if [ "$PUBLISH" = "true" ]; then
             bun run release:patched "$VERSION" --publish
           else
             bun run release:patched "$VERSION"
