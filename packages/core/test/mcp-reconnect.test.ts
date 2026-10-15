@@ -231,6 +231,53 @@ it.live(
 )
 
 it.live(
+  "ends the episode when the server is disconnected",
+  () =>
+    withTempDir((tmp) =>
+      Effect.gen(function* () {
+        const mcp = yield* Mcp.Service
+        yield* mcp.add(
+          "cancelled",
+          local({ MCP_RECONNECT_PID_FILE: path.join(tmp.path, "server.pid"), MCP_RECONNECT_MARKER: path.join(tmp.path, "available") }),
+        )
+        yield* until(mcp, "cancelled", retrying)
+
+        yield* mcp.disconnect("cancelled")
+        // Several bands pass here: an episode that survived would write its hint back.
+        yield* Effect.sleep("600 millis")
+        const found = (yield* mcp.servers()).find((server) => server.name === "cancelled")
+        expect(found?.status.status).toBe("disabled")
+      }).pipe(Effect.provide(reconnectLayer(reconnect))),
+    ),
+  30_000,
+)
+
+it.live(
+  "keeps its episode across a reload with an unchanged configuration",
+  () =>
+    withTempDir((tmp) =>
+      Effect.gen(function* () {
+        const pidFile = path.join(tmp.path, "server.pid")
+        const marker = path.join(tmp.path, "available")
+        const mcp = yield* Mcp.Service
+        yield* mcp.add("reloaded", local({ MCP_RECONNECT_PID_FILE: pidFile, MCP_RECONNECT_MARKER: marker }))
+        yield* until(mcp, "reloaded", retrying)
+
+        // Re-resolving an unchanged configuration is not a config change: it must neither cancel the
+        // episode nor arm a second one, and the server still has to come up on its own.
+        yield* mcp.reload()
+        const kept = yield* until(mcp, "reloaded", retrying)
+        expect(failure(kept)).toMatch(/retry \d+\/100 in/)
+
+        yield* Effect.promise(() => Bun.write(marker, "yes"))
+        yield* until(mcp, "reloaded", (status) => status.status === "connected")
+        expect(yield* toolNames(mcp)).toEqual(["current_directory"])
+      }).pipe(Effect.provide(reconnectLayer(reconnect))),
+    ),
+  30_000,
+)
+
+it.live(
   "gives up after the configured attempts with the original error and without the retry hint",
   () =>
     withTempDir((tmp) =>

@@ -517,7 +517,9 @@ export const layer = (options?: Options) =>
 
       // A defect or an interruption must not leave the registry entry behind: `startEpisode` refuses
       // to arm a second scheduler for a name, so a stale entry would silently end automatic
-      // reconnection for that server. The identity check leaves a replacement episode intact.
+      // reconnection for that server. The ordinary exits still clear the entry themselves, so the
+      // window in which an arm would be refused stays as short as possible; the identity check leaves
+      // a replacement episode intact either way.
       const reconnectLoop = (name: ServerName, episode: ReconnectEpisode) =>
         retryServer(name, episode).pipe(
           Effect.ensuring(
