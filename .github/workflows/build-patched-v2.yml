@@ -2,13 +2,15 @@ name: build-patched-v2
 
 # Builds — and optionally publishes — a patched fork prerelease for Linux x64.
 #
-# The pipeline deliberately owns no release logic and no release constants. The guards,
-# the artifact verification, the version check, the draft verification, the checksum
-# round-trip and the publish step all live in the repository
-# (packages/cli/script/patched-release.ts and patched-release-plan.ts) and the channel
-# contract lives in packages/util/src/installation/fork-release.ts, so the tag shape,
-# the ordering rule and the asset names cannot drift between the pipeline and the
-# updater. This file only decides which of those entry points runs.
+# The pipeline deliberately owns no release logic. The guards, the artifact
+# verification, the version check, the draft verification, the checksum round-trip and
+# the publish step all live in the repository (packages/cli/script/patched-release.ts
+# and patched-release-plan.ts) and the channel contract lives in
+# packages/util/src/installation/fork-release.ts, so the tag shape, the ordering rule
+# and the asset names cannot drift between the pipeline and the updater. This file only
+# decides which of those entry points runs; the two constants it does carry — the
+# release repository and the release branch — are the ones it has to compare itself
+# against, and the branch is handed to the script as its documented override.
 #
 # Dispatch route (GitHub resolves workflow_dispatch by filename against the default
 # branch, so this file has to exist on `dev` as well as on the branch it runs; a run
@@ -21,6 +23,13 @@ name: build-patched-v2
 # publish defaults to false, the path that touches no shared state: the job builds,
 # verifies and uploads the action artifact but creates no release. The checksum
 # round-trip belongs to the publishing path and runs there, inside the script.
+#
+# A publish run that dies after it created the draft leaves the draft behind: the next
+# run resumes a draft that points at the same commit, and refuses one that points
+# elsewhere (patched-release-plan.ts). Clear a stale draft before re-dispatching that
+# version:
+#
+#   gh release delete <version> --repo carsteneu/opencode --cleanup-tag --yes
 
 run-name: build patched ${{ inputs.version }} (publish=${{ inputs.publish }})
 
@@ -54,10 +63,13 @@ jobs:
       # below refuses a run dispatched from any other ref. Move this constant together
       # with the release branch of the v2 line.
       OPENCODE_RELEASE_BRANCH: v2-ci-release
-    # Same version, same intent: serialize. Different versions stay independent, so a
-    # queued run cannot silently displace another version's pending run.
+    # One group for the whole workflow: two runs that both publish must not overlap,
+    # because the "newer than the newest published" rule is checked before the build and
+    # the channel changes only at the publish step (patched-release.ts re-reads it, but
+    # not atomically). A run queued behind another can be displaced; for a publishing
+    # pipeline serialization is the safer side of that trade.
     concurrency:
-      group: build-patched-v2-${{ inputs.version }}
+      group: build-patched-v2
       cancel-in-progress: false
     steps:
       - name: Assert the release repository and branch
@@ -85,7 +97,7 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           # No credential in the workspace: the release branch push gets its token from
-          # the fork remote below, so the dependency install above runs without one.
+          # the fork remote below, so the dependency install that follows runs without.
           persist-credentials: false
 
       - name: Setup Bun
@@ -93,8 +105,10 @@ jobs:
 
       - name: Add the fork remote
         # patched-release.ts pushes the release branch to a remote named `fork` and
-        # re-reads it before it creates the draft. The credential is scoped to this
-        # step and to github.com, and the remote URL stays token-free.
+        # re-reads it before it creates the draft. GH_TOKEN enters the environment only
+        # for this step; the credential it writes lives in .git/config for the rest of
+        # the job because the later push and ls-remote depend on it, and the remote URL
+        # itself stays token-free.
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -105,7 +119,8 @@ jobs:
 
       - name: Build, verify and publish
         working-directory: packages/cli
-        # Scoped to this step: it is the only one that calls gh.
+        # A repository-write credential is set only where it is used: this step calls gh,
+        # the fork remote above needs it for the git push.
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
