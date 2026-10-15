@@ -37,7 +37,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Patched version to build (x.y.z-patched.n)"
+        description: "Patched version to build, e.g. 2.0.26-patched.4"
         required: true
         type: string
       publish:
@@ -46,7 +46,8 @@ on:
         type: boolean
         default: false
 
-# Baseline for any job added later; the job below widens it for the publishing path.
+# Baseline for any job added later: the job below replaces it with the write access the
+# publishing path needs.
 permissions:
   contents: read
 
@@ -63,10 +64,12 @@ jobs:
       # below refuses a run dispatched from any other ref. Move this constant together
       # with the release branch of the v2 line.
       OPENCODE_RELEASE_BRANCH: v2-ci-release
-    # One group for the whole workflow: two runs that both publish must not overlap,
-    # because the "newer than the newest published" rule is checked before the build and
-    # the channel changes only at the publish step (patched-release.ts re-reads it, but
-    # not atomically). A run queued behind another can be displaced; for a publishing
+    # One group for the whole workflow: two runs of THIS workflow that both publish must
+    # not overlap, because the "newer than the newest published" rule is checked before
+    # the build and the channel changes only at the publish step (patched-release.ts
+    # re-reads it, but not atomically). The group serializes this workflow only — the 1.x
+    # matrix workflow carries its own group and can be dispatched to the same channel
+    # independently. A run queued behind another can be displaced; for a publishing
     # pipeline serialization is the safer side of that trade.
     concurrency:
       group: build-patched-v2
@@ -105,12 +108,13 @@ jobs:
 
       - name: Add the fork remote
         # Only the publishing path touches the remote: with publish=false the script
-        # exits before any git call, so the credential is never written on the default
-        # path. patched-release.ts pushes the release branch to a remote named `fork`
-        # and re-reads it before it creates the draft. GH_TOKEN enters the environment
-        # only for this step; the credential it writes lives in .git/config for the rest
-        # of the job because the later push and ls-remote depend on it, and the remote
-        # URL itself stays token-free.
+        # exits before it reaches the `fork` remote (the git calls before that point are
+        # local reads, patched-release.ts:52-54 vs the exit at :145-148). patched-release.ts
+        # pushes the release branch to a remote named `fork` and re-reads it before it
+        # creates the draft. GH_TOKEN enters the environment only for this step; the
+        # credential it writes lives in .git/config for the rest of the job because the
+        # later push and ls-remote depend on it, and the remote URL itself stays
+        # token-free.
         if: ${{ inputs.publish }}
         env:
           GH_TOKEN: ${{ github.token }}
@@ -123,10 +127,11 @@ jobs:
       - name: Build, verify and publish
         working-directory: packages/cli
         # A repository-write credential is set only where it is used: this step calls gh,
-        # the fork remote above needs it for the git push. The inputs go in through the
-        # environment rather than into shell source.
+        # the fork remote above needs it for the git push. On the default path the script
+        # never reaches gh (patched-release.ts:68-69), so the token is empty there. The
+        # inputs go in through the environment rather than into shell source.
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ inputs.publish && github.token || '' }}
           PUBLISH: ${{ inputs.publish }}
         run: |
           set -euo pipefail
