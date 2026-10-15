@@ -6,7 +6,7 @@ import { ephemeral } from "@opencode/schema/event"
 import type { Session } from "@opencode/schema/session"
 import { createHash } from "node:crypto"
 import { isDeepStrictEqual } from "node:util"
-import { Cause, Context, Effect, Exit, FiberSet, Latch, Layer, Schema, Scope, Semaphore, Stream, Types } from "effect"
+import { Cause, Context, Effect, Exit, Fiber, FiberSet, Latch, Layer, Schema, Scope, Semaphore, Stream, Types } from "effect"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { Credential } from "../credential.js"
 import { Bus } from "../bus.js"
@@ -62,6 +62,35 @@ export class ToolCallError extends Schema.TaggedError<ToolCallError>()("MCP.Tool
   message: Schema.String,
 }) {}
 
+// Auto-reconnect: a server that fails or loses its connection retries on a piecewise schedule,
+// giving up only after `maxAttempts` failed attempts. Bands by upcoming attempt number, in groups
+// of `bandSize`: 1-10 every 10s, 11-20 every 100s, 21-30 every 10min, 31-40 every 1h, 41-100 every
+// 6h. Jitter spreads retries so many servers do not reconnect in lockstep.
+const RECONNECT_MAX_ATTEMPTS = 100
+const RECONNECT_BANDS = [10_000, 100_000, 600_000, 3_600_000, 21_600_000]
+const RECONNECT_BAND_SIZE = 10
+const RECONNECT_JITTER = () => 0.8 + Math.random() * 0.4
+
+/** Automatic-reconnect schedule; every field falls back to the production value below. */
+export interface Reconnect {
+  /** Failed attempts before the episode is abandoned. */
+  readonly maxAttempts?: number
+  /** Wait in ms for each group of `bandSize` attempts; the last band covers the remaining attempts. */
+  readonly bands?: ReadonlyArray<number>
+  readonly bandSize?: number
+  /** Multiplies the band wait. */
+  readonly jitter?: () => number
+}
+
+const bandDelay = (bands: ReadonlyArray<number>, bandSize: number, attempt: number) =>
+  bands[Math.min(Math.floor((attempt - 1) / bandSize), bands.length - 1)]
+
+const formatDelay = (ms: number) => {
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s`
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}min`
+  return `${Math.round(ms / 3_600_000)}h`
+}
+
 const unavailable = (server: ServerName, status: Status) => {
   switch (status.status) {
     case "failed":
@@ -98,6 +127,15 @@ const endpointLoads = KeyedMutex.makeUnsafe<string>()
 type Data = {
   servers: Map<ServerName, Types.DeepMutable<Mcp.ServerConfig>>
   removed: Set<ServerName>
+}
+
+// One automatic-reconnect episode per server; an entry present in `episodes` means a scheduler runs.
+type ReconnectEpisode = {
+  /** Failed attempts in this episode; the upcoming attempt is `attempt + 1`. */
+  attempt: number
+  fiber?: Fiber.Fiber<void>
+  /** Latest failure cause without the retry hint, so giving up can restore it. */
+  error: string
 }
 
 export type Editor = {
@@ -148,7 +186,9 @@ export const Options = Schema.Struct({
     }),
   ),
 })
-export type Options = typeof Options.Type
+// The reconnect schedule is passed as a plain option rather than a schema field: it is a function
+// of construction-time policy, not of decoded configuration.
+export type Options = typeof Options.Type & { readonly reconnect?: Reconnect }
 
 export const layer = (options?: Options) =>
   Layer.effect(
@@ -167,6 +207,23 @@ export const layer = (options?: Options) =>
       // Serializes lifecycle operations per server. Anything taking this lock from a connection
       // callback must stay forked: lifecycle operations close scopes while holding it, firing onClose.
       const locks = KeyedMutex.makeUnsafe<ServerName>()
+      // Automatic-reconnect schedulers, at most one per server.
+      const episodes = new Map<ServerName, ReconnectEpisode>()
+      let disposed = false
+      const retry = {
+        maxAttempts: options?.reconnect?.maxAttempts ?? RECONNECT_MAX_ATTEMPTS,
+        bands: options?.reconnect?.bands ?? RECONNECT_BANDS,
+        bandSize: options?.reconnect?.bandSize ?? RECONNECT_BAND_SIZE,
+        jitter: options?.reconnect?.jitter ?? RECONNECT_JITTER,
+      }
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          // The scheduler fibers are interrupted with this layer's fiber set; clearing the registry
+          // first only keeps a teardown from arming another episode.
+          disposed = true
+          episodes.clear()
+        }),
+      )
       // Legacy era only: pending URL-mode elicitation forms, settled by notifications/elicitation/complete.
       const urlElicitations = new Map<string, Form.ID>()
 
@@ -364,6 +421,102 @@ export const layer = (options?: Options) =>
           ),
         )
 
+      // A successful connection ends any pending retry, but only while that connection is still the
+      // live one: a server that flaps during startup has already armed a fresh episode, and clearing
+      // that one would leave the server dead. It never interrupts, because the scheduler may be the
+      // caller; the loop notices the removed registry entry and returns.
+      const settleEpisode = (name: ServerName, connection: McpClient.Connection) =>
+        Effect.sync(() => {
+          if (entries.get(name)?.client === connection) episodes.delete(name)
+        })
+
+      // Interrupts a scheduler other than the calling fiber. An attempt may replace its own server,
+      // and interrupting its own fiber there would deadlock the episode.
+      const cancelEpisode = Effect.fnUntraced(function* (name: ServerName) {
+        const episode = episodes.get(name)
+        if (!episode) return
+        const fiber = episode.fiber
+        if (fiber && fiber.id === (yield* Effect.fiberId)) return
+        episodes.delete(name)
+        if (fiber) yield* Fiber.interrupt(fiber)
+      })
+
+      // Retries ran out: the server keeps its last failure without the retry hint, so the original
+      // cause stays readable and the user can reconnect from /mcps once the configuration is fixed.
+      const giveUpEpisode = Effect.fnUntraced(function* (name: ServerName, episode: ReconnectEpisode) {
+        episodes.delete(name)
+        const entry = entries.get(name)
+        if (entry) {
+          entry.status = { status: "failed", error: episode.error }
+          yield* bus.publish(McpEvent.StatusChanged, { server: name })
+        }
+        yield* Effect.logWarning("MCP reconnect abandoned", { server: name, attempts: retry.maxAttempts })
+      })
+
+      const reconnectLoop = Effect.fnUntraced(function* (name: ServerName, episode: ReconnectEpisode) {
+        while (true) {
+          if (disposed || episodes.get(name) !== episode) return
+          const attempt = episode.attempt + 1
+          const delay =
+            attempt > retry.maxAttempts ? undefined : bandDelay(retry.bands, retry.bandSize, attempt)
+          if (delay === undefined) return yield* giveUpEpisode(name, episode)
+          const wait = Math.round(delay * retry.jitter())
+          if (attempt > 1 && bandDelay(retry.bands, retry.bandSize, attempt - 1) !== delay) {
+            yield* Effect.logWarning("MCP reconnect slowed down", {
+              server: name,
+              nextAttempt: attempt,
+              every: formatDelay(delay),
+            })
+          }
+          const entry = entries.get(name)
+          if (entry?.status.status === "failed") {
+            entry.status = {
+              status: "failed",
+              error: `${episode.error} — retry ${attempt}/${retry.maxAttempts} in ${formatDelay(wait)}`,
+            }
+          }
+          yield* Effect.sleep(wait)
+          if (disposed || episodes.get(name) !== episode) return
+          // The configuration is resolved again for every attempt, so a corrected, disabled or
+          // removed server is picked up instead of being retried against a stale one.
+          const config = state.get().servers.get(name)
+          const current = entries.get(name)
+          if (!config || config.disabled || !current) {
+            episodes.delete(name)
+            if (current?.status.status === "failed") {
+              current.status = { status: "failed", error: episode.error }
+              yield* bus.publish(McpEvent.StatusChanged, { server: name })
+            }
+            return
+          }
+          // The lock covers the attempt only: holding it across the wait would block every other
+          // lifecycle operation on this server for up to six hours.
+          yield* locks.withLock(name)(
+            isDeepStrictEqual(current.config, config)
+              ? stopServer(name, current).pipe(Effect.andThen(startServer(name, current)))
+              : replaceServer(name, config),
+          )
+          // A replaced or settled episode must not commit over the one that replaced it.
+          if (disposed || episodes.get(name) !== episode) return
+          const settled = entries.get(name)
+          // Only a plain failure keeps the episode going; a connection that came up, or a server
+          // waiting for authentication, ends it.
+          if (settled?.status.status !== "failed") {
+            episodes.delete(name)
+            return
+          }
+          episode.attempt = attempt
+          episode.error = settled.status.error
+        }
+      })
+
+      const startEpisode = Effect.fnUntraced(function* (name: ServerName, error: string) {
+        if (disposed || episodes.has(name)) return
+        const episode: ReconnectEpisode = { attempt: 0, error }
+        episodes.set(name, episode)
+        episode.fiber = fork(reconnectLoop(name, episode))
+      })
+
       const loadCatalog = (name: ServerName, entry: ServerEntry, connection: McpClient.Connection) =>
         recovering(name, entry, connection, (connection) =>
           Effect.all(
@@ -407,6 +560,8 @@ export const layer = (options?: Options) =>
               entry.status = { status: "failed", error: reason }
               yield* stopServer(name, entry)
               yield* bus.publish(McpEvent.StatusChanged, { server: name })
+              // The transport is gone either way; a close is what the automatic reconnect picks up.
+              yield* startEpisode(name, reason)
             }),
           ),
         )
@@ -464,17 +619,21 @@ export const layer = (options?: Options) =>
             yield* bus.publish(McpEvent.ResourcesChanged, { server: name })
             yield* bus.publish(McpEvent.StatusChanged, { server: name })
             whenLive(name, entry, result.value.connection)(refreshPrompts(name, entry, result.value.connection))
+            yield* settleEpisode(name, result.value.connection)
             return
           }
           yield* Scope.close(scope, Exit.void)
           entry.scope = undefined
           const error = Cause.squash(result.cause)
-          entry.status =
+          const status: Status =
             error instanceof McpClient.NeedsAuthError
               ? { status: "needs_auth", error: error.message }
               : { status: "failed", error: error instanceof Error ? error.message : String(error) }
-          yield* Effect.logWarning("mcp connect failed", { server: name, status: entry.status })
+          entry.status = status
+          yield* Effect.logWarning("mcp connect failed", { server: name, status })
           yield* bus.publish(McpEvent.StatusChanged, { server: name })
+          // A plain failure is what the automatic reconnect picks up; needs_auth waits for the user.
+          if (status.status === "failed") yield* startEpisode(name, status.error)
         }).pipe(
           Effect.ensuring(entry.startup.open),
           Effect.annotateLogs({ server: name, directory: location.directory, connectionID: crypto.randomUUID() }),
@@ -500,6 +659,7 @@ export const layer = (options?: Options) =>
       })
 
       const replaceServer = Effect.fnUntraced(function* (name: ServerName, serverConfig: Mcp.ServerConfig) {
+        yield* cancelEpisode(name)
         const previous = entries.get(name)
         if (previous) yield* disposeServer(name, previous)
         const entry: ServerEntry = {
@@ -525,6 +685,7 @@ export const layer = (options?: Options) =>
       const removeServer = Effect.fnUntraced(function* (name: ServerName) {
         const entry = entries.get(name)
         if (!entry) return
+        yield* cancelEpisode(name)
         yield* disposeServer(name, entry)
         // Credentials are keyed by name + URL and intentionally survive removal for a later re-add.
         entries.delete(name)
@@ -641,6 +802,7 @@ export const layer = (options?: Options) =>
           const name = ServerName.make(server)
           yield* Effect.gen(function* () {
             const target = yield* requireServer(name)
+            yield* cancelEpisode(name)
             yield* stopServer(name, target.entry)
             yield* startServer(name, target.entry)
           }).pipe(locks.withLock(name))
@@ -649,6 +811,7 @@ export const layer = (options?: Options) =>
           const name = ServerName.make(server)
           yield* Effect.gen(function* () {
             const target = yield* requireServer(name)
+            yield* cancelEpisode(name)
             yield* stopServer(name, target.entry)
             target.entry.status = { status: "disabled" }
             yield* bus.publish(McpEvent.StatusChanged, { server: name })
