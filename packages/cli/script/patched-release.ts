@@ -159,19 +159,19 @@ if (!tag) {
   await run(["git", "push", "fork", releaseBranch], root)
   const remote = (await run(["git", "rev-parse", `fork/${releaseBranch}`], root)).trim()
   if (remote !== head) throw new Error(`fork/${releaseBranch} is ${remote}, expected ${head}`)
+} else {
+  // The tag is what triggered this run, so it has to be on the fork and point at the commit
+  // that was checked out - the same remote-to-head binding the branch push gives above, and
+  // the only one available once the tag pre-exists. Checked on the resume path too: a re-run
+  // of a tag that has been moved would otherwise publish an older build under it.
+  const remoteTag = await forkTagCommit()
+  if (remoteTag !== head) throw new Error(`fork tag ${version} is ${remoteTag ?? "missing"}, expected ${head}`)
 }
 
 if (plan.action === "create") {
-  // On the branch route the tag must not exist yet: gh creates it from this commit below.
-  // On the tag route it is what triggered the run, so it has to be on the fork and point at
-  // the commit that was checked out - the same remote-to-head binding the branch push gives
-  // above, and the only binding available once the tag pre-exists.
-  const remoteTag = await forkTagCommit()
-  if (tag) {
-    if (remoteTag !== head) throw new Error(`fork tag ${version} is ${remoteTag ?? "missing"}, expected ${head}`)
-  } else if (remoteTag) {
+  // gh creates the tag from this commit below on the branch route, so it must not be there yet.
+  if (!tag && (await forkTagCommit()))
     throw new Error(`Remote tag ${version} already exists without a resumable draft release`)
-  }
   await run(
     [
       "gh",
@@ -205,7 +205,10 @@ const assets = new Map(staged.assets.map((item) => [item.name, item.size]))
 // it through the tag (proven against the fork above). Its value is reported instead of
 // compared there; on the branch route it still has to be this commit.
 const commitishIsHead = tag ? true : staged.targetCommitish === head
-if (tag) console.log(`Tag-driven draft reports target_commitish ${JSON.stringify(staged.targetCommitish)}`)
+if (tag)
+  console.log(
+    `Tag-driven draft reports target_commitish ${JSON.stringify(staged.targetCommitish)} (not compared; the tag binds the release to ${head})`,
+  )
 if (
   !staged.isDraft ||
   !staged.isPrerelease ||

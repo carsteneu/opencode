@@ -29,28 +29,42 @@ name: build-patched-v2
 # 2.x release outranks every 1.x release — the same rule that keeps the frozen line from
 # publishing while a 2.x release is the newest entry.
 #
+# A publish run that dies after it created the draft leaves the draft behind: the next
+# run resumes a draft that belongs to the same release and refuses one that does not
+# (patched-release-plan.ts). Re-run a failed run with `gh run rerun <run-id>`, which
+# reuses the ref it was triggered from, and on the tag route re-checks that the tag still
+# points at the commit being built. Clear a stale draft before re-running that version:
+#
+#   gh release delete <version> --repo carsteneu/opencode --yes
+#
+# No --cleanup-tag on the publishing route: the tag there is what triggers the run, so
+# deleting it costs the run its own ref. The manual route is the case that needs it — gh
+# creates the tag itself there and the script refuses to reuse one that is already on the
+# fork, so a manual re-run after deleting the release has to delete the tag as well:
+#
+#   gh release delete <version> --repo carsteneu/opencode --cleanup-tag --yes
+#
 # Manual route, for a build without publishing and for a hand-run release:
 #
 #   gh workflow run build-patched-v2.yml --repo carsteneu/opencode --ref v2-ci-release \
 #     -f version=2.0.26-patched.4 -f publish=true
 #
+# GitHub resolves a dispatch by filename against the default branch, so this file has to
+# exist on `dev` as well as on the ref it runs against; the dispatch route stays usable
+# only while that copy is kept in step with this one.
+#
 # publish defaults to false, the path that touches no shared state: the job builds,
 # verifies and uploads the action artifact but creates no release. The checksum
 # round-trip belongs to the publishing path and runs there, inside the script. A dispatch
-# from any other ref than the release branch is refused by the guard below.
+# from any other ref than the release branch is refused by the guard below — including a
+# dispatch pointed at a tag, which would otherwise look like the publishing route.
 #
-# A publish run that dies after it created the draft leaves the draft behind: the next
-# run resumes a draft that belongs to the same release and refuses one that does not
-# (patched-release-plan.ts). Re-run a failed run with `gh run rerun <run-id>`, which
-# reuses the ref it was triggered from. Clear a stale draft before re-running that version:
-#
-#   gh release delete <version> --repo carsteneu/opencode --yes
-#
-# (No --cleanup-tag: on the publishing route the tag is what triggers the run, so deleting
-# it costs the run its own ref. On the manual route gh creates the tag itself and the
-# script refuses to reuse one that is already there.)
+# The manual route builds the release branch, so after a publishing run (which builds the
+# tagged commit and does not touch any branch) that branch has to be fast-forwarded to the
+# published tag before it is used again; otherwise the next manual release would publish
+# the older code under a higher version number.
 
-run-name: build patched ${{ github.ref_type == 'tag' && github.ref_name || inputs.version }} (publish=${{ github.ref_type == 'tag' || inputs.publish }})
+run-name: build patched ${{ github.event_name == 'push' && github.ref_name || inputs.version }} (publish=${{ github.event_name == 'push' || inputs.publish }})
 
 on:
   push:
@@ -85,11 +99,12 @@ jobs:
       # below refuses a dispatch from any other ref. Move this constant together with the
       # release branch of the v2 line.
       OPENCODE_RELEASE_BRANCH: v2-ci-release
-      # The two values every step below acts on, resolved once: a tag push names the
-      # version and publishes it, a dispatch takes its inputs and stays opt-in. No step
-      # has to ask which event it came from.
-      VERSION: ${{ github.ref_type == 'tag' && github.ref_name || inputs.version }}
-      PUBLISH: ${{ github.ref_type == 'tag' || inputs.publish }}
+      # The two values every step below acts on, resolved once. The event decides the route,
+      # not the ref type: a dispatch can be pointed at a tag (`gh workflow run --ref <tag>`)
+      # and must not be mistaken for the publishing route, and a tag push neither carries
+      # inputs nor needs them. No step has to ask which event it came from.
+      VERSION: ${{ github.event_name == 'push' && github.ref_name || inputs.version }}
+      PUBLISH: ${{ github.event_name == 'push' || inputs.publish }}
     # One group for the whole workflow: two runs of THIS workflow that both publish must
     # not overlap, because the "newer than the newest published" rule is checked before
     # the build and the channel changes only at the publish step (patched-release.ts
@@ -116,11 +131,27 @@ jobs:
             *[[:space:]]*) echo "version must not contain whitespace"; exit 1 ;;
           esac
           # The full ref decides the route, not the short name: a tag called like the
-          # release branch must not pass as that branch, and the ref type is what tells the
-          # two routes apart. On a tag push the version comes from the tag itself, so the
-          # run and the tag can never disagree; a dispatch keeps its documented input.
+          # release branch must not pass as that branch. On a tag push the version comes
+          # from the tag itself, so the run and the tag can never disagree; a dispatch keeps
+          # its documented input.
           case "$GITHUB_REF" in
             refs/tags/*)
+              # Only a push may publish from a tag. A dispatch can be pointed at a tag ref
+              # as well, and reading that as the publishing route would ignore the inputs
+              # and override the publish opt-in, which is exactly what the dispatch route
+              # exists to avoid.
+              if [ "$GITHUB_EVENT_NAME" != "push" ]; then
+                echo "A dispatch is not a publishing route whatever its ref says; dispatch on refs/heads/$OPENCODE_RELEASE_BRANCH"
+                exit 1
+              fi
+              # The contract's tag pattern tolerates a leading v, but everything the release
+              # does with a tag uses the bare name: the fork tag it binds to the commit, the
+              # release it creates and the tag name it verifies afterwards. Refuse that form
+              # here, before anything is built, rather than after the build in that lookup.
+              if [ "${VERSION#v}" != "$VERSION" ]; then
+                echo "Tag the release without the v prefix, not $VERSION"
+                exit 1
+              fi
               echo "Tag push: building and publishing $VERSION"
               ;;
             refs/heads/"$OPENCODE_RELEASE_BRANCH")

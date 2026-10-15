@@ -98,6 +98,16 @@ describe("planForkRelease", () => {
     expect(plan({ existing: { isDraft: true, isPrerelease: true, targetCommitish: "dev" } }).action).toBe("refuse")
   })
 
+  test("a tag-driven draft still has to carry the prerelease flag", () => {
+    // The tag replaces the commit binding only; the release flags stay checked in both modes.
+    expect(
+      plan({ tag: `2.0.26-${channel}.4`, branch: "", existing: { isDraft: true, isPrerelease: false, targetCommitish: head } }),
+    ).toEqual({
+      action: "refuse",
+      reason: `Existing draft does not match this release: ${JSON.stringify({ isDraft: true, isPrerelease: false, targetCommitish: head })}`,
+    })
+  })
+
   test("publishes from the configured branch when it is overridden", () => {
     expect(plan({ releaseBranch: "v2", branch: "v2" })).toEqual({ action: "create" })
   })
