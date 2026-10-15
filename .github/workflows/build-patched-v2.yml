@@ -12,28 +12,50 @@ name: build-patched-v2
 # release repository and the release branch — are the ones it has to compare itself
 # against, and the branch is handed to the script as its documented override.
 #
-# Dispatch route (GitHub resolves workflow_dispatch by filename against the default
-# branch, so this file has to exist on `dev` as well as on the branch it runs; a run
-# dispatched from `dev` is refused by the guard below, the copy there exists only so
-# that the event can be dispatched at all):
+# Publishing route, the normal one: push the release tag.
+#
+#   git tag 2.0.26-patched.4 && git push fork 2.0.26-patched.4
+#
+# GitHub takes this file from the tagged commit, so the tag has to be on a commit that
+# already carries it, and the tagged commit is what gets built. The tag names the version
+# and the run publishes it; the version is not an input on this route and the branch
+# constant plays no part, because a tag push checks out a detached HEAD and the tag stands
+# in for the branch as the release identity (patched-release-plan.ts).
+#
+# The tag filter is a GitHub glob, not a regex, and it cannot express the major version,
+# so the frozen 1.x tags (1.18.34-patched.n) match it as well. Such a run can only happen
+# if this file exists at that tag, which the 1.x line does not carry; should one appear,
+# the plan refuses it before anything is built, because both lines share one channel and a
+# 2.x release outranks every 1.x release — the same rule that keeps the frozen line from
+# publishing while a 2.x release is the newest entry.
+#
+# Manual route, for a build without publishing and for a hand-run release:
 #
 #   gh workflow run build-patched-v2.yml --repo carsteneu/opencode --ref v2-ci-release \
 #     -f version=2.0.26-patched.4 -f publish=true
 #
 # publish defaults to false, the path that touches no shared state: the job builds,
 # verifies and uploads the action artifact but creates no release. The checksum
-# round-trip belongs to the publishing path and runs there, inside the script.
+# round-trip belongs to the publishing path and runs there, inside the script. A dispatch
+# from any other ref than the release branch is refused by the guard below.
 #
 # A publish run that dies after it created the draft leaves the draft behind: the next
-# run resumes a draft that points at the same commit, and refuses one that points
-# elsewhere (patched-release-plan.ts). Clear a stale draft before re-dispatching that
-# version:
+# run resumes a draft that belongs to the same release and refuses one that does not
+# (patched-release-plan.ts). Re-run a failed run with `gh run rerun <run-id>`, which
+# reuses the ref it was triggered from. Clear a stale draft before re-running that version:
 #
-#   gh release delete <version> --repo carsteneu/opencode --cleanup-tag --yes
+#   gh release delete <version> --repo carsteneu/opencode --yes
+#
+# (No --cleanup-tag: on the publishing route the tag is what triggers the run, so deleting
+# it costs the run its own ref. On the manual route gh creates the tag itself and the
+# script refuses to reuse one that is already there.)
 
-run-name: build patched ${{ inputs.version }} (publish=${{ inputs.publish }})
+run-name: build patched ${{ github.ref_type == 'tag' && github.ref_name || inputs.version }} (publish=${{ github.ref_type == 'tag' || inputs.publish }})
 
 on:
+  push:
+    tags:
+      - "*-patched.*"
   workflow_dispatch:
     inputs:
       version:
@@ -59,11 +81,15 @@ jobs:
     permissions:
       contents: write
     env:
-      VERSION: ${{ inputs.version }}
       # patched-release-plan.ts refuses --publish from any other branch, and the guard
-      # below refuses a run dispatched from any other ref. Move this constant together
-      # with the release branch of the v2 line.
+      # below refuses a dispatch from any other ref. Move this constant together with the
+      # release branch of the v2 line.
       OPENCODE_RELEASE_BRANCH: v2-ci-release
+      # The two values every step below acts on, resolved once: a tag push names the
+      # version and publishes it, a dispatch takes its inputs and stays opt-in. No step
+      # has to ask which event it came from.
+      VERSION: ${{ github.ref_type == 'tag' && github.ref_name || inputs.version }}
+      PUBLISH: ${{ github.ref_type == 'tag' || inputs.publish }}
     # One group for the whole workflow: two runs of THIS workflow that both publish must
     # not overlap, because the "newer than the newest published" rule is checked before
     # the build and the channel changes only at the publish step (patched-release.ts
@@ -75,11 +101,11 @@ jobs:
       group: build-patched-v2
       cancel-in-progress: false
     steps:
-      - name: Assert the release repository and branch
-        # Runs before checkout and before any dependency install, so a dispatch from a
-        # copy of the fork or from a feature branch costs nothing. carsteneu/opencode is
-        # a guard against building in the wrong repository here; the authoritative
-        # repository constant stays ForkRelease.repository in the release contract.
+      - name: Assert the release repository and ref
+        # Runs before checkout and before any dependency install, so a tag that this
+        # repository does not build or a dispatch from a feature branch costs nothing.
+        # carsteneu/opencode is a guard against building in the wrong repository here; the
+        # authoritative repository constant stays ForkRelease.repository in the contract.
         run: |
           set -euo pipefail
           if [ "$GITHUB_REPOSITORY" != "carsteneu/opencode" ]; then
@@ -89,12 +115,22 @@ jobs:
           case "$VERSION" in
             *[[:space:]]*) echo "version must not contain whitespace"; exit 1 ;;
           esac
-          # The ref type matters: a tag of the same name would otherwise check out a
-          # detached commit and build a version that no branch claims.
-          if [ "$GITHUB_REF" != "refs/heads/$OPENCODE_RELEASE_BRANCH" ]; then
-            echo "Dispatch this workflow on refs/heads/$OPENCODE_RELEASE_BRANCH, not $GITHUB_REF"
-            exit 1
-          fi
+          # The full ref decides the route, not the short name: a tag called like the
+          # release branch must not pass as that branch, and the ref type is what tells the
+          # two routes apart. On a tag push the version comes from the tag itself, so the
+          # run and the tag can never disagree; a dispatch keeps its documented input.
+          case "$GITHUB_REF" in
+            refs/tags/*)
+              echo "Tag push: building and publishing $VERSION"
+              ;;
+            refs/heads/"$OPENCODE_RELEASE_BRANCH")
+              echo "Dispatch on $OPENCODE_RELEASE_BRANCH: building $VERSION with publish=$PUBLISH"
+              ;;
+            *)
+              echo "Push a release tag, or dispatch this workflow on refs/heads/$OPENCODE_RELEASE_BRANCH, not $GITHUB_REF"
+              exit 1
+              ;;
+          esac
 
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -109,13 +145,13 @@ jobs:
       - name: Add the fork remote
         # Only the publishing path touches the remote: with publish=false the script
         # exits before it reaches the `fork` remote (the git calls before that point are
-        # local reads, patched-release.ts:52-54 vs the exit at :145-148). patched-release.ts
-        # pushes the release branch to a remote named `fork` and re-reads it before it
-        # creates the draft. GH_TOKEN enters the environment only for this step; the
-        # credential it writes lives in .git/config for the rest of the job because the
-        # later push and ls-remote depend on it, and the remote URL itself stays
-        # token-free.
-        if: ${{ inputs.publish }}
+        # local reads, patched-release.ts:52-60 vs the exit at :153-155). On the tag route
+        # the remote is read before the draft is created, to bind the pushed tag to the
+        # checked-out commit; on the manual route it is pushed to. GH_TOKEN enters the
+        # environment only for this step; the credential it writes lives in .git/config for
+        # the rest of the job because the later push and ls-remote depend on it, and the
+        # remote URL itself stays token-free.
+        if: ${{ env.PUBLISH == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -128,11 +164,10 @@ jobs:
         working-directory: packages/cli
         # A repository-write credential is set only where it is used: this step calls gh,
         # the fork remote above needs it for the git push. On the default path the script
-        # never reaches gh (patched-release.ts:68-69), so the token is empty there. The
+        # never reaches gh (patched-release.ts:75-76), so the token is empty there. The
         # inputs go in through the environment rather than into shell source.
         env:
-          GH_TOKEN: ${{ inputs.publish && github.token || '' }}
-          PUBLISH: ${{ inputs.publish }}
+          GH_TOKEN: ${{ env.PUBLISH == 'true' && github.token || '' }}
         run: |
           set -euo pipefail
           if [ "$PUBLISH" = "true" ]; then
@@ -144,6 +179,6 @@ jobs:
       - name: Upload patched binaries
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: patched-binaries-${{ inputs.version }}
+          name: patched-binaries-${{ env.VERSION }}
           path: packages/cli/dist/patched-release/
           if-no-files-found: error
