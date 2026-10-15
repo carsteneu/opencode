@@ -1,0 +1,12 @@
+name: dispatch-probe
+on:
+  workflow_dispatch:
+    inputs:
+      note:
+        required: false
+        type: string
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "dispatch probe ran"
