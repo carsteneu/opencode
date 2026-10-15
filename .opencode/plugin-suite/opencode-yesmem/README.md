@@ -170,10 +170,10 @@ SKILL.md body would pass — no core path produces one today.
 bun run test plugin/opencode-yesmem
 ```
 
-The plugin files live outside every tsconfig project (deliberate, as for the other plugin-suite entries), so
-the tests load them through the real host loader and call the registered hook callbacks directly. The
-integration test additionally drives the plugin through the real core plugin host (`PluginModule` +
-`Tool.Service` snapshot), which is what proves a block rejects the call before the tool runs.
+For this pre-built-in copy the files still live outside every tsconfig project (deliberate, as for the other
+plugin-suite entries), so the historical tests loaded them through the real host loader and call the registered
+hook callbacks directly. The live source under `packages/core/src/plugin/yesmem/` sits inside the core tsconfig
+and its tests import the modules directly (see that directory's README).
 
 The daemon is always a local mock socket pointed to by `YESMEM_SOCKET`, the guard endpoint a local HTTP mock,
 and `YESMEM_LOG_FILE` keeps the plugin's debug log out of the live install; no live daemon, config directory or

@@ -3,7 +3,9 @@ import { Plugin } from "@opencode/plugin/tui"
 
 // v2 binds bare Home/End to transcript navigation (session.first/session.last)
 // even while the composer is focused; the input commands input.buffer.home/end
-// default to "none". v1 let the focused input win (see fork commit 48fdd6cc37).
+// default to "none". v1 let the focused input win: our fork restored that in
+// 48fdd6cc37 (fix(tui): preserve prompt home and end keys), and v2 upstream
+// resolves the same collision by leaving input.buffer.home/end unbound.
 // This plugin restores the v1 binding: with an editor focused, Home/End move the
 // buffer cursor, and a higher layer priority keeps session.first/last from
 // consuming the key. With no editor focused the command returns false, so the

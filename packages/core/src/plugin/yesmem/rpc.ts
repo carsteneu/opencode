@@ -52,8 +52,8 @@ export class YesMemRPC {
         resolve(response)
       }
 
-      // Peer bytes never travel back in an error string: callers render these messages into model-visible
-      // text, and a compromised daemon would otherwise get to speak through them.
+      // Callers render these messages into model-visible text, so only the daemon's bounded `error` field is
+      // passed through — never the raw peer bytes that failed to parse.
       const parse = (text: string): RPCResponse => {
         const trimmed = text.trim()
         if (!trimmed) return { ok: false, error: "empty response" }

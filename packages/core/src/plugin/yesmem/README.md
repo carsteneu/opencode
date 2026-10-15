@@ -148,8 +148,10 @@ SKILL.md body would pass — no core path produces one today.
    recognises the non-human frames above. v1 also injected daemon/model text verbatim: the ledger block is now
    bounded (40 lines, 4000 chars) and stripped of control characters with its delimiters neutralized, a skill
    name must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` before it is injected, the stage-2 response body is
-   capped, and a `RULES.md` larger than 256 KiB is ignored instead of being read into memory on the request
-   path. The delimiter neutralizer is case-insensitive and the strip covers the Unicode line/paragraph
+   capped, and the skill-catalogue read of a `RULES.md` larger than 256 KiB is skipped instead of being read
+   into memory. That size cap covers the catalogue reader (`skill_nudge.ts`), not the guard's own rule read:
+   `rule_guard.ts#loadRules` still reads the whole file, so a hostile repository can make the guard path load
+   and ship an oversized `RULES.md`. The delimiter neutralizer is case-insensitive and the strip covers the Unicode line/paragraph
    separators and bidi overrides, so a plan cannot close the block or forge a top-level line.
 8. **Response bodies are read with a budget.** `http.ts#readBodyCapped` stops reading once the budget is
    exhausted; v1 (and this plugin before the review) called `response.text()` and trimmed afterwards, which
@@ -167,6 +169,37 @@ SKILL.md body would pass — no core path produces one today.
 - **`chat.params`.** No v2 equivalent, so the summary-title conversation fallback is gone.
 - **`code_nav` and the dedicated `grep`/`glob` tools.** v1 blocked shell commands and the `read` tool only;
   v2's separate `grep`/`glob` tools are not covered, matching v1's behaviour rather than extending it.
+
+## Open security items (found while moving the plugin, deliberately not fixed here)
+
+These three come from the security review of the built-in move. They are properties of the ported plugin, not
+of the move; the move only widens their reach, because the plugin is now active in every location of every
+build instead of only where a plugin directory was configured. They are left alone on purpose: this branch
+packages the plugin and requires its behaviour to stay identical, so each fix is a separate decision in the
+plugin's own development (and should land in the copy that lives outside the fork too).
+
+1. **The guard's provider egress is on by default, with no switch for itself.** `rule_guard.ts` resolves a
+   provider from `~/.local/share/opencode/auth.json`, `models.json` and the yesmem `config.yaml`
+   (`rule_guard.ts:147-211`) and, once the repository has a non-trivial `RULES.md`, sends the rules text plus
+   up to 300 characters of tool arguments and up to 6 conversation messages to that provider
+   (`rule_guard.ts:264-271`, `:346-363`, `:396`). `skill_nudge.ts:169-183` does the same for the catalogue.
+   `YESMEM_GUARD_URL`/`_KEY` only redirect it; there is no `YESMEM_GUARD=off`, unlike the three nudge
+   switches. Suggested fix: gate on an explicit opt-in (a reachable daemon or `YESMEM_GUARD=on`).
+2. **The guard model's BLOCK text reaches the model unsanitized.** `rule_guard.ts:414-416` joins the
+   violation strings, truncates them to `MAX_VIOLATION_CHARS` and returns them as a model-visible tool error,
+   while the sibling injection paths strip control characters and neutralize delimiters
+   (`ledger_nudge.ts:37-41`). A hostile `RULES.md` that steers the guard model therefore gets up to 1000
+   characters of unvalidated text into the request. Suggested fix: the same `sanitizeLine` treatment as the
+   ledger block. (Not reproduced live; the gap is read from the code.)
+3. **The guard path has no `RULES.md` size cap.** `rule_guard.ts#loadRules` reads the file whole, while
+   `skill_nudge.ts:241` skips catalogues above 256 KiB. The `guardCache` key embeds the full rules text
+   (`rule_guard.ts:36-38`), so a large file costs memory and bandwidth per call until its 5s TTL expires.
+   Suggested fix: the same cap in `loadRules`.
+
+Two further review observations need no code change: the `log.ts:21` `mode` only applies when the log is
+created (the path is operator-controlled, so it is defense in depth at most), and `shell.ts:19-24` adds
+`YESMEM_SOCKET`/`YESMEM_SOURCE_AGENT`/`YESMEM_SESSION_ID` to every spawned shell without exporting a
+credential.
 
 ## Operational notes
 
