@@ -5,7 +5,8 @@ import path from "path"
 import { Schema } from "effect"
 import { ForkRelease } from "@opencode/util/installation/fork-release"
 import { reportedVersion } from "../src/services/updater-action"
-import { planForkRelease, type KnownRelease } from "./patched-release-plan"
+import { composeReleaseNotes, readNotes, type ReleaseCommit } from "./patched-release-notes"
+import { newestPublished, planForkRelease, releaseBase, type KnownRelease } from "./patched-release-plan"
 
 // The branch that may publish. Overridable for a local run; the v2 line publishes from
 // workingv2, and a tag push does not need it at all (the tag is the release identity).
@@ -35,7 +36,7 @@ const argument = process.argv.find((arg) => ForkRelease.version(arg) !== undefin
 if (!argument)
   throw new Error(
     `Usage: bun run release:patched <x.y.z-${ForkRelease.channel}.n> [--publish] [--draft] ` +
-      `(OPENCODE_RELEASE_BRANCH overrides ${releaseBranch})`,
+      `[--dry-run] [--notes-file <path>] (OPENCODE_RELEASE_BRANCH overrides ${releaseBranch})`,
   )
 const version = ForkRelease.version(argument)!
 // Also the platform guard: without an asset for this platform there is nothing to release.
@@ -45,10 +46,19 @@ const checksumAsset = ForkRelease.checksumAsset(asset)
 // `--draft` runs the publish path but stops after the draft has been verified, so the
 // uploaded assets can be inspected before they become visible to the update channel.
 const draft = process.argv.includes("--draft")
-const publish = process.argv.includes("--publish") || draft
+// `--dry-run` builds and stages as a plain run does, but prints the body the release would
+// carry instead of creating a draft or publishing anything.
+const dryRun = process.argv.includes("--dry-run")
+const publish = !dryRun && (process.argv.includes("--publish") || draft)
+const notesArgument = process.argv.indexOf("--notes-file")
+if (notesArgument !== -1 && !process.argv[notesArgument + 1])
+  throw new Error("--notes-file needs the path of the notes file")
 
 const root = path.resolve(import.meta.dir, "../../..")
 const packageDir = path.join(root, "packages/cli")
+// Handwritten notes are optional in both directions: the file may be absent, and its path
+// may be pointed elsewhere for a release with notes of its own.
+const notesFile = notesArgument === -1 ? path.join(root, "RELEASE_NOTES.md") : process.argv[notesArgument + 1]!
 const head = (await run(["git", "rev-parse", "HEAD"], root)).trim()
 const branch = (await run(["git", "branch", "--show-current"], root)).trim()
 // A tag push is the publishing route: GitHub resolves it to refs/tags/<name>, checks that
@@ -158,6 +168,12 @@ if (publish) {
 console.log(`Prepared ${binary}`)
 console.log(`Prepared ${checksum}`)
 if (!publish) {
+  if (dryRun) {
+    console.log("")
+    console.log(`Body for ${version} (dry run: nothing was created or published):`)
+    console.log("")
+    console.log(await notes())
+  }
   console.log(`Re-run with --publish after committing this exact source to ${releaseBranch}`)
   process.exit(0)
 }
@@ -192,7 +208,7 @@ if (plan.action === "create") {
       "--title",
       `OpenCode ${version}`,
       "--notes",
-      `Fork prerelease with a checksum-verified self-update channel from ${ForkRelease.repository}.`,
+      await notes(),
       "--prerelease",
       "--draft",
     ],
@@ -236,6 +252,13 @@ if (remoteChecksum !== (await Bun.file(checksum).text())) {
 console.log(
   `Verified draft: ${asset} (${binarySize} bytes) and ${checksumAsset} (${checksumSize} bytes), checksum round-trip identical`,
 )
+if (plan.action === "resume") {
+  // The plan resumes only a draft that belongs to this release, so refreshing its body writes
+  // to our own draft and never over somebody else's release. A published release does not get
+  // this far: the plan refuses it before the build.
+  await run(["gh", "release", "edit", version, "--repo", ForkRelease.repository, "--notes", await notes()], root)
+  console.log(`Refreshed the body of the draft ${version}`)
+}
 if (draft) {
   console.log(
     `Draft ${version} staged and verified; publish it with: gh release edit ${version} --repo ${ForkRelease.repository} --draft=false --prerelease`,
@@ -267,6 +290,54 @@ async function knownDraft() {
   if (result.code === 0) return Schema.decodeUnknownSync(Schema.fromJsonString(Draft))(result.stdout)
   if (/release not found|HTTP 404/i.test(result.stderr)) return undefined
   throw new Error(result.stderr.trim() || `Could not inspect release ${version}`)
+}
+
+/** The body the release carries: our commits since the previous prerelease, its assets and the notes. */
+async function notes() {
+  const previous = newestPublished(await knownReleases())
+  const base = releaseBase(version)
+  return composeReleaseNotes({
+    version,
+    baseVersion: base,
+    previous,
+    commits: await ourCommits(previous, base),
+    assets: [
+      { name: asset!, size: Bun.file(binary).size },
+      { name: checksumAsset, size: Bun.file(checksum).size },
+    ],
+    notes: await readNotes(notesFile),
+  })
+}
+
+/**
+ * Our own commits since the previous prerelease. Everything the upstream merge of a base
+ * change brought in is dropped, because that wave is not what this fork's body describes: the
+ * commit upstream released our base with sits in the fork's own history, so excluding its
+ * ancestry is enough. While the base is unchanged that wave is older than `previous` and the
+ * exclusion changes nothing.
+ */
+async function ourCommits(previous: string | undefined, base: string): Promise<ReadonlyArray<ReleaseCommit>> {
+  if (!previous) return []
+  const pattern = `^release: v${base.replaceAll(".", "\\.")}$`
+  const upstream = (await run(["git", "rev-list", "--max-count=1", "--grep", pattern, head], root)).trim()
+  const log = await run(
+    [
+      "git",
+      "log",
+      "--no-merges",
+      "--pretty=format:%h%x09%s",
+      `${previous}..${head}`,
+      ...(upstream ? ["--not", upstream] : []),
+    ],
+    root,
+  )
+  return log
+    .split("\n")
+    .filter((line) => line !== "")
+    .map((line) => {
+      const [hash, ...subject] = line.split("\t")
+      return { hash: hash!, subject: subject.join("\t") }
+    })
 }
 
 /** Commit the fork's tag for this release points at, or undefined when the tag is absent. */

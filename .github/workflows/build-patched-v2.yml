@@ -187,6 +187,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
+          # The full history and the tags: the release body lists our commits since the
+          # previous prerelease, which the script reads from the fork's own tags and history.
+          # A shallow checkout has neither, so the body could not be composed there.
+          fetch-depth: 0
           # No credential in the workspace: the release branch push gets its token from
           # the fork remote below, so the dependency install that follows runs without.
           persist-credentials: false
