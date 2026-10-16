@@ -5,7 +5,9 @@ import path from "path"
 import { Schema } from "effect"
 import { ForkRelease } from "@opencode/util/installation/fork-release"
 import { reportedVersion } from "../src/services/updater-action"
-import { planForkRelease, type KnownRelease } from "./patched-release-plan"
+import { composeReleaseNotes, readNotes } from "./patched-release-notes"
+import { releaseCommits } from "./patched-release-commits"
+import { newestPublished, planForkRelease, releaseBase, type KnownRelease } from "./patched-release-plan"
 
 // The branch that may publish. Overridable for a local run; the v2 line publishes from
 // workingv2, and a tag push does not need it at all (the tag is the release identity).
@@ -35,7 +37,7 @@ const argument = process.argv.find((arg) => ForkRelease.version(arg) !== undefin
 if (!argument)
   throw new Error(
     `Usage: bun run release:patched <x.y.z-${ForkRelease.channel}.n> [--publish] [--draft] ` +
-      `(OPENCODE_RELEASE_BRANCH overrides ${releaseBranch})`,
+      `[--dry-run] [--notes-file <path>] (OPENCODE_RELEASE_BRANCH overrides ${releaseBranch})`,
   )
 const version = ForkRelease.version(argument)!
 // Also the platform guard: without an asset for this platform there is nothing to release.
@@ -45,10 +47,25 @@ const checksumAsset = ForkRelease.checksumAsset(asset)
 // `--draft` runs the publish path but stops after the draft has been verified, so the
 // uploaded assets can be inspected before they become visible to the update channel.
 const draft = process.argv.includes("--draft")
-const publish = process.argv.includes("--publish") || draft
+// `--dry-run` builds and stages as a plain run does, but prints the body the release would
+// carry instead of creating a draft or publishing anything.
+const dryRun = process.argv.includes("--dry-run")
+const publish = !dryRun && (process.argv.includes("--publish") || draft)
+const notesArgument = process.argv.find((argument) => argument === "--notes-file" || argument.startsWith("--notes-file="))
+const notesValue =
+  notesArgument === undefined
+    ? undefined
+    : notesArgument.includes("=")
+      ? notesArgument.slice(notesArgument.indexOf("=") + 1)
+      : process.argv[process.argv.indexOf(notesArgument) + 1]
+if (notesArgument !== undefined && !notesValue) throw new Error("--notes-file needs the path of the notes file")
 
 const root = path.resolve(import.meta.dir, "../../..")
 const packageDir = path.join(root, "packages/cli")
+// Handwritten notes ship with the release, so a file inside the repository has to be committed
+// before publishing — the body is composed from the release commit. A file named on the command
+// line may point anywhere; without either, the body carries no Notes section at all.
+const notesFile = notesValue ?? path.join(root, "RELEASE_NOTES.md")
 const head = (await run(["git", "rev-parse", "HEAD"], root)).trim()
 const branch = (await run(["git", "branch", "--show-current"], root)).trim()
 // A tag push is the publishing route: GitHub resolves it to refs/tags/<name>, checks that
@@ -85,6 +102,11 @@ let plan = planForkRelease({
 })
 if (plan.action === "refuse") throw new Error(plan.reason)
 
+// The body's inputs are read before the build: a release tag this clone does not carry, a base
+// change that cannot be told apart from the upstream wave, or a notes file that is not there must
+// not cost a build and a smoke test.
+const inputs = publish || dryRun ? await bodyInputs() : undefined
+
 // buildAppArchive runs the web UI's own `bun run build`, which resolves `node` from PATH.
 // The bundled rolldown imports node:util.styleText (Node 20.12+), so fail loudly here
 // instead of dying inside vite.
@@ -119,6 +141,19 @@ while (true) {
   hash.update(chunk.value)
 }
 await Bun.write(checksum, ForkRelease.checksumFile(hash.digest("hex"), asset))
+
+// Only the asset sizes need the build; everything else was read before it.
+const body =
+  inputs === undefined
+    ? undefined
+    : composeReleaseNotes({
+        version,
+        ...inputs,
+        assets: [
+          { name: asset!, size: Bun.file(binary).size },
+          { name: checksumAsset, size: Bun.file(checksum).size },
+        ],
+      })
 
 const built = (await run([binary, "--version"], packageDir)).trim()
 if (reportedVersion(built) !== version) throw new Error(`Built ${reportedVersion(built)}, expected ${version}`)
@@ -158,6 +193,13 @@ if (publish) {
 console.log(`Prepared ${binary}`)
 console.log(`Prepared ${checksum}`)
 if (!publish) {
+  if (dryRun) {
+    console.log("")
+    console.log(`Body for ${version} (dry run: nothing was created or published):`)
+    console.log("")
+    console.log(body!)
+    console.log("")
+  }
   console.log(`Re-run with --publish after committing this exact source to ${releaseBranch}`)
   process.exit(0)
 }
@@ -192,7 +234,7 @@ if (plan.action === "create") {
       "--title",
       `OpenCode ${version}`,
       "--notes",
-      `Fork prerelease with a checksum-verified self-update channel from ${ForkRelease.repository}.`,
+      body!,
       "--prerelease",
       "--draft",
     ],
@@ -236,6 +278,13 @@ if (remoteChecksum !== (await Bun.file(checksum).text())) {
 console.log(
   `Verified draft: ${asset} (${binarySize} bytes) and ${checksumAsset} (${checksumSize} bytes), checksum round-trip identical`,
 )
+if (plan.action === "resume") {
+  // The plan resumes only a draft that belongs to this release, so refreshing its body writes
+  // to our own draft and never over somebody else's release. A published release does not get
+  // this far: the plan refuses it before the build.
+  await run(["gh", "release", "edit", version, "--repo", ForkRelease.repository, "--notes", body!], root)
+  console.log(`Refreshed the body of the draft ${version}`)
+}
 if (draft) {
   console.log(
     `Draft ${version} staged and verified; publish it with: gh release edit ${version} --repo ${ForkRelease.repository} --draft=false --prerelease`,
@@ -267,6 +316,23 @@ async function knownDraft() {
   if (result.code === 0) return Schema.decodeUnknownSync(Schema.fromJsonString(Draft))(result.stdout)
   if (/release not found|HTTP 404/i.test(result.stderr)) return undefined
   throw new Error(result.stderr.trim() || `Could not inspect release ${version}`)
+}
+
+/**
+ * Everything the body needs except the asset sizes, which only exist once the build has staged
+ * them. Read before the build so a broken input costs no build.
+ */
+async function bodyInputs() {
+  const notes = await readNotes(notesFile, version, notesArgument !== undefined)
+  const previous = newestPublished(await knownReleases())
+  const base = releaseBase(version)
+  const selection = await releaseCommits(git, { previous, base, head })
+  return { baseVersion: base, previous: selection.previous, commits: selection.commits, notes }
+}
+
+/** The git side of the release: every command runs in the repository root. */
+function git(command: ReadonlyArray<string>) {
+  return run(["git", ...command], root)
 }
 
 /** Commit the fork's tag for this release points at, or undefined when the tag is absent. */
