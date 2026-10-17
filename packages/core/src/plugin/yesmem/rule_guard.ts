@@ -29,6 +29,16 @@ const skipTools = new Set(["skill", "subagent", "todowrite"])
 const GUARD_CACHE_TTL_MS = 5000
 const MAX_GUARD_RESPONSE_CHARS = 100_000
 const MAX_VIOLATION_CHARS = 1000
+const MAX_LOG_EXCERPT_CHARS = 300
+
+/**
+ * A capped one-line excerpt for a log line. The body comes from a remote endpoint and may carry
+ * newlines, so it is JSON-quoted: a raw body could otherwise forge a second log entry.
+ */
+function logExcerpt(text: string): string {
+  const capped = text.length > MAX_LOG_EXCERPT_CHARS ? text.substring(0, MAX_LOG_EXCERPT_CHARS) + "…" : text
+  return JSON.stringify(capped)
+}
 
 // Keyed on the full text, not a 32-bit hash: the map holds a handful of entries and a hash collision would
 // hand one call another call's decision.
@@ -59,34 +69,53 @@ async function loadRules(directory: string): Promise<string> {
   return rules || "No numbered rules found"
 }
 
-async function getGitBranch(directory: string): Promise<string> {
+export async function getGitBranch(directory: string): Promise<string> {
   try {
+    // `.git` is a directory in a plain checkout and a `gitdir:` pointer file in a worktree. Reading it
+    // as text fails on the directory, so the pointer decides only when it parses as one.
     const gitFile = (await readText(`${directory}/.git`)) ?? ""
     const match = gitFile.match(/^gitdir:\s*(.+)$/m)
     const gitDir = match ? match[1].trim() : `${directory}/.git`
     const head = (await readText(`${gitDir}/HEAD`)) ?? ""
-    return head.trim().replace(/^ref: refs\/heads\//, "")
+    // Only a branch ref counts: a detached HEAD is a SHA, and calling that a feature branch would repeat
+    // the false assurance YM-85 is about.
+    const branch = /^ref:\s*refs\/heads\/(.+)$/.exec(head.trim())
+    return branch ? branch[1] : ""
   } catch {
     return ""
   }
+}
+
+const defaultBranches = new Set(["main", "master"])
+
+/**
+ * The context line that tells the model a feature-branch rule is already satisfied. It belongs to a
+ * feature branch only: on main the rule is exactly what the guard must keep suggesting (YM-85).
+ */
+export function featureBranchNote(branch: string): string {
+  if (!branch || defaultBranches.has(branch)) return ""
+  return `\nGit branch: ${branch} (feature branch rules are satisfied — no need to suggest worktree/branch skills)`
 }
 
 // ---------------------------------------------------------------------------------------------
 // Guard configuration
 
 /**
- * Reads the two `config.yaml` values the guard needs. v1 used the `yaml` module; that module is not
+ * Reads the config.yaml values the guard needs. v1 used the `yaml` module; that module is not
  * available to the plugin runtime, so this scans the document instead. Only these shapes are understood:
  *
- *   extraction:
+ *   rule_guard:
  *     model: <name>
  *   proxy:
  *     provider_targets:
  *       <model>: <url>
+ *
+ * The guard has its own model key on purpose: the extraction model is tuned for long transcripts and may
+ * answer only in its reasoning channel, which left the guard judging nothing (YM-78).
  */
-export function parseGuardConfig(text: string): { model?: string; providerTargets: Record<string, string> } {
+export function parseGuardConfig(text: string): { ruleGuardModel?: string; providerTargets: Record<string, string> } {
   const providerTargets: Record<string, string> = {}
-  let model: string | undefined
+  let ruleGuardModel: string | undefined
   let section: string | undefined
   let subsectionIndent = -1
   let inProviderTargets = false
@@ -108,8 +137,8 @@ export function parseGuardConfig(text: string): { model?: string; providerTarget
       subsectionIndent = -1
       continue
     }
-    if (section === "extraction" && key === "model" && value) {
-      model = unquote(value)
+    if (section === "rule_guard" && key === "model" && value) {
+      ruleGuardModel = unquote(value)
       continue
     }
     if (section !== "proxy") continue
@@ -121,7 +150,7 @@ export function parseGuardConfig(text: string): { model?: string; providerTarget
     if (inProviderTargets && indent > subsectionIndent && value) providerTargets[key] = unquote(value)
   }
 
-  return { ...(model === undefined ? {} : { model }), providerTargets }
+  return { ...(ruleGuardModel === undefined ? {} : { ruleGuardModel }), providerTargets }
 }
 
 const FIRST_PARTY_DEFAULTS: Record<string, string> = {
@@ -158,7 +187,9 @@ export async function resolveGuardConfig(): Promise<{ model: string; apiUrl: str
 
   const home = process.env.HOME || homedir()
   const config = parseGuardConfig((await readText(`${home}/.claude/yesmem/config.yaml`)) ?? "")
-  let model = config.model || "deepseek-v4-flash"
+  // Not extraction.model: that one may be a reasoning model, and its empty answers made the guard pass
+  // every call without judging it (YM-78).
+  const model = config.ruleGuardModel || "deepseek-v4-flash"
   const providerTargets = config.providerTargets
 
   const models = await readJson(`${home}/.cache/opencode/models.json`)
@@ -213,6 +244,22 @@ export async function resolveGuardConfig(): Promise<{ model: string; apiUrl: str
 // ---------------------------------------------------------------------------------------------
 // Guard decision
 
+/**
+ * Logs model and endpoint host once per change. The host, never the key: the guard's answer changes with
+ * both, and a silent switch between providers is otherwise invisible in the log.
+ */
+let lastResolution = ""
+function logResolution(config: { model: string; apiUrl: string; npm: string }) {
+  let host = config.apiUrl
+  try {
+    host = new URL(config.apiUrl).host
+  } catch {}
+  const resolution = `${config.model} via ${host}`
+  if (resolution === lastResolution) return
+  lastResolution = resolution
+  debugLog("guard", `RESOLVED model=${config.model} host=${host} npm=${config.npm || "-"}`)
+}
+
 async function guardCheck(
   rules: string,
   tool: string,
@@ -231,6 +278,9 @@ async function guardCheck(
     debugLog("guard", `NO-KEY url=${config.apiUrl} key=${config.apiKey ? "yes" : "no"}`)
     return { decision: "PASS" }
   }
+  // The endpoint and the credential change with the model. Say it once per resolution, host only, so a
+  // model switch (rule_guard.model) is visible in the log instead of being inferred from errors.
+  logResolution(config)
 
   const blockOption = canBlock
     ? `- BLOCK: call violates a rule → {"decision":"BLOCK","violations":["Rule X: reason"]}\n`
@@ -271,24 +321,58 @@ async function guardCheck(
     })
     const raw = await readBodyCapped(response, MAX_GUARD_RESPONSE_CHARS)
     const elapsed = Date.now() - started
-    const message = (JSON.parse(raw) as any)?.choices?.[0]?.message
+    // Every abnormal answer is logged with status, model and body excerpt. Without that the guard passed
+    // silently for days and the cause was unreadable (YM-78).
+    if (!response.ok) {
+      debugLog("guard", `[${elapsed}ms] HTTP-ERROR status=${response.status} model=${config.model} body=${logExcerpt(raw)}`)
+      return { decision: "PASS" }
+    }
+    let payload: any
+    try {
+      payload = JSON.parse(raw)
+    } catch {
+      debugLog("guard", `[${elapsed}ms] NON-JSON status=${response.status} model=${config.model} body=${logExcerpt(raw)}`)
+      return { decision: "PASS" }
+    }
+    const message = payload?.choices?.[0]?.message
     const content: string = message?.content || ""
 
     if (!content) {
-      debugLog("guard", `[${elapsed}ms] EMPTY-CONTENT — PASS`)
+      debugLog(
+        "guard",
+        `[${elapsed}ms] EMPTY-CONTENT status=${response.status} model=${config.model} finish=${message?.finish_reason ?? "?"} body=${logExcerpt(raw)}`,
+      )
       const result: GuardResult = { decision: "PASS" }
       guardCache.set(cacheKey, { result, ts: Date.now() })
       return result
     }
 
-    const parsed = JSON.parse(content) as GuardResult
+    const parsed = (() => {
+      try {
+        return JSON.parse(content) as GuardResult
+      } catch {
+        return undefined
+      }
+    })()
+    if (!parsed) {
+      // Prose instead of JSON is the same class as an empty answer: the guard did not judge, and the reply
+      // says why. Retrying costs a second request and hides the reason.
+      debugLog(
+        "guard",
+        `[${elapsed}ms] NON-JSON-ANSWER status=${response.status} model=${config.model} content=${logExcerpt(content)}`,
+      )
+      return { decision: "PASS" }
+    }
     guardCache.set(cacheKey, { result: parsed, ts: Date.now() })
     if (parsed.decision === "BLOCK" && parsed.violations?.length) {
-      debugLog("guard", `[${elapsed}ms] BLOCKED ${parsed.violations.join("; ")}`)
+      debugLog(
+        "guard",
+        `[${elapsed}ms] ${canBlock ? "BLOCKED" : "BLOCK-IGNORED (tool cannot be blocked)"} ${logExcerpt(parsed.violations.join("; "))}`,
+      )
       return parsed
     }
     if (parsed.decision === "SUGGEST" && parsed.suggestion) {
-      debugLog("guard", `[${elapsed}ms] SUGGEST ${parsed.suggestion}`)
+      debugLog("guard", `[${elapsed}ms] SUGGEST ${logExcerpt(parsed.suggestion)}`)
       return parsed
     }
     debugLog("guard", `[${elapsed}ms] PASS`)
@@ -303,6 +387,35 @@ async function guardCheck(
     debugLog("guard", `check failed: ${error?.message || String(error)}`)
     return { decision: "PASS" }
   }
+}
+
+/**
+ * Rule numbers a BLOCK may cite: only rules the loaded catalogue actually contains. Without this filter a
+ * model-invented rule number blocks a call (the audit saw "Rule 42", which does not exist). A citation may
+ * read "Rule 2", "Rule #2" or "Rules 2 and 4"; everything else in the text is ignored.
+ */
+export function existingCitedRules(rules: string, violations: string[]): number[] {
+  const known = new Set<number>()
+  for (const line of rules.split("\n")) {
+    const match = /^(\d+)\.\s/.exec(line.trim())
+    if (match) known.add(Number(match[1]))
+  }
+  const cited = new Set<number>()
+  for (const violation of violations) {
+    for (const number of citedRuleNumbers(violation)) if (known.has(number)) cited.add(number)
+  }
+  return [...cited]
+}
+
+/** The numbers a violation cites: right after "rule"/"rules" (optionally "#") and in a following list. */
+function citedRuleNumbers(violation: string): number[] {
+  const numbers: number[] = []
+  for (const segment of violation.split(/\brule(?:s)?\b/i).slice(1)) {
+    const head = /^[\s#]*(\d+(?:\s*(?:,\s*|\s+and\s+|&\s*)\s*#?\d+)*)/.exec(segment)
+    if (!head) continue
+    for (const number of head[1].match(/\d+/g) ?? []) numbers.push(Number(number))
+  }
+  return numbers
 }
 
 function detectUserIntent(message: string, tool: string, args: Record<string, any>): boolean {
@@ -372,6 +485,8 @@ export function ruleGuard(directory: string) {
           "guard",
           `loaded ${rulesCache.split("\n").length} rules ~${Math.round(rulesCache.length / 4)} sys-tok branch=${gitBranch || "?"}`,
         )
+        // "nothing to judge" must be distinguishable from "the guard is broken" (YM-78).
+        if (!rulesCache || rulesCache.startsWith("No ")) debugLog("guard", `SKIP-NORULES ${rulesCache}`)
       }
       if (!rulesCache || rulesCache.startsWith("No ")) return
 
@@ -406,14 +521,20 @@ export function ruleGuard(directory: string) {
         context += `\nNOTE: This is a test file ("_test.go"). Writing test files before implementation IS TDD-compliant — do not BLOCK under TDD/test-first rules.`
       }
       if (gitBranch) {
-        context += `\nGit branch: ${gitBranch} (feature branch rules are satisfied — no need to suggest worktree/branch skills)`
+        context += featureBranchNote(gitBranch)
       }
 
       const canBlock = blockableTools.has(toolName)
       const result = await guardCheck(rulesCache, toolName, context, canBlock)
       if (result.decision === "BLOCK" && canBlock) {
+        const violations = result.violations || []
+        // A model-invented rule number may not block a call; only a rule the catalogue holds counts.
+        if (existingCitedRules(rulesCache, violations).length === 0) {
+          debugLog("guard", `DOWNGRADE no existing rule cited: ${logExcerpt(violations.join("; "))}`)
+          return
+        }
         // The text comes from a model whose prompt embeds repository content; it reaches the model again.
-        return `Rule check blocked this call: ${(result.violations || []).join("; ").substring(0, MAX_VIOLATION_CHARS)}`
+        return `Rule check blocked this call: ${violations.join("; ").substring(0, MAX_VIOLATION_CHARS)}`
       }
       if (result.decision === "SUGGEST") {
         const suggestion = result.suggestion || ""
