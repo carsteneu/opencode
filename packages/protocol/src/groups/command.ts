@@ -2,6 +2,7 @@ import { Command } from "@opencode/schema/command"
 import { Location } from "@opencode/schema/location"
 import { Schema } from "effect"
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api"
+import { ServiceUnavailableError } from "../errors.js"
 import { LocationQuery, locationQueryOpenApi } from "./location.js"
 
 export const CommandGroup = HttpApiGroup.make("server.command")
@@ -9,6 +10,7 @@ export const CommandGroup = HttpApiGroup.make("server.command")
     HttpApiEndpoint.get("command.list", "/api/command", {
       query: LocationQuery,
       success: Location.response(Schema.Array(Command.Info)),
+      error: ServiceUnavailableError,
     })
       .annotateMerge(locationQueryOpenApi)
       .annotateMerge(
