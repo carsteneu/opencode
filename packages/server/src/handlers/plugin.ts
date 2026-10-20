@@ -39,13 +39,20 @@ function errorTag(error: unknown): string | undefined {
 
 // runPluginUpdates runs every requested package update and collects one line per
 // failure. Updates run to completion instead of interrupting the rest on the
-// first failure.
+// first failure. The cause stays in the log: the collected line is the 503 body
+// and carries no stack trace, so without the log a failed install would leave no
+// trace at all.
 export const runPluginUpdates = (updates: PluginUpdate.Interface, targets: readonly string[]) =>
   Effect.forEach(
     uniqueUpdateTargets(targets),
     (target) =>
       updates.update(target).pipe(
         Effect.exit,
+        Effect.tap((exit) =>
+          Exit.isFailure(exit)
+            ? Effect.logWarning("plugin package update failed", { target, cause: exit.cause })
+            : Effect.void,
+        ),
         Effect.map((exit) => (Exit.isFailure(exit) ? [`${target}: ${updateFailureReason(exit.cause)}`] : [])),
       ),
     { concurrency: pluginUpdateConcurrency },

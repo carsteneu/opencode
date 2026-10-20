@@ -1,6 +1,6 @@
 import { Npm } from "@opencode/util/npm"
 import { expect, test } from "bun:test"
-import { Effect, Stream } from "effect"
+import { Effect, Logger, Stream } from "effect"
 import { runPluginUpdates } from "../src/handlers/plugin"
 
 type Fake = {
@@ -56,10 +56,22 @@ test("runs package installs one at a time", async () => {
 
 test("reports a failed update without the cause", async () => {
   const fake = fakeUpdates({ fail: ["a@1.0.0"] })
-  const failures = await Effect.runPromise(runPluginUpdates(fake.updates, ["a@1.0.0", "b@1.0.0"]))
+  const messages: unknown[] = []
+  const logger = Logger.make<unknown, void>((options) => {
+    messages.push({ message: options.message, cause: options.cause })
+  })
+  const failures = await Effect.runPromise(
+    runPluginUpdates(fake.updates, ["a@1.0.0", "b@1.0.0"]).pipe(
+      Effect.provide(Logger.layer([logger], { mergeWithExisting: false })),
+    ),
+  )
   expect(failures).toEqual(["a@1.0.0: package install failed"])
   // The 503 body leaves the server: a pretty-printed cause would carry stack
   // traces and the package manager's paths into the response.
   expect(failures.join(" ")).not.toContain("/home/dev")
   expect(failures.join(" ")).not.toContain("npm exited 1")
+  // The cause itself must not be lost: it is the only diagnostic for a failed
+  // install.
+  expect(messages.length).toBe(1)
+  expect(JSON.stringify(messages[0])).toContain("NpmInstallFailedError")
 })
