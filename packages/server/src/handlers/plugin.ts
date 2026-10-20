@@ -10,9 +10,10 @@ import { response } from "../location"
 // same package would install it twice, so only the first mention counts.
 export const uniqueUpdateTargets = (targets: readonly string[]) => [...new Set(targets)]
 
-// Package installs write the same global package directory, and the per-target
-// lock in PluginUpdate cannot see a second target. Running them one at a time is
-// the only bound that keeps two installs out of that directory.
+// Each update is an independent npm install: PluginUpdate locks per target, so
+// concurrency is not a correctness question here, it bounds the work a single
+// request can trigger. Without a bound a request naming every plugin starts one
+// full dependency resolution per package at the same time.
 export const pluginUpdateConcurrency = 1
 
 // updateFailureReason names a failed update without its cause. The text leaves

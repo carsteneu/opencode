@@ -8,6 +8,11 @@ import path from "node:path"
  * the assertion deterministic instead of racing the forked activation in the
  * supervisor (packages/core/src/plugin/supervisor.ts).
  *
+ * The callers give the answer a 300ms head start before opening the gate, a
+ * margin of roughly 60 times a local roundtrip. If a machine were slow enough to
+ * answer later than that, a mutated handler would survive the test; the content
+ * assertion stays the second discriminator, not a replacement for the window.
+ *
  * The plugin needs no imports: the bare specifier a real plugin uses does not
  * resolve from a temporary directory.
  */
