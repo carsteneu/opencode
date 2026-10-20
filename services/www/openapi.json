@@ -790,7 +790,7 @@
             }
           }
         },
-        "description": "Update package plugins concurrently and notify active locations to reload them. Responds once every update has finished; fails when any update fails.",
+        "description": "Update package plugins one at a time and notify active locations to reload them. Responds once every update has finished; fails when any update fails.",
         "summary": "Update plugins",
         "requestBody": {
           "content": {
