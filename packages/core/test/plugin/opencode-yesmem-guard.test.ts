@@ -13,7 +13,7 @@ import {
 } from "./opencode-yesmem-fixture"
 
 type GuardModule = {
-  parseGuardConfig: (text: string) => { model?: string; providerTargets: Record<string, string> }
+  parseGuardConfig: (text: string) => { ruleGuardModel?: string; providerTargets: Record<string, string> }
 }
 
 const RULES = `# Project rules
@@ -255,7 +255,7 @@ describe("rule_guard", () => {
 })
 
 describe("rule_guard config scan", () => {
-  test("reads the extraction model and provider targets without a YAML dependency", async () => {
+  test("reads the rule_guard model and provider targets without a YAML dependency", async () => {
     const module = (await import(yesmemEntry("rule_guard.ts"))) as GuardModule
 
     const config = module.parseGuardConfig(`# yesmem config
@@ -265,11 +265,14 @@ proxy:
     privateTom: http://127.0.0.1:1234
     "quoted": https://example.test/
 extraction:
+  model: gd-flash
+rule_guard:
   model: deepseek-v4-flash
   other: ignored
 `)
 
-    expect(config.model).toBe("deepseek-v4-flash")
+    // The guard has its own model; extraction.model may be a reasoning model whose empty answers made it pass.
+    expect(config.ruleGuardModel).toBe("deepseek-v4-flash")
     expect(config.providerTargets).toEqual({
       privateTom: "http://127.0.0.1:1234",
       quoted: "https://example.test/",
@@ -280,5 +283,7 @@ extraction:
     const module = (await import(yesmemEntry("rule_guard.ts"))) as GuardModule
     expect(module.parseGuardConfig("")).toEqual({ providerTargets: {} })
     expect(module.parseGuardConfig("other:\n  key: value\n")).toEqual({ providerTargets: {} })
+    // extraction.model alone no longer selects the guard model.
+    expect(module.parseGuardConfig("extraction:\n  model: gd-flash\n")).toEqual({ providerTargets: {} })
   })
 })

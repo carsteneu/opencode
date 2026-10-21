@@ -18,8 +18,9 @@ const indexed = (request: DaemonRequest) => {
   return { result: {} }
 }
 
+// An unindexed project is a daemon error (handler_code_intelligence.go), not an empty result.
 const notIndexed = (request: DaemonRequest) => {
-  if (request.method === "search_code_index") return { result: { text: "No results found" } }
+  if (request.method === "search_code_index") return { error: "no code index available for project: /workspace/e2" }
   return { result: {} }
 }
 

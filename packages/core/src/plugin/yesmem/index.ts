@@ -25,7 +25,7 @@ import { ruleGuard, type ToolResultEvent } from "./rule_guard"
 import { YesMemRPC } from "./rpc"
 import { sessionTracker, type HostEvent } from "./session"
 import { shellEnvironment, type ShellCreateEvent } from "./shell"
-import { skillNudge } from "./skill_nudge"
+import { catalogCandidates, skillNudge } from "./skill_nudge"
 
 const pluginDirectory = fileURLToPath(new URL(".", import.meta.url))
 
@@ -40,22 +40,21 @@ export default Plugin.define({
       const learn = failureLearn(rpc, directory)
       const resolve = autoResolve(rpc, directory)
       const session = sessionTracker(rpc)
-      const shell = shellEnvironment(rpc, rpc.socket, session.current)
+      const shell = shellEnvironment(rpc, rpc.socket)
       const skills = skillNudge(
-        [
-          process.env.YESMEM_SKILL_CATALOG,
-          `${pluginDirectory.replace(/\/$/, "")}/RULES.md`,
-          `${directory.replace(/\/$/, "")}/RULES.md`,
-        ].filter((candidate): candidate is string => Boolean(candidate)),
+        catalogCandidates({
+          override: process.env.YESMEM_SKILL_CATALOG,
+          pluginDirectory,
+          projectDirectory: directory,
+        }),
       )
       const ledger = ledgerNudge(rpc)
       const idle = idleReminder()
 
       // v1 primed the project index without waiting for it, and activation must not stall on the daemon:
-      // `Plugin.awaitActivation` gates session entry points on this effect completing.
-      yield* Effect.promise(() =>
-        rpc.call("search_code_index", { pattern: "func", kind: "function", project: directory, limit: 1 }),
-      ).pipe(Effect.forkScoped)
+      // `Plugin.awaitActivation` gates session entry points on this effect completing. Priming goes through
+      // the guard, so it asks the same question in the same shape and fills the probe cache.
+      yield* Effect.promise(() => codeNav.prime()).pipe(Effect.forkScoped)
 
       // Returns the message the call must be rejected with, or undefined to let it run.
       async function before(event: ToolCallEvent): Promise<string | undefined> {

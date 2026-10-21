@@ -62,6 +62,17 @@ function cacheSet(key: string, value: string | null) {
   }
 }
 
+/**
+ * Log-safe label for a cache key. The key is `${catalogHash}\u0000${userMessage}`, so writing it into the
+ * log wrote whole prompts into plugin-v2.log (YM-22). The label keeps the catalogue hash plus a short
+ * message digest: the same recommendation stays recognisable, the text does not.
+ */
+export function cacheKeyLabel(key: string): string {
+  const separator = key.indexOf("\u0000")
+  if (separator < 0) return hashString(key)
+  return `${key.substring(0, separator)}#${hashString(key.substring(separator + 1))}`
+}
+
 /** YAML strings of a trigger list, with escaped quotes handled. */
 export function extractYamlStrings(text: string): string[] {
   const result: string[] = []
@@ -203,17 +214,36 @@ function precompute(key: string, userMessage: string, catalogText: string, onTra
     .then((skill) => {
       // Only a definitive answer is cached; a failed call stays open for the next sighting.
       if (skill === undefined) {
-        debugLog("skill_nudge", `no answer for ${key}, will retry`)
+        debugLog("skill_nudge", `no answer for ${cacheKeyLabel(key)}, will retry`)
         onTransient?.()
         return
       }
       cacheSet(key, skill)
-      debugLog("skill_nudge", `cached ${key}=${skill ?? "NONE"}`)
+      debugLog("skill_nudge", `cached ${cacheKeyLabel(key)}=${skill ?? "NONE"}`)
     })
     .catch(() => {
       onTransient?.()
     })
     .finally(() => inFlight.delete(key))
+}
+
+/**
+ * RULES.md candidates in priority order: an explicit override, then the project file the guard evaluates,
+ * then a copy shipped next to the plugin. The first readable file with a Skill Catalog wins — the shipped
+ * copy is only a fallback, so the nudge and the guard cannot work with two different catalogues (YM-88).
+ */
+export function catalogCandidates(sources: {
+  override?: string
+  pluginDirectory?: string
+  projectDirectory?: string
+}): string[] {
+  const asRulesFile = (directory: string) => `${directory.replace(/\/$/, "")}/RULES.md`
+  // The override names a file; the two directory sources are completed to their RULES.md.
+  return [
+    sources.override,
+    sources.projectDirectory ? asRulesFile(sources.projectDirectory) : undefined,
+    sources.pluginDirectory ? asRulesFile(sources.pluginDirectory) : undefined,
+  ].filter((candidate): candidate is string => Boolean(candidate))
 }
 
 export interface ContextEvent {
@@ -222,8 +252,8 @@ export interface ContextEvent {
 }
 
 /**
- * @param catalogPaths candidate `RULES.md` locations in priority order (env override, plugin directory,
- * project directory). The first readable one wins.
+ * @param catalogPaths candidate `RULES.md` locations in priority order (env override, project directory,
+ * plugin directory). The first readable one with a Skill Catalog wins.
  */
 export function skillNudge(catalogPaths: readonly string[]) {
   let catalog: SkillEntry[] | null = null
@@ -231,18 +261,28 @@ export function skillNudge(catalogPaths: readonly string[]) {
   let catalogHash = ""
   let loadedPath: string | null = null
   let loadedMtime = -1
+  // A project without any catalogue would otherwise be re-read on every turn.
+  let noCatalogUntil = 0
+  const NO_CATALOG_TTL_MS = 30000
   // Keyed on catalogue + text: a catalogue change must not wedge the message that was pending before it.
   let lastPrecomputed: string | null = null
 
   async function loadCatalog() {
-    const read = async (candidate: string) => {
+    if (Date.now() < noCatalogUntil) return
+    const read = async (candidate: string): Promise<boolean> => {
       const info = await stat(candidate)
       // The catalogue is repo content and this runs on the request path.
       if (info.size > MAX_CATALOG_BYTES) {
         debugLog("skill_nudge", `catalog too large (${info.size} bytes), ignored: ${candidate}`)
-        return
+        return false
       }
       const parsed = parseSkillCatalog(await readFile(candidate, "utf8"))
+      // A rule file without a catalogue section carries nothing to match against; the next candidate
+      // (the project file, or the copy shipped with the plugin) is still worth reading.
+      if (parsed.length === 0) {
+        debugLog("skill_nudge", `no skill catalog in ${candidate}`)
+        return false
+      }
       catalog = parsed
       catalogText = parsed
         .map((entry) => `- ${entry.skill} (${entry.priority}): ${entry.triggers.join(", ")}`)
@@ -252,6 +292,7 @@ export function skillNudge(catalogPaths: readonly string[]) {
       loadedPath = candidate
       loadedMtime = info.mtimeMs
       debugLog("skill_nudge", `loaded ${parsed.length} skills from ${candidate}`)
+      return true
     }
 
     // Re-stat the file that was loaded first: a different candidate with a coincidentally equal mtime must
@@ -260,18 +301,26 @@ export function skillNudge(catalogPaths: readonly string[]) {
       try {
         const info = await stat(loadedPath)
         if (info.mtimeMs === loadedMtime) return
-        await read(loadedPath)
-        return
+        if (await read(loadedPath)) return
+        loadedPath = null
       } catch {
         loadedPath = null
       }
     }
+    // A run that finds no catalogue must leave no stale one behind: otherwise a removed file keeps nudging
+    // from the previous content and the result cache stays keyed on an outdated hash.
+    catalog = null
+    catalogText = ""
+    catalogHash = ""
     for (const candidate of catalogPaths) {
       try {
-        await read(candidate)
-        return
+        if (await read(candidate)) {
+          noCatalogUntil = 0
+          return
+        }
       } catch {}
     }
+    noCatalogUntil = Date.now() + NO_CATALOG_TTL_MS
   }
 
   async function context(event: ContextEvent) {
