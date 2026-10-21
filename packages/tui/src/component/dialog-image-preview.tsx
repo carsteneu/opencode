@@ -1,4 +1,3 @@
-import { TextAttributes } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
 import path from "node:path"
 import { createMemo, createSignal, onCleanup } from "solid-js"
@@ -6,8 +5,8 @@ import { Keymap } from "../context/keymap"
 import { useTuiPaths } from "../context/runtime"
 import { useTheme } from "../context/theme"
 import { abbreviateHome } from "../runtime"
+import { DialogHeader, DialogLayout, useDialog } from "../ui/dialog"
 import { DialogPrompt } from "../ui/dialog-prompt"
-import { useDialog } from "../ui/dialog"
 import { useToast } from "../ui/toast"
 import { resolveSessionImageDirectory, saveSessionImage } from "../util/session-image-save"
 
@@ -52,20 +51,46 @@ export function DialogImagePreview(props: { images: readonly ImagePreviewItem[];
   }))
 
   return (
-    <box id="prompt-image-viewer" paddingLeft={2} paddingRight={2} paddingBottom={1} gap={1}>
-      <box flexDirection="row" justifyContent="space-between">
-        <text attributes={TextAttributes.BOLD} fg={theme.text.base}>
-          Image {index() + 1} of {props.images.length}
-        </text>
-        <box flexDirection="row" gap={2}>
+    <DialogLayout
+      id="prompt-image-viewer"
+      header={<DialogHeader title={`Image ${index() + 1} of ${props.images.length}`} />}
+      footer={{
+        actions: {
+          primary:
+            props.images.length > 1
+              ? [
+                  { title: "previous", key: "←", onTrigger: () => move(-1) },
+                  { title: "next", key: "→", onTrigger: () => move(1) },
+                  { title: "save", key: "s", onTrigger: save },
+                ]
+              : [{ title: "save", key: "s", onTrigger: save }],
+        },
+        get children() {
+          return (
+            <text fg={failed() ? theme.text.feedback.error.base : theme.text.muted} wrapMode="none" truncate>
+              {failed() ? "No preview" : (current().mention?.text ?? `Image ${index() + 1}`)}
+            </text>
+          )
+        },
+      }}
+      legacyFooter={
+        <box flexDirection="row" justifyContent="space-between">
+          <text fg={theme.text.muted} onMouseUp={() => move(-1)}>
+            {props.images.length > 1 ? "← previous" : ""}
+          </text>
+          <text fg={failed() ? theme.text.feedback.error.base : theme.text.muted} wrapMode="none" truncate>
+            {failed() ? "No preview" : (current().mention?.text ?? `Image ${index() + 1}`)}
+          </text>
+          <text fg={theme.text.muted} onMouseUp={() => move(1)}>
+            {props.images.length > 1 ? "next →" : ""}
+          </text>
           <text fg={theme.text.muted} onMouseUp={save}>
             {saveShortcut() ? `${saveShortcut()} save` : "save"}
           </text>
-          <text fg={theme.text.muted} onMouseUp={() => dialog.clear()}>
-            esc
-          </text>
         </box>
-      </box>
+      }
+    >
+
       <image
         id="prompt-image-viewer-image"
         source={current().uri}
@@ -75,18 +100,7 @@ export function DialogImagePreview(props: { images: readonly ImagePreviewItem[];
         height={imageHeight()}
         onError={() => setFailed(true)}
       />
-      <box flexDirection="row" justifyContent="space-between">
-        <text fg={theme.text.muted} onMouseUp={() => move(-1)}>
-          {props.images.length > 1 ? "← previous" : ""}
-        </text>
-        <text fg={failed() ? theme.text.feedback.error.base : theme.text.muted} wrapMode="none" truncate>
-          {failed() ? "No preview" : (current().mention?.text ?? `Image ${index() + 1}`)}
-        </text>
-        <text fg={theme.text.muted} onMouseUp={() => move(1)}>
-          {props.images.length > 1 ? "next →" : ""}
-        </text>
-      </box>
-    </box>
+    </DialogLayout>
   )
 }
 

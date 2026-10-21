@@ -72,7 +72,7 @@ describe("toLLMMessages", () => {
           SessionMessage.AssistantReasoning.make({
             type: "reasoning",
             text: "",
-            state: { signature: "sig_1" },
+            native: { signature: "sig_1" },
           }),
         ]),
       ],
@@ -148,7 +148,7 @@ describe("toLLMMessages", () => {
           status: "completed",
           reason: "auto",
           summary: "Earlier work",
-          recent: "Recent work",
+          metadata: { recent: "Recent work" },
           time: { created },
         }),
       ],
@@ -211,7 +211,6 @@ Recent work
           status: "completed",
           reason: "auto",
           summary: "Earlier work",
-          recent: "",
           time: { created },
         }),
       ],
@@ -763,7 +762,7 @@ Earlier work
             SessionMessage.AssistantReasoning.make({
               type: "reasoning",
               text: "Think",
-              state: { signature: "sig_1" },
+              native: { signature: "sig_1" },
             }),
             SessionMessage.AssistantTool.make({
               type: "tool",
@@ -807,8 +806,7 @@ Earlier work
               id: "hosted",
               name: "web_search",
               executed: true,
-              providerState: { continuation: "hosted-call" },
-              providerResultState: { continuation: "hosted-result" },
+              native: { continuation: "hosted" },
               state: SessionMessage.ToolStateCompleted.make({
                 status: "completed",
                 input: { query: "Effect" },
@@ -821,7 +819,7 @@ Earlier work
               id: "hosted-failed",
               name: "write",
               executed: true,
-              providerState: { continuation: "failed" },
+              native: { continuation: "failed" },
               state: SessionMessage.ToolStateError.make({
                 status: "error",
                 input: { path: "README.md" },
@@ -854,14 +852,14 @@ Earlier work
         name: "web_search",
         input: { query: "Effect" },
         providerExecuted: true,
-        providerMetadata: { provider: { continuation: "hosted-call" } },
+        providerMetadata: { provider: { continuation: "hosted" } },
       },
       {
         type: "tool-result",
         id: "hosted",
         name: "web_search",
         providerExecuted: true,
-        providerMetadata: { provider: { continuation: "hosted-result" } },
+        providerMetadata: { provider: { continuation: "hosted" } },
         result: { type: "text", value: "Found it" },
       },
       {
@@ -912,7 +910,7 @@ Earlier work
             SessionMessage.AssistantReasoning.make({
               type: "reasoning",
               text: "Think",
-              state: { itemId: "rs_1", reasoningEncryptedContent: "encrypted-state" },
+              native: { itemId: "rs_1", reasoningEncryptedContent: "encrypted-state" },
             }),
           ],
           time: { created, completed: created },
@@ -943,7 +941,7 @@ Earlier work
             SessionMessage.AssistantReasoning.make({
               type: "reasoning",
               text: "Think",
-              state: { signature: "signed" },
+              native: { signature: "signed" },
             }),
           ],
           time: { created, completed: created },
@@ -970,15 +968,14 @@ Earlier work
             SessionMessage.AssistantReasoning.make({
               type: "reasoning",
               text: "Partial thought",
-              state: { itemId: "rs_failed", reasoningEncryptedContent: null },
+              native: { itemId: "rs_failed", reasoningEncryptedContent: null },
             }),
             SessionMessage.AssistantTool.make({
               type: "tool",
               id: "hosted-completed",
               name: "web_search",
               executed: true,
-              providerState: { itemId: "call_completed" },
-              providerResultState: { itemId: "result_completed" },
+              native: { itemId: "hosted_completed" },
               state: SessionMessage.ToolStateCompleted.make({
                 status: "completed",
                 input: { query: "Effect" },
@@ -991,8 +988,7 @@ Earlier work
               id: "hosted-failed",
               name: "web_search",
               executed: true,
-              providerState: { itemId: "call_failed" },
-              providerResultState: { itemId: "result_failed" },
+              native: { itemId: "hosted_failed" },
               state: SessionMessage.ToolStateError.make({
                 status: "error",
                 input: { query: "Effect" },
@@ -1017,7 +1013,7 @@ Earlier work
         name: "web_search",
         input: { query: "Effect" },
         providerExecuted: true,
-        providerMetadata: { provider: { itemId: "call_completed" } },
+        providerMetadata: { provider: { itemId: "hosted_completed" } },
       },
       {
         type: "tool-result",
@@ -1027,7 +1023,7 @@ Earlier work
         providerExecuted: true,
         cache: undefined,
         metadata: undefined,
-        providerMetadata: { provider: { itemId: "result_completed" } },
+        providerMetadata: { provider: { itemId: "hosted_completed" } },
       },
       {
         type: "tool-call",
@@ -1035,7 +1031,7 @@ Earlier work
         name: "web_search",
         input: { query: "Effect" },
         providerExecuted: true,
-        providerMetadata: { provider: { itemId: "call_failed" } },
+        providerMetadata: { provider: { itemId: "hosted_failed" } },
       },
       {
         type: "tool-result",
@@ -1051,7 +1047,7 @@ Earlier work
         providerExecuted: true,
         cache: undefined,
         metadata: undefined,
-        providerMetadata: { provider: { itemId: "result_failed" } },
+        providerMetadata: { provider: { itemId: "hosted_failed" } },
       },
     ])
   })
@@ -1068,13 +1064,13 @@ Earlier work
             SessionMessage.AssistantReasoning.make({
               type: "reasoning",
               text: "Completed summary part",
-              state: { itemId: "rs_interrupted", reasoningEncryptedContent: null },
+              native: { itemId: "rs_interrupted", reasoningEncryptedContent: null },
               time: { created, completed: created },
             }),
             SessionMessage.AssistantReasoning.make({
               type: "reasoning",
               text: "",
-              state: { itemId: "rs_interrupted", reasoningEncryptedContent: null },
+              native: { itemId: "rs_interrupted", reasoningEncryptedContent: null },
               time: { created },
             }),
           ],
@@ -1099,15 +1095,14 @@ Earlier work
             SessionMessage.AssistantReasoning.make({
               type: "reasoning",
               text: "Visible thought",
-              state: { signature: "sig_old" },
+              native: { signature: "sig_old" },
             }),
             SessionMessage.AssistantTool.make({
               type: "tool",
               id: "hosted-old-model",
               name: "web_search",
               executed: true,
-              providerState: { itemId: "hosted-old-model" },
-              providerResultState: { itemId: "hosted-old-model" },
+              native: { itemId: "hosted-old-model", result: { signature: "result-sig" } },
               state: SessionMessage.ToolStateCompleted.make({
                 status: "completed",
                 input: { query: "Effect" },
@@ -1120,8 +1115,7 @@ Earlier work
               id: "local-old-model",
               name: "read",
               executed: false,
-              providerState: { call: "old" },
-              providerResultState: { result: "old" },
+              native: { call: "old" },
               state: SessionMessage.ToolStateCompleted.make({
                 status: "completed",
                 input: { path: "README.md" },
@@ -1156,7 +1150,7 @@ Earlier work
         metadata: undefined,
         // Hosted result payloads are provider-format state and must survive a
         // model switch within the same provider for replay to stay valid.
-        providerMetadata: { provider: { itemId: "hosted-old-model" } },
+        providerMetadata: { provider: { itemId: "hosted-old-model", result: { signature: "result-sig" } } },
       },
       {
         type: "tool-call",
@@ -1193,7 +1187,7 @@ Earlier work
             SessionMessage.AssistantReasoning.make({
               type: "reasoning",
               text: "Visible thought",
-              state: { reasoningEncryptedContent: "encrypted" },
+              native: { reasoningEncryptedContent: "encrypted" },
             }),
           ],
           time: { created, completed: created },
@@ -1223,7 +1217,7 @@ Earlier work
             SessionMessage.AssistantText.make({
               type: "text",
               text: "Checking.",
-              state: { phase: "commentary" },
+              native: { phase: "commentary" },
             }),
           ],
           error: { type: "provider.unknown", message: "Interrupted after commentary" },
@@ -1254,7 +1248,7 @@ Earlier work
             SessionMessage.AssistantText.make({
               type: "text",
               text: "Checking.",
-              state: { phase: "commentary" },
+              native: { phase: "commentary" },
             }),
           ],
           time: { created, completed: created },

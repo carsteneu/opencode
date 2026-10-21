@@ -162,6 +162,32 @@ test("keyboard navigation follows the visible tab order and skips unresolved tab
   await expectPath(page, sessionHref(c.id))
 })
 
+test("option arrows move to the previous or next tab, and with shift to the next unread one", async ({ page }) => {
+  await mockWorkspace(page, {
+    name: "Tabs",
+    sessions: [a, b, c],
+    sessionPermissions: {
+      [c.id]: [
+        { id: "permission-tab-c", sessionID: c.id, action: "shell", resources: ["git status"], metadata: {}, save: [] },
+      ],
+    },
+  })
+  await page.goto(sessionHref(a.id))
+  await page.mouse.move(0, 0)
+  await expect(
+    page.locator(`[data-titlebar-tab-slot]:has(a[href="${sessionHref(c.id)}"]) [data-slot="tab-unread-dot"]`),
+  ).toBeVisible()
+
+  await page.keyboard.press("Alt+ArrowDown")
+  await expectPath(page, sessionHref(b.id))
+
+  await page.keyboard.press("Alt+ArrowUp")
+  await expectPath(page, sessionHref(a.id))
+
+  await page.keyboard.press("Shift+Alt+ArrowDown")
+  await expectPath(page, sessionHref(c.id))
+})
+
 for (const row of [
   { tabLayout: "horizontal", width: 360, hasTouch: false, direction: "ltr" },
   { tabLayout: "vertical", width: 390, hasTouch: true, direction: "rtl" },
@@ -411,8 +437,12 @@ test("tab preview opens cold, switches immediately between tabs, and closes outs
   const tabC = rows.filter({ has: page.locator(`a[href="${sessionHref(c.id)}"]`) })
   const preview = page.locator('[data-component="session-tab-popover"]')
   await expect(rows.locator("[data-titlebar-tab-title]")).toHaveText([a.title, b.title, c.title, d.title])
-  await page.clock.install()
-  await page.clock.pauseAt(new Date())
+  // Until it is paused the installed clock follows real time, and it starts slightly ahead of the runner's wall clock,
+  // so `pauseAt(new Date())` can name an instant the page has already passed. Pause at a fixed offset from an explicit
+  // install time instead; the offset only has to outlast the real time between the two calls.
+  const start = Date.now()
+  await page.clock.install({ time: start })
+  await page.clock.pauseAt(start + 10_000)
   await tabB.hover()
   await page.clock.runFor(700)
   await expect(preview).toHaveCount(0)
