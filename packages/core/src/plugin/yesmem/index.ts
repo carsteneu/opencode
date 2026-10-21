@@ -40,7 +40,7 @@ export default Plugin.define({
       const learn = failureLearn(rpc, directory)
       const resolve = autoResolve(rpc, directory)
       const session = sessionTracker(rpc)
-      const shell = shellEnvironment(rpc, rpc.socket, session.current)
+      const shell = shellEnvironment(rpc, rpc.socket)
       const skills = skillNudge(
         catalogCandidates({
           override: process.env.YESMEM_SKILL_CATALOG,
