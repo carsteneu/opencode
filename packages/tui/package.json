@@ -70,8 +70,7 @@
     "string-width": "catalog:",
     "strip-ansi": "7.1.2",
     "uqr": "0.1.3",
-    "marked": "catalog:",
-    "opentui-spinner": "catalog:"
+    "marked": "catalog:"
   },
   "devDependencies": {
     "@tsconfig/bun": "catalog:",

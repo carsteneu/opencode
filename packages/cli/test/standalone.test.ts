@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test"
 import path from "node:path"
+import fs from "node:fs/promises"
+import os from "node:os"
 import { tmpdir } from "../../core/test/fixture/tmpdir"
 import { isolatedEnv } from "./fixture/environment"
 

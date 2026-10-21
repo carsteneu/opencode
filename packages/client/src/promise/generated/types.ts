@@ -96,7 +96,7 @@ export type ShellID = string
 
 export type SessionMessageNative = { [x: string]: JsonValue }
 
-export type SessionMessageToolStateStreaming = { status: "streaming"; input: string }
+export type SessionMessageToolStateStreaming = { status: "streaming"; input: string; received?: number }
 
 export type SessionMessageToolStateRunning = {
   status: "running"
@@ -1576,6 +1576,15 @@ export type SessionToolInputDelta = {
   data: { sessionID: SessionID; assistantMessageID: SessionMessageID; id: string; delta: string }
 }
 
+export type SessionToolInputProgress = {
+  id: EventID
+  created: number
+  metadata?: { [x: string]: any }
+  type: "session.tool.input.progress"
+  location?: LocationRef
+  data: { sessionID: SessionID; assistantMessageID: SessionMessageID; id: string; received: number }
+}
+
 export type SessionToolProgress = {
   id: EventID
   created: number
@@ -2613,6 +2622,7 @@ export type V2Event =
   | SessionToolInputStarted
   | SessionToolInputDelta
   | SessionToolInputEnded
+  | SessionToolInputProgress
   | SessionToolCalled
   | SessionToolProgress
   | SessionToolSuccess
@@ -2660,6 +2670,7 @@ export type V2Event =
   | VcsBranchUpdated
   | McpStatusChanged
   | McpResourcesChanged
+  | SessionToolInputProgress
   | V2EventRpc
   | V2EventServerConnected
 
