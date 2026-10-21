@@ -83,7 +83,7 @@ const it = testEffect(
 describe("PluginSupervisor", () => {
   // A copy of a built-in left behind in a plugin directory, re-exporting the built-in entrypoint: the same
   // plugin, a second source, the same id.
-  const builtinCopySource = fileURLToPath(new URL("../../src/plugin/yesmem/index.ts", import.meta.url))
+  const builtinCopySource = fileURLToPath(new URL("../../src/plugin/plan.ts", import.meta.url))
 
   it.live("activates a configured copy of a built-in plugin only as a duplicate failure", () =>
     Effect.gen(function* () {
@@ -92,7 +92,7 @@ describe("PluginSupervisor", () => {
       yield* Effect.promise(() =>
         writeFile(
           path.join(directory.path, "index.ts"),
-          `export { default } from ${JSON.stringify(builtinCopySource)}\n`,
+          `export { Plugin as default } from ${JSON.stringify(builtinCopySource)}\n`,
         ),
       )
       source.operations = [{ type: "add", target: directory.path, options: {} }]
@@ -107,15 +107,15 @@ describe("PluginSupervisor", () => {
       )
 
       // Exactly one active registration, and it is the built-in: the copy never runs a second time.
-      const yesmem = inventory.filter((plugin) => plugin.id === "opencode.yesmem")
-      expect(yesmem.filter((plugin) => plugin.state.status === "active")).toEqual([
+      const plan = inventory.filter((plugin) => plugin.id === "opencode.plan")
+      expect(plan.filter((plugin) => plugin.state.status === "active")).toEqual([
         expect.objectContaining({ source: { type: "builtin" } }),
       ])
-      expect(yesmem.filter((plugin) => plugin.state.status !== "active")).toEqual([
+      expect(plan.filter((plugin) => plugin.state.status !== "active")).toEqual([
         expect.objectContaining({
           // The copy really was loaded from the configured directory before the duplicate policy dropped it.
           source: expect.objectContaining({ type: "local" }),
-          state: { status: "failed", error: "Duplicate plugin ID: opencode.yesmem" },
+          state: { status: "failed", error: "Duplicate plugin ID: opencode.plan" },
         }),
       ])
     }).pipe(
@@ -166,9 +166,9 @@ describe("PluginSupervisor", () => {
     }),
   )
 
-  it.effect("lets a config remove operation switch the built-in yesmem plugin off", () =>
+  it.effect("lets a config remove operation switch a built-in plugin off", () =>
     Effect.gen(function* () {
-      source.operations = [{ type: "remove", target: "opencode.yesmem" }]
+      source.operations = [{ type: "remove", target: "opencode.plan" }]
       const directory = yield* tmpdirScoped()
       const locations = yield* LocationServiceMap.Service
       const inventory = yield* Effect.gen(function* () {
@@ -179,8 +179,8 @@ describe("PluginSupervisor", () => {
         Effect.scoped,
         Effect.provide(locations.get(Location.Ref.make({ directory: AbsolutePath.make(directory.path) }))),
       )
-      // `opencode.yesmem` is not in PluginInternal.guarded, so a `-opencode.yesmem` entry removes it.
-      expect(inventory.some((plugin) => plugin.id === "opencode.yesmem")).toBe(false)
+      // `opencode.plan` is not in PluginInternal.guarded, so a `-opencode.plan` entry removes it.
+      expect(inventory.some((plugin) => plugin.id === "opencode.plan")).toBe(false)
       // Other builtins are untouched by the removal.
       expect(
         inventory.some((plugin) => plugin.id === "opencode.config.agent" && plugin.state.status === "active"),
