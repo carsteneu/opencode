@@ -10,6 +10,7 @@ import { noTimeoutFetch } from "@opencode/util/no-timeout-fetch"
 import { ClipboardProvider, useClipboard } from "./context/clipboard"
 import { LogProvider, type LogSink } from "./context/log"
 import { ExitProvider, useExit } from "./context/exit"
+import { createExitGuard } from "./util/exit-guard"
 import { EpilogueProvider } from "./context/epilogue"
 import { Selection } from "./util/selection"
 import {
@@ -244,6 +245,8 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
         targetFps: 60,
         gatherStats: false,
         exitOnCtrlC: false,
+        // SIGINT is handled by the app's two-press exit guard instead.
+        exitSignals: ["SIGTERM", "SIGQUIT", "SIGABRT", "SIGHUP", "SIGPIPE", "SIGBREAK", "SIGBUS"],
         useKittyKeyboard: {},
         autoFocus: false,
         openConsoleOnError: false,
@@ -489,6 +492,23 @@ function App() {
   const data = useData()
   const location = useLocation()
   const exit = useExit()
+  const exitGuard = createExitGuard({ windowMs: 2000 })
+  const requestExit = () => {
+    if (exitGuard.press() === "fire") {
+      exit()
+      return
+    }
+    toast.show({
+      title: "Press ctrl+c again to exit",
+      message: "",
+      variant: "info",
+      duration: 2000,
+    })
+  }
+  // Terminals without the kitty keyboard protocol deliver Ctrl+C as SIGINT
+  // rather than a key event; route it through the same two-press guard.
+  process.on("SIGINT", requestExit)
+  onCleanup(() => process.off("SIGINT", requestExit))
   const promptRef = usePromptRef()
   const plugins = usePlugin()
   const clipboard = useClipboard()
@@ -1146,7 +1166,7 @@ function App() {
         name: "app.exit",
         title: "Exit the app",
         slash: { name: "exit", aliases: ["quit", "q"] },
-        run: () => exit(),
+        run: () => requestExit(),
         category: "System",
       },
       {

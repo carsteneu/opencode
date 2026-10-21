@@ -57,8 +57,8 @@ describe("prompt home/end plugin", () => {
       gotoBufferHome: () => h.calls.push("home"),
       gotoBufferEnd: () => h.calls.push("end"),
     }
-    expect(home!.run()).toBe(true)
-    expect(end!.run()).toBe(true)
+    expect(home!.run()).toBeUndefined()
+    expect(end!.run()).toBeUndefined()
     expect(h.calls).toEqual(["home", "end"])
 
     // An empty composer has no cursor to move, so the key belongs to the transcript: decline instead of

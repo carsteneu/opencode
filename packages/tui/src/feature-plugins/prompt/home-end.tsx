@@ -31,8 +31,8 @@ export default Plugin.define({
       // in it the key always stays in the input: jumping the transcript out from under a draft would be
       // surprising, even when the cursor already sits at the edge.
       if (typeof editor.plainText === "string" && editor.plainText.length === 0) return false
+      // `undefined` is the keymap's "handled"; only `false` lets the key fall through.
       goto.call(editor)
-      return true
     }
     context.keymap.layer(() => ({
       priority: 10,
