@@ -49,7 +49,7 @@ export const PluginGroup = HttpApiGroup.make("server.plugin")
           identifier: "plugin.update",
           summary: "Update plugins",
           description:
-            "Update package plugins concurrently and notify active locations to reload them. Responds once every update has finished; fails when any update fails.",
+            "Update package plugins one at a time and notify active locations to reload them. Responds once every update has finished; fails when any update fails.",
         }),
       ),
   )
