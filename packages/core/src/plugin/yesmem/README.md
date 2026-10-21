@@ -20,7 +20,7 @@ call sites.
 | `code_nav.ts` | port of v1 `code_nav.ts` | Blocks shell/read navigation on files the YesMem index covers. |
 | `rule_guard.ts` | port of v1 `rule_guard.ts` | Pre-tool RULES.md check (small model), BLOCK/SUGGEST. |
 | `failure_learn.ts` | port of v1 `failure_learn.ts` | Error → `remember`, plus a `hybrid_search` assist note. |
-| `auto_resolve.ts` | port of v1 `auto_resolve.ts` | `git commit -m` → `resolve_by_text`. |
+| `auto_resolve.ts` | port of v1 `auto_resolve.ts` | `git commit -m` → `resolve_by_commit`; the subject names the task. |
 | `session.ts` | new | Session tracking + `register_pid` (v1 used the `session.created` hook). |
 | `messages.ts` | new | Message helpers + the human-turn predicate shared by the nudges. |
 | `http.ts` | new | Response reader with a byte budget (v1 read bodies unbounded). |
@@ -69,7 +69,7 @@ The plugin reads everything from the environment and from its own directory — 
 | `YESMEM_LOG_FILE` | Debug log. Default `$HOME/.claude/yesmem/logs/plugin-v2.log`. |
 | `YESMEM_SKILL_CATALOG` | First candidate for the skill catalogue, before the project's `RULES.md`. |
 | `YESMEM_SKILL_ROOTS` | Extra `:`-separated roots for installed-skill detection. |
-| `YESMEM_SESSION_ID` | Written, not read: the id of the last session the plugin saw. |
+| `YESMEM_SESSION_ID` | Read to drop an inherited id; never written. A shell forwards an id only when the host supplies one with the event (YM-257). |
 | `YESMEM_GUARD_URL` / `_KEY` / `_MODEL` / `_NPM` | Short-circuit the guard's provider resolution. |
 | `YESMEM_IDLE_CADENCE` | Turns between invisible idle reminders (floor 2). |
 
@@ -109,7 +109,7 @@ Every other hook still runs plain async code, lifted with `Effect.tryPromise` in
 | `tool.execute.before` | `ctx.tool.hook("execute.before", e)` | `e.input` and `e.tool` are mutable; failing with `Tool.Error` rejects the call. code_nav runs first, then rule_guard, then the tool-context injection. |
 | `tool.execute.after` | `ctx.tool.hook("execute.after", e)` | `status: "completed"` exposes a mutable `e.result`; `status: "error"` a mutable `e.error`. rule_guard's directive is injected first, then failure_learn, then auto_resolve. |
 | `shell.env` | `ctx.shell.hook("create.before", e)` | Mutable `e.env`. |
-| `session.created` | `ctx.event.subscribe()` → `session.created`, `data.sessionID` | Registers the process with the daemon; mirrors the id into `process.env.YESMEM_SESSION_ID`. |
+| `session.created` | `ctx.event.subscribe()` → `session.created`, `data.sessionID` | Registers the process with the daemon so the daemon can persist `source_agent:<session>`. It deliberately publishes nothing process-wide: one service process hosts every session (YM-257). |
 | `experimental.chat.messages.transform` | `ctx.session.hook("context", e)` | Four handlers in registration order: read-only conversation capture for the guard, then the three nudges (`skill_nudge`, `ledger_nudge`, `idle_reminder`). Every nudge only patches the **last message the human actually wrote** (see below), keeps a marker guard against double patching, and produces identical bytes for every step of a turn. |
 
 `role === "user"` is not the human: v2 lowers several history entries to user-role messages. A message counts
@@ -197,9 +197,9 @@ plugin's own development (and should land in the copy that lives outside the for
    Suggested fix: the same cap in `loadRules`.
 
 Two further review observations need no code change: the `log.ts:21` `mode` only applies when the log is
-created (the path is operator-controlled, so it is defense in depth at most), and `shell.ts:19-24` adds
-`YESMEM_SOCKET`/`YESMEM_SOURCE_AGENT`/`YESMEM_SESSION_ID` to every spawned shell without exporting a
-credential.
+created (the path is operator-controlled, so it is defense in depth at most), and `shell.ts:29-38` adds
+`YESMEM_SOCKET`/`YESMEM_SOURCE_AGENT` to every spawned shell, removes an inherited `YESMEM_SESSION_ID`, and
+forwards a session id only when the host supplies one with the event.
 
 ## Operational notes
 
