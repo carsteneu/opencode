@@ -117,7 +117,6 @@ export async function renderSession(
   const setup = await createTestRenderer({
     width: options.width ?? TERMINAL_WIDTH,
     height: options.height ?? 34,
-    useThread: false,
     kittyKeyboard: true,
   })
   // oxlint-disable-next-line no-restricted-globals -- OpenTUI does not expose test resolution mutation publicly.

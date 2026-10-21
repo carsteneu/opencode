@@ -35,6 +35,7 @@ export const dict = {
   "email.placeholder": "ที่อยู่อีเมล",
   "email.subscribe": "สมัครรับข่าวสาร",
   "email.success": "เกือบเสร็จแล้ว ตรวจสอบกล่องจดหมายและยืนยันที่อยู่อีเมลของคุณ",
+  "email.error": "สมัครรับข่าวสารไม่สำเร็จ โปรดลองอีกครั้ง",
 
   "notFound.title": "ไม่พบหน้า | OpenCode",
   "notFound.heading": "404 - ไม่พบหน้าที่ค้นหา",
@@ -56,22 +57,6 @@ export const dict = {
   "app.meta.description": "OpenCode - เอเจนต์เขียนโค้ดแบบโอเพนซอร์ส",
 
   "home.title": "OpenCode | เอเจนต์เขียนโค้ดด้วย AI แบบโอเพนซอร์ส",
-
-  "temp.title": "OpenCode | เอเจนต์เขียนโค้ด AI ที่สร้างมาเพื่อเทอร์มินัล",
-  "temp.hero.title": "เอเจนต์เขียนโค้ด AI ที่สร้างมาเพื่อเทอร์มินัล",
-  "temp.zen": "OpenCode Zen",
-  "temp.getStarted": "เริ่มต้นใช้งาน",
-  "temp.feature.native.title": "Native TUI",
-  "temp.feature.native.body": "UI เทอร์มินัลแบบเนทีฟที่ตอบสนองไวและปรับแต่งธีมได้",
-  "temp.feature.zen.beforeLink": "",
-  "temp.feature.zen.link": "รายการโมเดลที่คัดสรรแล้ว",
-  "temp.feature.zen.afterLink": "โดย OpenCode",
-  "temp.feature.models.beforeLink": "รองรับผู้ให้บริการ LLM กว่า 75 รายผ่าน",
-  "temp.feature.models.afterLink": "รวมถึงโมเดล Local",
-  "temp.screenshot.caption": "OpenCode TUI พร้อมธีม tokyonight",
-  "temp.screenshot.alt": "OpenCode TUI พร้อมธีม tokyonight",
-  "temp.logoLightAlt": "โลโก้ opencode แบบสว่าง",
-  "temp.logoDarkAlt": "โลโก้ opencode แบบมืด",
 
   "home.banner.badge": "ใหม่",
 
@@ -138,11 +123,9 @@ export const dict = {
   "home.faq.a6":
     "OpenCode ใช้งานได้ฟรี 100% และมาพร้อมกับชุดโมเดลฟรี อาจมีค่าใช้จ่ายเพิ่มเติมหากคุณเชื่อมต่อกับผู้ให้บริการรายอื่น",
   "home.faq.q7": "แล้วเรื่องข้อมูลและความเป็นส่วนตัวล่ะ?",
-  "home.faq.a7.p1": "ข้อมูลของคุณจะถูกจัดเก็บเฉพาะเมื่อคุณใช้โมเดลฟรีของเราหรือสร้างลิงก์ที่แชร์ได้",
+  "home.faq.a7.p1": "ข้อมูลของคุณจะถูกจัดเก็บเฉพาะเมื่อคุณใช้โมเดลฟรีของเรา",
   "home.faq.a7.p2.beforeModels": "เรียนรู้เพิ่มเติมเกี่ยวกับ",
   "home.faq.a7.p2.modelsLink": "โมเดลของเรา",
-  "home.faq.a7.p2.and": "และ",
-  "home.faq.a7.p2.shareLink": "หน้าแชร์",
   "home.faq.q8": "OpenCode เป็นโอเพนซอร์สหรือไม่?",
   "home.faq.a8.p1": "ใช่ OpenCode เป็นโอเพนซอร์สเต็มรูปแบบ ซอร์สโค้ดเปิดเผยต่อสาธารณะบน",
   "home.faq.a8.p2": "ภายใต้",
@@ -219,7 +202,7 @@ export const dict = {
     "โมเดล Zen ทั้งหมดโฮสต์ในสหรัฐอเมริกา ผู้ให้บริการปฏิบัติตามนโยบายไม่เก็บรักษาข้อมูล (zero-retention policy) และไม่ใช้ข้อมูลของคุณสำหรับการฝึกโมเดล โดยมี",
   "zen.privacy.exceptionsLink": "ข้อยกเว้นดังนี้",
 
-  "go.promo.gemini": "Gemini 4 Argon พร้อมให้ใช้งานแล้ว พร้อมการใช้งาน 2 เท่าในช่วงเวลาจำกัด",
+  "go.promo.minimaxM31FlashFree": "MiniMax M3.1 Flash Free พร้อมให้ใช้งานใน Go แล้ว ใช้ฟรีในช่วงเวลาจำกัด",
   "go.title": "OpenCode Go | โมเดลเขียนโค้ดราคาประหยัดสำหรับทุกคน",
   "go.meta.description":
     "Go มีราคา $10/เดือน พร้อมขีดจำกัดการใช้งานที่เอื้อเฟื้อและการเข้าถึงโมเดลเขียนโค้ดชั้นนำอย่างเชื่อถือได้",
@@ -257,7 +240,6 @@ export const dict = {
   "go.problem.title": "Go แก้ปัญหาอะไร?",
   "go.problem.body":
     "เรามุ่งมั่นที่จะนำประสบการณ์ OpenCode ไปสู่ผู้คนให้ได้มากที่สุด OpenCode Go เป็นการสมัครสมาชิกราคาประหยัด $10/เดือน โดยมอบขีดจำกัดที่เอื้อเฟื้อและการเข้าถึงโมเดลโอเพนซอร์สที่มีความสามารถสูงสุดอย่างเชื่อถือได้",
-  "go.problem.subtitle": " ",
   "go.problem.item1": "ราคาการสมัครสมาชิกที่ต่ำ",
   "go.problem.item2": "ขีดจำกัดที่กว้างขวางและการเข้าถึงที่เชื่อถือได้",
   "go.problem.item3": "สร้างขึ้นเพื่อโปรแกรมเมอร์จำนวนมากที่สุดเท่าที่จะเป็นไปได้",
@@ -302,7 +284,6 @@ export const dict = {
     "ระบบจะสร้างบันทึกการตรวจสอบการใช้งานในทางที่ผิดสำหรับการใช้งานฟีเจอร์ API ทั้งหมด และเก็บรักษาไว้นานสูงสุด 30 วัน",
   "go.faq.a5.museRetention":
     "ราคาของ token ลดลงอย่างมาก โดยแลกกับการอนุญาตให้นำพรอมต์และผลลัพธ์ที่สร้างขึ้นของคุณไปใช้ฝึกโมเดล Meta ในอนาคต",
-  "go.faq.a5.catJamRetention": "ในช่วงที่ให้ใช้ฟรี ข้อมูลที่รวบรวมอาจถูกนำไปใช้เพื่อปรับปรุงโมเดล",
   "go.faq.a5.geminiRetention": "พรอมต์และผลลัพธ์ที่สร้างขึ้นของคุณอาจถูกนำไปใช้ฝึกโมเดล Google ในอนาคต",
   "go.faq.a5.learnMore": "ดูข้อมูลเพิ่มเติม",
   "go.faq.a5.deepseekRetention": "ข้อตกลง ZDR จะต่ออายุทุกเดือน ข้อตกลงปัจจุบันมีผลใช้ถึงวันที่ 31 ตุลาคม 2026",
@@ -320,32 +301,6 @@ export const dict = {
   "go.faq.q10": "ฉันขอเงินคืนได้หรือไม่?",
   "go.faq.a10":
     "หากมีการเรียกเก็บเงินภายใน 14 วันที่ผ่านมาและคุณยังไม่ได้ใช้สิทธิ์การใช้งาน Go เลยในรอบการเรียกเก็บเงินนั้น คุณอาจมีสิทธิ์ได้รับเงินคืน {{contact}}เพื่อขอเงินคืน",
-
-  "black.meta.title": "OpenCode Black | เข้าถึงโมเดลเขียนโค้ดที่ดีที่สุดในโลก",
-  "black.meta.description": "เข้าถึง Claude, GPT, Gemini และอื่นๆ ด้วยแผนสมาชิก OpenCode Black",
-  "black.hero.title": "เข้าถึงโมเดลเขียนโค้ดที่ดีที่สุดในโลก",
-  "black.hero.subtitle": "รวมถึง Claude, GPT, Gemini และอื่นๆ อีกมากมาย",
-  "black.title": "OpenCode Black | ราคา",
-  "black.paused": "การสมัครแผน Black หยุดชั่วคราว",
-  "black.plan.icon20": "แผน Black 20",
-  "black.plan.icon100": "แผน Black 100",
-  "black.plan.icon200": "แผน Black 200",
-  "black.plan.multiplier100": "ใช้งานได้มากกว่า Black 20 ถึง 5 เท่า",
-  "black.plan.multiplier200": "ใช้งานได้มากกว่า Black 20 ถึง 20 เท่า",
-  "black.price.perMonth": "ต่อเดือน",
-  "black.price.perPersonBilledMonthly": "ต่อคน เรียกเก็บรายเดือน",
-  "black.terms.1": "การสมัครสมาชิกของคุณจะยังไม่เริ่มต้นทันที",
-  "black.terms.2": "คุณจะถูกเพิ่มในรายชื่อรอและจะได้รับการเปิดใช้งานเร็วๆ นี้",
-  "black.terms.3": "บัตรของคุณจะถูกตัดเงินเมื่อการสมัครสมาชิกของคุณถูกเปิดใช้งานเท่านั้น",
-  "black.terms.4": "มีขีดจำกัดการใช้งาน การใช้ระบบอัตโนมัติอย่างหนักอาจทำให้ถึงขีดจำกัดเร็วขึ้น",
-  "black.terms.5": "การสมัครสมาชิกสำหรับบุคคลธรรมดา ติดต่อฝ่ายองค์กรสำหรับทีม",
-  "black.terms.6": "ขีดจำกัดอาจมีการปรับเปลี่ยนและแผนอาจถูกยกเลิกในอนาคต",
-  "black.terms.7": "ยกเลิกการสมัครสมาชิกได้ตลอดเวลา",
-  "black.finePrint.beforeTerms": "ราคาที่แสดงยังไม่รวมภาษีที่เกี่ยวข้อง",
-  "black.finePrint.terms": "ข้อกำหนดการให้บริการ",
-  "black.workspace.title": "OpenCode Black | เลือก Workspace",
-  "black.workspace.selectPlan": "เลือก Workspace สำหรับแผนนี้",
-  "black.workspace.name": "Workspace {{n}}",
 
   "download.title": "OpenCode | ดาวน์โหลด",
   "download.meta.description": "ดาวน์โหลด OpenCode สำหรับ macOS, Windows และ Linux",
@@ -373,10 +328,6 @@ export const dict = {
   "download.faq.a5.p2.beforeZen":
     "ค่าใช้จ่ายเพิ่มเติมใดๆ จะมาจากการสมัครสมาชิกของคุณกับผู้ให้บริการโมเดล แม้ว่า OpenCode จะทำงานร่วมกับผู้ให้บริการโมเดลใดก็ได้ แต่เราแนะนำให้ใช้",
   "download.faq.a5.p2.afterZen": "",
-
-  "download.faq.a6.p1": "ข้อมูลของคุณจะถูกจัดเก็บเฉพาะเมื่อคุณสร้างลิงก์ที่แชร์ได้ใน OpenCode เท่านั้น",
-  "download.faq.a6.p2.beforeShare": "เรียนรู้เพิ่มเติมเกี่ยวกับ",
-  "download.faq.a6.shareLink": "หน้าแชร์",
 
   "enterprise.title": "OpenCode | โซลูชันระดับองค์กรสำหรับองค์กรของคุณ",
   "enterprise.meta.description": "ติดต่อ OpenCode สำหรับโซลูชันระดับองค์กร",
@@ -412,6 +363,7 @@ export const dict = {
   "enterprise.form.error.invalidEmailFormat": "รูปแบบอีเมลไม่ถูกต้อง",
   "enterprise.form.error.invalidInferenceSpend": "เลือกช่วงค่าใช้จ่ายด้าน inference ที่ถูกต้อง",
   "enterprise.form.error.internalServer": "เกิดข้อผิดพลาดภายในเซิร์ฟเวอร์",
+  "enterprise.form.error.captcha": "การยืนยัน captcha ล้มเหลว โปรดลองอีกครั้ง",
   "enterprise.faq.title": "คำถามที่พบบ่อย",
   "enterprise.faq.q1": "OpenCode Enterprise คืออะไร?",
   "enterprise.faq.a1":

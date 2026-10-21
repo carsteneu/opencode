@@ -36,6 +36,7 @@ export const dict = {
   "email.placeholder": "メールアドレス",
   "email.subscribe": "登録",
   "email.success": "ほぼ完了です。受信トレイを確認してメールアドレスを認証してください",
+  "email.error": "登録できませんでした。もう一度お試しください。",
 
   "notFound.title": "見つかりません | OpenCode",
   "notFound.heading": "404 - ページが見つかりません",
@@ -57,22 +58,6 @@ export const dict = {
   "app.meta.description": "OpenCode - オープンソースのコーディングエージェント。",
 
   "home.title": "OpenCode | オープンソースのAIコーディングエージェント",
-
-  "temp.title": "OpenCode | ターミナル向けに構築されたAIコーディングエージェント",
-  "temp.hero.title": "ターミナル向けに構築されたAIコーディングエージェント",
-  "temp.zen": "OpenCode Zen",
-  "temp.getStarted": "はじめる",
-  "temp.feature.native.title": "ネイティブ TUI",
-  "temp.feature.native.body": "レスポンシブでネイティブ、テーマ変更可能なターミナルUI",
-  "temp.feature.zen.beforeLink": "OpenCodeが提供する",
-  "temp.feature.zen.link": "厳選されたモデルリスト",
-  "temp.feature.zen.afterLink": "",
-  "temp.feature.models.beforeLink": "ローカルモデルを含む、",
-  "temp.feature.models.afterLink": "を通じて75以上のLLMプロバイダーをサポート",
-  "temp.screenshot.caption": "tokyonight テーマを使用した OpenCode TUI",
-  "temp.screenshot.alt": "tokyonight テーマの OpenCode TUI",
-  "temp.logoLightAlt": "opencodeのロゴ（ライト）",
-  "temp.logoDarkAlt": "opencodeのロゴ（ダーク）",
 
   "home.banner.badge": "新着",
 
@@ -140,11 +125,9 @@ export const dict = {
   "home.faq.a6":
     "OpenCodeは100%無料で使えます。無料モデルも含まれています。他のプロバイダーに接続する場合は追加費用が発生することがあります。",
   "home.faq.q7": "データとプライバシーは？",
-  "home.faq.a7.p1": "無料モデルを使う場合や共有リンクを作成する場合にのみ、データが保存されます。",
+  "home.faq.a7.p1": "無料モデルを使う場合にのみ、データが保存されます。",
   "home.faq.a7.p2.beforeModels": "詳しくは",
   "home.faq.a7.p2.modelsLink": "モデルのプライバシー",
-  "home.faq.a7.p2.and": "と",
-  "home.faq.a7.p2.shareLink": "共有ページのプライバシー",
   "home.faq.q8": "OpenCodeはオープンソースですか？",
   "home.faq.a8.p1": "はい、OpenCodeは完全にオープンソースです。ソースコードは",
   "home.faq.a8.p2": "の",
@@ -220,7 +203,7 @@ export const dict = {
     "すべてのZenモデルは米国でホストされています。プロバイダーはゼロ保持ポリシーに従い、モデルのトレーニングにデータを使用しません（",
   "zen.privacy.exceptionsLink": "以下の例外",
 
-  "go.promo.gemini": "Gemini 4 Argon を期間限定で利用枠2倍で提供中です。",
+  "go.promo.minimaxM31FlashFree": "MiniMax M3.1 Flash Free を Go で期間限定・無料で提供中です。",
   "go.title": "OpenCode Go | すべての人のための低価格なコーディングモデル",
   "go.meta.description":
     "Goは月額$10で、主要なコーディングモデルへのゆとりある利用上限と安定したアクセスを提供します。",
@@ -258,7 +241,6 @@ export const dict = {
   "go.problem.title": "Goはどのような問題を解決していますか？",
   "go.problem.body":
     "私たちはOpenCodeの体験をできるだけ多くの人に届けることに注力しています。OpenCode Goは月額$10の低価格なサブスクリプションです。ゆとりある上限と、最も高性能なオープンソースモデルへの信頼できるアクセスを提供します。",
-  "go.problem.subtitle": " ",
   "go.problem.item1": "低価格なサブスクリプション料金",
   "go.problem.item2": "十分な制限と安定したアクセス",
   "go.problem.item3": "できるだけ多くのプログラマーのために構築",
@@ -302,7 +284,6 @@ export const dict = {
   "go.faq.a5.gptRetention": "不正使用監視ログはすべてのAPI機能の使用時に生成され、最大30日間保持されます。",
   "go.faq.a5.museRetention":
     "将来のMetaモデルのトレーニングにプロンプトと生成結果を使用する許可と引き換えに、トークン料金が大幅に割引されます。",
-  "go.faq.a5.catJamRetention": "無料提供期間中、収集されたデータはモデルの改善に使用される場合があります。",
   "go.faq.a5.geminiRetention": "プロンプトと生成結果は、将来のGoogleモデルのトレーニングに使用される場合があります。",
   "go.faq.a5.learnMore": "詳しく見る",
   "go.faq.a5.deepseekRetention": "ZDR契約は毎月更新されます。現在の契約は2026年10月31日まで有効です。",
@@ -320,32 +301,6 @@ export const dict = {
   "go.faq.q10": "返金を受けられますか？",
   "go.faq.a10":
     "請求から14日以内で、その請求期間中にGoの利用枠を一切使用していない場合、返金の対象となる可能性があります。返金を希望する場合は、{{contact}}ください。",
-
-  "black.meta.title": "OpenCode Black | 世界最高峰のコーディングモデルすべてにアクセス",
-  "black.meta.description": "OpenCode Black サブスクリプションプランで、Claude、GPT、Gemini などにアクセス。",
-  "black.hero.title": "世界最高峰のコーディングモデルすべてにアクセス",
-  "black.hero.subtitle": "Claude、GPT、Gemini などを含む",
-  "black.title": "OpenCode Black | 料金",
-  "black.paused": "Blackプランの登録は一時的に停止しています。",
-  "black.plan.icon20": "Black 20 プラン",
-  "black.plan.icon100": "Black 100 プラン",
-  "black.plan.icon200": "Black 200 プラン",
-  "black.plan.multiplier100": "Black 20 の5倍の利用量",
-  "black.plan.multiplier200": "Black 20 の20倍の利用量",
-  "black.price.perMonth": "/月",
-  "black.price.perPersonBilledMonthly": "1人あたり / 月額請求",
-  "black.terms.1": "サブスクリプションはすぐには開始されません",
-  "black.terms.2": "ウェイトリストに追加され、まもなく有効化されます",
-  "black.terms.3": "サブスクリプションが有効化された時点でのみカードに請求されます",
-  "black.terms.4": "利用制限が適用されます。過度な自動化利用は早く制限に達する可能性があります",
-  "black.terms.5": "サブスクリプションは個人向けです。チーム利用はエンタープライズにお問い合わせください",
-  "black.terms.6": "将来的に制限が調整されたり、プランが廃止される可能性があります",
-  "black.terms.7": "サブスクリプションはいつでもキャンセル可能です",
-  "black.finePrint.beforeTerms": "表示価格には適用される税金は含まれていません",
-  "black.finePrint.terms": "利用規約",
-  "black.workspace.title": "OpenCode Black | ワークスペースの選択",
-  "black.workspace.selectPlan": "このプランのワークスペースを選択してください",
-  "black.workspace.name": "ワークスペース {{n}}",
 
   "download.title": "OpenCode | ダウンロード",
   "download.meta.description": "OpenCode を macOS、Windows、Linux 向けにダウンロード",
@@ -374,10 +329,6 @@ export const dict = {
   "download.faq.a5.p2.beforeZen":
     "追加コストはモデルプロバイダーのサブスクリプションから発生します。OpenCodeはどのモデルプロバイダーでも利用できますが、",
   "download.faq.a5.p2.afterZen": "の利用をおすすめします。",
-
-  "download.faq.a6.p1": "あなたのデータと情報は、OpenCodeで共有リンクを作成したときにのみ保存されます。",
-  "download.faq.a6.p2.beforeShare": "詳しくは",
-  "download.faq.a6.shareLink": "共有ページ",
 
   "enterprise.title": "OpenCode | 組織向けエンタープライズソリューション",
   "enterprise.meta.description": "エンタープライズソリューションについてOpenCodeに問い合わせる",
@@ -413,6 +364,7 @@ export const dict = {
   "enterprise.form.error.invalidEmailFormat": "無効なメール形式です。",
   "enterprise.form.error.invalidInferenceSpend": "有効な推論費用の範囲を選択してください。",
   "enterprise.form.error.internalServer": "内部サーバーエラー。",
+  "enterprise.form.error.captcha": "CAPTCHA認証に失敗しました。もう一度お試しください。",
   "enterprise.faq.title": "FAQ",
   "enterprise.faq.q1": "OpenCode Enterpriseとは？",
   "enterprise.faq.a1":

@@ -53,7 +53,7 @@ const messages: SessionMessageInfo[] = [
 
 async function withSession(run: (setup: Setup, events: Events) => Promise<void>) {
   await using state = await tmpdir()
-  const setup = await createTestRenderer({ width: 100, height: 30, useThread: false, kittyKeyboard: true })
+  const setup = await createTestRenderer({ width: 100, height: 30, kittyKeyboard: true })
   setup.renderer.start()
   const events = createEventStream()
   const calls = createFetch((url) => {

@@ -170,6 +170,7 @@ if (stale.length > 0) {
 
 console.log("bun.lock opentui versions are consistent")
 
+
 async function findUrlPinnedEntries(manifests: string[]) {
   const found: string[] = []
   for (const rel of manifests) {
@@ -195,7 +196,7 @@ async function findUrlPinnedEntries(manifests: string[]) {
 
 async function fixKnownLockfileIssues() {
   const txt = await Bun.file(lockfile).text()
-  const stale = findStaleLockfileEntriesInText(txt)
+  const stale = await findStaleLockfileEntries()
   if (stale.length === 0) return []
   if (stale.some((item) => !item.entry.startsWith("opentui-spinner/@opentui/"))) return []
 
@@ -216,11 +217,9 @@ async function fixKnownLockfileIssues() {
   return removed
 }
 
-async function findStaleLockfileEntries() {
-  return findStaleLockfileEntriesInText(await Bun.file(lockfile).text())
-}
 
-function findStaleLockfileEntriesInText(txt: string) {
+async function findStaleLockfileEntries() {
+  const txt = await Bun.file(lockfile).text()
   return Array.from(txt.matchAll(/^    "([^"]+)": \["(@opentui\/(?:core(?:-[^@"]+)?|keymap|solid))@([^"]+)"/gm))
     .map((match) => ({
       entry: match[1]!,

@@ -2,6 +2,310 @@
 
 Release notes for OpenCode V2, newest first.
 
+## v2.1.0 — 2026-10-20
+
+### Highlights
+
+- **Persistent Terminals on Windows**: Windows users now get persistent PTYs through the same terminal workflow available on macOS and Linux. ([#56245](https://github.com/anomalyco/opencode/pull/56245))
+- **Todo Lists in the TUI**: Enable `{ "experimental": { "todo": true } }` to give models the `todowrite` tool and display their task list in the session and sidebar. ([#56947](https://github.com/anomalyco/opencode/pull/56947))
+- **Reliable Long-Running TUI Commands**: Plugin commands, shell calls, and other TUI requests can now run beyond Bun’s five-minute fetch deadline without losing their connection. ([#55149](https://github.com/anomalyco/opencode/pull/55149))
+
+### Breaking changes
+
+Version 2.1 makes intentional changes to public SDK, HTTP message/event, and plugin contracts so provider replay data and compaction use consistent names and shapes. Integrations must adopt the new fields. Existing stored sessions, credentials, and older session imports remain readable through compatibility decoders; no database migration is required. ([#57260](https://github.com/anomalyco/opencode/pull/57260))
+
+#### Provider replay data is now `native`
+
+Provider-owned replay data previously used different names on different surfaces. Read and write `native` instead; a tool's execution `state` and UI `metadata` are separate and are not renamed.
+
+| Surface | Before | After |
+| --- | --- | --- |
+| Text and reasoning parts | `state` | `native` |
+| Assistant and compaction messages | `providerState` | `native` |
+| Text/reasoning lifecycle events and `session.tool.called` | `state` | `native` |
+| `session.step.ended`, `session.step.failed`, and `session.compaction.ended` | `providerState` | `native` |
+| `session.tool.success` and `session.tool.failed` | `resultState` | `native` |
+| Exported replay-data schema | `SessionMessage.ProviderState` | `SessionMessage.Native` |
+| Plugin compaction hook result | `SessionCompactionResult.providerState` | `SessionCompactionResult.native` |
+
+#### Tool call and result data share `tool.native`
+
+Tool parts no longer have separate `providerState` and `providerResultState` fields:
+
+```diff
+ tool
+-  providerState?
+-  providerResultState?
++  native?
+   state
+```
+
+Success and failure events shallow-merge their `native` into the call's existing `native`. Missing result data preserves call data; result values win on duplicate keys. Provider/protocol implementations must use distinct keys when call and result values differ. There is no `state.native`, `resultNative`, or nested `{ call, result }` envelope.
+
+Replay passes the merged blob to the protocol, which reads the fields it needs. Tool calls receive it only for the same provider and model. Provider-run results receive it for the same provider, including after a model switch. Local results receive it only for the same provider and model when the step did not fail. Legacy stored or imported `providerResultState` is merged into `tool.native` when read. Execution status and readable output remain in `tool.state`.
+
+#### Key credential setup answers move to `metadata`
+
+`Credential.Key.configuration` is removed. Public credential writes must put setup-form answers in the existing `metadata` field:
+
+```diff
+ { type: "key", key: "...",
+-  configuration: { account: "example" }
++  metadata: { account: "example" }
+ }
+```
+
+Existing stored credentials and `opencode auth import` still accept the old shape. Legacy `configuration` is merged into `metadata`; the legacy configuration value wins when both contain the same key. This compatibility is for storage/import, not a reason to keep sending `configuration` in public writes.
+
+#### Summary compactions reference kept messages
+
+Compaction messages and `session.compaction.started` / `session.compaction.ended` no longer expose `recent`. New summary compactions reference the first message retained verbatim through `metadata.keepID` instead of storing a second, flattened copy:
+
+```diff
+ summary compaction
+-  recent: "[User]: ... [Assistant]: ..."
++  metadata: { keepID: "msg_..." }
+```
+
+History reconstructs the kept text from that message up to the compaction boundary. Forks remap the reference to their copied messages, and compaction hooks can override `keepID` through metadata. Kept text from pre-2.1 compactions and V1 imports remains available as `metadata.recent`. New compactions store the reference, not the duplicated text.
+
+#### Provider compaction windows move to `native.messages`
+
+Completed compactions and `session.compaction.ended` no longer have `providerContext`. The replacement message window now lives in `native.messages`:
+
+```diff
+-  providerContext: { version, provenance, messages }
++  native: { messages }
+```
+
+Native compaction replay now matches the compaction's provider ID and model ID, rather than route/protocol/endpoint provenance. If they do not match, history uses the original messages. Endpoint changes alone no longer block replay, and request hooks that rewrite the base URL no longer block native compaction or replay.
+
+Summary compactions no longer save the summary call's unused provider data in `native`. A compaction hook's `result.native` is still stored; if it contains `messages`, that window is replayed **instead of** the summary. Old `providerContext` rows and events are converted when read, including the media format used before 2.0.15.
+
+#### Remove the unused `session.compacted` event
+
+The transitional `session.compacted` event is removed from the public event surface. Update event subscriptions and schema imports to use the current compaction lifecycle events, including `session.compaction.started` and `session.compaction.ended`.
+
+### Core
+
+#### Improvements
+
+- Added persistent PTY support for Windows x64 and ARM64. ([#56245](https://github.com/anomalyco/opencode/pull/56245))
+- Restored the `todowrite` tool behind `{ "experimental": { "todo": true } }`; it accepts the complete list as `{ todos: [{ content, status }] }`. ([#56947](https://github.com/anomalyco/opencode/pull/56947))
+- Restored session archiving, including archive-state filtering and restoring archived sessions. ([#53759](https://github.com/anomalyco/opencode/pull/53759))
+- Added support for editing saved permission actions and resource patterns. ([#56659](https://github.com/anomalyco/opencode/pull/56659))
+- Summary compaction now covers the whole conversation while retaining recent text verbatim, and begins earlier by default to leave more response room. ([#57091](https://github.com/anomalyco/opencode/pull/57091))
+- Added the `streamUsage` model compatibility option for providers that reject `stream_options`. ([#57255](https://github.com/anomalyco/opencode/pull/57255))
+
+#### Bug fixes
+
+- Prevented long-running TUI, `run`, and `mini` requests from hitting Bun’s default fetch deadline. Thanks @Finn763. ([#55149](https://github.com/anomalyco/opencode/pull/55149))
+- Retried broken-pipe transport failures. Thanks @sdivyanshu90. ([#56307](https://github.com/anomalyco/opencode/pull/56307))
+- Retried transient failures from buffered model generations instead of immediately failing. ([#56497](https://github.com/anomalyco/opencode/pull/56497))
+- Ignored provider keep-alives and unknown stream events while continuing to reject malformed known events. ([#56286](https://github.com/anomalyco/opencode/pull/56286), [#56669](https://github.com/anomalyco/opencode/pull/56669))
+- Limited the OpenAI-compatible `store` field to OpenAI, Azure, and providers that explicitly opt in. ([#57239](https://github.com/anomalyco/opencode/pull/57239))
+- Preserved more complete context during compaction and stabilized image trimming and instruction baselines to improve prompt-cache reuse. Thanks @rrauenza for the revert fix. ([#56983](https://github.com/anomalyco/opencode/pull/56983), [#54410](https://github.com/anomalyco/opencode/pull/54410))
+- Ensured shell completion is reported only after output capture finishes, and reported removed running shells as killed. ([#56321](https://github.com/anomalyco/opencode/pull/56321), [#56982](https://github.com/anomalyco/opencode/pull/56982))
+- Prevented undefined permission metadata from breaking pending-request responses. ([#54090](https://github.com/anomalyco/opencode/pull/54090))
+- Bounded skill discovery and file watches, and tolerated filesystem permission denials during sandboxed startup. ([#55597](https://github.com/anomalyco/opencode/pull/55597), [#55817](https://github.com/anomalyco/opencode/pull/55817))
+- Included the root `script/` directory in Nix CLI builds. ([#55494](https://github.com/anomalyco/opencode/pull/55494))
+
+### TUI
+
+#### Improvements
+
+- Added todo lists to session output, compact cards, and the sidebar when experimental todo support is enabled. ([#56947](https://github.com/anomalyco/opencode/pull/56947))
+- `/models` now opens on the current model and preserves the server’s preferred model order. ([#57151](https://github.com/anomalyco/opencode/pull/57151))
+- Added visible keyboard focus and reverse `Shift+Tab` navigation to export options. ([#57154](https://github.com/anomalyco/opencode/pull/57154))
+
+#### Bug fixes
+
+- Kept long-running commands connected beyond Bun’s fetch deadline and restored the composer with an error toast when an existing-session shell command fails. Thanks @Finn763. ([#55149](https://github.com/anomalyco/opencode/pull/55149))
+- Retried `session.wait` after transport interruptions in `mini`. ([#57062](https://github.com/anomalyco/opencode/pull/57062))
+- Highlighted the selected file in the diff tree. Thanks @Tarquinen. ([#57227](https://github.com/anomalyco/opencode/pull/57227))
+- Removed per-row resize listeners from selection dialogs. Thanks @tobwen. ([#56234](https://github.com/anomalyco/opencode/pull/56234))
+- Corrected spacing above simple-dialog footers. ([#56092](https://github.com/anomalyco/opencode/pull/56092))
+- Fixed Mermaid flowchart rendering in the TUI when labels contain apostrophes. ([#57060](https://github.com/anomalyco/opencode/pull/57060))
+
+### Desktop
+
+#### Bug fixes
+
+- Show free OpenCode models alongside their paid counterparts by default instead of hiding them when they share the same model family and release date. ([#55712](https://github.com/anomalyco/opencode/pull/55712))
+
+### SDK
+
+#### Improvements
+
+- Extended the existing experimental server voice API, `client.voice.session(...)`, with Gemini Live support for `gemini-3.8-live*` models over WebSocket. The server uses a stored Google key or `GEMINI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`, or `GOOGLE_API_KEY`. ([#56888](https://github.com/anomalyco/opencode/pull/56888))
+- Added `client.permission.saved.update(...)` for changing a saved permission’s action or resource. ([#56659](https://github.com/anomalyco/opencode/pull/56659))
+- Added archive filtering to `client.session.list(...)` and archive updates to `client.session.update(...)`. ([#53759](https://github.com/anomalyco/opencode/pull/53759))
+- Added `idle` to the supported `client.message.list(...)` type filter. ([#56504](https://github.com/anomalyco/opencode/pull/56504))
+
+### Extensions
+
+#### Improvements
+
+- Added paginated `ctx.session.list(...)` to both Effect and Promise plugin APIs. ([#56264](https://github.com/anomalyco/opencode/pull/56264))
+
+## v2.0.32 — 2026-10-16
+
+### Highlights
+
+- **Copy the Latest Reply**: Run `/copy` in the TUI to copy the latest assistant message or completed compaction summary instead of the full transcript. ([#56053](https://github.com/anomalyco/opencode/pull/56053), [#56055](https://github.com/anomalyco/opencode/pull/56055))
+- **Auth Login in Headless Environments**: `opencode auth login` no longer crashes in a container or other headless environment that cannot open a browser; use the URL already printed in the terminal to continue. ([#56082](https://github.com/anomalyco/opencode/pull/56082))
+
+### Core
+
+#### Bug fixes
+
+- Prevented `opencode auth login` from crashing when no browser opener such as `xdg-open` is available. ([#56082](https://github.com/anomalyco/opencode/pull/56082))
+- Gemini sessions now retry or continue after intermittent `MALFORMED_RESPONSE` finishes instead of immediately failing. ([#56232](https://github.com/anomalyco/opencode/pull/56232))
+- Made snapshot capture resilient to concurrent Git object writes on Windows. ([#56190](https://github.com/anomalyco/opencode/pull/56190))
+
+### TUI
+
+#### Improvements
+
+- Changed `/copy` to copy the latest assistant message; the full transcript remains available from the command palette or `/export`. ([#56053](https://github.com/anomalyco/opencode/pull/56053))
+
+#### Bug fixes
+
+- `/copy` now copies a completed compaction summary when it is the latest response. ([#56055](https://github.com/anomalyco/opencode/pull/56055))
+
+### SDK
+
+#### Improvements
+
+- Added the experimental `client.voice.session(...)` API for server-brokered OpenAI GPT-Live and Realtime WebRTC sessions, OpenAI Realtime WebSocket sessions, and xAI Grok Voice WebSocket sessions. It uses an API key stored on the server or `OPENAI_API_KEY`/`XAI_API_KEY`; ChatGPT sign-in credentials are not used. ([#55951](https://github.com/anomalyco/opencode/pull/55951))
+
+## v2.0.30 — 2026-10-15
+
+### Highlights
+
+- **Changed Files by Turn**: Enable **Settings → Preferences → Timeline → Changed files** to see each completed turn’s changed files, line counts, and expandable diffs. ([#55064](https://github.com/anomalyco/opencode/pull/55064))
+- **Docked TUI Diffs**: Run `/diff` inside a session to open the diff viewer beside your work. Press `f` to switch between the side panel and full screen; the layout adapts automatically to narrower terminals. ([#47152](https://github.com/anomalyco/opencode/pull/47152), [#55574](https://github.com/anomalyco/opencode/pull/55574), [#55780](https://github.com/anomalyco/opencode/pull/55780))
+- **Keyboard Tab Navigation**: Use **Option+↑/↓** to move between session tabs, or add **Shift** to jump between unread tabs. ([#54277](https://github.com/anomalyco/opencode/pull/54277))
+
+### Core
+
+#### Improvements
+
+- Load local glob patterns and remote URLs configured through `instructions`, and refresh them when configuration changes. ([#55539](https://github.com/anomalyco/opencode/pull/55539))
+- Honor `OPENCODE_DISABLE_CLAUDE_CODE` and `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS` when discovering `.claude` skills. ([#55774](https://github.com/anomalyco/opencode/pull/55774))
+- Publish a configuration schema that accepts both V1 and V2 configuration shapes during migration. ([#55524](https://github.com/anomalyco/opencode/pull/55524))
+- Remove the retired session-sharing backend and unavailable `/share` command. ([#55716](https://github.com/anomalyco/opencode/pull/55716))
+
+#### Bug fixes
+
+- Use protocol-specific inference endpoints for OpenCode providers and accept `null` namespaces in Responses API function calls. ([#55680](https://github.com/anomalyco/opencode/pull/55680), [#55631](https://github.com/anomalyco/opencode/pull/55631))
+- Fit compaction output limits to the request actually sent. ([#55613](https://github.com/anomalyco/opencode/pull/55613))
+- Restore authenticated TinyFish web search by initializing its MCP session. Thanks [@terry-an-investor](https://github.com/terry-an-investor). ([#54730](https://github.com/anomalyco/opencode/pull/54730))
+- Improve MCP compatibility by skipping unsupported catalog and codemode calls, advertising spec-compliant elicitation capabilities, and accepting `*.localhost` OAuth token endpoints. Thanks [@tsehla42](https://github.com/tsehla42) and [@donbowman](https://github.com/donbowman). ([#55474](https://github.com/anomalyco/opencode/pull/55474), [#55618](https://github.com/anomalyco/opencode/pull/55618), [#53196](https://github.com/anomalyco/opencode/pull/53196), [#55627](https://github.com/anomalyco/opencode/pull/55627))
+- Treat empty provider and model names as omitted, and substitute an empty value for missing configuration-file references. ([#55465](https://github.com/anomalyco/opencode/pull/55465), [#55388](https://github.com/anomalyco/opencode/pull/55388))
+- Default the Windows background service to port `45278`. ([#55547](https://github.com/anomalyco/opencode/pull/55547))
+
+### TUI
+
+#### Improvements
+
+- Open `/diff` beside the current session by default, retain state when toggling full screen with `f`, and adapt the file tree and patch layout to terminal width. ([#47152](https://github.com/anomalyco/opencode/pull/47152), [#55574](https://github.com/anomalyco/opencode/pull/55574), [#55780](https://github.com/anomalyco/opencode/pull/55780))
+
+#### Bug fixes
+
+- Show `/fork`’s pending view reliably and keep it aligned with the file list. ([#55746](https://github.com/anomalyco/opencode/pull/55746), [#55751](https://github.com/anomalyco/opencode/pull/55751))
+- Correct spacing and inactive key-hint styling in the docked diff panel. ([#55452](https://github.com/anomalyco/opencode/pull/55452), [#55467](https://github.com/anomalyco/opencode/pull/55467))
+
+### Desktop
+
+#### Improvements
+
+- Show each completed turn’s changed files, line counts, and expandable diffs when **Settings → Preferences → Timeline → Changed files** is enabled. ([#55064](https://github.com/anomalyco/opencode/pull/55064))
+- Navigate session tabs with **Option+↑/↓**, or add **Shift** to jump to the previous or next unread tab. ([#54277](https://github.com/anomalyco/opencode/pull/54277))
+- Display delegations from the iOS app as **Voice** messages. ([#54426](https://github.com/anomalyco/opencode/pull/54426))
+
+#### Bug fixes
+
+- Open PowerShell in the selected project directory on Windows. ([#55710](https://github.com/anomalyco/opencode/pull/55710))
+- Keep project settings accessible when the project folder is missing. ([#55553](https://github.com/anomalyco/opencode/pull/55553))
+- Show the requested URL while `webfetch` is running. ([#55590](https://github.com/anomalyco/opencode/pull/55590))
+
+### Extensions
+
+#### Bug fixes
+
+- Include MCP tool input as `metadata.input` in permission requests, allowing permission hooks to inspect the proposed call. Thanks [@lu-zero](https://github.com/lu-zero). ([#51062](https://github.com/anomalyco/opencode/pull/51062))
+
+## v2.0.29 — 2026-10-14
+
+### Highlights
+
+- **Remote Device Pairing**: In **Settings → Pairing**, select **Pair device** to enable OpenTunnel remote access and get a QR code or copyable link. ([#55306](https://github.com/anomalyco/opencode/pull/55306))
+- **Provider Account Management**: Use the connect dialog or **Settings → Providers** to switch, rename, remove, or add provider accounts. ([#54101](https://github.com/anomalyco/opencode/pull/54101))
+- **Automatic Response Continuation**: Responses that reach their output-token limit now continue automatically, preserving partial output instead of stopping abruptly. ([#53876](https://github.com/anomalyco/opencode/pull/53876))
+- **Trackpad Image Navigation**: Pinch to zoom and use two-finger scrolling to pan image and SVG previews. Select **Fit** to reset the view. ([#54590](https://github.com/anomalyco/opencode/pull/54590))
+
+### Core
+
+#### Improvements
+
+- Automatically continue responses after an output-token limit, with bounded retries and clearer recovery for truncated tool calls. ([#53876](https://github.com/anomalyco/opencode/pull/53876))
+- Stabilize access policies under the top-level `policies` configuration key while retaining compatibility with `experimental.policies`. ([#55297](https://github.com/anomalyco/opencode/pull/55297))
+
+#### Bug fixes
+
+- Give centrally managed configuration precedence over local and user configuration. ([#55267](https://github.com/anomalyco/opencode/pull/55267))
+- Allow migrated V1 npm provider configuration to target built-in provider routes. ([#55254](https://github.com/anomalyco/opencode/pull/55254))
+
+### TUI
+
+#### Improvements
+
+- Report working sessions and sessions awaiting permission or input through terminal program-status notifications. ([#55172](https://github.com/anomalyco/opencode/pull/55172))
+
+### Desktop
+
+#### Improvements
+
+- Pair devices from **Settings → Pairing** through OpenTunnel remote access, with a QR code and copyable link. ([#55306](https://github.com/anomalyco/opencode/pull/55306))
+- Manage provider accounts from the connect dialog and **Settings → Providers**, including switching, renaming, removal, and adding another account. ([#54101](https://github.com/anomalyco/opencode/pull/54101))
+- Show session context tokens and accumulated family cost in the session view. ([#53785](https://github.com/anomalyco/opencode/pull/53785))
+- Pinch to zoom and use two-finger scrolling to pan image and SVG previews; select **Fit** to reset. ([#54590](https://github.com/anomalyco/opencode/pull/54590))
+- Cycle side-panel tabs with the configured previous-tab and next-tab shortcuts while the side panel is focused. ([#54899](https://github.com/anomalyco/opencode/pull/54899))
+- Refresh the question composer and clarify timeline notices that apply only to a model variant. ([#54822](https://github.com/anomalyco/opencode/pull/54822), [#54880](https://github.com/anomalyco/opencode/pull/54880))
+- Refine diff colors and move unread indicators into session tabs. ([#52551](https://github.com/anomalyco/opencode/pull/52551), [#53570](https://github.com/anomalyco/opencode/pull/53570))
+
+#### Bug fixes
+
+- Show steered messages as pending immediately and render inline attachments before their server echo arrives. ([#55251](https://github.com/anomalyco/opencode/pull/55251), [#54650](https://github.com/anomalyco/opencode/pull/54650))
+- Preserve raw media data up to 256 MiB so artifact previews remain available. ([#55018](https://github.com/anomalyco/opencode/pull/55018))
+- Retain session model selections when the model catalog refreshes. ([#54481](https://github.com/anomalyco/opencode/pull/54481))
+- Close browser tabs from the address field and suppress incorrect missing-file notices for restored or already-open tabs. ([#54501](https://github.com/anomalyco/opencode/pull/54501), [#55022](https://github.com/anomalyco/opencode/pull/55022))
+- Prevent a project-store eviction loop during launch and remove hover gaps between vertical tabs. ([#55078](https://github.com/anomalyco/opencode/pull/55078), [#54866](https://github.com/anomalyco/opencode/pull/54866))
+
+### SDK
+
+#### Improvements
+
+- Export `lastAssistantWithUsage` from the Solid client to consistently locate the assistant step that determines current context usage. ([#53785](https://github.com/anomalyco/opencode/pull/53785))
+
+#### Bug fixes
+
+- Include all paginated child sessions when loading a session family for usage totals. ([#53785](https://github.com/anomalyco/opencode/pull/53785))
+- Admit inline data-URL files into optimistic pending messages so attachments render immediately. ([#54650](https://github.com/anomalyco/opencode/pull/54650))
+
+### Extensions
+
+#### Improvements
+
+- Add `ctx.permission.assert` for Effect and Promise plugins, allowing plugins to use configured permission rules and the native approval prompt. ([#54930](https://github.com/anomalyco/opencode/pull/54930))
+
+#### Bug fixes
+
+- Use Figma's public endpoint and default OAuth configuration, and support Git installations and development releases. ([#55252](https://github.com/anomalyco/opencode/pull/55252), [#55304](https://github.com/anomalyco/opencode/pull/55304))
+- Resolve the Figma plugin peer dependency from its workspace. ([#55269](https://github.com/anomalyco/opencode/pull/55269))
+- Associate each rejected Promise hook with its own tool call. Thanks [@1052326311](https://github.com/1052326311). ([#55263](https://github.com/anomalyco/opencode/pull/55263))
+
 ## v2.0.28 — 2026-10-13
 
 ### Highlights

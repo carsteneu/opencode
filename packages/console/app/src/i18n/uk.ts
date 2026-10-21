@@ -35,6 +35,7 @@ export const dict = {
   "email.placeholder": "Електронна адреса",
   "email.subscribe": "Підписатися",
   "email.success": "Майже готово! Перевірте пошту та підтвердьте адресу",
+  "email.error": "Не вдалося оформити підписку. Спробуйте ще раз.",
 
   "notFound.title": "Не знайдено | opencode",
   "notFound.heading": "404 — Сторінку не знайдено",
@@ -56,22 +57,6 @@ export const dict = {
   "app.meta.description": "OpenCode — відкритий агент для програмування.",
 
   "home.title": "OpenCode | Відкритий AI-агент для кодування",
-
-  "temp.title": "opencode | AI-агент для кодування, створений для термінала",
-  "temp.hero.title": "AI-агент для кодування, створений для термінала",
-  "temp.zen": "opencode zen",
-  "temp.getStarted": "Почати",
-  "temp.feature.native.title": "Рідний TUI",
-  "temp.feature.native.body": "Чуйний, рідний інтерфейс термінала з темами",
-  "temp.feature.zen.beforeLink": "A",
-  "temp.feature.zen.link": "добірка моделей",
-  "temp.feature.zen.afterLink": "від opencode",
-  "temp.feature.models.beforeLink": "Підтримує 75+ LLM-провайдерів через",
-  "temp.feature.models.afterLink": ", включаючи локальні моделі",
-  "temp.screenshot.caption": "OpenCode TUI з темою tokyonight",
-  "temp.screenshot.alt": "OpenCode TUI з темою tokyonight",
-  "temp.logoLightAlt": "світлий логотип opencode",
-  "temp.logoDarkAlt": "темний логотип opencode",
 
   "home.banner.badge": "Нове",
 
@@ -140,12 +125,9 @@ export const dict = {
   "home.faq.a6":
     "OpenCode є 100% безкоштовним. Він також має набір безкоштовних моделей. Додаткові витрати можливі, якщо ви підключите іншого провайдера.",
   "home.faq.q7": "А як щодо даних та конфіденційності?",
-  "home.faq.a7.p1":
-    "Ваші дані зберігаються лише тоді, коли ви використовуєте безкоштовні моделі або створюєте посилання для обміну.",
+  "home.faq.a7.p1": "Ваші дані зберігаються лише тоді, коли ви використовуєте безкоштовні моделі.",
   "home.faq.a7.p2.beforeModels": "Дізнайтеся більше про",
   "home.faq.a7.p2.modelsLink": "наші моделі",
-  "home.faq.a7.p2.and": "та",
-  "home.faq.a7.p2.shareLink": "сторінки обміну",
   "home.faq.q8": "Чи є OpenCode відкритим?",
   "home.faq.a8.p1": "Так, OpenCode повністю відкритий. Вихідний код доступний публічно на",
   "home.faq.a8.p2": "під ліцензією",
@@ -221,7 +203,7 @@ export const dict = {
     "Усі моделі Zen розміщені в США. Провайдери дотримуються політики нульового зберігання та не використовують ваші дані для навчання моделей, за",
   "zen.privacy.exceptionsLink": "такими винятками",
 
-  "go.promo.gemini": "Gemini 4 Argon уже доступна з лімітом ×2 протягом обмеженого часу.",
+  "go.promo.minimaxM31FlashFree": "MiniMax M3.1 Flash Free уже доступна в Go безкоштовно протягом обмеженого часу.",
   "go.title": "OpenCode Go | Недорогі моделі кодування для всіх",
   "go.meta.description":
     "Go коштує $10/місяць, зі щедрими лімітами використання та надійним доступом до провідних моделей для кодування.",
@@ -259,7 +241,6 @@ export const dict = {
   "go.problem.title": "Яку проблему вирішує Go?",
   "go.problem.body":
     "Ми зосереджені на тому, щоб зробити досвід OpenCode доступним для якомога більшої кількості людей. OpenCode Go — це недорога підписка за $10/місяць. Вона надає щедрі ліміти та надійний доступ до найкращих моделей з відкритим кодом.",
-  "go.problem.subtitle": " ",
   "go.problem.item1": "Недорога підписка",
   "go.problem.item2": "Щедрі ліміти та надійний доступ",
   "go.problem.item3": "Створено для якомога більшої кількості програмістів",
@@ -302,7 +283,6 @@ export const dict = {
     "ZDR вимикає важливі функції API, які залежать від збережених даних, зокрема Responses API зі збереженням стану, Files and Collections та Batch API.",
   "go.faq.a5.gptRetention":
     "Журнали моніторингу зловживань створюються для всіх випадків використання функцій API та зберігаються до 30 днів.",
-  "go.faq.a5.catJamRetention": "Протягом безкоштовного періоду зібрані дані можуть використовуватися для покращення моделі.",
   "go.faq.a5.geminiRetention":
     "Ваші промпти та відповіді можуть використовуватися для навчання майбутніх моделей Google.",
   "go.faq.a5.learnMore": "Докладніше",
@@ -323,32 +303,6 @@ export const dict = {
   "go.faq.q10": "Чи можу я отримати повернення коштів?",
   "go.faq.a10":
     "Ви можете претендувати на повернення, якщо кошти було списано протягом останніх 14 днів і ви не використали ліміт Go протягом цього розрахункового періоду. {{contact}}, щоб подати запит на повернення.",
-
-  "black.meta.title": "OpenCode Black | Доступ до найкращих моделей кодування",
-  "black.meta.description": "Отримайте доступ до Claude, GPT, Gemini та інших із планами підписки OpenCode Black.",
-  "black.hero.title": "Доступ до найкращих моделей кодування",
-  "black.hero.subtitle": "Включаючи Claude, GPT, Gemini та інші",
-  "black.title": "OpenCode Black | Ціни",
-  "black.paused": "Реєстрація в план Black тимчасово призупинена.",
-  "black.plan.icon20": "План Black 20",
-  "black.plan.icon100": "План Black 100",
-  "black.plan.icon200": "План Black 200",
-  "black.plan.multiplier100": "5x більше використання ніж Black 20",
-  "black.plan.multiplier200": "20x більше використання ніж Black 20",
-  "black.price.perMonth": "на місяць",
-  "black.price.perPersonBilledMonthly": "за особу з щомісячною оплатою",
-  "black.terms.1": "Ваша підписка не розпочнеться негайно",
-  "black.terms.2": "Вас додадуть до списку очікування та активують незабаром",
-  "black.terms.3": "Картку буде списано лише після активації підписки",
-  "black.terms.4": "Діють ліміти використання, інтенсивне автоматичне використання може швидше вичерпати ліміти",
-  "black.terms.5": "Підписки призначені для фізичних осіб, зверніться в Enterprise для команд",
-  "black.terms.6": "Ліміти можуть бути змінені, а плани можуть бути припинені в майбутньому",
-  "black.terms.7": "Скасуйте підписку в будь-який час",
-  "black.finePrint.beforeTerms": "Зазначені ціни не включають податки",
-  "black.finePrint.terms": "Умови надання послуг",
-  "black.workspace.title": "OpenCode Black | Виберіть робочий простір",
-  "black.workspace.selectPlan": "Виберіть робочий простір для цього плану",
-  "black.workspace.name": "Робочий простір {{n}}",
 
   "download.title": "OpenCode | Завантажити",
   "download.meta.description": "Завантажте OpenCode для macOS, Windows та Linux",
@@ -377,10 +331,6 @@ export const dict = {
   "download.faq.a5.p2.beforeZen":
     "Будь-які додаткові витрати будуть з вашої підписки у провайдера моделі. Ми рекомендуємо",
   "download.faq.a5.p2.afterZen": ".",
-
-  "download.faq.a6.p1": "Ваші дані зберігаються лише при створенні посилань для обміну в OpenCode.",
-  "download.faq.a6.p2.beforeShare": "Дізнайтеся більше про",
-  "download.faq.a6.shareLink": "сторінки обміну",
 
   "enterprise.title": "OpenCode | Enterprise-рішення для вашої організації",
   "enterprise.meta.description": "Зв'яжіться з OpenCode для Enterprise-рішень",
@@ -416,6 +366,7 @@ export const dict = {
   "enterprise.form.error.invalidEmailFormat": "Недійсний формат email.",
   "enterprise.form.error.invalidInferenceSpend": "Виберіть допустимий діапазон витрат на інференс.",
   "enterprise.form.error.internalServer": "Внутрішня помилка сервера.",
+  "enterprise.form.error.captcha": "Не вдалося пройти перевірку captcha. Спробуйте ще раз.",
   "enterprise.faq.title": "FAQ",
   "enterprise.faq.q1": "Що таке OpenCode Enterprise?",
   "enterprise.faq.a1":
@@ -442,5 +393,4 @@ export const dict = {
   "changelog.hero.subtitle": "Нові оновлення та покращення OpenCode",
   "changelog.empty": "Записів у журналі змін не знайдено.",
   "changelog.viewJson": "Переглянути JSON",
-
 }

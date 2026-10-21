@@ -1,6 +1,6 @@
 {
   "name": "@opencode/ui",
-  "version": "2.0.29",
+  "version": "2.1.2",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -101,13 +101,14 @@
     "@solidjs/meta": "catalog:",
     "@tsconfig/node22": "catalog:",
     "@types/bun": "catalog:",
-    "@typescript/native-preview": "catalog:",
+    "@typescript/native": "catalog:",
     "solid-js": "catalog:",
     "tailwindcss": "catalog:",
     "typescript": "catalog:",
     "vite": "catalog:",
     "vite-plugin-icons-spritesheet": "3.0.1",
-    "vite-plugin-solid": "catalog:"
+    "vite-plugin-solid": "catalog:",
+    "@typescript/native-preview": "catalog:"
   },
   "dependencies": {
     "@kitlangton/solid-motion": "0.2.2",

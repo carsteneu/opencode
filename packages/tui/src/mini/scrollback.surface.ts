@@ -12,6 +12,7 @@ import {
   type TreeSitterClient,
   type CliRenderer,
   type ScrollbackSurface,
+  type SyntaxStyle,
 } from "@opentui/core"
 import { entryBody, entryCanStream, entryDone, entryFlags } from "./entry.body"
 import { inlineImageBudgetExceeded } from "../util/session-image-preview"
@@ -29,6 +30,7 @@ type ActiveEntry = {
   commit: StreamCommit
   surface: ScrollbackSurface
   renderable: TextRenderable | CodeRenderable | MarkdownRenderable
+  syntax?: SyntaxStyle
   content: string
   committedRows: number
   committedBlocks: number
@@ -96,6 +98,7 @@ export class RunScrollbackStream {
   private imagePreview: boolean
   private destroyed = false
   private pendingThemes: RunTheme[] = []
+  private pendingStyles: SyntaxStyle[] = []
 
   constructor(
     private renderer: CliRenderer,
@@ -129,12 +132,14 @@ export class RunScrollbackStream {
     // Rebuild the Markdown tree, keeping its source and printed block boundary.
     // Mono hooks are one-way, and ending the entry would lose open fence/list context.
     const next = this.createEntry(active.commit, active.body)
-    this.active = { ...active, surface: next.surface, renderable: next.renderable }
+    this.active = { ...active, surface: next.surface, renderable: next.renderable, syntax: next.syntax }
     active.surface.destroy()
+    active.syntax?.destroy()
     this.releasePendingThemes()
   }
 
   private releasePendingThemes(): void {
+    for (const style of this.pendingStyles.splice(0)) style.destroy()
     if (this.pendingThemes.length === 0) {
       return
     }
@@ -165,7 +170,10 @@ export class RunScrollbackStream {
     }
 
     active.renderable.fg = entryColor(active.commit, theme)
-    active.renderable.syntaxStyle = entrySyntax(theme)
+    const syntax = entrySyntax(theme, active.surface.renderContext.nativeScene)
+    if (active.syntax) this.pendingStyles.push(active.syntax)
+    active.syntax = syntax
+    active.renderable.syntaxStyle = syntax
   }
 
   private createEntry(commit: StreamCommit, body: ActiveBody): ActiveEntry {
@@ -173,6 +181,7 @@ export class RunScrollbackStream {
       startOnNewLine: entryFlags(commit).startOnNewLine,
     })
     const style = entryLook(commit, this.theme.entry)
+    const syntax = body.type === "text" ? undefined : entrySyntax(this.theme, surface.renderContext.nativeScene)
     const treeSitterClient = body.type === "text" ? undefined : (this.treeSitterClient ??= getTreeSitterClient())
     const renderable =
       body.type === "text"
@@ -187,7 +196,7 @@ export class RunScrollbackStream {
           ? new CodeRenderable(surface.renderContext, {
               content: "",
               filetype: body.filetype,
-              syntaxStyle: entrySyntax(this.theme),
+              syntaxStyle: syntax!,
               width: "100%",
               wrapMode: "word",
               drawUnstyledText: false,
@@ -197,7 +206,7 @@ export class RunScrollbackStream {
             })
           : new MarkdownRenderable(surface.renderContext, {
               content: "",
-              syntaxStyle: entrySyntax(this.theme),
+              syntaxStyle: syntax!,
               width: "100%",
               streaming: true,
               internalBlockMode: "top-level",
@@ -216,6 +225,7 @@ export class RunScrollbackStream {
       commit,
       surface,
       renderable,
+      syntax,
       content: "",
       committedRows: 0,
       committedBlocks: 0,
@@ -348,6 +358,7 @@ export class RunScrollbackStream {
       if (!active.surface.isDestroyed) {
         active.surface.destroy()
       }
+      active.syntax?.destroy()
       this.releasePendingThemes()
     }
 
@@ -495,6 +506,7 @@ export class RunScrollbackStream {
     if (!this.active.surface.isDestroyed) {
       this.active.surface.destroy()
     }
+    this.active.syntax?.destroy()
 
     this.active = undefined
     this.releasePendingThemes()

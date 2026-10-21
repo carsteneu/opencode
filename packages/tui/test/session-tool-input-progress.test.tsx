@@ -46,7 +46,7 @@ async function withSession(
   run: (setup: Awaited<ReturnType<typeof createTestRenderer>>, events: ReturnType<typeof createEventStream>) => Promise<void>,
 ) {
   await using state = await tmpdir()
-  const setup = await createTestRenderer({ width: 100, height: 30, useThread: false, kittyKeyboard: true })
+  const setup = await createTestRenderer({ width: 100, height: 30, kittyKeyboard: true })
   setup.renderer.start()
   const fixture = messages(received)
   const events = createEventStream()

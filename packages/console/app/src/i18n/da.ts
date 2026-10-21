@@ -36,6 +36,7 @@ export const dict = {
   "email.placeholder": "E-mailadresse",
   "email.subscribe": "Tilmeld",
   "email.success": "Næsten færdig - tjek din indbakke og bekræft din e-mailadresse",
+  "email.error": "Tilmeldingen mislykkedes. Prøv igen.",
 
   "notFound.title": "Ikke fundet | opencode",
   "notFound.heading": "404 - Siden blev ikke fundet",
@@ -57,22 +58,6 @@ export const dict = {
   "app.meta.description": "OpenCode - Den open source kodningsagent.",
 
   "home.title": "OpenCode | Den open source AI-kodningsagent",
-
-  "temp.title": "opencode | AI-kodningsagent bygget til terminalen",
-  "temp.hero.title": "AI-kodningsagenten bygget til terminalen",
-  "temp.zen": "opencode zen",
-  "temp.getStarted": "Kom i gang",
-  "temp.feature.native.title": "Native TUI",
-  "temp.feature.native.body": "En responsiv, native, tema-bar terminal-UI",
-  "temp.feature.zen.beforeLink": "En",
-  "temp.feature.zen.link": "kurateret liste over modeller",
-  "temp.feature.zen.afterLink": "leveret af opencode",
-  "temp.feature.models.beforeLink": "Understøtter 75+ LLM-udbydere gennem",
-  "temp.feature.models.afterLink": ", inklusive lokale modeller",
-  "temp.screenshot.caption": "opencode TUI med tokyonight-temaet",
-  "temp.screenshot.alt": "opencode TUI med tokyonight-temaet",
-  "temp.logoLightAlt": "opencode logo light",
-  "temp.logoDarkAlt": "opencode logo dark",
 
   "home.banner.badge": "Ny",
 
@@ -141,11 +126,9 @@ export const dict = {
   "home.faq.a6":
     "OpenCode er 100% gratis at bruge. Det kommer også med et sæt gratis modeller. Der kan være ekstra omkostninger, hvis du forbinder en anden udbyder.",
   "home.faq.q7": "Hvad med data og privatliv?",
-  "home.faq.a7.p1": "Dine data gemmes kun, når du bruger vores gratis modeller eller opretter delbare links.",
+  "home.faq.a7.p1": "Dine data gemmes kun, når du bruger vores gratis modeller.",
   "home.faq.a7.p2.beforeModels": "Læs mere om",
   "home.faq.a7.p2.modelsLink": "vores modeller",
-  "home.faq.a7.p2.and": "og",
-  "home.faq.a7.p2.shareLink": "delingssider",
   "home.faq.q8": "Er OpenCode open source?",
   "home.faq.a8.p1": "Ja, OpenCode er fuldt open source. Kildekoden er offentlig på",
   "home.faq.a8.p2": "under",
@@ -221,7 +204,7 @@ export const dict = {
     "Alle Zen-modeller er hostet i USA. Udbydere følger en nulopbevaringspolitik og bruger ikke dine data til modeltræning med",
   "zen.privacy.exceptionsLink": "følgende undtagelser",
 
-  "go.promo.gemini": "Gemini 4 Argon er nu tilgængelig med 2× forbrug i en begrænset periode.",
+  "go.promo.minimaxM31FlashFree": "MiniMax M3.1 Flash Free er nu tilgængelig i Go, gratis i en begrænset periode.",
   "go.title": "OpenCode Go | Kodningsmodeller til lav pris for alle",
   "go.meta.description":
     "Go koster $10/måned, med generøse brugsgrænser og pålidelig adgang til førende kodningsmodeller.",
@@ -259,7 +242,6 @@ export const dict = {
   "go.problem.title": "Hvilket problem løser Go?",
   "go.problem.body":
     "Vi fokuserer på at bringe OpenCode-oplevelsen ud til så mange som muligt. OpenCode Go er et lavprisabonnement til $10/måned. Det giver generøse grænser og pålidelig adgang til de mest kapable open source-modeller.",
-  "go.problem.subtitle": " ",
   "go.problem.item1": "Lavpris abonnementspriser",
   "go.problem.item2": "Generøse grænser og pålidelig adgang",
   "go.problem.item3": "Bygget til så mange programmører som muligt",
@@ -304,7 +286,6 @@ export const dict = {
     "Logfiler til overvågning af misbrug genereres ved al brug af API-funktioner og opbevares i op til 30 dage.",
   "go.faq.a5.museRetention":
     "Kraftigt nedsatte tokenpriser til gengæld for tilladelse til at bruge dine prompts og modelsvar til at træne fremtidige Meta-modeller.",
-  "go.faq.a5.catJamRetention": "I gratisperioden kan indsamlede data blive brugt til at forbedre modellen.",
   "go.faq.a5.geminiRetention": "Dine prompts og modelsvar kan blive brugt til at træne fremtidige Google-modeller.",
   "go.faq.a5.learnMore": "Læs mere",
   "go.faq.a5.deepseekRetention":
@@ -323,32 +304,6 @@ export const dict = {
   "go.faq.q10": "Kan jeg få en refusion?",
   "go.faq.a10":
     "Du kan muligvis få en refusion, hvis opkrævningen blev foretaget inden for de seneste 14 dage, og du ikke har brugt din Go-kvote i den pågældende faktureringsperiode. {{contact}} for at anmode om en refusion.",
-
-  "black.meta.title": "OpenCode Black | Få adgang til verdens bedste kodningsmodeller",
-  "black.meta.description": "Få adgang til Claude, GPT, Gemini og mere med OpenCode Black-abonnementer.",
-  "black.hero.title": "Få adgang til verdens bedste kodningsmodeller",
-  "black.hero.subtitle": "Inklusive Claude, GPT, Gemini og mere",
-  "black.title": "OpenCode Black | Priser",
-  "black.paused": "Black-plantilmelding er midlertidigt sat på pause.",
-  "black.plan.icon20": "Black 20-plan",
-  "black.plan.icon100": "Black 100-plan",
-  "black.plan.icon200": "Black 200-plan",
-  "black.plan.multiplier100": "5x mere brug end Black 20",
-  "black.plan.multiplier200": "20x mere brug end Black 20",
-  "black.price.perMonth": "pr. måned",
-  "black.price.perPersonBilledMonthly": "pr. person faktureret månedligt",
-  "black.terms.1": "Dit abonnement starter ikke med det samme",
-  "black.terms.2": "Du bliver sat på ventelisten og aktiveret snart",
-  "black.terms.3": "Dit kort debiteres først, når dit abonnement er aktiveret",
-  "black.terms.4": "Forbrugsgrænser gælder, tung automatiseret brug kan nå grænserne hurtigere",
-  "black.terms.5": "Abonnementer er for enkeltpersoner, kontakt Enterprise for teams",
-  "black.terms.6": "Grænser kan justeres, og planer kan blive udfaset i fremtiden",
-  "black.terms.7": "Opsig dit abonnement når som helst",
-  "black.finePrint.beforeTerms": "Viste priser inkluderer ikke gældende skat",
-  "black.finePrint.terms": "Servicevilkår",
-  "black.workspace.title": "OpenCode Black | Vælg workspace",
-  "black.workspace.selectPlan": "Vælg et workspace til denne plan",
-  "black.workspace.name": "Workspace {{n}}",
 
   "download.title": "OpenCode | Download",
   "download.meta.description": "Download OpenCode til macOS, Windows og Linux",
@@ -376,10 +331,6 @@ export const dict = {
   "download.faq.a5.p2.beforeZen":
     "Eventuelle ekstra omkostninger kommer fra dit abonnement hos en modeludbyder. Selvom OpenCode fungerer med enhver modeludbyder, anbefaler vi at bruge",
   "download.faq.a5.p2.afterZen": ".",
-
-  "download.faq.a6.p1": "Dine data og oplysninger gemmes kun når du opretter delbare links i OpenCode.",
-  "download.faq.a6.p2.beforeShare": "Læs mere om",
-  "download.faq.a6.shareLink": "delingssider",
 
   "enterprise.title": "OpenCode | Enterprise-løsninger til din organisation",
   "enterprise.meta.description": "Kontakt OpenCode for enterprise-løsninger",
@@ -415,6 +366,7 @@ export const dict = {
   "enterprise.form.error.invalidEmailFormat": "Ugyldigt e-mailformat.",
   "enterprise.form.error.invalidInferenceSpend": "Vælg et gyldigt interval for inferensforbrug.",
   "enterprise.form.error.internalServer": "Intern serverfejl.",
+  "enterprise.form.error.captcha": "Captcha-verificering mislykkedes. Prøv igen.",
   "enterprise.faq.title": "FAQ",
   "enterprise.faq.q1": "Hvad er OpenCode Enterprise?",
   "enterprise.faq.a1":

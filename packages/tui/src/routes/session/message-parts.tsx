@@ -1,6 +1,6 @@
 import { createMemo, Match, Show, Switch } from "solid-js"
 import { RGBA, TextAttributes, type MouseEvent } from "@opentui/core"
-import type { JSX } from "@opentui/solid"
+import { useRenderer, type JSX } from "@opentui/solid"
 import type {
   SessionMessageAssistant,
   SessionMessageAssistantReasoning,
@@ -31,6 +31,7 @@ const toolDisplays = new Set([
   "subagent",
   "execute",
   "patch",
+  "todowrite",
   "question",
   "skill",
 ])
@@ -47,7 +48,10 @@ export function ReasoningPart(props: {
 }) {
   const theme = useTheme()
   const { currentSyntax: syntax } = useThemes()
-  const thinkingSyntax = createSyntaxStyleMemo(() => generateThinkingSyntax(syntax(), theme.text.muted))
+  const renderer = useRenderer()
+  const thinkingSyntax = createSyntaxStyleMemo(() =>
+    generateThinkingSyntax(syntax(), theme.text.muted, renderer.nativeScene),
+  )
   const ctx = use()
 
   const content = createMemo(() => reasoningContent(props.part))

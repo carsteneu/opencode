@@ -25,7 +25,8 @@ async function runArm(arm: "content" | "contentUpdate"): Promise<{ cpuMs: number
   const setup = await createTestRenderer({ width: 100, height: 40 })
   const renderer = setup.renderer as unknown as { ctx?: unknown }
   const ctx = (renderer.ctx ?? renderer) as never
-  const syntaxStyle = SyntaxStyle.create()
+  // 0.6.6 hands every native style a resource owner, so the renderer owns it.
+  const syntaxStyle = SyntaxStyle.create(setup.renderer as never)
   const md = new MarkdownRenderable(ctx, {
     syntaxStyle,
     content: "",
@@ -40,8 +41,8 @@ async function runArm(arm: "content" | "contentUpdate"): Promise<{ cpuMs: number
   for (const delta of bench.deltas) {
     text += delta
     const w0 = performance.now()
-    if (arm === "content") md.content = text
-    else md.contentUpdate = { content: text, appended: delta }
+    // The append setter this arm used to compare against is gone in 0.6.6: both arms measure the setter.
+    md.content = text
     perDelta.push(performance.now() - w0)
   }
   const cpuMs = cpuNow() - cpu0

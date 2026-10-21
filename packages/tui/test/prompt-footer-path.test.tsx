@@ -22,7 +22,6 @@ async function renderSession(statePath: string, running = false) {
   const setup = await createTestRenderer({
     width: TERMINAL_WIDTH,
     height: 34,
-    useThread: false,
     kittyKeyboard: true,
   })
   setup.renderer.start()

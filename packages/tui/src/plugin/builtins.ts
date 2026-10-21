@@ -8,6 +8,7 @@ import SidebarFooter from "../feature-plugins/sidebar/footer"
 import SidebarFooterIdentity from "../feature-plugins/sidebar/footer-identity"
 import SidebarMcp from "../feature-plugins/sidebar/mcp"
 import SidebarTitleRename from "../feature-plugins/sidebar/title-rename"
+import SidebarTodo from "../feature-plugins/sidebar/todo"
 import DiffViewer from "../feature-plugins/system/diff-viewer"
 import Notifications from "../feature-plugins/system/notifications"
 import Plugins from "../feature-plugins/system/plugins"
@@ -22,6 +23,7 @@ export const builtins = [
   PromptBtw,
   SidebarContext,
   SidebarMcp,
+  SidebarTodo,
   SidebarFooter,
   Notifications,
   Plugins,

@@ -36,6 +36,7 @@ export const dict = {
   "email.placeholder": "Indirizzo email",
   "email.subscribe": "Iscriviti",
   "email.success": "Quasi fatto, controlla la posta in arrivo e conferma il tuo indirizzo email",
+  "email.error": "Iscrizione non riuscita. Riprova.",
 
   "notFound.title": "Non trovato | opencode",
   "notFound.heading": "404 - Pagina non trovata",
@@ -57,22 +58,6 @@ export const dict = {
   "app.meta.description": "OpenCode - L'agente di programmazione open source.",
 
   "home.title": "OpenCode | L'agente di coding IA open source",
-
-  "temp.title": "opencode | Agente di coding IA costruito per il terminale",
-  "temp.hero.title": "L'agente di coding IA costruito per il terminale",
-  "temp.zen": "opencode zen",
-  "temp.getStarted": "Inizia",
-  "temp.feature.native.title": "TUI Nativa",
-  "temp.feature.native.body": "Un'interfaccia terminale reattiva, nativa e personalizzabile",
-  "temp.feature.zen.beforeLink": "Una",
-  "temp.feature.zen.link": "lista curata di modelli",
-  "temp.feature.zen.afterLink": "fornita da opencode",
-  "temp.feature.models.beforeLink": "Supporta 75+ provider LLM tramite",
-  "temp.feature.models.afterLink": ", inclusi modelli locali",
-  "temp.screenshot.caption": "OpenCode TUI con il tema tokyonight",
-  "temp.screenshot.alt": "OpenCode TUI con tema tokyonight",
-  "temp.logoLightAlt": "logo chiaro di opencode",
-  "temp.logoDarkAlt": "logo scuro di opencode",
 
   "home.banner.badge": "Nuovo",
 
@@ -140,12 +125,9 @@ export const dict = {
   "home.faq.a6":
     "OpenCode è gratuito al 100%. Include anche un set di modelli gratuiti. Potrebbero esserci costi aggiuntivi se colleghi altri provider.",
   "home.faq.q7": "E per quanto riguarda dati e privacy?",
-  "home.faq.a7.p1":
-    "I tuoi dati vengono archiviati solo quando usi i nostri modelli gratuiti o crei link condivisibili.",
+  "home.faq.a7.p1": "I tuoi dati vengono archiviati solo quando usi i nostri modelli gratuiti.",
   "home.faq.a7.p2.beforeModels": "Scopri di più su",
   "home.faq.a7.p2.modelsLink": "i nostri modelli",
-  "home.faq.a7.p2.and": "e",
-  "home.faq.a7.p2.shareLink": "le pagine di condivisione",
   "home.faq.q8": "OpenCode è open source?",
   "home.faq.a8.p1": "Sì, OpenCode è completamente open source. Il codice sorgente è pubblico su",
   "home.faq.a8.p2": "sotto la",
@@ -221,7 +203,7 @@ export const dict = {
     "Tutti i modelli Zen sono ospitati negli Stati Uniti. I provider seguono una policy di zero-retention e non usano i tuoi dati per l'addestramento dei modelli, con le",
   "zen.privacy.exceptionsLink": "seguenti eccezioni",
 
-  "go.promo.gemini": "Gemini 4 Argon è ora disponibile con utilizzo 2× per un periodo limitato.",
+  "go.promo.minimaxM31FlashFree": "MiniMax M3.1 Flash Free è ora disponibile in Go, gratis per un periodo limitato.",
   "go.title": "OpenCode Go | Modelli di coding a basso costo per tutti",
   "go.meta.description":
     "Go costa $10/mese, con limiti di utilizzo generosi e un accesso affidabile ai principali modelli di coding.",
@@ -259,7 +241,6 @@ export const dict = {
   "go.problem.title": "Quale problema risolve Go?",
   "go.problem.body":
     "Ci concentriamo nel portare l'esperienza OpenCode a quante più persone possibile. OpenCode Go è un abbonamento a basso costo da $10/mese. Offre limiti generosi e accesso affidabile ai modelli open source più capaci.",
-  "go.problem.subtitle": " ",
   "go.problem.item1": "Prezzo di abbonamento a basso costo",
   "go.problem.item2": "Limiti generosi e accesso affidabile",
   "go.problem.item3": "Costruito per il maggior numero possibile di programmatori",
@@ -302,7 +283,6 @@ export const dict = {
     "ZDR disabilita importanti funzionalità API che dipendono dai dati archiviati, tra cui la Responses API con stato, Files and Collections e Batch API.",
   "go.faq.a5.gptRetention":
     "I log di monitoraggio degli abusi vengono generati per l'utilizzo di tutte le funzionalità API e conservati per un massimo di 30 giorni.",
-  "go.faq.a5.catJamRetention": "Durante il periodo gratuito, i dati raccolti possono essere utilizzati per migliorare il modello.",
   "go.faq.a5.geminiRetention":
     "I tuoi prompt e completamenti possono essere utilizzati per addestrare futuri modelli Google.",
   "go.faq.a5.learnMore": "Scopri di più",
@@ -324,34 +304,6 @@ export const dict = {
   "go.faq.q10": "Posso ottenere un rimborso?",
   "go.faq.a10":
     "Potresti avere diritto a un rimborso se l'addebito è stato effettuato negli ultimi 14 giorni e non hai utilizzato la tua quota Go durante quel periodo di fatturazione. {{contact}} per richiedere un rimborso.",
-
-  "black.meta.title": "OpenCode Black | Accedi ai migliori modelli di coding al mondo",
-  "black.meta.description":
-    "Ottieni l'accesso a Claude, GPT, Gemini e altri con i piani di abbonamento OpenCode Black.",
-  "black.hero.title": "Accedi ai migliori modelli di coding al mondo",
-  "black.hero.subtitle": "Inclusi Claude, GPT, Gemini e altri",
-  "black.title": "OpenCode Black | Prezzi",
-  "black.paused": "L'iscrizione al piano Black è temporaneamente sospesa.",
-  "black.plan.icon20": "Piano Black 20",
-  "black.plan.icon100": "Piano Black 100",
-  "black.plan.icon200": "Piano Black 200",
-  "black.plan.multiplier100": "5x più utilizzo rispetto a Black 20",
-  "black.plan.multiplier200": "20x più utilizzo rispetto a Black 20",
-  "black.price.perMonth": "al mese",
-  "black.price.perPersonBilledMonthly": "per persona fatturato mensilmente",
-  "black.terms.1": "Il tuo abbonamento non inizierà immediatamente",
-  "black.terms.2": "Verrai aggiunto alla lista d'attesa e attivato presto",
-  "black.terms.3": "La tua carta verrà addebitata solo quando il tuo abbonamento sarà attivato",
-  "black.terms.4":
-    "Si applicano limiti di utilizzo, un uso fortemente automatizzato potrebbe raggiungere i limiti prima",
-  "black.terms.5": "Gli abbonamenti sono per individui, contatta Enterprise per i team",
-  "black.terms.6": "I limiti potrebbero essere modificati e i piani potrebbero essere interrotti in futuro",
-  "black.terms.7": "Annulla il tuo abbonamento in qualsiasi momento",
-  "black.finePrint.beforeTerms": "I prezzi mostrati non includono le tasse applicabili",
-  "black.finePrint.terms": "Termini di servizio",
-  "black.workspace.title": "OpenCode Black | Seleziona Workspace",
-  "black.workspace.selectPlan": "Seleziona un workspace per questo piano",
-  "black.workspace.name": "Workspace {{n}}",
 
   "download.title": "OpenCode | Download",
   "download.meta.description": "Scarica OpenCode per macOS, Windows e Linux",
@@ -379,10 +331,6 @@ export const dict = {
   "download.faq.a5.p2.beforeZen":
     "Eventuali costi aggiuntivi proverranno dal tuo abbonamento a un provider di modelli. Mentre OpenCode funziona con qualsiasi provider di modelli, raccomandiamo di usare",
   "download.faq.a5.p2.afterZen": ".",
-
-  "download.faq.a6.p1": "I tuoi dati e informazioni sono archiviati solo quando crei link condivisibili in OpenCode.",
-  "download.faq.a6.p2.beforeShare": "Scopri di più sulle",
-  "download.faq.a6.shareLink": "pagine condivise",
 
   "enterprise.title": "OpenCode | Soluzioni Enterprise per la tua organizzazione",
   "enterprise.meta.description": "Contatta OpenCode per soluzioni enterprise",
@@ -418,6 +366,7 @@ export const dict = {
   "enterprise.form.error.invalidEmailFormat": "Formato email non valido.",
   "enterprise.form.error.invalidInferenceSpend": "Seleziona una fascia di spesa per l'inferenza valida.",
   "enterprise.form.error.internalServer": "Errore interno del server.",
+  "enterprise.form.error.captcha": "Verifica captcha non riuscita. Riprova.",
   "enterprise.faq.title": "FAQ",
   "enterprise.faq.q1": "Cos'è OpenCode Enterprise?",
   "enterprise.faq.a1":

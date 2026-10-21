@@ -1,4 +1,16 @@
-import { Duration, Effect, Equal, Option, Schema, SchemaGetter, Scope, Semaphore, Stream } from "effect"
+import {
+  Clock,
+  Duration,
+  Effect,
+  Equal,
+  FiberHandle,
+  Option,
+  Schema,
+  SchemaGetter,
+  Scope,
+  Semaphore,
+  Stream,
+} from "effect"
 import type { IntegrationOAuthMethodRegistration } from "@opencode/plugin/effect/integration"
 import { define } from "@opencode/plugin/effect/plugin"
 import type { SessionHttpResponse } from "@opencode/plugin/effect/session"
@@ -11,6 +23,7 @@ import { IntegrationConnection } from "../../integration/connection.js"
 import { ManagedPolicy } from "../../managed-policy.js"
 import { Model } from "../../model.js"
 import { Provider } from "../../provider.js"
+import { Variant } from "../../variant.js"
 import { WebSearch } from "../../websearch.js"
 import { ConfigPolicy } from "@opencode/schema/config/policy"
 import { ConfigProvider } from "@opencode/schema/config/provider"
@@ -184,6 +197,7 @@ function oauth(http: HttpClient.HttpClient) {
 export const OpencodePlugin = define<HttpClient.HttpClient | Bus.Service | ManagedPolicy.Service | Scope.Scope>({
   id: "opencode.provider.opencode",
   effect: Effect.fn(function* (ctx) {
+    const disableFree = ["1", "true"].includes(process.env.OPENCODE_DISABLE_FREE_MODELS?.toLowerCase() ?? "")
     const bus = yield* Bus.Service
     const client = yield* HttpClient.HttpClient
     // Every request here goes to the Console, which reads the User-Agent to tell which OpenCode a member runs
@@ -205,8 +219,11 @@ export const OpencodePlugin = define<HttpClient.HttpClient | Bus.Service | Manag
     // Status last reported for the active connection, so inference failures can name the fix.
     let reported: IntegrationConnection.Status | undefined
     let explainers: Effect.Success<ReturnType<typeof ctx.session.hook>>[] = []
+    // When the last Console config load started, so rejected inference can reuse a recent status.
+    let checked = Number.NEGATIVE_INFINITY
 
     const load = Effect.fn("OpencodePlugin.load")(function* () {
+      checked = yield* Clock.currentTimeMillis
       const connection = yield* ctx.integration.connection.active("opencode")
       if (!connection) {
         reported = undefined
@@ -287,6 +304,7 @@ export const OpencodePlugin = define<HttpClient.HttpClient | Bus.Service | Manag
             if (config.family !== undefined) model.family = config.family
             if (config.name !== undefined) model.name = config.name
             if (config.modelID !== undefined) model.modelID = config.modelID
+            if (config.releaseDate !== undefined) model.time = { released: Date.parse(config.releaseDate) }
             if (config.compatibility !== undefined)
               model.compatibility = { ...model.compatibility, ...config.compatibility }
             model.package = config.package ?? (item.package !== undefined ? undefined : model.package)
@@ -299,6 +317,18 @@ export const OpencodePlugin = define<HttpClient.HttpClient | Bus.Service | Manag
             )
             model.headers = Provider.mergeHeaders(model.headers, config.headers)
             model.body = Provider.mergeOverlay(model.body, config.body)
+            if (config.limit !== undefined) model.limit = { ...model.limit, ...config.limit }
+          })
+          // Variants are spelled for the final package, which the update above normalizes from `aisdk:*`.
+          providers.models.update(providerID, modelID, (model) => {
+            // The Console's reasoning replaces the base variants; its variants still overlay them below.
+            if (config.capabilities?.reasoning !== undefined)
+              model.variants = [
+                ...Variant.resolve(
+                  { ...model, package: model.package ?? providers.get(providerID)?.provider.package },
+                  Variant.supports(config.capabilities.reasoning),
+                ),
+              ]
             for (const variant of config.variants ?? []) {
               let existing = model.variants.find((item) => item.id === variant.id)
               if (!existing) {
@@ -322,7 +352,6 @@ export const OpencodePlugin = define<HttpClient.HttpClient | Bus.Service | Manag
                 },
               }))
             model.enabled = !config.disabled
-            if (config.limit !== undefined) model.limit = { ...model.limit, ...config.limit }
           })
         }
         const configured = providers.get(providerID)
@@ -338,7 +367,7 @@ export const OpencodePlugin = define<HttpClient.HttpClient | Bus.Service | Manag
       if (!item) return
       const hasKey = Boolean(process.env.OPENCODE_API_KEY || snapshot.connection || item.provider.settings?.apiKey)
       providers.update(item.provider.id, (provider) => {
-        if (!hasKey) {
+        if (!hasKey && !disableFree) {
           provider.activation = "enabled"
           provider.settings = { ...provider.settings, apiKey: "public" }
         }
@@ -441,17 +470,24 @@ export const OpencodePlugin = define<HttpClient.HttpClient | Bus.Service | Manag
     })
     const refresh = () => loading.withPermit(load().pipe(Effect.andThen(apply)))
     // Annotated: `apply` re-registers the hooks that call `check`, which would otherwise make inference circular.
-    const check = (): Effect.Effect<void> =>
+    // With `maxAge`, a load that started within it is reused; checking inside the permit lets concurrent callers
+    // share the load that was in flight when they arrived.
+    const check = (maxAge = Duration.zero): Effect.Effect<void> =>
       loading.withPermit(
-        load().pipe(Effect.flatMap((next) => (Equal.equals(snapshot, next) ? Effect.void : apply(next)))),
+        Effect.gen(function* () {
+          if ((yield* Clock.currentTimeMillis) - checked < Duration.toMillis(maxAge)) return
+          const next = yield* load()
+          if (!Equal.equals(snapshot, next)) yield* apply(next)
+        }),
       )
 
     // Console inference rejects a missing SSO sign-in with a generic 401/403. Re-check the Console config, which
     // reports the reason, and replace the response with instructions when the connection needs the user.
+    // A client retrying rejected inference would otherwise send one config request per failed response.
     const explain = (event: SessionHttpResponse) =>
       Effect.gen(function* () {
         if (event.response.status !== 401 && event.response.status !== 403) return
-        yield* check()
+        yield* check(Duration.seconds(30))
         const status = reported
         if (!status) return
         void event.response.body?.cancel()
@@ -474,15 +510,23 @@ export const OpencodePlugin = define<HttpClient.HttpClient | Bus.Service | Manag
       )
     })
     yield* guard(snapshot)
-    yield* bus.subscribe(Credential.Event.Switched).pipe(
-      Stream.filter((event) => event.data.integrationID === Integration.ID.make("opencode")),
-      Stream.runForEach(refresh),
-      Effect.forkScoped({ startImmediately: true }),
-    )
 
     // Console config can change independently of local credential activity, so re-fetch
     // periodically and only rebuild the catalog and search providers when the snapshot differs.
-    yield* Effect.sleep(Duration.minutes(1)).pipe(Effect.andThen(check()), Effect.forever, Effect.forkScoped)
+    // Only while connected: a signed-out location runs no timer and no credential lookups.
+    const polling = yield* FiberHandle.make<void, never>()
+    const poll = Effect.fnUntraced(function* () {
+      if (!snapshot.connection) return yield* FiberHandle.clear(polling)
+      yield* FiberHandle.run(polling, Effect.sleep(Duration.minutes(1)).pipe(Effect.andThen(check()), Effect.forever), {
+        onlyIfMissing: true,
+      })
+    })
+    yield* bus.subscribe(Credential.Event.Switched).pipe(
+      Stream.filter((event) => event.data.integrationID === Integration.ID.make("opencode")),
+      Stream.runForEach(() => refresh().pipe(Effect.andThen(poll()))),
+      Effect.forkScoped({ startImmediately: true }),
+    )
+    yield* poll()
   }),
 })
 
@@ -558,7 +602,10 @@ function credentialHeaders(value: Credential.Key | Credential.OAuth): Record<str
 }
 
 function serverUrl(value: Credential.Value) {
-  return typeof value.metadata?.server === "string" ? value.metadata.server : defaultServer
+  const server = typeof value.metadata?.server === "string" ? value.metadata.server : defaultServer
+  // Credentials saved before August 2026 store the retired console.opencode.ai host, which maps path-for-path onto
+  // the default server; rewriting it lets that host be shut down without forcing those users to reconnect.
+  return server.replace(/^https:\/\/console\.opencode\.ai(?=\/|$)/, defaultServer)
 }
 
 function withoutCredentials<Value>(body: Readonly<Record<string, Value>> | undefined) {
