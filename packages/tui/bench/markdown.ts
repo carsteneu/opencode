@@ -26,7 +26,7 @@ async function runArm(arm: "content" | "contentUpdate"): Promise<{ cpuMs: number
   const renderer = setup.renderer as unknown as { ctx?: unknown }
   const ctx = (renderer.ctx ?? renderer) as never
   // 0.6.6 hands every native style a resource owner, so the renderer owns it.
-  const syntaxStyle = SyntaxStyle.create(setup.renderer as never)
+  const syntaxStyle = SyntaxStyle.create((setup.renderer as unknown as { nativeScene: never }).nativeScene)
   const md = new MarkdownRenderable(ctx, {
     syntaxStyle,
     content: "",

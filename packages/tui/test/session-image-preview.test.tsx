@@ -23,7 +23,9 @@ import {
 let rasterize: typeof OptimizedBuffer.prototype.drawImage
 beforeAll(() => {
   rasterize = OptimizedBuffer.prototype.drawImage
-  OptimizedBuffer.prototype.drawImage = () => false
+  // 0.6.6 reports whether the image was drawn; claiming success keeps the renderer from
+  // retrying the frame forever, which is all this stub needs to do for a text-only assertion.
+  OptimizedBuffer.prototype.drawImage = () => true
 })
 afterAll(() => {
   OptimizedBuffer.prototype.drawImage = rasterize

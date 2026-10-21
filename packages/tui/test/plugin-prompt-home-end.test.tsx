@@ -51,13 +51,26 @@ describe("prompt home/end plugin", () => {
     expect(home!.run()).toBe(false)
     expect(h.calls).toEqual([])
 
-    // Live editor: move its buffer directly.
+    // Live editor with text: consume the key and move the buffer directly.
     h.renderer.currentFocusedEditor = {
+      plainText: "draft",
       gotoBufferHome: () => h.calls.push("home"),
       gotoBufferEnd: () => h.calls.push("end"),
     }
-    expect(home!.run()).toBeUndefined()
-    expect(end!.run()).toBeUndefined()
+    expect(home!.run()).toBe(true)
+    expect(end!.run()).toBe(true)
     expect(h.calls).toEqual(["home", "end"])
+
+    // An empty composer has no cursor to move, so the key belongs to the transcript: decline instead of
+    // swallowing it. Without this, Home/End never reached session.first/last while the composer had focus.
+    h.calls.length = 0
+    h.renderer.currentFocusedEditor = {
+      plainText: "",
+      gotoBufferHome: () => h.calls.push("home"),
+      gotoBufferEnd: () => h.calls.push("end"),
+    }
+    expect(home!.run()).toBe(false)
+    expect(end!.run()).toBe(false)
+    expect(h.calls).toEqual([])
   })
 })
