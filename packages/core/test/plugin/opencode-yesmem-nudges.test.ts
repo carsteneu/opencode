@@ -614,3 +614,18 @@ describe("idle_reminder", () => {
     }
   })
 })
+
+describe("skill_nudge cache label", () => {
+  type LabelModule = { cacheKeyLabel: (key: string) => string }
+
+  // The label goes into the debug log, which is a file on disk. The key holds the full message text
+  // (a 32-bit hash would hand one message another message's answer), so the label may not.
+  test("never carries the message text", async () => {
+    const module = (await import(yesmemEntry("skill_nudge.ts"))) as LabelModule
+    const label = module.cacheKeyLabel(`cataloghash\u0000please deploy the release notes`)
+
+    expect(label.startsWith("cataloghash#")).toBe(true)
+    expect(label).not.toContain("deploy")
+    expect(module.cacheKeyLabel(`cataloghash\u0000a different message`)).not.toBe(label)
+  })
+})
