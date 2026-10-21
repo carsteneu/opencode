@@ -5,7 +5,7 @@ const daemonHandler = (request: DaemonRequest) => {
   if (request.method === "remember") return { result: { ok: true } }
   if (request.method === "hybrid_search")
     return { result: { results: [{ category: "gotcha", content: "similar issue seen before" }] } }
-  if (request.method === "resolve_by_text") return { result: { resolved: 1 } }
+  if (request.method === "resolve_by_commit") return { result: { resolved: true } }
   return { result: {} }
 }
 
@@ -146,8 +146,9 @@ describe("auto_resolve", () => {
         })
 
         const requests = daemon.hooked()
-        expect(methods(requests)).toEqual(["resolve_by_text"])
-        expect(requests[0].params).toEqual({ text: "fix the flaky test", project: "/workspace/resolve" })
+        // The commit subject is the only join key: resolve_by_text closed unrelated items (YM-251).
+        expect(methods(requests)).toEqual(["resolve_by_commit"])
+        expect(requests[0].params).toEqual({ message: "fix the flaky test", project: "/workspace/resolve" })
       })
     } finally {
       await daemon.close()
@@ -170,7 +171,7 @@ describe("auto_resolve", () => {
           error: { message: "pre-commit hook rejected the commit" },
         })
 
-        expect(daemon.hooked().some((request) => request.method === "resolve_by_text")).toBe(false)
+        expect(daemon.hooked().some((request) => request.method === "resolve_by_commit")).toBe(false)
       })
     } finally {
       await daemon.close()

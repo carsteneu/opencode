@@ -1,4 +1,4 @@
-// tool.execute.after — resolve open yesmem tasks from a commit message.
+// tool.execute.after — resolve the open yesmem task the commit subject names.
 //
 // Ported from the v1 plugin's auto_resolve.ts. v2 names the shell tool `shell` (v1: bash) and the command
 // lives on the call event.
@@ -19,8 +19,8 @@ export function autoResolve(rpc: YesMemRPC, directory: string) {
     const message = match?.[1] || ""
     if (!message) return
 
-    const response = await rpc.call("resolve_by_text", { text: message, project: directory })
-    if (response.ok && response.result?.resolved > 0) {
+    const response = await rpc.call("resolve_by_commit", { message, project: directory })
+    if (response.ok && response.result?.resolved === true) {
       debugLog("auto_resolve", `resolved via commit: ${message.substring(0, 80)}`)
     }
   }
