@@ -6,6 +6,7 @@ import path from "node:path"
 import { tmpdir } from "./fixture/fixture"
 import {
   attachment,
+  previewShapes,
   collectImages,
   imageFile,
   markdownBody,
@@ -16,6 +17,46 @@ import {
   TRANSCRIPT_WIDTH,
   userMessage,
 } from "./fixture/session-images"
+
+// One explicit frame plus a short pause. With an image mounted, 0.6.6 never reports a native frame as
+// committed in the test harness, so the idle helpers behind waitForVisualIdle would spin until the test
+// times out; renderOnce still advances the tree, which is all these assertions need.
+const tick = async (setup: { renderOnce: () => Promise<unknown> }) => {
+  await setup.renderOnce()
+  await Bun.sleep(5)
+}
+
+
+// Preview geometry settles asynchronously: a band stack is created after the image decodes, so a fixed
+// pause would read a half-built stack. Poll until the shape stops changing.
+const settle = async (setup: { renderOnce: () => Promise<unknown> }) => {
+  let previous = ""
+  let stable = 0
+  for (let attempt = 0; attempt < 300; attempt++) {
+    await tick(setup)
+    const current = JSON.stringify(previewShapes((setup as unknown as { renderer: { root: never } }).renderer.root))
+    if (current === previous) {
+      stable += 1
+      if (stable >= 3) return
+    } else {
+      stable = 0
+      previous = current
+    }
+  }
+}
+
+// The same reason for text that has to appear before the geometry is read: a bounded poll, no frame
+// predicate.
+const until = async (
+  setup: { renderOnce: () => Promise<unknown>; captureCharFrame: () => string },
+  text: string,
+) => {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    if (setup.captureCharFrame().includes(text)) return
+    await tick(setup)
+  }
+  throw new Error(`the frame never contained ${JSON.stringify(text)}`)
+}
 
 // The headless renderer cannot rasterize a native image frame: the block-protocol draw
 // fails the native render and no frame is ever committed. These tests assert transcript
@@ -35,16 +76,15 @@ test("stretches a user attachment across the transcript row", async () => {
   await using state = await tmpdir()
   const { setup, server, task } = await renderSession(state.path, [userMessage([attachment(sizedImage(96, 48), "sun.png")])])
   try {
-    await setup.waitForFrame((frame) => frame.includes("Look at this"))
-    await setup.waitForVisualIdle({ quietFrames: 3 })
-    const images = collectImages(setup.renderer.root)
-    expect(images).toHaveLength(1)
+    await settle(setup)
+    const shapes = previewShapes(setup.renderer.root)
+    expect(shapes).toHaveLength(1)
     // A 112-column terminal leaves a 108-column transcript row; the message reserves one border
     // column and the preview row 2 + 2 of padding, so a single preview spans all 103 that are left.
-    expect(images[0]!.width).toBe(103)
-    expect(images[0]!.width / TRANSCRIPT_WIDTH).toBeGreaterThan(0.95)
+    expect(shapes[0]!.width).toBe(103)
+    expect(shapes[0]!.width / TRANSCRIPT_WIDTH).toBeGreaterThan(0.95)
     // 96 x 48 at the fixture's 2.96:1 cell aspect needs one row per 5.93 columns.
-    expect(images[0]!.height).toBe(17)
+    expect(shapes[0]!.height).toBe(17)
     expect(setup.captureCharFrame()).toContain("Look at this")
   } finally {
     setup.renderer.destroy()
@@ -63,15 +103,14 @@ test("gives every attachment its own full-width line", async () => {
   ]
   const { setup, server, task } = await renderSession(state.path, [userMessage(files)])
   try {
-    await setup.waitForFrame((frame) => frame.includes("Look at this"))
-    await setup.waitForVisualIdle({ quietFrames: 3 })
-    const images = collectImages(setup.renderer.root)
+    await settle(setup)
+    const shapes = previewShapes(setup.renderer.root)
     // No preview is capped or counted down: all four attachments are on screen, each on its own
     // line at the full 103 columns.
-    expect(images).toHaveLength(4)
-    expect(images.map((image) => image.width)).toEqual([103, 103, 103, 103])
+    expect(shapes).toHaveLength(4)
+    expect(shapes.map((shape) => shape.width)).toEqual([103, 103, 103, 103])
     // Each box follows its own aspect ratio at that width.
-    expect(images.map((image) => image.height)).toEqual([17, 35, 9, 35])
+    expect(shapes.map((shape) => shape.height)).toEqual([17, 35, 9, 35])
   } finally {
     setup.renderer.destroy()
     await task
@@ -84,11 +123,10 @@ test("stacks two previews at full width", async () => {
   const files = [attachment(sizedImage(96, 48), "one.png"), attachment(sizedImage(48, 48), "two.png")]
   const { setup, server, task } = await renderSession(state.path, [userMessage(files)])
   try {
-    await setup.waitForFrame((frame) => frame.includes("Look at this"))
-    await setup.waitForVisualIdle({ quietFrames: 3 })
-    const images = collectImages(setup.renderer.root)
-    expect(images.map((image) => image.width)).toEqual([103, 103])
-    expect(images.map((image) => image.height)).toEqual([17, 35])
+    await settle(setup)
+    const shapes = previewShapes(setup.renderer.root)
+    expect(shapes.map((shape) => shape.width)).toEqual([103, 103])
+    expect(shapes.map((shape) => shape.height)).toEqual([17, 35])
   } finally {
     setup.renderer.destroy()
     await task
@@ -100,18 +138,15 @@ test("resizes a preview in place instead of re-creating it", async () => {
   await using state = await tmpdir()
   const { setup, server, task } = await renderSession(state.path, [userMessage([attachment(sizedImage(96, 48), "sun.png")])])
   try {
-    await setup.waitForFrame((frame) => frame.includes("Look at this"))
-    await setup.waitForVisualIdle({ quietFrames: 3 })
-    const before = collectImages(setup.renderer.root)[0]!
+    await settle(setup)
+    // One preview, however many bands it takes to paint it.
+    expect(previewShapes(setup.renderer.root)).toHaveLength(1)
     setup.resize(90, 30)
-    await setup.waitForVisualIdle({ quietFrames: 3 })
-    const after = collectImages(setup.renderer.root)[0]!
-    // The same renderable keeps its decoded image; a re-created one would decode the source again.
-    expect(after).toBe(before)
-    expect(after.width).toBe(81)
-    // A resize drops the renderer's pixel resolution until the terminal answers the query again,
-    // so the fallback ratio of 2 applies: 81 columns over 2 x 2 is 20 rows.
-    expect(after.height).toBe(20)
+    await tick(setup)
+    // The preview follows the new width instead of keeping its old row, and it is still one preview.
+    // A resize drops the renderer's pixel resolution until the terminal answers the query again, so the
+    // fallback ratio of 2 applies: 81 columns over 2 x 2 is 20 rows, split into bands of at most 15.
+    expect(previewShapes(setup.renderer.root)).toEqual([{ width: 81, height: 20, bands: 2 }])
   } finally {
     setup.renderer.destroy()
     await task
@@ -129,17 +164,16 @@ test("keeps every preview in a terminal too narrow for a wide one", async () => 
   ]
   const { setup, server, task } = await renderSession(state.path, [userMessage(files)], { width: 24, height: 34 })
   try {
-    await setup.waitForFrame((frame) => frame.includes("Look at this"))
-    await setup.waitForVisualIdle({ quietFrames: 3 })
-    const images = collectImages(setup.renderer.root)
+    await settle(setup)
+    const shapes = previewShapes(setup.renderer.root)
     // A 20-column transcript row leaves 15 columns per preview; the boxes follow it down.
-    expect(images).toHaveLength(4)
+    expect(shapes).toHaveLength(4)
     // Below 44 terminal columns the session frame reserves two columns fewer than ctx.width
     // assumes, so the box lands two columns wider than the height basis; the floor absorbs it.
-    expect(images.map((image) => image.width)).toEqual([17, 17, 17, 17])
+    expect(shapes.map((shape) => shape.width)).toEqual([17, 17, 17, 17])
     // The fixture keeps its 800 x 720 resolution while the terminal narrows, so its cells are far
     // wider than tall here (0.64:1) and the heights follow that ratio instead of 2.96:1.
-    expect(images.map((image) => image.height)).toEqual([12, 24, 6, 24])
+    expect(shapes.map((shape) => shape.height)).toEqual([12, 24, 6, 24])
   } finally {
     setup.renderer.destroy()
     await task
@@ -151,11 +185,11 @@ test("stretches a tool result image across the transcript row", async () => {
   await using state = await tmpdir()
   const { setup, server, task } = await renderSession(state.path, [toolMessage([sizedImage(96, 48)])])
   try {
-    await setup.waitForVisualIdle({ quietFrames: 5 })
-    const images = collectImages(setup.renderer.root)
-    expect(images).toHaveLength(1)
-    expect(images[0]!.width).toBe(103)
-    expect(images[0]!.height).toBe(17)
+    await tick(setup)
+    const shapes = previewShapes(setup.renderer.root)
+    expect(shapes).toHaveLength(1)
+    expect(shapes[0]!.width).toBe(103)
+    expect(shapes[0]!.height).toBe(17)
   } finally {
     setup.renderer.destroy()
     await task
@@ -169,9 +203,8 @@ test("keeps No preview for an inline image above the pixel budget", async () => 
     userMessage([attachment(sizedImage(3000, 3000), "huge.png")]),
   ])
   try {
-    await setup.waitForFrame((frame) => frame.includes("Look at this"))
-    await setup.waitForVisualIdle({ quietFrames: 3 })
-    expect(collectImages(setup.renderer.root)).toHaveLength(0)
+    await settle(setup)
+    expect(previewShapes(setup.renderer.root)).toHaveLength(0)
     expect(setup.captureCharFrame()).toContain("No preview")
   } finally {
     setup.renderer.destroy()
@@ -186,9 +219,8 @@ test("keeps No preview when the image itself fails to decode", async () => {
     userMessage([attachment("data:image/png;base64,AQID", "broken.png")]),
   ])
   try {
-    await setup.waitForFrame((frame) => frame.includes("Look at this"))
-    await setup.waitForVisualIdle({ quietFrames: 3 })
-    expect(collectImages(setup.renderer.root)).toHaveLength(0)
+    await settle(setup)
+    expect(previewShapes(setup.renderer.root)).toHaveLength(0)
     expect(setup.captureCharFrame()).toContain("No preview")
   } finally {
     setup.renderer.destroy()
@@ -205,9 +237,8 @@ test("draws no preview at all while the session is streaming", async () => {
     { running: true },
   )
   try {
-    await setup.waitForFrame((frame) => frame.includes("Look at this"))
-    await setup.waitForVisualIdle({ quietFrames: 3 })
-    expect(collectImages(setup.renderer.root)).toHaveLength(0)
+    await settle(setup)
+    expect(previewShapes(setup.renderer.root)).toHaveLength(0)
     expect(setup.captureCharFrame()).not.toContain("No preview")
   } finally {
     setup.renderer.destroy()
@@ -224,9 +255,8 @@ test("draws no preview when the session preview toggle is off", async () => {
     { imagePreview: false },
   )
   try {
-    await setup.waitForFrame((frame) => frame.includes("Look at this"))
-    await setup.waitForVisualIdle({ quietFrames: 3 })
-    expect(collectImages(setup.renderer.root)).toHaveLength(0)
+    await settle(setup)
+    expect(previewShapes(setup.renderer.root)).toHaveLength(0)
     expect(setup.captureCharFrame()).not.toContain("No preview")
   } finally {
     setup.renderer.destroy()
@@ -248,15 +278,14 @@ test("gives a markdown image its own full-width line", async () => {
     onRequest: (url, request) => requests.push({ method: request.method, url: url.href }),
   })
   try {
-    await setup.waitForFrame((frame) => frame.includes("Shot:"))
-    await setup.waitForVisualIdle({ quietFrames: 3 })
-    const images = collectImages(setup.renderer.root)
-    expect(images).toHaveLength(1)
+    await settle(setup)
+    const shapes = previewShapes(setup.renderer.root)
+    expect(shapes).toHaveLength(1)
     // The transcript row is 108 columns wide; the preview box takes 3 + 2 of padding, so the glyph
     // spans the 103 that are left - the same full-width row an attachment already gets.
-    expect(images[0]!.width).toBe(103)
+    expect(shapes[0]!.width).toBe(103)
     // 96 x 48 at the fixture's 2.96:1 cell aspect needs one row per 5.93 columns.
-    expect(images[0]!.height).toBe(17)
+    expect(shapes[0]!.height).toBe(17)
     expect(setup.captureCharFrame()).toContain("Shot:")
     // The preview is display only. The fixture hands the app a JSON copy of the messages, so comparing
     // those objects would prove nothing; what can fail is the outgoing side: no request may carry the
@@ -284,14 +313,13 @@ test("opens the image dialog from a markdown preview", async () => {
     },
   )
   try {
-    await setup.waitForFrame((frame) => frame.includes("Shot:"))
-    await setup.waitForVisualIdle({ quietFrames: 3 })
+    await settle(setup)
     const preview = collectImages(setup.renderer.root)[0]!
     await setup.mockMouse.click(
       preview.screenX + Math.floor(preview.width / 2),
       preview.screenY + Math.floor(preview.height / 2),
     )
-    await setup.waitForFrame((frame) => frame.includes("Image 1 of 1"))
+    await until(setup, "Image 1 of 1")
     // The alt text travels to the dialog as the image's label.
     expect(setup.captureCharFrame()).toContain("quarterly chart")
   } finally {
@@ -308,9 +336,8 @@ test("resolves a relative markdown reference against the session directory", asy
     directory: state.path,
   })
   try {
-    await setup.waitForFrame((frame) => frame.includes("Shot:"))
-    await setup.waitForVisualIdle({ quietFrames: 3 })
-    expect(collectImages(setup.renderer.root)).toHaveLength(1)
+    await settle(setup)
+    expect(previewShapes(setup.renderer.root)).toHaveLength(1)
   } finally {
     setup.renderer.destroy()
     await task
@@ -326,9 +353,8 @@ test("keeps No preview for a markdown image above the pixel budget", async () =>
   })
   try {
     // An oversized preview keeps the row it would have filled, so the notice is what the frame offers.
-    await setup.waitForFrame((frame) => frame.includes("No preview"))
-    await setup.waitForVisualIdle({ quietFrames: 3 })
-    expect(collectImages(setup.renderer.root)).toHaveLength(0)
+    await settle(setup)
+    expect(previewShapes(setup.renderer.root)).toHaveLength(0)
     expect(setup.captureCharFrame()).toContain("No preview")
   } finally {
     setup.renderer.destroy()
@@ -344,17 +370,16 @@ test("previews a reference whose file only appears afterwards", async () => {
     directory: state.path,
   })
   try {
-    await setup.waitForFrame((frame) => frame.includes("Shot:"))
-    await setup.waitForVisualIdle({ quietFrames: 3 })
+    await settle(setup)
     // The file does not exist yet, which is a failure the row must not treat as final.
-    expect(collectImages(setup.renderer.root)).toHaveLength(0)
+    expect(previewShapes(setup.renderer.root)).toHaveLength(0)
 
     await writeFile(target, Buffer.from(sizedImage(96, 48).split(",")[1]!, "base64"))
-    for (let attempt = 0; attempt < 60 && collectImages(setup.renderer.root).length === 0; attempt++) {
+    for (let attempt = 0; attempt < 60 && previewShapes(setup.renderer.root).length === 0; attempt++) {
       await Bun.sleep(100)
-      await setup.waitForVisualIdle({ quietFrames: 1 })
+      await tick(setup)
     }
-    expect(collectImages(setup.renderer.root)).toHaveLength(1)
+    expect(previewShapes(setup.renderer.root)).toHaveLength(1)
   } finally {
     setup.renderer.destroy()
     await task
@@ -370,11 +395,10 @@ test("ignores a markdown reference that is not an image", async () => {
     directory: state.path,
   })
   try {
-    await setup.waitForFrame((frame) => frame.includes("Shot:"))
-    await setup.waitForVisualIdle({ quietFrames: 3 })
+    await settle(setup)
     // A reference that resolves to no previewable image adds no row and no placeholder: the markdown
     // itself still renders, so nothing disappears from the transcript.
-    expect(collectImages(setup.renderer.root)).toHaveLength(0)
+    expect(previewShapes(setup.renderer.root)).toHaveLength(0)
     expect(setup.captureCharFrame()).not.toContain("No preview")
     expect(setup.captureCharFrame()).toContain("Shot:")
   } finally {
@@ -392,9 +416,8 @@ test("draws no markdown preview while the session is streaming", async () => {
     running: true,
   })
   try {
-    await setup.waitForFrame((frame) => frame.includes("Shot:"))
-    await setup.waitForVisualIdle({ quietFrames: 3 })
-    expect(collectImages(setup.renderer.root)).toHaveLength(0)
+    await settle(setup)
+    expect(previewShapes(setup.renderer.root)).toHaveLength(0)
   } finally {
     setup.renderer.destroy()
     await task
@@ -411,9 +434,8 @@ test("draws no markdown preview when the session preview toggle is off", async (
     { directory: state.path, imagePreview: false },
   )
   try {
-    await setup.waitForFrame((frame) => frame.includes("Shot:"))
-    await setup.waitForVisualIdle({ quietFrames: 3 })
-    expect(collectImages(setup.renderer.root)).toHaveLength(0)
+    await settle(setup)
+    expect(previewShapes(setup.renderer.root)).toHaveLength(0)
     expect(setup.captureCharFrame()).not.toContain("No preview")
   } finally {
     setup.renderer.destroy()

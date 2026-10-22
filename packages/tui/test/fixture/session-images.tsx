@@ -161,6 +161,26 @@ export function collectImages(node: Renderable, found: ImageRenderable[] = []): 
   return found
 }
 
+/**
+ * One entry per preview, not per renderable: a preview wider than the renderer can paint in one go is drawn
+ * as stacked bands, so its geometry is the sum of the bands that share a parent.
+ */
+export function previewShapes(root: Renderable) {
+  const shapes: { width: number; height: number; bands: number }[] = []
+  const visit = (node: Renderable) => {
+    const bands = node.getChildren().filter((child): child is ImageRenderable => child instanceof ImageRenderable)
+    if (bands.length > 0)
+      shapes.push({
+        width: Math.max(...bands.map((band) => band.width)),
+        height: bands.reduce((sum, band) => sum + band.height, 0),
+        bands: bands.length,
+      })
+    for (const child of node.getChildren()) visit(child)
+  }
+  visit(root)
+  return shapes
+}
+
 export function findTranscript(root: Renderable, id: string): ScrollBoxRenderable | undefined {
   if (root instanceof ScrollBoxRenderable && root.getRenderable(id)) return root
   return root

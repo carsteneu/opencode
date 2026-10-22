@@ -35,6 +35,14 @@ afterAll(() => {
 const HISTORY = 45
 const TAIL_MARKER = `History message ${String(HISTORY - 1).padStart(4, "0")}`
 
+// One explicit frame plus a short pause. With an image mounted, 0.6.6 never reports a native frame as
+// committed in the test harness, so the idle helpers behind waitForVisualIdle would spin until the test
+// times out; renderOnce still advances the tree, which is all these assertions need.
+const tick = async (setup: { renderOnce: () => Promise<unknown> }) => {
+  await setup.renderOnce()
+  await Bun.sleep(5)
+}
+
 type Kind = "user attachment" | "tool result" | "markdown reference"
 type Placement = "oldest" | "tail"
 
@@ -80,13 +88,13 @@ async function excursion(
     // when the preview sits at the oldest end, and the preview itself when it sits at the newest end.
     const settled = async () => {
       for (let attempt = 0; attempt < 80; attempt++) {
-        await setup.waitForVisualIdle({ quietFrames: 2 })
+        await tick(setup)
         if (previews() > 0 || setup.captureCharFrame().includes(TAIL_MARKER)) return
       }
       throw new Error("the transcript never settled")
     }
     await settled()
-    await setup.waitForVisualIdle({ quietFrames: 3 })
+    await tick(setup)
     const scroll = findTranscript(setup.renderer.root, `history-${HISTORY - 1}`)
     if (!scroll) throw new Error("session transcript scrollbox was not found")
 
@@ -110,7 +118,7 @@ async function excursion(
     const wheelUntil = async (direction: "up" | "down", reached: () => boolean, phase: string) => {
       for (let step = 1; step <= 700; step++) {
         await setup.mockMouse.scroll(scroll.viewport.x + 2, scroll.viewport.y + 2, direction)
-        await setup.waitForVisualIdle({ quietFrames: 1 })
+        await tick(setup)
         if (reached()) return step
       }
       throw new Error(
@@ -120,7 +128,7 @@ async function excursion(
     const wheel = async (direction: "up" | "down", times: number) => {
       for (let index = 0; index < times; index++) {
         await setup.mockMouse.scroll(scroll.viewport.x + 2, scroll.viewport.y + 2, direction)
-        await setup.waitForVisualIdle({ quietFrames: 1 })
+        await tick(setup)
       }
     }
 
