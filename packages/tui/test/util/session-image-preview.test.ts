@@ -56,6 +56,7 @@ test("reports an unprobeable data image and a budget overrun as oversized", () =
 test("sizes a preview from its aspect ratio and the width it was given", () => {
   expect(sessionImagePreviewHeight(24, 80)).toBe(23)
   expect(sessionImagePreviewHeight(40, 120, 1, 1, 2)).toBe(60)
-  expect(sessionImagePreviewHeight(24, 80, 1, 10, 2)).toBe(48)
+  // The row takes the height its full width demands; a tall preview is stacked in bands, not narrowed.
+  expect(sessionImagePreviewHeight(24, 80, 1, 10, 2)).toBe(400)
   expect(sessionImagePreviewHeight(3, 10)).toBe(3)
 })
