@@ -2,19 +2,12 @@ import { RendererControlState, type CliRenderer } from "@opentui/core"
 
 type TitleRenderer = Pick<CliRenderer, "isDestroyed" | "controlState" | "setTerminalTitle">
 
-// OpenTUI rejects terminal control unless the renderer's session is running: from suspend() until resume()
-// completes (e.g. while $EDITOR runs), and in a renderer that was never started (test renderers). A title
-// is cosmetic, so every other phase is a skip rather than a failure.
+// OpenTUI rejects terminal control from suspend() until resume() completes (e.g. while $EDITOR runs).
+// Its native session also has phases the control state does not model: 0.6.6 throws
+// "ot_session_control failed: InvalidPhase" for a title while that session is not attached. A title is
+// cosmetic, so it is best effort and must never be the reason a session dies.
 export function setTerminalTitle(renderer: TitleRenderer, title: string) {
-  if (renderer.isDestroyed) return
-  if (
-    renderer.controlState !== RendererControlState.AUTO_STARTED &&
-    renderer.controlState !== RendererControlState.EXPLICIT_STARTED
-  )
-    return
-  // The native session has phases the control state does not model: 0.6.6 rejects a title while that
-  // session is not attached ("ot_session_control failed: InvalidPhase"). A title is cosmetic, so it must
-  // never be the reason a session dies.
+  if (renderer.isDestroyed || renderer.controlState === RendererControlState.EXPLICIT_SUSPENDED) return
   try {
     renderer.setTerminalTitle(title)
   } catch {}
