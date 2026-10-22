@@ -65,7 +65,10 @@ export function sessionImagePreviewHeight(
   cellAspectRatio = 2,
 ) {
   const minimum = Math.min(6, Math.max(1, terminalHeight))
-  const maximum = Math.max(minimum, terminalHeight * 2)
   const aspect = sourceWidth > 0 && sourceHeight > 0 ? (sourceWidth / sourceHeight) * cellAspectRatio : 1
-  return Math.max(minimum, Math.min(maximum, Math.round(Math.max(1, availableColumns) / aspect)))
+  // The width is the authority: the row is as tall as the full width demands. The renderer cannot paint a
+  // single tall row, so the preview stacks bands (see session-image-slices); the only remaining bound keeps
+  // an absurd aspect ratio from claiming the whole transcript.
+  const bound = Math.max(minimum, Math.round(availableColumns * 6))
+  return Math.max(minimum, Math.min(bound, Math.round(Math.max(1, availableColumns) / aspect)))
 }

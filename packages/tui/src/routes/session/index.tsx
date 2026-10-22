@@ -99,6 +99,7 @@ import { collapseShellOutput, collapseToolOutput } from "../../util/collapse-too
 import { probeSessionImage, sessionImagePreviewHeight, type SessionImageProbe } from "../../util/session-image-preview"
 import { textPartImageSources, type MarkdownImageSource } from "../../util/session-image-markdown"
 import { acquireImagePreview, releaseImagePreview } from "../../util/session-image-preview-cache"
+import { SessionImageBands } from "../../component/session-image-bands"
 import { Keymap, type KeymapCommand } from "../../context/keymap"
 import { usePathFormatter } from "../../context/path-format"
 import { useLocation } from "../../context/location"
@@ -2842,12 +2843,11 @@ function SessionImages(props: { images: readonly SessionImagePreview[]; paddingL
                   }}
                 >
                   <Show when={!preview().oversized && !failed()} fallback={<text>No preview</text>}>
-                    <image
+                    <SessionImageBands
                       source={image.uri}
-                      fit="fit"
-                      protocol="auto"
-                      width="100%"
-                      height="100%"
+                      rows={preview().height}
+                      // A band stays well under the renderer's paint limit (about twice the viewport).
+                      maxBandRows={Math.max(4, Math.floor(ctx.terminal.height / 2))}
                       onError={() => setFailed(true)}
                     />
                   </Show>
