@@ -6,7 +6,7 @@ import type { FileDiffInfo, SessionInfo, SessionMessageInfo } from "@opencode/cl
 import { createAppFixture } from "./fixture/app"
 import { directory, json } from "./fixture/tui-client"
 import { tmpdir } from "./fixture/fixture"
-import { SESSION_REPLAY_WIDTH, SESSION_SIDEBAR_WIDTH } from "../src/ui/layout"
+import { SESSION_PANE_MIN_WIDTH, SESSION_REPLAY_WIDTH, SESSION_SIDEBAR_WIDTH } from "../src/ui/layout"
 
 test("the replay pane is off by default and reserves its column between transcript and sidebar", async () => {
   await using state = await tmpdir()
@@ -232,6 +232,33 @@ test("a stored replay width is restored when the pane opens", async () => {
   await replayReady(setup)
   expect(node(setup, "session-replay").width).toBe(52)
   expect(node(setup, "session-pane").width).toBe(148)
+})
+
+test("a stored replay width from a wider terminal still leaves the panel its floor", async () => {
+  await using state = await tmpdir()
+  await using setup = await createSessionFixture(state.path, { width: 240 })
+  await ready(setup)
+  setup.mockInput.pressKey("y", { ctrl: true })
+  await replayReady(setup)
+
+  // Fill the row with the replay first, so its stored width no longer fits later.
+  await setup.mockMouse.pressDown(240 - SESSION_REPLAY_WIDTH, 10)
+  await setup.mockMouse.moveTo(4, 10)
+  await setup.mockMouse.release(4, 10)
+  await setup.flush()
+  expect(node(setup, "session-replay").width).toBe(240 - 44)
+
+  setup.mockInput.pressKey("F6")
+  await setup.waitForFrame((frame) => frame.includes("file00.txt"), { maxPasses: 120 })
+  setup.resize(130, 36)
+  await setup.flush()
+
+  const replay = node(setup, "session-replay").width
+  const panel = node(setup, "session-panel").width
+  const transcript = node(setup, "session-pane").width
+  expect(panel).toBeGreaterThanOrEqual(SESSION_PANE_MIN_WIDTH)
+  expect(transcript).toBeGreaterThanOrEqual(43)
+  expect(transcript + replay + panel).toBeLessThanOrEqual(130)
 })
 
 const diffs = Array.from({ length: 2 }, (_, index) => ({

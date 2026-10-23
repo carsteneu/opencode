@@ -19,7 +19,13 @@ import { useStorage } from "../context/storage"
 import { useDialog } from "../ui/dialog"
 import { Session } from "../routes/session"
 import { Sidebar } from "../routes/session/sidebar"
-import { clampSessionPaneWidth, clampSessionReplayWidth, SESSION_REPLAY_WIDTH, SESSION_SIDEBAR_WIDTH } from "../ui/layout"
+import {
+  clampSessionPaneWidth,
+  clampSessionReplayWidth,
+  SESSION_PANE_MIN_WIDTH,
+  SESSION_REPLAY_WIDTH,
+  SESSION_SIDEBAR_WIDTH,
+} from "../ui/layout"
 import { createPaneResize } from "../ui/pane-resize"
 import { PaneResizeHandle } from "../ui/pane-resize-handle"
 import { useToast } from "../ui/toast"
@@ -40,19 +46,17 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
   const dialog = useDialog()
   const availableWidth = () => Math.max(0, dimensions().width - props.verticalTabsWidth)
   const defaultPaneWidth = () => Math.max(1, Math.floor(panels.width() / 2))
-  const [layout, updateLayout] = useStorage().store<{ paneWidth?: number; terminalWidth?: number; replayWidth?: number }>(
-    "layout",
-    {
-      initial: {},
-    },
-  )
+  const [layout, updateLayout] = useStorage().store<{
+    paneWidth?: number
+    terminalWidth?: number
+    replayWidth?: number
+  }>("layout", {
+    initial: {},
+  })
   const paneResize = createPaneResize({
     value: () => layout.paneWidth ?? layout.terminalWidth ?? defaultPaneWidth(),
     defaultValue: defaultPaneWidth,
-    // The replay column is not part of this pane's own width, so the split budget
-    // must give back whatever the replay currently claims. Reading its clamped
-    // size here would recurse back into this clamp through the layout memos.
-    clamp: (width) => clampSessionPaneWidth(width, panels.width() - (replayVisible() ? replayResize.preferredSize() : 0)),
+    clamp: (width) => clampSessionPaneWidth(width, panels.width() - replayClaim()),
     fromMouse: (event) => dimensions().width - event.x - 1,
     contains: (event, width) => event.x >= dimensions().width - width - 1 && event.x <= dimensions().width - width,
     onCommit: (width) => {
@@ -151,6 +155,21 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
       }).catch((error) => console.error("Failed to persist TUI layout", error))
     },
   })
+  // The replay column takes its width out of this pane's row share. The stored
+  // width can outgrow the row after the terminal shrinks, so the claim is capped
+  // against the current row: otherwise the right pane would be starved to nothing.
+  // The clamped size cannot be read here, it would close the loop through `rightWidth`.
+  const replayClaim = () => {
+    if (!replayVisible()) return 0
+    const preferred = replayResize.preferredSize()
+    return Math.min(preferred, clampSessionReplayWidth(preferred, panels.width() - rightFloor()))
+  }
+  const rightFloor = () => {
+    const pane = rightPane()
+    if (pane === "sidebar") return SESSION_SIDEBAR_WIDTH
+    if (pane === "terminal" || pane === "panel") return SESSION_PANE_MIN_WIDTH
+    return 0
+  }
   const toggleSidebar = () => {
     batch(() => {
       const visible = rightPane() === "sidebar"
