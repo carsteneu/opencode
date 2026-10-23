@@ -46,16 +46,23 @@ export function SessionReplay(props: { sessionID: string }) {
   })
 
   // The newest edit is the interesting one: follow the tail whenever a step
-  // is appended, and never re-anchor on re-renders.
+  // is appended, and never re-anchor on re-renders. The scrollbox measures
+  // its content one frame after it mounts, so a single scroll can be a no-op.
+  const follow = () => {
+    let attempts = 0
+    const scrollToTail = () => {
+      if (!scroll || scroll.isDestroyed) return
+      scroll.scrollTo(scroll.scrollHeight)
+      if (scroll.scrollTop === 0 && attempts++ < 3) renderer.requestAnimationFrame(scrollToTail)
+    }
+    renderer.requestAnimationFrame(scrollToTail)
+  }
   let followed = 0
   createEffect(() => {
     const count = steps().length
     if (count === followed) return
     followed = count
-    renderer.requestAnimationFrame(() => {
-      if (!scroll || scroll.isDestroyed) return
-      scroll.scrollTo(scroll.scrollHeight)
-    })
+    follow()
   })
 
   return (

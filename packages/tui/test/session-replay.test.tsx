@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { TextareaRenderable, type Renderable } from "@opentui/core"
+import { ScrollBoxRenderable, TextareaRenderable, type Renderable } from "@opentui/core"
 import type { FileDiffInfo, SessionInfo, SessionMessageInfo } from "@opencode/client"
 import { createAppFixture } from "./fixture/app"
 import { directory, json } from "./fixture/tui-client"
@@ -18,7 +18,7 @@ test("the replay pane is off by default and reserves its column between transcri
   await replayReady(setup)
   expect(node(setup, "session-pane").width).toBe(width - SESSION_REPLAY_WIDTH)
   expect(text(setup, "replay-step-1")).toContain("1/2")
-  expect(text(setup, "replay-step-1")).toContain("a.ts")
+  expect(text(setup, "replay-step-1")).toContain("a0.ts")
 
   // The pane sits beside the sidebar instead of replacing it.
   setup.mockInput.pressKey("x", { ctrl: true })
@@ -87,6 +87,20 @@ test("a fullscreen panel hides the replay column instead of pushing the panel ou
   await replayReady(setup)
 })
 
+test("a long ledger opens at its newest step", async () => {
+  await using state = await tmpdir()
+  await using setup = await createSessionFixture(state.path, { width: 200, edits: 8 })
+  await ready(setup)
+  setup.mockInput.pressKey("y", { ctrl: true })
+  setup.mockInput.pressKey("y", { ctrl: true })
+  await setup.waitForFrame((frame) => frame.includes("8/8"), { maxPasses: 120 })
+
+  const ledger = replayScroll(setup)
+  await setup.waitFor(() => ledger.scrollTop > 0)
+  expect(setup.captureCharFrame()).toContain("8/8")
+  expect(setup.captureCharFrame()).not.toContain("1/8")
+})
+
 const diffs = Array.from({ length: 2 }, (_, index) => ({
   file: `src/file0${index}.txt`,
   status: "modified",
@@ -104,7 +118,8 @@ const diffs = Array.from({ length: 2 }, (_, index) => ({
 })) satisfies FileDiffInfo[]
 
 const session = {
-  id: `ses_replay_${crypto.randomUUID()}`,  title: "Replay fixture",
+  id: `ses_replay_${crypto.randomUUID()}`,
+  title: "Replay fixture",
   projectID: "proj_replay",
   location: { directory },
   agent: "build",
@@ -114,7 +129,7 @@ const session = {
   time: { created: 1, updated: 12 },
 } satisfies SessionInfo
 
-function messages(): SessionMessageInfo[] {
+function messages(edits = 2): SessionMessageInfo[] {
   return [
     { id: "msg_replay_01", type: "user", text: "Transcript item 1", time: { created: 1 } },
     {
@@ -125,36 +140,42 @@ function messages(): SessionMessageInfo[] {
       time: { created: 2 },
       content: [
         { type: "text", text: "Transcript item 2" },
-        {
-          type: "tool",
-          id: "prt_replay_01",
-          name: "edit",
-          time: { created: 3 },
-          state: {
-            status: "completed",
-            input: { path: "src/a.ts" },
-            content: [{ type: "text", text: "ok" }],
-            metadata: { files: [{ file: "src/a.ts", patch: "@@ -1,3 +1,3 @@\n a\n-b\n+c\n" }] },
-          },
-        },
-        {
-          type: "tool",
-          id: "prt_replay_02",
-          name: "write",
-          time: { created: 4 },
-          state: {
-            status: "completed",
-            input: { path: "src/b.ts", content: "export const b = 1" },
-            content: [{ type: "text", text: "ok" }],
-          },
-        },
+        ...Array.from({ length: edits }, (_, index) => editPart(index)),
       ],
     } as unknown as SessionMessageInfo,
     { id: "msg_replay_03", type: "user", text: "Transcript item 3", time: { created: 5 } },
   ]
 }
 
-async function createSessionFixture(state: string, input: { width: number }) {
+function editPart(index: number) {
+  const file = index === 1 ? "src/b.ts" : `src/a${index}.ts`
+  return index % 2 === 0
+    ? {
+        type: "tool",
+        id: `prt_replay_${index}`,
+        name: "edit",
+        time: { created: 3 + index },
+        state: {
+          status: "completed",
+          input: { path: file },
+          content: [{ type: "text", text: "ok" }],
+          metadata: { files: [{ file, patch: "@@ -1,2 +1,2 @@\n a\n-b\n+c\n" }] },
+        },
+      }
+    : {
+        type: "tool",
+        id: `prt_replay_${index}`,
+        name: "write",
+        time: { created: 3 + index },
+        state: {
+          status: "completed",
+          input: { path: file, content: "export const b = 1" },
+          content: [{ type: "text", text: "ok" }],
+        },
+      }
+}
+
+async function createSessionFixture(state: string, input: { width: number; edits?: number }) {
   const location = { directory, project: { id: session.projectID, directory, canonical: directory } }
   return createAppFixture({
     width: input.width,
@@ -182,7 +203,7 @@ async function createSessionFixture(state: string, input: { width: number }) {
       if (url.pathname === "/api/vcs/diff") return json({ location, data: diffs })
       if (url.pathname === `/api/session/${session.id}`) return json({ data: session })
       if (url.pathname === `/api/session/${session.id}/message`)
-        return json({ data: messages().toReversed(), cursor: {} })
+        return json({ data: messages(input.edits).toReversed(), cursor: {} })
       if (url.pathname === `/api/session/${session.id}/inbox`) return json({ data: [] })
       if (url.pathname === `/api/session/${session.id}/permission`) return json({ data: [] })
       if (url.pathname === `/api/session/${session.id}/form`) return json({ data: [] })
@@ -214,6 +235,16 @@ function node(setup: AppFixture, id: string) {
 
 function found(setup: AppFixture, id: string) {
   return setup.renderer.root.findDescendantById(id)
+}
+
+function replayScroll(setup: AppFixture) {
+  const result = descendants(node(setup, "session-replay")).find((item) => item instanceof ScrollBoxRenderable)
+  if (!result) throw new Error("Missing replay scrollbox")
+  return result
+}
+
+function descendants(root: Renderable): Renderable[] {
+  return root.getChildren().flatMap((item) => [item, ...descendants(item)])
 }
 
 function text(setup: AppFixture, id: string) {
