@@ -1,9 +1,9 @@
 /** @jsxImportSource @opentui/solid */
 import { expect, test } from "bun:test"
-import { DiffRenderable, RGBA, type Renderable } from "@opentui/core"
+import { DiffRenderable, MouseButton, RGBA, type CliRenderer, type MouseEvent, type Renderable } from "@opentui/core"
 import { testRender } from "@opentui/solid"
 import { createSignal } from "solid-js"
-import { BoundedDiff } from "../../src/component/bounded-diff"
+import { BoundedDiff, isPlainClick } from "../../src/component/bounded-diff"
 import { DIFF_PREVIEW_LIMITS } from "../../src/util/diff-preview"
 
 const colors = {
@@ -101,6 +101,27 @@ test("shows the bounded summary without an expansion hint where the surface take
   }
 })
 
+test("leaves the preview closed when the release ends a drag instead of a click", async () => {
+  const large = patch("drag.ts", DIFF_PREVIEW_LIMITS.maxChangedLines + 1)
+  const app = await render(large)
+  try {
+    await app.renderOnce()
+    expect(findDiffs(app.renderer.root)).toEqual([])
+
+    // A press, a move and a release is a copy gesture, not a click, even when it ends over the preview.
+    await app.mockMouse.pressDown(2, 1)
+    await app.mockMouse.moveTo(30, 3)
+    await app.mockMouse.release(30, 3)
+    await app.flush()
+    expect(findDiffs(app.renderer.root)).toEqual([])
+
+    await app.mockMouse.click(5, 1)
+    await app.waitFor(() => findDiffs(app.renderer.root).length === 1)
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
 test("renders the full patch again when the input shrinks back under the limit", async () => {
   const large = patch("shrinks.ts", DIFF_PREVIEW_LIMITS.maxChangedLines + 1)
   const small = patch("shrinks.ts", 2)
@@ -123,4 +144,29 @@ test("renders the full patch again when the input shrinks back under the limit",
   } finally {
     app.renderer.destroy()
   }
+})
+
+function fakeRenderer(selection: unknown) {
+  return { getSelection: () => selection } as unknown as CliRenderer
+}
+
+function release(button = MouseButton.LEFT) {
+  return { button } as MouseEvent
+}
+
+test("counts a fresh cell selection as a click", () => {
+  const fresh = { isStart: true, behavior: "cell", getSelectedText: () => "" }
+  expect(isPlainClick(fakeRenderer(fresh), release())).toBe(true)
+  expect(isPlainClick(fakeRenderer(undefined), release())).toBe(true)
+})
+
+test("refuses a release that ended a drag or a copy selection", () => {
+  const moved = { isStart: false, behavior: "cell", getSelectedText: () => "copied text" }
+  const selected = { isStart: true, behavior: "cell", getSelectedText: () => "a" }
+  const line = { isStart: true, behavior: "line", getSelectedText: () => "" }
+
+  expect(isPlainClick(fakeRenderer(moved), release())).toBe(false)
+  expect(isPlainClick(fakeRenderer(selected), release())).toBe(false)
+  expect(isPlainClick(fakeRenderer(line), release())).toBe(false)
+  expect(isPlainClick(fakeRenderer(undefined), release(MouseButton.RIGHT))).toBe(false)
 })

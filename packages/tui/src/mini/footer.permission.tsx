@@ -32,7 +32,7 @@ import { stringWidth } from "../util/string-width"
 import { toolFiletype } from "./tool"
 import { transparent, type RunBlockTheme, type RunFooterTheme } from "./theme"
 import type { MiniPermissionRequest, PermissionReply } from "./types"
-import { BoundedDiff } from "../component/bounded-diff"
+import { BoundedDiff, isPlainClick } from "../component/bounded-diff"
 import { createDiffPreview, formatDiffBytes } from "../util/diff-preview"
 
 function buttons(
@@ -157,6 +157,7 @@ export function RunPermissionBody(props: {
   const stage = createMemo(() => state().stage)
   const info = createMemo(() => permissionInfo(props.request, props.directory?.(), props.mono))
   const ft = createMemo(() => toolFiletype(info().file))
+  const renderer = useRenderer()
   const patchPreview = createMemo(() => {
     const value = info().patch
     return value === undefined ? undefined : createDiffPreview(value)
@@ -465,7 +466,7 @@ export function RunPermissionBody(props: {
                             flexShrink={0}
                             onMouseUp={(event) => {
                               if (patchPreview()?.limited !== true) return
-                              if (event.isDragging) return
+                              if (!isPlainClick(renderer, event)) return
                               event.stopPropagation()
                               toggleExpandedPatch()
                             }}

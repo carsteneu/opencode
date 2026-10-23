@@ -1,8 +1,20 @@
 /** @jsxImportSource @opentui/solid */
-import type { ColorInput } from "@opentui/core"
+import { MouseButton, type CliRenderer, type ColorInput, type MouseEvent } from "@opentui/core"
+import { useRenderer } from "@opentui/solid"
 import { createMemo, createSignal, Show, splitProps, type Accessor } from "solid-js"
 import { createDiffPreview, formatDiffBytes } from "../util/diff-preview"
 import { PatchDiff, type PatchDiffProps } from "./patch-diff"
+
+/**
+ * A release is a click unless it ends a real drag or selection gesture. A plain click leaves either no selection
+ * (the cell is not selectable) or a fresh, empty cell selection; a drag has moved the focus and selects text.
+ */
+export function isPlainClick(renderer: CliRenderer, event: MouseEvent) {
+  if (event.button !== MouseButton.LEFT) return false
+  const selection = renderer.getSelection()
+  if (!selection) return true
+  return selection.isStart === true && selection.behavior === "cell" && !selection.getSelectedText()
+}
 
 type Props = PatchDiffProps & {
   /** Colors for the summary notice and its preview; the call site owns the palette. */
@@ -20,6 +32,7 @@ type Props = PatchDiffProps & {
  * never a partial patch: an oversized patch is either rendered whole or not at all.
  */
 export function BoundedDiff(props: Props) {
+  const renderer = useRenderer()
   const [local, diffProps] = splitProps(props, ["noticeFg", "previewFg", "expandable", "expanded", "onExpand"])
   const [ownExpanded, setOwnExpanded] = createSignal(false)
   const expanded = () => local.expanded?.() ?? ownExpanded()
@@ -35,8 +48,7 @@ export function BoundedDiff(props: Props) {
           gap={1}
           onMouseUp={(event) => {
             if (!local.expandable) return
-            // The release that ends a selection or drag gesture is not a click.
-            if (event.isDragging) return
+            if (!isPlainClick(renderer, event)) return
             event.stopPropagation()
             if (local.onExpand) local.onExpand()
             else setOwnExpanded(true)

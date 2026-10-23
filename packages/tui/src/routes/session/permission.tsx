@@ -14,13 +14,14 @@ import { Keymap } from "../../context/keymap"
 import { useInteractivity } from "../../context/interactivity"
 import { usePathFormatter } from "../../context/path-format"
 import { SimulationSemantics } from "../../simulation/semantics"
-import { BoundedDiff } from "../../component/bounded-diff"
+import { BoundedDiff, isPlainClick } from "../../component/bounded-diff"
 import { createDiffPreview, formatDiffBytes } from "../../util/diff-preview"
 import { useToast } from "../../ui/toast"
 
 type PermissionStage = "permission" | "reject"
 
 function EditBody(props: { file?: string; diff?: string; patch?: string }) {
+  const renderer = useRenderer()
   const theme = useTheme()
   const themes = useThemes()
   const syntax = themes.currentSyntax
@@ -106,7 +107,7 @@ function EditBody(props: { file?: string; diff?: string; patch?: string }) {
                 gap={1}
                 onMouseUp={(event) => {
                   if (patchPreview()?.limited !== true) return
-                  if (event.isDragging) return
+                  if (!isPlainClick(renderer, event)) return
                   event.stopPropagation()
                   setExpandedPatch((value) => !value)
                 }}
