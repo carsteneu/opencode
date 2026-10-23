@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { TextareaRenderable, type Renderable } from "@opentui/core"
-import type { SessionInfo, SessionMessageInfo } from "@opencode/client"
+import type { FileDiffInfo, SessionInfo, SessionMessageInfo } from "@opencode/client"
 import { createAppFixture } from "./fixture/app"
 import { directory, json } from "./fixture/tui-client"
 import { tmpdir } from "./fixture/fixture"
@@ -68,9 +68,43 @@ test("widening after an open pane keeps it, narrowing hides it until the termina
   await setup.waitFor(() => !setup.renderer.root.findDescendantById("session-replay"))
 })
 
+test("a fullscreen panel hides the replay column instead of pushing the panel out of the frame", async () => {
+  await using state = await tmpdir()
+  await using setup = await createSessionFixture(state.path, { width: 200 })
+  await ready(setup)
+  setup.mockInput.pressKey("y", { ctrl: true })
+  await replayReady(setup)
+
+  setup.mockInput.pressKey("F6")
+  await setup.waitForFrame((frame) => frame.includes("file00.txt"), { maxPasses: 120 })
+  expect(found(setup, "session-replay")).toBeDefined()
+
+  setup.mockInput.pressKey("f")
+  await setup.waitFor(() => found(setup, "session-panel")?.width === setup.renderer.width)
+  expect(found(setup, "session-replay")).toBeUndefined()
+
+  setup.mockInput.pressKey("f")
+  await replayReady(setup)
+})
+
+const diffs = Array.from({ length: 2 }, (_, index) => ({
+  file: `src/file0${index}.txt`,
+  status: "modified",
+  additions: 1,
+  deletions: 1,
+  patch: [
+    `--- a/src/file0${index}.txt`,
+    `+++ b/src/file0${index}.txt`,
+    "@@ -1,2 +1,2 @@",
+    "-before",
+    "+after",
+    " context",
+    "",
+  ].join("\n"),
+})) satisfies FileDiffInfo[]
+
 const session = {
-  id: `ses_replay_${crypto.randomUUID()}`,
-  title: "Replay fixture",
+  id: `ses_replay_${crypto.randomUUID()}`,  title: "Replay fixture",
   projectID: "proj_replay",
   location: { directory },
   agent: "build",
@@ -131,6 +165,8 @@ async function createSessionFixture(state: string, input: { width: number }) {
       animations: false,
       tabs: { enabled: false },
       session: { sidebar: "hide" },
+      diffs: { tree: false, view: "unified" },
+      keybinds: { "diff.open": "f6" },
     },
     fetch: async (url) => {
       if (url.pathname === "/api/location") return json(location)
@@ -141,6 +177,9 @@ async function createSessionFixture(state: string, input: { width: number }) {
         return json({ location, data: [{ id: "model", providerID: "fixture", name: "Model", variants: [] }] })
       if (url.pathname === "/api/provider") return json({ location, data: [{ id: "fixture", name: "Fixture" }] })
       if (url.pathname === "/api/vcs") return json({ location, data: { branch: { current: "replay", default: "v2" } } })
+      if (url.pathname === "/api/vcs/base")
+        return json({ location, data: { name: "v2", ref: "refs/heads/v2", source: "default" } })
+      if (url.pathname === "/api/vcs/diff") return json({ location, data: diffs })
       if (url.pathname === `/api/session/${session.id}`) return json({ data: session })
       if (url.pathname === `/api/session/${session.id}/message`)
         return json({ data: messages().toReversed(), cursor: {} })

@@ -119,7 +119,9 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
   })
   // The replay pane is its own column beside the sidebar: it keeps its state
   // when the terminal narrows and only hides until it is wide enough again.
-  const replayVisible = createMemo(() => replay.open && wide())
+  // A fullscreen panel already claims the whole width, so the column yields
+  // there instead of pushing the panel out of the frame.
+  const replayVisible = createMemo(() => replay.open && wide() && !fullscreen())
   const toggleSidebar = () => {
     batch(() => {
       const visible = rightPane() === "sidebar"
