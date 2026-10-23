@@ -27,7 +27,9 @@ import { createDebouncedSignal } from "../../util/signal"
 import { type DiffSource, useConfig } from "../../config"
 import { locationKey } from "../../context/data"
 import { useTheme, useThemes } from "../../context/theme"
-import { PatchDiff, type PatchDiffRef } from "../../component/patch-diff"
+import type { PatchDiffRef } from "../../component/patch-diff"
+import { BoundedDiff } from "../../component/bounded-diff"
+import { DIFF_PREVIEW_LIMITS, shouldLimitDiffSet } from "../../util/diff-preview"
 import {
   allExpandedFileTreeDirectories,
   buildFileTree,
@@ -340,8 +342,22 @@ export function DiffViewerContent(props: {
   const inset = () => (compact() ? 0 : FULL_INSET)
   const mode = () => props.mode
   const [fileTreeEnabled, setFileTreeEnabled] = createSignal(props.preferences?.tree ?? true)
-  const showFileTree = createMemo(() => !compact() && showDiffViewerFileTree(fileTreeEnabled(), files().length))
-  const [singlePatch, setSinglePatch] = createSignal(props.preferences?.single ?? false)
+  // Past the tree limit the tree itself becomes a render cost; the patches keep the whole pane.
+  const automaticFileTreeLimit = createMemo(() => files().length > DIFF_PREVIEW_LIMITS.maxFileTreeFiles)
+  const showFileTree = createMemo(
+    () => !compact() && !automaticFileTreeLimit() && showDiffViewerFileTree(fileTreeEnabled(), files().length),
+  )
+  const [singlePatchPreference, setSinglePatchPreference] = createSignal(props.preferences?.single ?? false)
+  // A set too large to mount at once starts on one patch; the preference only matters below the limits.
+  const automaticSinglePatch = createMemo(() => shouldLimitDiffSet(files().map((file) => file.patch)))
+  const singlePatch = () => automaticSinglePatch() || singlePatchPreference()
+  const safeMode = createMemo(() => {
+    const reasons = [
+      automaticSinglePatch() ? "one patch at a time" : undefined,
+      automaticFileTreeLimit() ? "file tree hidden" : undefined,
+    ].filter((reason): reason is string => reason !== undefined)
+    return reasons.length > 0 ? `Safe mode: ${reasons.join(", ")}` : undefined
+  })
   const fileTreeWidth = createMemo(() =>
     Math.max(FILE_TREE_MIN_WIDTH, Math.min(FILE_TREE_MAX_WIDTH, Math.floor(width() / 4))),
   )
@@ -365,6 +381,13 @@ export function DiffViewerContent(props: {
   const patchDiffByFileIndex = new Map<number, PatchDiffRef>()
   const [selectedHunk, setSelectedHunk] = createSignal<SelectedHunk | undefined>()
   const [pendingPatchScrollFileIndex, setPendingPatchScrollFileIndex] = createSignal<number | undefined>()
+  const [expandedPatches, setExpandedPatches] = createSignal<ReadonlySet<number>>(new Set())
+  const expandPatch = (fileIndex: number) =>
+    setExpandedPatches((current) => {
+      const next = new Set(current)
+      next.add(fileIndex)
+      return next
+    })
 
   createEffect(() => {
     setExpandedFileNodes(allExpandedFileTreeDirectories(fileTree()))
@@ -373,6 +396,7 @@ export function DiffViewerContent(props: {
     setReviewedFileNames(new Set<string>())
     setExhaustedFileIndex(undefined)
     setFileMenu(undefined)
+    setExpandedPatches(new Set<number>())
   })
 
   const clearPatchSelection = () => {
@@ -698,9 +722,10 @@ export function DiffViewerContent(props: {
       id: "diff.toggle_file_tree",
       title: "Toggle diff viewer file tree",
       group: "VCS",
-      enabled: () => !compact(),
+      enabled: () => !compact() && !automaticFileTreeLimit(),
       run() {
-        if (compact()) return
+        // Hidden by the file-tree limit, the tree cannot be shown again; do not record a preference that does nothing.
+        if (compact() || automaticFileTreeLimit()) return
         const next = !fileTreeEnabled()
         setFileTreeEnabled(next)
         props.onPreferencesChange?.({ tree: next })
@@ -710,11 +735,14 @@ export function DiffViewerContent(props: {
       id: "diff.single_patch",
       title: "Toggle single patch view",
       group: "VCS",
+      enabled: () => !automaticSinglePatch(),
       run() {
+        // Over the set limit the viewer stays on one patch, so the toggle must not record a preference it ignores.
+        if (automaticSinglePatch()) return
         setSelectedHunk(undefined)
         if (!singlePatch()) {
           ensureHighlightedPatchFile()
-          setSinglePatch(true)
+          setSinglePatchPreference(true)
           props.onPreferencesChange?.({ single: true })
           scrollSinglePatchToTop()
           return
@@ -723,7 +751,7 @@ export function DiffViewerContent(props: {
           visiblePatchFiles()[0]?.fileIndex ??
           singlePatchFileIndex(selectedFileIndex(), currentPatchFileIndex(), firstPatchFileIndex())
         if (fileIndex !== undefined) selectPatchFile(fileIndex)
-        setSinglePatch(false)
+        setSinglePatchPreference(false)
         props.onPreferencesChange?.({ single: false })
         if (fileIndex !== undefined) scrollToPatchFileIndexAfterRender(fileIndex)
       },
@@ -896,6 +924,20 @@ export function DiffViewerContent(props: {
               </text>
             </Show>
           </box>
+          <Show when={safeMode()}>
+            {(label) => (
+              <text
+                fg={theme.text.feedback.warning.base}
+                flexShrink={1}
+                minWidth={0}
+                wrapMode="none"
+                truncate
+                selectable={false}
+              >
+                {label()}
+              </text>
+            )}
+          </Show>
           <text id="diff-review-count" fg={theme.text.muted} flexShrink={0} wrapMode="none">
             {files().filter((file) => reviewedFileNames().has(file.file)).length}/{files().length}
           </text>
@@ -1087,7 +1129,12 @@ export function DiffViewerContent(props: {
                                 </Match>
                                 <Match when={!(mode() === "committed" && image()) && entry.file.patch}>
                                   {(patch) => (
-                                    <PatchDiff
+                                    <BoundedDiff
+                                      expandable
+                                      expanded={() => expandedPatches().has(entry.fileIndex)}
+                                      onExpand={() => expandPatch(entry.fileIndex)}
+                                      noticeFg={theme.text.feedback.warning.base}
+                                      previewFg={theme.text.muted}
                                       ref={(component) => {
                                         patchDiffByFileIndex.set(entry.fileIndex, component)
                                         onCleanup(() => patchDiffByFileIndex.delete(entry.fileIndex))

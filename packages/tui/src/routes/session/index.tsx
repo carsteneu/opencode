@@ -23,6 +23,9 @@ import { SplitBorder } from "../../ui/border"
 import { useTuiTerminalEnvironment } from "../../context/runtime"
 import { Spinner, SPINNER_FRAMES } from "../../component/spinner"
 import { PatchDiff } from "../../component/patch-diff"
+import { BoundedDiff } from "../../component/bounded-diff"
+import { ApplyPatchSummary } from "../../component/apply-patch-summary"
+import { formatDiffBytes, summarizeDiffSet } from "../../util/diff-preview"
 import { useTheme, useThemes } from "../../context/theme"
 import {
   BoxRenderable,
@@ -3678,7 +3681,10 @@ function Edit(props: ToolProps) {
         {(item) => (
           <BlockTool path={{ label: "← Edit", value: pathFormatter.format(path()) }} part={props.part}>
             <box paddingLeft={1}>
-              <PatchDiff
+              <BoundedDiff
+                expandable
+                noticeFg={theme.text.feedback.warning.base}
+                previewFg={theme.text.muted}
                 diff={item().patch}
                 hunkFg={theme.diff.text.hunkHeader}
                 view={view()}
@@ -3745,55 +3751,79 @@ function ApplyPatch(props: ToolProps) {
     if (ctx.config.diffs?.view === "split") return "split"
     return ctx.width > 120 ? "split" : "unified"
   })
+  const setSummary = createMemo(() => summarizeDiffSet(files().map((file) => file.patch)))
+  const summaries = createMemo(() => files().map((file, index) => ({ file, measured: setSummary().measured[index]! })))
+  const totals = () => setSummary().totals
+  // A set that cannot mount every patch at once gets one summary card instead of a card per file.
+  const limited = () => setSummary().limited
 
   return (
     <Switch>
       <Match when={files().length > 0}>
-        <box flexDirection="column" gap={1}>
-          <For each={files()}>
-            {(file) => (
-              <BlockTool
-                path={{
-                  label: file.type === "add" ? "# Created" : file.type === "delete" ? "# Deleted" : "← Patched",
-                  value: pathFormatter.format(file.relativePath),
-                }}
-                part={props.part}
-              >
-                <Show
-                  when={file.type !== "delete"}
-                  fallback={
-                    <text fg={theme.diff.text.removed}>
-                      -{file.deletions} line{file.deletions !== 1 ? "s" : ""}
-                    </text>
-                  }
-                >
-                  <box paddingLeft={1}>
-                    <PatchDiff
-                      diff={file.patch}
-                      hunkFg={theme.diff.text.hunkHeader}
-                      view={view()}
-                      filetype={filetype(file.relativePath)}
-                      syntaxStyle={syntax()}
-                      showLineNumbers={true}
-                      width="100%"
-                      wrapMode={ctx.diffWrapMode()}
-                      fg={theme.text.base}
-                      addedBg={theme.diff.background.added}
-                      removedBg={theme.diff.background.removed}
-                      contextBg={theme.diff.background.context}
-                      addedSignColor={theme.diff.highlight.added}
-                      removedSignColor={theme.diff.highlight.removed}
-                      lineNumberFg={theme.diff.lineNumber.text}
-                      lineNumberBg={theme.diff.background.context}
-                      addedLineNumberBg={theme.diff.lineNumber.background.added}
-                      removedLineNumberBg={theme.diff.lineNumber.background.removed}
-                    />
-                  </box>
-                </Show>
-              </BlockTool>
-            )}
-          </For>
-        </box>
+        <Switch>
+          <Match when={limited()}>
+            {/* The change is already applied: the review path is the diff viewer, so nothing here mounts a patch. */}
+            <BlockTool
+              title={`# Patched ${files().length} file${files().length === 1 ? "" : "s"} · +${totals().additions} -${totals().deletions} · ${formatDiffBytes(totals().bytes)}`}
+              part={props.part}
+            >
+              <ApplyPatchSummary
+                files={files()}
+                measured={summaries().map((item) => item.measured)}
+                fg={theme.text.base}
+                mutedFg={theme.text.muted}
+                formatPath={pathFormatter.format}
+              />
+            </BlockTool>
+          </Match>
+          <Match when={true}>
+            <box flexDirection="column" gap={1}>
+              <For each={files()}>
+                {(file) => (
+                  <BlockTool
+                    path={{
+                      label: file.type === "add" ? "# Created" : file.type === "delete" ? "# Deleted" : "← Patched",
+                      value: pathFormatter.format(file.relativePath),
+                    }}
+                    part={props.part}
+                  >
+                    <Show
+                      when={file.type !== "delete"}
+                      fallback={
+                        <text fg={theme.diff.text.removed}>
+                          -{file.deletions} line{file.deletions !== 1 ? "s" : ""}
+                        </text>
+                      }
+                    >
+                      <box paddingLeft={1}>
+                        <PatchDiff
+                          diff={file.patch}
+                          hunkFg={theme.diff.text.hunkHeader}
+                          view={view()}
+                          filetype={filetype(file.relativePath)}
+                          syntaxStyle={syntax()}
+                          showLineNumbers={true}
+                          width="100%"
+                          wrapMode={ctx.diffWrapMode()}
+                          fg={theme.text.base}
+                          addedBg={theme.diff.background.added}
+                          removedBg={theme.diff.background.removed}
+                          contextBg={theme.diff.background.context}
+                          addedSignColor={theme.diff.highlight.added}
+                          removedSignColor={theme.diff.highlight.removed}
+                          lineNumberFg={theme.diff.lineNumber.text}
+                          lineNumberBg={theme.diff.background.context}
+                          addedLineNumberBg={theme.diff.lineNumber.background.added}
+                          removedLineNumberBg={theme.diff.lineNumber.background.removed}
+                        />
+                      </box>
+                    </Show>
+                  </BlockTool>
+                )}
+              </For>
+            </box>
+          </Match>
+        </Switch>
       </Match>
       <Match when={applied().length > 0}>
         <box flexDirection="column" gap={1}>

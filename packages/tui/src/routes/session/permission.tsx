@@ -1,5 +1,5 @@
 import { createStore } from "solid-js/store"
-import { createMemo, For, Match, Show, Switch } from "solid-js"
+import { createMemo, createSignal, For, Match, Show, Switch } from "solid-js"
 import { Portal, useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import type { TextareaRenderable } from "@opentui/core"
 import { useTheme, useThemes } from "../../context/theme"
@@ -14,12 +14,14 @@ import { Keymap } from "../../context/keymap"
 import { useInteractivity } from "../../context/interactivity"
 import { usePathFormatter } from "../../context/path-format"
 import { SimulationSemantics } from "../../simulation/semantics"
-import { PatchDiff } from "../../component/patch-diff"
+import { BoundedDiff, isPlainClick } from "../../component/bounded-diff"
+import { createDiffPreview, formatDiffBytes } from "../../util/diff-preview"
 import { useToast } from "../../ui/toast"
 
 type PermissionStage = "permission" | "reject"
 
 function EditBody(props: { file?: string; diff?: string; patch?: string }) {
+  const renderer = useRenderer()
   const theme = useTheme()
   const themes = useThemes()
   const syntax = themes.currentSyntax
@@ -38,6 +40,9 @@ function EditBody(props: { file?: string; diff?: string; patch?: string }) {
 
   const ft = createMemo(() => filetype(filepath()))
   const scrollAcceleration = createMemo(() => getScrollAcceleration(config))
+  const patchPreview = createMemo(() => (props.patch === undefined ? undefined : createDiffPreview(props.patch)))
+  const [expandedPatch, setExpandedPatch] = createSignal(false)
+  const previewPatch = () => patchPreview()?.limited === true && !expandedPatch()
 
   return (
     <box flexDirection="column" gap={1}>
@@ -52,7 +57,10 @@ function EditBody(props: { file?: string; diff?: string; patch?: string }) {
             },
           }}
         >
-          <PatchDiff
+          <BoundedDiff
+            expandable
+            noticeFg={theme.text.feedback.warning.base}
+            previewFg={theme.text.muted}
             diff={diff()}
             hunkFg={theme.diff.text.hunkHeader}
             view={view()}
@@ -94,14 +102,37 @@ function EditBody(props: { file?: string; diff?: string; patch?: string }) {
                 },
               }}
             >
-              <code
-                filetype="diff"
-                drawUnstyledText={false}
-                streaming={true}
-                syntaxStyle={syntax()}
-                content={patch()}
-                fg={theme.text.muted}
-              />
+              <box
+                flexDirection="column"
+                gap={1}
+                onMouseUp={(event) => {
+                  if (patchPreview()?.limited !== true) return
+                  if (!isPlainClick(renderer, event)) return
+                  event.stopPropagation()
+                  setExpandedPatch((value) => !value)
+                }}
+              >
+                <Show when={previewPatch() && patchPreview()}>
+                  {(measured) => (
+                    <text fg={theme.text.feedback.warning.base} selectable={false}>
+                      {`Preview limited (${formatDiffBytes(measured().bytes)}, ${measured().changedLines} changed lines)`}
+                    </text>
+                  )}
+                </Show>
+                <code
+                  filetype="diff"
+                  drawUnstyledText={false}
+                  streaming={true}
+                  syntaxStyle={syntax()}
+                  content={previewPatch() ? (patchPreview()?.preview ?? "") : patch()}
+                  fg={theme.text.muted}
+                />
+                <Show when={patchPreview()?.limited}>
+                  <text fg={theme.text.feedback.warning.base} selectable={false}>
+                    {expandedPatch() ? "Click to collapse." : "Click to render the full patch."}
+                  </text>
+                </Show>
+              </box>
             </scrollbox>
           )}
         </Show>

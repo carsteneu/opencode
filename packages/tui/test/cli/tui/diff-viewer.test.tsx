@@ -29,6 +29,7 @@ import { StorageProvider, useStorage } from "../../../src/context/storage"
 import { TuiAppProvider } from "../../../src/context/runtime"
 import { ConfigProvider, type Info } from "../../../src/config"
 import type { TuiKeybind } from "../../../src/config/keybind"
+import { DIFF_PREVIEW_LIMITS } from "../../../src/util/diff-preview"
 import { Keymap } from "../../../src/context/keymap"
 import diffViewerPlugin from "../../../src/feature-plugins/system/diff-viewer"
 import { createTuiResolvedConfig } from "../../fixture/tui-runtime"
@@ -1800,7 +1801,7 @@ test.each([
 })
 
 test("Ctrl+D and Ctrl+U scroll the patch viewport by half a page, without closing", async () => {
-  const viewer = await renderDiffViewer(manyDiffs, { width: 160, height: 24 })
+  const viewer = await renderDiffViewer(manyDiffs.slice(0, 6), { width: 160, height: 24 })
   try {
     await viewer.app.waitForFrame((frame) => frame.includes("const first"))
     await viewer.app.flush()
@@ -1824,7 +1825,11 @@ test("Ctrl+D and Ctrl+U scroll the patch viewport by half a page, without closin
 })
 
 test.each([20, 32])("Tab and file clicks never redirect scrolling keys into the tree at %i rows", async (height) => {
-  const viewer = await renderDiffViewer(manyDiffs, { width: 160, height, keybinds: { "diff.switch_focus": "tab" } })
+  const viewer = await renderDiffViewer(manyDiffs.slice(0, 6), {
+    width: 160,
+    height,
+    keybinds: { "diff.switch_focus": "tab" },
+  })
   try {
     await viewer.app.waitForFrame((frame) => frame.includes("const first"))
     await viewer.app.flush()
@@ -1912,7 +1917,7 @@ test("folders are mouse controlled and n/p reveal files inside collapsed folders
 })
 
 test("n/p jump between files and gg/G always navigate the diff", async () => {
-  const viewer = await renderDiffViewer(manyDiffs, { width: 160, height: 24 })
+  const viewer = await renderDiffViewer(manyDiffs.slice(0, 6), { width: 160, height: 24 })
   try {
     await viewer.app.waitForFrame((frame) => frame.includes("const first"))
     await viewer.app.flush()
@@ -2338,6 +2343,7 @@ test("highlights virtual chunks with whole-file syntax context", async () => {
       .lines.flatMap((line) => line.spans)
       .find((span) => span.text.includes(text))?.fg
   try {
+    await expandFirstPreview(viewer.app)
     findScrollBox(viewer.app.renderer.root)!.scrollTo(360)
     await viewer.app.flush()
     // The comment starts in the first chunk and ends in the second; wait until it is highlighted.
@@ -2371,6 +2377,8 @@ test("does not virtualize added files at or below the size threshold", async () 
     { width: 120, height: 24 },
   )
   try {
+    expect(findDiffs(viewer.app.renderer.root)).toHaveLength(0)
+    await expandFirstPreview(viewer.app)
     expect(findDiffs(viewer.app.renderer.root)).toHaveLength(1)
   } finally {
     viewer.app.renderer.destroy()
@@ -2393,6 +2401,7 @@ test("file navigation and review still work after a virtualized patch", async ()
     { width: 160, height: 24 },
   )
   try {
+    await expandFirstPreview(viewer.app)
     const scroll = findScrollBox(viewer.app.renderer.root)!
     scroll.scrollTo(2700)
     await viewer.app.flush()
@@ -2423,6 +2432,18 @@ test("file navigation and review still work after a virtualized patch", async ()
 function findScrollBox(root: Renderable, patches = true): ScrollBoxRenderable | undefined {
   const node = root.findDescendantById(patches ? "diff-patches" : "diff-files")
   return node instanceof ScrollBoxRenderable ? node : undefined
+}
+
+/** A patch over the preview limits mounts only after the reader asks for it. */
+async function expandFirstPreview(app: {
+  renderer: { root: Renderable }
+  mockMouse: { click: (x: number, y: number) => Promise<void> }
+  flush: () => Promise<void>
+}) {
+  const preview = app.renderer.root.findDescendantById("diff-preview-limited")
+  if (!preview) return
+  await app.mockMouse.click(preview.x + 2, preview.y + 1)
+  await app.flush()
 }
 
 function findDiffs(root: Renderable): DiffRenderable[] {
@@ -2502,6 +2523,61 @@ test.each([100, 160])("the sidebar source picker switches VCS sources at %i colu
     })
     expect(viewer.baseRequests).toHaveLength(1)
     expect(viewer.writes).toHaveLength(0)
+  } finally {
+    viewer.app.renderer.destroy()
+  }
+})
+
+test("a change set over the set limit starts on one patch at a time", async () => {
+  const files = Array.from({ length: DIFF_PREVIEW_LIMITS.maxSetFiles + 1 }, (_, index) => ({
+    ...hunkDiff[0],
+    file: `src/file${index}.txt`,
+  }))
+  const viewer = await renderDiffViewer(files)
+  try {
+    await viewer.app.waitForFrame((frame) => frame.includes("const first"))
+    expect(viewer.app.renderer.root.findDescendantById("diff-file-header-0")).toBeDefined()
+    expect(viewer.app.renderer.root.findDescendantById("diff-file-header-1")).toBeUndefined()
+    // The automatic limit is a view decision, not a stored preference.
+    expect(viewer.writes).toHaveLength(0)
+  } finally {
+    viewer.app.renderer.destroy()
+  }
+})
+
+test("a change set over the file tree limit hides the tree and says why", async () => {
+  const files = Array.from({ length: DIFF_PREVIEW_LIMITS.maxFileTreeFiles + 1 }, (_, index) => ({
+    file: `src/file${index}.txt`,
+    additions: 1,
+    deletions: 0,
+    status: "added" as const,
+    patch: `--- /dev/null\n+++ b/src/file${index}.txt\n@@ -0,0 +1 @@\n+one`,
+  }))
+  const viewer = await renderDiffViewer(files, { width: 100 })
+  try {
+    await viewer.app.waitForFrame((frame) => frame.includes("Safe mode"))
+    expect(viewer.app.renderer.root.findDescendantById("diff-tree-top-edge")).toBeUndefined()
+    expect(viewer.app.captureCharFrame()).toContain("file tree hidden")
+    expect(viewer.writes).toHaveLength(0)
+  } finally {
+    viewer.app.renderer.destroy()
+  }
+})
+
+test("an oversized patch in the diff viewer stays a preview until it is clicked", async () => {
+  const patch = `--- a/src/huge.ts\n+++ b/src/huge.ts\n@@ -0,0 +1,${DIFF_PREVIEW_LIMITS.maxChangedLines + 1} @@\n${Array.from(
+    { length: DIFF_PREVIEW_LIMITS.maxChangedLines + 1 },
+    (_, index) => `+line-${index}`,
+  ).join("\n")}`
+  const viewer = await renderDiffViewer([{ ...hunkDiff[0], file: "src/huge.ts", patch }])
+  try {
+    await viewer.app.waitForFrame((frame) => frame.includes("Preview limited"))
+    const preview = viewer.app.renderer.root.findDescendantById("diff-preview-limited")!
+    expect(preview).toBeDefined()
+    expect(findDiffs(viewer.app.renderer.root)).toHaveLength(0)
+
+    await viewer.app.mockMouse.click(preview.x + 2, preview.y + 1)
+    await viewer.app.waitForFrame((frame) => !frame.includes("Preview limited"))
   } finally {
     viewer.app.renderer.destroy()
   }
