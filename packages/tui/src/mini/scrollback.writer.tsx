@@ -17,7 +17,7 @@ import { toolFiletype, toolStructuredFinal } from "./tool"
 import { RUN_THEME_FALLBACK, transparent, type RunTheme } from "./theme"
 import type { EntryLayout, RunEntryBody, ScrollbackOptions, StreamCommit, TurnSummary } from "./types"
 import { todoMarker } from "../util/todo"
-import { PatchDiff } from "../component/patch-diff"
+import { BoundedDiff } from "../component/bounded-diff"
 
 export function entryGroupKey(commit: StreamCommit): string | undefined {
   if (!commit.partID) {
@@ -204,7 +204,9 @@ export function RunEntryContent(props: {
               </text>
               {item.diff.trim() ? (
                 <box ref={(node: Renderable) => borrowers.push(node)} width="100%" paddingLeft={1}>
-                  <PatchDiff
+                  <BoundedDiff
+                    noticeFg={theme().block.muted}
+                    previewFg={theme().block.text}
                     diff={item.diff}
                     hunkFg={theme().block.diffLineNumber}
                     view="unified"

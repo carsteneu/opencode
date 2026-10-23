@@ -72,6 +72,25 @@ export function shouldLimitDiffSet(patches: readonly (string | undefined)[]) {
   )
 }
 
+/** Per-patch measurements plus the verdict for the set as a whole: file count, total bytes, or one oversized patch. */
+export function summarizeDiffSet(patches: readonly string[]) {
+  const measured = patches.map((patch) => measureDiff(patch))
+  const totals = measured.reduce(
+    (result, item) => ({
+      bytes: result.bytes + item.bytes,
+      additions: result.additions + item.additions,
+      deletions: result.deletions + item.deletions,
+    }),
+    { bytes: 0, additions: 0, deletions: 0 },
+  )
+  return {
+    measured,
+    totals,
+    limited:
+      shouldLimitDiffSet(patches) || totals.bytes > DIFF_PREVIEW_LIMITS.maxSetBytes || measured.some((item) => item.limited),
+  }
+}
+
 export function formatDiffBytes(bytes: number) {
   const value = Math.max(0, Math.floor(bytes))
   if (value < 1024) return `${value} B`

@@ -25,7 +25,7 @@ export interface PatchDiffRef {
 const VIRTUAL_MIN_LINES = 3000
 const VIRTUAL_CHUNK_LINES = 128
 
-type Props = Omit<JSX.IntrinsicElements["diff"], "diff" | "lineNumberBg" | "ref"> & {
+export type PatchDiffProps = Omit<JSX.IntrinsicElements["diff"], "diff" | "lineNumberBg" | "ref"> & {
   diff: string
   hunkFg: ColorInput
   lineNumberBg: ColorInput
@@ -35,7 +35,7 @@ type Props = Omit<JSX.IntrinsicElements["diff"], "diff" | "lineNumberBg" | "ref"
   gutterPadding?: number
 }
 
-export function PatchDiff(props: Props) {
+export function PatchDiff(props: PatchDiffProps) {
   const renderer = useRenderer()
   const [local, diffProps] = splitProps(props, ["diff", "hunkFg", "lineNumberBg", "ref", "scroll", "gutterPadding"])
   const hunks = createMemo(() => splitPatchHunks(local.diff))

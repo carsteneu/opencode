@@ -32,7 +32,8 @@ import { stringWidth } from "../util/string-width"
 import { toolFiletype } from "./tool"
 import { transparent, type RunBlockTheme, type RunFooterTheme } from "./theme"
 import type { MiniPermissionRequest, PermissionReply } from "./types"
-import { PatchDiff } from "../component/patch-diff"
+import { BoundedDiff } from "../component/bounded-diff"
+import { createDiffPreview, formatDiffBytes } from "../util/diff-preview"
 
 function buttons(
   list: PermissionOption[],
@@ -156,6 +157,16 @@ export function RunPermissionBody(props: {
   const stage = createMemo(() => state().stage)
   const info = createMemo(() => permissionInfo(props.request, props.directory?.(), props.mono))
   const ft = createMemo(() => toolFiletype(info().file))
+  const patchPreview = createMemo(() => {
+    const value = info().patch
+    return value === undefined ? undefined : createDiffPreview(value)
+  })
+  const diffPreview = createMemo(() => {
+    const value = info().diff
+    return value === undefined ? undefined : createDiffPreview(value)
+  })
+  const [expandedPatch, setExpandedPatch] = createSignal(false)
+  const previewPatch = () => patchPreview()?.limited === true && !expandedPatch()
   let scroll: ScrollBoxRenderable | undefined
   const scrollbar = createMemo(() => ({
     visible: !props.mono,
@@ -427,28 +438,52 @@ export function RunPermissionBody(props: {
                         }
                       >
                         {(patch) => (
-                          <Show
-                            when={props.block.syntax}
-                            fallback={
-                              <text width="100%" fg={props.theme.muted} wrapMode="word" flexShrink={0}>
-                                {patch()}
-                              </text>
-                            }
+                          <box
+                            width="100%"
+                            flexDirection="column"
+                            gap={compact() ? 0 : 1}
+                            flexShrink={0}
+                            onMouseUp={(event) => {
+                              if (patchPreview()?.limited !== true) return
+                              event.stopPropagation()
+                              setExpandedPatch((value) => !value)
+                            }}
                           >
-                            {(syntax) => (
-                              <code
-                                width="100%"
-                                flexShrink={0}
-                                wrapMode="word"
-                                filetype="diff"
-                                drawUnstyledText={false}
-                                streaming={true}
-                                syntaxStyle={syntax()}
-                                content={patch()}
-                                fg={props.theme.muted}
-                              />
-                            )}
-                          </Show>
+                            <Show when={previewPatch() && patchPreview()}>
+                              {(measured) => (
+                                <text width="100%" fg={props.theme.muted} wrapMode="word" flexShrink={0}>
+                                  {`Preview limited (${formatDiffBytes(measured().bytes)}, ${measured().changedLines} changed lines)`}
+                                </text>
+                              )}
+                            </Show>
+                            <Show
+                              when={props.block.syntax}
+                              fallback={
+                                <text width="100%" fg={props.theme.muted} wrapMode="word" flexShrink={0}>
+                                  {previewPatch() ? (patchPreview()?.preview ?? "") : patch()}
+                                </text>
+                              }
+                            >
+                              {(syntax) => (
+                                <code
+                                  width="100%"
+                                  flexShrink={0}
+                                  wrapMode="word"
+                                  filetype="diff"
+                                  drawUnstyledText={false}
+                                  streaming={true}
+                                  syntaxStyle={syntax()}
+                                  content={previewPatch() ? (patchPreview()?.preview ?? "") : patch()}
+                                  fg={props.theme.muted}
+                                />
+                              )}
+                            </Show>
+                            <Show when={patchPreview()?.limited}>
+                              <text width="100%" fg={props.theme.muted} wrapMode="word" flexShrink={0}>
+                                {expandedPatch() ? "Click to collapse." : "Click to render the full patch."}
+                              </text>
+                            </Show>
+                          </box>
                         )}
                       </Show>
                     }
@@ -457,11 +492,14 @@ export function RunPermissionBody(props: {
                       when={width() >= 40}
                       fallback={
                         <text width="100%" fg={props.theme.text} wrapMode="word" flexShrink={0}>
-                          {info().diff}
+                          {diffPreview()?.limited ? (diffPreview()?.preview ?? "") : info().diff}
                         </text>
                       }
                     >
-                      <PatchDiff
+                      <BoundedDiff
+                        expandable
+                        noticeFg={props.theme.muted}
+                        previewFg={props.theme.text}
                         diff={info().diff!}
                         hunkFg={props.block.diffLineNumber}
                         view="unified"
