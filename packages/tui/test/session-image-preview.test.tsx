@@ -29,15 +29,23 @@ const tick = async (setup: { renderOnce: () => Promise<unknown> }) => {
 
 // Preview geometry settles asynchronously: a band stack is created after the image decodes, so a fixed
 // pause would read a half-built stack. Poll until the shape stops changing.
-const settle = async (setup: { renderOnce: () => Promise<unknown> }) => {
+const settle = async (setup: { renderOnce: () => Promise<unknown>; captureCharFrame: () => string }) => {
   let previous = ""
   let stable = 0
   for (let attempt = 0; attempt < 300; attempt++) {
     await tick(setup)
+    const frame = setup.captureCharFrame()
+    // "Loading plugins…" is a frame, but not the transcript: waiting on it would settle before the rows
+    // exist and every geometry assertion would read an empty tree.
+    if (frame.trim().length === 0 || !/Look at this|Shot:|No preview|→ Read/.test(frame)) {
+      previous = ""
+      stable = 0
+      continue
+    }
     const current = JSON.stringify(previewShapes((setup as unknown as { renderer: { root: never } }).renderer.root))
     if (current === previous) {
       stable += 1
-      if (stable >= 3) return
+      if (stable >= 5) return
     } else {
       stable = 0
       previous = current
@@ -142,7 +150,7 @@ test("resizes a preview in place instead of re-creating it", async () => {
     // One preview, however many bands it takes to paint it.
     expect(previewShapes(setup.renderer.root)).toHaveLength(1)
     setup.resize(90, 30)
-    await tick(setup)
+    await settle(setup)
     // The preview follows the new width instead of keeping its old row, and it is still one preview.
     // A resize drops the renderer's pixel resolution until the terminal answers the query again, so the
     // fallback ratio of 2 applies: 81 columns over 2 x 2 is 20 rows, split into bands of at most 15.
@@ -185,7 +193,7 @@ test("stretches a tool result image across the transcript row", async () => {
   await using state = await tmpdir()
   const { setup, server, task } = await renderSession(state.path, [toolMessage([sizedImage(96, 48)])])
   try {
-    await tick(setup)
+    await settle(setup)
     const shapes = previewShapes(setup.renderer.root)
     expect(shapes).toHaveLength(1)
     expect(shapes[0]!.width).toBe(103)

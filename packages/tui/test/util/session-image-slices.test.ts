@@ -2,8 +2,12 @@ import { describe, expect, test } from "bun:test"
 import { pixelBands, sliceRows } from "../../src/util/session-image-slices"
 
 describe("sliceRows", () => {
-  test("splits into bands no taller than the cap", () => {
-    expect(sliceRows(142, 15)).toEqual([15, 15, 15, 15, 15, 15, 15, 15, 15, 7])
+  test("splits into bands no taller than the cap, spread evenly", () => {
+    // 142 rows over a cap of 15 needs ten bands: two of 15 and eight of 14, not nine of 15 and a sliver.
+    expect(sliceRows(142, 15)).toEqual([15, 15, 14, 14, 14, 14, 14, 14, 14, 14])
+    // 35 rows over a cap of 17 needs three bands, so they come out 12/12/11 rather than 17/17/1.
+    expect(sliceRows(35, 17)).toEqual([12, 12, 11])
+    expect(sliceRows(20, 15)).toEqual([10, 10])
   })
 
   test("keeps a short preview as one band", () => {

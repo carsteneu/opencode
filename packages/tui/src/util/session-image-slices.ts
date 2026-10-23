@@ -5,17 +5,18 @@
  * preview take the full transcript width and be as tall as its aspect ratio demands.
  */
 
-/** Row counts for the stack, none above `maxSliceRows`. */
+/**
+ * Row counts for the stack, none above `maxSliceRows`. The remainder is spread evenly rather than left as a
+ * sliver at the end: a one-row last band is both ugly and, in the native extract, rejected outright.
+ */
 export function sliceRows(totalRows: number, maxSliceRows: number) {
-  const rows: number[] = []
-  let remaining = Math.max(0, Math.round(totalRows))
+  const total = Math.max(0, Math.round(totalRows))
   const cap = Math.max(1, Math.round(maxSliceRows))
-  while (remaining > 0) {
-    const take = Math.min(remaining, cap)
-    rows.push(take)
-    remaining -= take
-  }
-  return rows
+  if (total === 0) return []
+  const count = Math.ceil(total / cap)
+  const base = Math.floor(total / count)
+  const remainder = total - base * count
+  return Array.from({ length: count }, (_, index) => base + (index < remainder ? 1 : 0))
 }
 
 /** Pixel band per slice, proportional to its row share, so the stack reproduces the whole image. */
