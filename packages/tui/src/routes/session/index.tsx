@@ -8,6 +8,7 @@ import {
   Match,
   on,
   onCleanup,
+  onMount,
   Show,
   Switch,
   type Accessor,
@@ -99,6 +100,7 @@ import { collapseShellOutput, collapseToolOutput } from "../../util/collapse-too
 import { probeSessionImage, sessionImagePreviewHeight, type SessionImageProbe } from "../../util/session-image-preview"
 import { textPartImageSources, type MarkdownImageSource } from "../../util/session-image-markdown"
 import { acquireImagePreview, releaseImagePreview } from "../../util/session-image-preview-cache"
+import { intersectsViewport, visibilityMargin } from "../../util/session-image-visibility"
 import { SessionImageBands } from "../../component/session-image-bands"
 import { Keymap, type KeymapCommand } from "../../context/keymap"
 import { usePathFormatter } from "../../context/path-format"
@@ -152,6 +154,8 @@ const BACKGROUND_TOOL_HINT_DELAY = 3_000
 // The tail comfortably overfills a tall viewport; older rows mount as the reader approaches them.
 const TRANSCRIPT_TAIL_ROWS = 40
 const TRANSCRIPT_BACKFILL_CHUNK = 60
+// Cheap enough to poll: it reads a position, and only a changed verdict does any work.
+const VIEWPORT_POLL_MS = 50
 
 export function Session(props: {
   scrollRef?: (scroll: ScrollBoxRenderable | undefined) => void
@@ -2659,7 +2663,17 @@ function ToolImages(props: { parts: readonly SessionMessageAssistantTool[] }) {
   return <SessionImages images={images()} />
 }
 
-type SessionImagePreview = { uri: string; mention?: { text: string }; probe?: SessionImageProbe }
+type SessionImagePreview = {
+  uri: string
+  mention?: { text: string }
+  probe?: SessionImageProbe
+  /**
+   * Cache references owned by the preview once it exists: whoever hides it gives them back, whoever shows
+   * it takes them again. Tool results carry none, their bytes live in the message.
+   */
+  retain?: () => void
+  release?: () => void
+}
 
 // One retry for a source that failed to load: a file written a moment after the text that names it
 // still gets its preview, without polling a source that will never arrive.
@@ -2722,7 +2736,14 @@ function TextImages(props: { part: SessionMessageAssistantText; message: Session
         releaseImagePreview(image.source)
         return { uri: "", probe, mention: { text: image.label } }
       }
-      return { uri, mention: { text: image.label } }
+      // The reference travels with the preview: the slot that shows it gives the bytes back when it hides.
+      held.delete(image.source)
+      return {
+        uri,
+        mention: { text: image.label },
+        retain: () => void acquireImagePreview(image.source),
+        release: () => releaseImagePreview(image.source),
+      }
     }
 
     // Nothing is loaded while the session streams: the previews are suspended then, so a fetch or a
@@ -2779,6 +2800,26 @@ function SessionImages(props: { images: readonly SessionImagePreview[]; paddingL
   // Image glyphs repaint every shown line each frame while streaming text advances; suspend the
   // previews until the runner idles so the two do not compete for the same frame budget.
   const visible = createMemo(() => (ctx.sessionRunning() ? [] : images()))
+  // Only the rows near the viewport hold a decoded image: the transcript mounts far more rows than it
+  // shows, and every mounted preview used to decode and keep its pixels for as long as the window held
+  // it. The row keeps its height either way, so nothing moves when an image is released.
+  const boxes = new Map<number, BoxRenderable>()
+  const [onScreen, setOnScreen] = createSignal<ReadonlySet<number>>(new Set())
+  const measure = () => {
+    const viewport = Math.max(1, renderer.terminalHeight)
+    const shown = onScreen()
+    const next = new Set<number>()
+    for (const [index, node] of boxes) {
+      if (node.isDestroyed) continue
+      if (intersectsViewport(node.screenY, node.height, viewport, visibilityMargin(shown.has(index), viewport)))
+        next.add(index)
+    }
+    if (next.size !== shown.size || [...next].some((index) => !shown.has(index))) setOnScreen(next)
+  }
+  onMount(() => {
+    const timer = setInterval(measure, VIEWPORT_POLL_MS)
+    onCleanup(() => clearInterval(timer))
+  })
   // The probe is width-independent, so it belongs to the image list rather than to the geometry:
   // a resize must not re-decode a payload that can run to the whole inline budget. A caller that
   // already probed its payload hands the verdict in, so it is read at most once.
@@ -2827,8 +2868,26 @@ function SessionImages(props: { images: readonly SessionImagePreview[]; paddingL
               // Read through the index so a resize re-sizes the box without re-keying the row:
               // a keyed re-render would drop the image element and decode the source again.
               const preview = () => value()[index()]
+              const shown = () => onScreen().has(index())
+              // One cache reference, handed over with the preview: out of sight gives the bytes back, back
+              // in sight takes them again, and leaving the tree gives back whatever is still held.
+              let holding = true
+              createEffect(() => {
+                const now = shown()
+                if (now === holding) return
+                if (now) image.retain?.()
+                else image.release?.()
+                holding = now
+              })
+              onCleanup(() => {
+                if (holding) image.release?.()
+              })
               return (
                 <box
+                  ref={(node) => {
+                    boxes.set(index(), node)
+                    measure()
+                  }}
                   width="100%"
                   height={preview().height}
                   flexShrink={0}
@@ -2843,13 +2902,15 @@ function SessionImages(props: { images: readonly SessionImagePreview[]; paddingL
                   }}
                 >
                   <Show when={!preview().oversized && !failed()} fallback={<text>No preview</text>}>
-                    <SessionImageBands
-                      source={image.uri}
-                      rows={preview().height}
-                      // A band stays well under the renderer's paint limit (about twice the viewport).
-                      maxBandRows={Math.max(4, Math.floor(ctx.terminal.height / 2))}
-                      onError={() => setFailed(true)}
-                    />
+                    <Show when={shown()}>
+                      <SessionImageBands
+                        source={image.uri}
+                        rows={preview().height}
+                        // A band stays well under the renderer's paint limit (about twice the viewport).
+                        maxBandRows={Math.max(4, Math.floor(ctx.terminal.height / 2))}
+                        onError={() => setFailed(true)}
+                      />
+                    </Show>
                   </Show>
                 </box>
               )
