@@ -96,7 +96,7 @@ export function replayFileName(filePath: string): string {
 }
 
 function inputValue(state: ToolPart["state"]): Record<string, unknown> {
-  return state.input
+  return recordValue(state.input) ?? {}
 }
 
 function stepPatch(state: ToolPart["state"]): string | undefined {
