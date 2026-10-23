@@ -3763,53 +3763,36 @@ function ApplyPatch(props: ToolProps) {
         .join("\n"),
     ),
   )
-  const [expanded, setExpanded] = createSignal(false)
 
   return (
     <Switch>
       <Match when={files().length > 0}>
         <Switch>
           <Match when={limited()}>
+            {/* The change is already applied: the review path is the diff viewer, so nothing here mounts a patch. */}
             <BlockTool
               title={`# Patched ${files().length} file${files().length === 1 ? "" : "s"} · +${totals().additions} -${totals().deletions} · ${formatDiffBytes(totals().bytes)}`}
               part={props.part}
-              onClick={() => setExpanded((value) => !value)}
             >
-              <Show
-                when={expanded()}
-                fallback={
-                  <box gap={1}>
-                    <box>
-                      <For each={summaries().slice(0, DIFF_PREVIEW_LIMITS.maxSetFiles)}>
-                        {(item) => (
-                          <text fg={theme.text.muted}>
-                            {pathFormatter.format(item.file.relativePath)} +{item.measured.additions} -
-                            {item.measured.deletions}
-                          </text>
-                        )}
-                      </For>
-                      <Show when={files().length > DIFF_PREVIEW_LIMITS.maxSetFiles}>
-                        <text fg={theme.text.muted}>
-                          +{files().length - DIFF_PREVIEW_LIMITS.maxSetFiles} more files
-                        </text>
-                      </Show>
-                    </box>
-                    <text fg={theme.text.base} wrapMode="char">
-                      {preview().preview}
-                    </text>
-                    <text fg={theme.text.muted}>Click to show the raw patch · /diff opens the full review</text>
-                  </box>
-                }
-              >
-                <box gap={1}>
-                  <text fg={theme.text.base} wrapMode="char">
-                    {files()
-                      .map((file) => file.patch)
-                      .join("\n")}
-                  </text>
-                  <text fg={theme.text.muted}>Click to collapse · /diff opens the full review</text>
+              <box gap={1}>
+                <box>
+                  <For each={summaries().slice(0, DIFF_PREVIEW_LIMITS.maxSetFiles)}>
+                    {(item) => (
+                      <text fg={theme.text.muted}>
+                        {pathFormatter.format(item.file.relativePath)} +{item.measured.additions} -
+                        {item.measured.deletions}
+                      </text>
+                    )}
+                  </For>
+                  <Show when={files().length > DIFF_PREVIEW_LIMITS.maxSetFiles}>
+                    <text fg={theme.text.muted}>+{files().length - DIFF_PREVIEW_LIMITS.maxSetFiles} more files</text>
+                  </Show>
                 </box>
-              </Show>
+                <text fg={theme.text.base} wrapMode="char">
+                  {preview().preview}
+                </text>
+                <text fg={theme.text.muted}>Open the diff viewer for the full review.</text>
+              </box>
             </BlockTool>
           </Match>
           <Match when={true}>
