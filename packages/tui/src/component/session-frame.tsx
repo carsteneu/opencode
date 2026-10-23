@@ -25,6 +25,7 @@ import { PaneResizeHandle } from "../ui/pane-resize-handle"
 import { useToast } from "../ui/toast"
 import { TerminalPane } from "./terminal-pane"
 import { PanelHost } from "./panel-host"
+import { SessionReplay } from "./session-replay"
 
 export function SessionFrame(props: { sessionID: string; verticalTabsWidth: number }) {
   const sessions = useSessionTerminals()
@@ -66,6 +67,7 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
     paneResize.onMouseUp(event)
   }
   const [sidebarOpen, setSidebarOpen] = createSignal(false)
+  const [replay, updateReplay] = useStorage().store<{ open: boolean }>("replay", { initial: { open: false } })
   const [sessionWidth, setSessionWidth] = createSignal<number>()
   const [activePane, setActivePane] = createSignal<"session" | "right">("session")
   const [restoreTerminalFocus, setRestoreTerminalFocus] = createSignal(false)
@@ -115,6 +117,9 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
     if (selectedTerminal()) return "terminal"
     if (sidebarVisible()) return "sidebar"
   })
+  // The replay pane is its own column beside the sidebar: it keeps its state
+  // when the terminal narrows and only hides until it is wide enough again.
+  const replayVisible = createMemo(() => replay.open && wide())
   const toggleSidebar = () => {
     batch(() => {
       const visible = rightPane() === "sidebar"
@@ -190,6 +195,25 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
         palette: true,
         run: () => {
           toggleSidebar()
+          dialog.clear()
+        },
+      },
+      {
+        id: "session.replay.toggle",
+        title: replayVisible() ? "Hide replay pane" : "Show replay pane",
+        group: "Session",
+        palette: true,
+        run: () => {
+          // The pane needs the room it takes: refuse on a narrow terminal
+          // instead of squeezing the transcript, and keep the state as it was.
+          if (!wide()) {
+            toast.show({ message: "Terminal too narrow for replay pane", variant: "warning", duration: 3000 })
+            dialog.clear()
+            return
+          }
+          void updateReplay((draft) => {
+            draft.open = !draft.open
+          }).catch(toast.error)
           dialog.clear()
         },
       },
@@ -322,6 +346,9 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
           />
         </Show>
       </box>
+      <Show when={replayVisible()}>
+        <SessionReplay sessionID={props.sessionID} />
+      </Show>
       <Show when={rightPane() === "terminal" || rightPane() === "panel" || (rightPane() === "sidebar" && wide())}>
         <box
           ref={(value: BoxRenderable) => (rightNode = value)}
