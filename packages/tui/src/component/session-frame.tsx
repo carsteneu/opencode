@@ -53,6 +53,7 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
   }>("layout", {
     initial: {},
   })
+  const replayWidth = () => layout.replayWidth ?? SESSION_REPLAY_WIDTH
   const paneResize = createPaneResize({
     value: () => layout.paneWidth ?? layout.terminalWidth ?? defaultPaneWidth(),
     defaultValue: defaultPaneWidth,
@@ -133,17 +134,27 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
   // A fullscreen panel already claims the whole width, so the column yields
   // there instead of pushing the panel out of the frame.
   const replayVisible = createMemo(() => replay.open && wide() && !fullscreen())
-  // Rendered width of the right-hand column, which the replay column has to share
-  // the row with. A sidebar is fixed; terminal and panel panes own the splitter.
-  const rightWidth = createMemo(() => {
-    if (fullscreen()) return 0
+  // The right-hand column the replay column shares the row with: a sidebar is
+  // fixed, a terminal or panel pane owns the splitter.
+  const rightColumn = (width: () => number) => {
     const pane = rightPane()
     if (pane === "sidebar") return SESSION_SIDEBAR_WIDTH
-    if (pane === "terminal" || pane === "panel") return paneResize.size()
+    if (pane === "terminal" || pane === "panel") return width()
     return 0
-  })
+  }
+  // The replay column takes its width out of the right pane's row share. A stored
+  // width can outgrow the row after the terminal shrinks, so the claim is capped
+  // against the current row: otherwise the right pane would be starved to nothing.
+  // It reads the stored width, never the replay resizer's live size, so this clamp
+  // and the replay clamp cannot close a loop through each other.
+  const replayClaim = () => {
+    if (!replayVisible()) return 0
+    const width = replayWidth()
+    return Math.min(width, clampSessionReplayWidth(width, panels.width() - rightColumn(() => SESSION_PANE_MIN_WIDTH)))
+  }
+  const rightWidth = createMemo(() => (fullscreen() ? 0 : rightColumn(() => paneResize.size())))
   const replayResize = createPaneResize({
-    value: () => layout.replayWidth ?? SESSION_REPLAY_WIDTH,
+    value: replayWidth,
     defaultValue: () => SESSION_REPLAY_WIDTH,
     clamp: (width) => clampSessionReplayWidth(width, panels.width() - rightWidth()),
     fromMouse: (event) => dimensions().width - rightWidth() - event.x,
@@ -155,21 +166,6 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
       }).catch((error) => console.error("Failed to persist TUI layout", error))
     },
   })
-  // The replay column takes its width out of this pane's row share. The stored
-  // width can outgrow the row after the terminal shrinks, so the claim is capped
-  // against the current row: otherwise the right pane would be starved to nothing.
-  // The clamped size cannot be read here, it would close the loop through `rightWidth`.
-  const replayClaim = () => {
-    if (!replayVisible()) return 0
-    const preferred = replayResize.preferredSize()
-    return Math.min(preferred, clampSessionReplayWidth(preferred, panels.width() - rightFloor()))
-  }
-  const rightFloor = () => {
-    const pane = rightPane()
-    if (pane === "sidebar") return SESSION_SIDEBAR_WIDTH
-    if (pane === "terminal" || pane === "panel") return SESSION_PANE_MIN_WIDTH
-    return 0
-  }
   const toggleSidebar = () => {
     batch(() => {
       const visible = rightPane() === "sidebar"
