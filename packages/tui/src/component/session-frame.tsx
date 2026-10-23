@@ -22,7 +22,7 @@ import { Sidebar } from "../routes/session/sidebar"
 import {
   clampSessionPaneWidth,
   clampSessionReplayWidth,
-  SESSION_PANE_MIN_WIDTH,
+  SESSION_REPLAY_MIN_WIDTH,
   SESSION_REPLAY_WIDTH,
   SESSION_SIDEBAR_WIDTH,
 } from "../ui/layout"
@@ -53,7 +53,10 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
   }>("layout", {
     initial: {},
   })
-  const replayWidth = () => layout.replayWidth ?? SESSION_REPLAY_WIDTH
+  const replayWidth = () => {
+    const stored = layout.replayWidth
+    return typeof stored === "number" && Number.isFinite(stored) ? stored : SESSION_REPLAY_WIDTH
+  }
   const paneResize = createPaneResize({
     value: () => layout.paneWidth ?? layout.terminalWidth ?? defaultPaneWidth(),
     defaultValue: defaultPaneWidth,
@@ -136,23 +139,22 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
   const replayVisible = createMemo(() => replay.open && wide() && !fullscreen())
   // The right-hand column the replay column shares the row with: a sidebar is
   // fixed, a terminal or panel pane owns the splitter.
-  const rightColumn = (width: () => number) => {
+  const rightColumn = (width: number) => {
     const pane = rightPane()
     if (pane === "sidebar") return SESSION_SIDEBAR_WIDTH
-    if (pane === "terminal" || pane === "panel") return width()
+    if (pane === "terminal" || pane === "panel") return width
     return 0
   }
-  // The replay column takes its width out of the right pane's row share. A stored
-  // width can outgrow the row after the terminal shrinks, so the claim is capped
-  // against the current row: otherwise the right pane would be starved to nothing.
-  // It reads the stored width, never the replay resizer's live size, so this clamp
-  // and the replay clamp cannot close a loop through each other.
+  // The replay column may not take the row share the right pane had before it
+  // became draggable: a wider replay grows into the transcript, a narrower one
+  // hands columns back, so resizing it can never crush the right pane or leave
+  // its splitter with nothing to do. Growing past the transcript's minimum is
+  // refused by this column's own clamp below.
   const replayClaim = () => {
     if (!replayVisible()) return 0
-    const width = replayWidth()
-    return Math.min(width, clampSessionReplayWidth(width, panels.width() - rightColumn(() => SESSION_PANE_MIN_WIDTH)))
+    return Math.min(Math.max(replayWidth(), SESSION_REPLAY_MIN_WIDTH), SESSION_REPLAY_WIDTH)
   }
-  const rightWidth = createMemo(() => (fullscreen() ? 0 : rightColumn(() => paneResize.size())))
+  const rightWidth = createMemo(() => (fullscreen() ? 0 : rightColumn(paneResize.size())))
   const replayResize = createPaneResize({
     value: replayWidth,
     defaultValue: () => SESSION_REPLAY_WIDTH,

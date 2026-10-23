@@ -6,7 +6,12 @@ import type { FileDiffInfo, SessionInfo, SessionMessageInfo } from "@opencode/cl
 import { createAppFixture } from "./fixture/app"
 import { directory, json } from "./fixture/tui-client"
 import { tmpdir } from "./fixture/fixture"
-import { SESSION_PANE_MIN_WIDTH, SESSION_REPLAY_WIDTH, SESSION_SIDEBAR_WIDTH } from "../src/ui/layout"
+import {
+  SESSION_PANE_MIN_WIDTH,
+  SESSION_REPLAY_MIN_WIDTH,
+  SESSION_REPLAY_WIDTH,
+  SESSION_SIDEBAR_WIDTH,
+} from "../src/ui/layout"
 
 test("the replay pane is off by default and reserves its column between transcript and sidebar", async () => {
   await using state = await tmpdir()
@@ -234,7 +239,7 @@ test("a stored replay width is restored when the pane opens", async () => {
   expect(node(setup, "session-pane").width).toBe(148)
 })
 
-test("a stored replay width from a wider terminal still leaves the panel its floor", async () => {
+test("a stored replay width from a wider terminal never crushes the panel", async () => {
   await using state = await tmpdir()
   await using setup = await createSessionFixture(state.path, { width: 240 })
   await ready(setup)
@@ -256,9 +261,46 @@ test("a stored replay width from a wider terminal still leaves the panel its flo
   const replay = node(setup, "session-replay").width
   const panel = node(setup, "session-panel").width
   const transcript = node(setup, "session-pane").width
+  // The stored width yields to the row: the panel keeps its floor, nothing overflows.
   expect(panel).toBeGreaterThanOrEqual(SESSION_PANE_MIN_WIDTH)
-  expect(transcript).toBeGreaterThanOrEqual(43)
+  expect(replay).toBeLessThanOrEqual(240 - 44)
   expect(transcript + replay + panel).toBeLessThanOrEqual(130)
+})
+
+test("the replay border also drags beside the sidebar and stops at its floor", async () => {
+  await using state = await tmpdir()
+  await using setup = await createSessionFixture(state.path, { width: 200 })
+  await ready(setup)
+  setup.mockInput.pressKey("y", { ctrl: true })
+  await replayReady(setup)
+  setup.mockInput.pressKey("x", { ctrl: true })
+  setup.mockInput.pressKey("b")
+  await setup.waitFor(() => node(setup, "session-pane").width === 200 - SESSION_REPLAY_WIDTH - SESSION_SIDEBAR_WIDTH)
+  await setup.flush()
+
+  // The sidebar is a fixed column, so the border sits that much further left.
+  const border = 200 - SESSION_SIDEBAR_WIDTH - SESSION_REPLAY_WIDTH
+  expect(node(setup, "session-replay").x).toBe(border)
+
+  await setup.mockMouse.pressDown(border, 10)
+  await setup.mockMouse.moveTo(border - 16, 10)
+  await setup.mockMouse.release(border - 16, 10)
+  await setup.flush()
+  expect(node(setup, "session-replay").width).toBe(SESSION_REPLAY_WIDTH + 16)
+  expect(node(setup, "session-pane").width).toBe(border - 16)
+
+  // Dragging right past the floor keeps the column usable instead of vanishing.
+  const grown = border - 16
+  await setup.mockMouse.pressDown(grown, 10)
+  await setup.mockMouse.moveTo(150, 10)
+  await setup.mockMouse.release(150, 10)
+  await setup.flush()
+  expect(node(setup, "session-replay").width).toBe(SESSION_REPLAY_MIN_WIDTH)
+
+  // Double-clicking the border restores the default column.
+  await setup.mockMouse.doubleClick(200 - SESSION_SIDEBAR_WIDTH - SESSION_REPLAY_MIN_WIDTH, 10)
+  await setup.flush()
+  expect(node(setup, "session-replay").width).toBe(SESSION_REPLAY_WIDTH)
 })
 
 const diffs = Array.from({ length: 2 }, (_, index) => ({
