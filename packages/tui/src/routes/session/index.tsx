@@ -24,7 +24,8 @@ import { useTuiTerminalEnvironment } from "../../context/runtime"
 import { Spinner, SPINNER_FRAMES } from "../../component/spinner"
 import { PatchDiff } from "../../component/patch-diff"
 import { BoundedDiff } from "../../component/bounded-diff"
-import { DIFF_PREVIEW_LIMITS, createDiffPreview, formatDiffBytes, summarizeDiffSet } from "../../util/diff-preview"
+import { ApplyPatchSummary } from "../../component/apply-patch-summary"
+import { formatDiffBytes, summarizeDiffSet } from "../../util/diff-preview"
 import { useTheme, useThemes } from "../../context/theme"
 import {
   BoxRenderable,
@@ -3755,14 +3756,6 @@ function ApplyPatch(props: ToolProps) {
   const totals = () => setSummary().totals
   // A set that cannot mount every patch at once gets one summary card instead of a card per file.
   const limited = () => setSummary().limited
-  const preview = createMemo(() =>
-    createDiffPreview(
-      files()
-        .slice(0, DIFF_PREVIEW_LIMITS.maxSetFiles)
-        .map((file) => createDiffPreview(file.patch).preview)
-        .join("\n"),
-    ),
-  )
 
   return (
     <Switch>
@@ -3774,25 +3767,13 @@ function ApplyPatch(props: ToolProps) {
               title={`# Patched ${files().length} file${files().length === 1 ? "" : "s"} · +${totals().additions} -${totals().deletions} · ${formatDiffBytes(totals().bytes)}`}
               part={props.part}
             >
-              <box gap={1}>
-                <box>
-                  <For each={summaries().slice(0, DIFF_PREVIEW_LIMITS.maxSetFiles)}>
-                    {(item) => (
-                      <text fg={theme.text.muted}>
-                        {pathFormatter.format(item.file.relativePath)} +{item.measured.additions} -
-                        {item.measured.deletions}
-                      </text>
-                    )}
-                  </For>
-                  <Show when={files().length > DIFF_PREVIEW_LIMITS.maxSetFiles}>
-                    <text fg={theme.text.muted}>+{files().length - DIFF_PREVIEW_LIMITS.maxSetFiles} more files</text>
-                  </Show>
-                </box>
-                <text fg={theme.text.base} wrapMode="char">
-                  {preview().preview}
-                </text>
-                <text fg={theme.text.muted}>Open the diff viewer for the full review.</text>
-              </box>
+              <ApplyPatchSummary
+                files={files()}
+                measured={summaries().map((item) => item.measured)}
+                fg={theme.text.base}
+                mutedFg={theme.text.muted}
+                formatPath={pathFormatter.format}
+              />
             </BlockTool>
           </Match>
           <Match when={true}>

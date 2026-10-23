@@ -465,6 +465,7 @@ export function RunPermissionBody(props: {
                             flexShrink={0}
                             onMouseUp={(event) => {
                               if (patchPreview()?.limited !== true) return
+                              if (event.isDragging) return
                               event.stopPropagation()
                               toggleExpandedPatch()
                             }}

@@ -106,6 +106,7 @@ function EditBody(props: { file?: string; diff?: string; patch?: string }) {
                 gap={1}
                 onMouseUp={(event) => {
                   if (patchPreview()?.limited !== true) return
+                  if (event.isDragging) return
                   event.stopPropagation()
                   setExpandedPatch((value) => !value)
                 }}

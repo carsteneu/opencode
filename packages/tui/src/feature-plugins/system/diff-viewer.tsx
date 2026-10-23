@@ -722,7 +722,7 @@ export function DiffViewerContent(props: {
       id: "diff.toggle_file_tree",
       title: "Toggle diff viewer file tree",
       group: "VCS",
-      enabled: () => !compact(),
+      enabled: () => !compact() && !automaticFileTreeLimit(),
       run() {
         // Hidden by the file-tree limit, the tree cannot be shown again; do not record a preference that does nothing.
         if (compact() || automaticFileTreeLimit()) return
@@ -735,6 +735,7 @@ export function DiffViewerContent(props: {
       id: "diff.single_patch",
       title: "Toggle single patch view",
       group: "VCS",
+      enabled: () => !automaticSinglePatch(),
       run() {
         // Over the set limit the viewer stays on one patch, so the toggle must not record a preference it ignores.
         if (automaticSinglePatch()) return
@@ -925,7 +926,14 @@ export function DiffViewerContent(props: {
           </box>
           <Show when={safeMode()}>
             {(label) => (
-              <text fg={theme.text.feedback.warning.base} flexShrink={0} wrapMode="none" selectable={false}>
+              <text
+                fg={theme.text.feedback.warning.base}
+                flexShrink={1}
+                minWidth={0}
+                wrapMode="none"
+                truncate
+                selectable={false}
+              >
                 {label()}
               </text>
             )}

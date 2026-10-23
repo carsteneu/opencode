@@ -35,6 +35,8 @@ export function BoundedDiff(props: Props) {
           gap={1}
           onMouseUp={(event) => {
             if (!local.expandable) return
+            // The release that ends a selection or drag gesture is not a click.
+            if (event.isDragging) return
             event.stopPropagation()
             if (local.onExpand) local.onExpand()
             else setOwnExpanded(true)
