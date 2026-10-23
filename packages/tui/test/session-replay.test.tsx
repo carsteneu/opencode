@@ -1,0 +1,322 @@
+import { expect, test } from "bun:test"
+import { ScrollBoxRenderable, TextareaRenderable, type Renderable } from "@opentui/core"
+import type { FileDiffInfo, SessionInfo, SessionMessageInfo } from "@opencode/client"
+import { createAppFixture } from "./fixture/app"
+import { directory, json } from "./fixture/tui-client"
+import { tmpdir } from "./fixture/fixture"
+import { SESSION_REPLAY_WIDTH, SESSION_SIDEBAR_WIDTH } from "../src/ui/layout"
+
+test("the replay pane is off by default and reserves its column between transcript and sidebar", async () => {
+  await using state = await tmpdir()
+  await using setup = await createSessionFixture(state.path, { width: 200 })
+  await ready(setup)
+  const width = node(setup, "session-pane").width
+
+  expect(found(setup, "session-replay")).toBeUndefined()
+
+  setup.mockInput.pressKey("y", { ctrl: true })
+  await replayReady(setup)
+  expect(node(setup, "session-pane").width).toBe(width - SESSION_REPLAY_WIDTH)
+  expect(text(setup, "replay-step-1")).toContain("1/2")
+  expect(text(setup, "replay-step-1")).toContain("a0.ts")
+
+  // The pane sits beside the sidebar instead of replacing it.
+  setup.mockInput.pressKey("x", { ctrl: true })
+  setup.mockInput.pressKey("b")
+  await setup.waitFor(() => node(setup, "session-pane").width === width - SESSION_REPLAY_WIDTH - SESSION_SIDEBAR_WIDTH)
+  await setup.flush()
+  expect(found(setup, "session-replay")).toBeDefined()
+
+  setup.mockInput.pressKey("y", { ctrl: true })
+  await setup.waitFor(() => !setup.renderer.root.findDescendantById("session-replay"))
+  await setup.flush()
+  expect(node(setup, "session-pane").width).toBe(width - SESSION_SIDEBAR_WIDTH)
+})
+
+test("a narrow terminal refuses the toggle, keeps the state and says why", async () => {
+  await using state = await tmpdir()
+  await using setup = await createSessionFixture(state.path, { width: 120 })
+  await ready(setup)
+
+  setup.mockInput.pressKey("y", { ctrl: true })
+  await setup.waitForFrame((frame) => frame.includes("Terminal too narrow for replay pane"))
+  expect(found(setup, "session-replay")).toBeUndefined()
+
+  // The refusal must not have flipped the stored preference.
+  setup.resize(200, 36)
+  await setup.flush()
+  expect(found(setup, "session-replay")).toBeUndefined()
+
+  setup.mockInput.pressKey("y", { ctrl: true })
+  await replayReady(setup)
+  expect(node(setup, "session-replay").width).toBe(SESSION_REPLAY_WIDTH)
+})
+
+test("widening after an open pane keeps it, narrowing hides it until the terminal is wide again", async () => {
+  await using state = await tmpdir()
+  await using setup = await createSessionFixture(state.path, { width: 200 })
+  await ready(setup)
+  setup.mockInput.pressKey("y", { ctrl: true })
+  await replayReady(setup)
+
+  setup.resize(110, 36)
+  await setup.waitFor(() => !setup.renderer.root.findDescendantById("session-replay"))
+  setup.resize(200, 36)
+  await replayReady(setup)
+
+  setup.mockInput.pressKey("y", { ctrl: true })
+  await setup.waitFor(() => !setup.renderer.root.findDescendantById("session-replay"))
+})
+
+test("a fullscreen panel hides the replay column instead of pushing the panel out of the frame", async () => {
+  await using state = await tmpdir()
+  await using setup = await createSessionFixture(state.path, { width: 200 })
+  await ready(setup)
+  setup.mockInput.pressKey("y", { ctrl: true })
+  await replayReady(setup)
+
+  setup.mockInput.pressKey("F6")
+  await setup.waitForFrame((frame) => frame.includes("file00.txt"), { maxPasses: 120 })
+  expect(found(setup, "session-replay")).toBeDefined()
+
+  setup.mockInput.pressKey("f")
+  await setup.waitFor(() => found(setup, "session-panel")?.width === setup.renderer.width)
+  expect(found(setup, "session-replay")).toBeUndefined()
+
+  setup.mockInput.pressKey("f")
+  await replayReady(setup)
+})
+
+test("a long ledger opens at its newest step", async () => {
+  await using state = await tmpdir()
+  await using setup = await createSessionFixture(state.path, { width: 200, edits: 8 })
+  await ready(setup)
+  setup.mockInput.pressKey("y", { ctrl: true })
+  setup.mockInput.pressKey("y", { ctrl: true })
+  await setup.waitForFrame((frame) => frame.includes("8/8"), { maxPasses: 120 })
+
+  const ledger = replayScroll(setup)
+  await setup.waitFor(() => ledger.scrollTop > 0)
+  expect(setup.captureCharFrame()).toContain("8/8")
+  expect(setup.captureCharFrame()).not.toContain("1/8")
+})
+
+test("the toggle follows the configured keybind", async () => {
+  await using state = await tmpdir()
+  await using setup = await createSessionFixture(state.path, {
+    width: 200,
+    keybinds: { "session.replay.toggle": "f7" },
+  })
+  await ready(setup)
+  setup.mockInput.pressKey("y", { ctrl: true })
+  await setup.flush()
+  expect(found(setup, "session-replay")).toBeUndefined()
+
+  setup.mockInput.pressKey("F7")
+  await replayReady(setup)
+})
+
+test("the replay column is part of the split budget at the narrowest wide terminal", async () => {
+  await using state = await tmpdir()
+  await using setup = await createSessionFixture(state.path, { width: 121 })
+  await ready(setup)
+  setup.mockInput.pressKey("y", { ctrl: true })
+  await replayReady(setup)
+
+  setup.mockInput.pressKey("F6")
+  await setup.waitForFrame((frame) => frame.includes("file00.txt"), { maxPasses: 120 })
+  await setup.flush()
+  const panel = node(setup, "session-panel")
+  const transcript = node(setup, "session-pane").width
+  // The split clamp must know the replay column; otherwise the panel keeps half
+  // the terminal and the transcript drops far below its 44-column minimum.
+  expect(transcript + panel.width + SESSION_REPLAY_WIDTH).toBeLessThanOrEqual(121)
+  expect(transcript).toBeGreaterThanOrEqual(43)
+})
+
+test("the toggle does what its label says while a panel is fullscreen", async () => {
+  await using state = await tmpdir()
+  await using setup = await createSessionFixture(state.path, { width: 200 })
+  await ready(setup)
+  setup.mockInput.pressKey("y", { ctrl: true })
+  await replayReady(setup)
+
+  setup.mockInput.pressKey("F6")
+  await setup.waitForFrame((frame) => frame.includes("file00.txt"), { maxPasses: 120 })
+  setup.mockInput.pressKey("f")
+  await setup.waitFor(() => found(setup, "session-panel")?.width === setup.renderer.width)
+  expect(found(setup, "session-replay")).toBeUndefined()
+
+  // Hiding the open pane must work behind a fullscreen panel.
+  setup.mockInput.pressKey("y", { ctrl: true })
+  await setup.flush()
+  // Showing it must refuse with a reason instead of flipping the stored state.
+  setup.mockInput.pressKey("y", { ctrl: true })
+  await setup.waitForFrame((frame) => frame.includes("Exit the fullscreen panel to show the replay pane"))
+
+  setup.mockInput.pressKey("f")
+  await setup.waitFor(() => found(setup, "session-panel")?.width !== setup.renderer.width)
+  await setup.flush()
+  expect(found(setup, "session-replay")).toBeUndefined()
+})
+
+const diffs = Array.from({ length: 2 }, (_, index) => ({
+  file: `src/file0${index}.txt`,
+  status: "modified",
+  additions: 1,
+  deletions: 1,
+  patch: [
+    `--- a/src/file0${index}.txt`,
+    `+++ b/src/file0${index}.txt`,
+    "@@ -1,2 +1,2 @@",
+    "-before",
+    "+after",
+    " context",
+    "",
+  ].join("\n"),
+})) satisfies FileDiffInfo[]
+
+const session = {
+  id: `ses_replay_${crypto.randomUUID()}`,
+  title: "Replay fixture",
+  projectID: "proj_replay",
+  location: { directory },
+  agent: "build",
+  model: { providerID: "fixture", id: "model" },
+  cost: 0,
+  tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+  time: { created: 1, updated: 12 },
+} satisfies SessionInfo
+
+function messages(edits = 2): SessionMessageInfo[] {
+  return [
+    { id: "msg_replay_01", type: "user", text: "Transcript item 1", time: { created: 1 } },
+    {
+      id: "msg_replay_02",
+      type: "assistant",
+      agent: "build",
+      model: { providerID: "fixture", id: "model" },
+      time: { created: 2 },
+      content: [
+        { type: "text", text: "Transcript item 2" },
+        ...Array.from({ length: edits }, (_, index) => editPart(index)),
+      ],
+    } as unknown as SessionMessageInfo,
+    { id: "msg_replay_03", type: "user", text: "Transcript item 3", time: { created: 5 } },
+  ]
+}
+
+function editPart(index: number) {
+  const file = index === 1 ? "src/b.ts" : `src/a${index}.ts`
+  return index % 2 === 0
+    ? {
+        type: "tool",
+        id: `prt_replay_${index}`,
+        name: "edit",
+        time: { created: 3 + index },
+        state: {
+          status: "completed",
+          input: { path: file },
+          content: [{ type: "text", text: "ok" }],
+          metadata: { files: [{ file, patch: "@@ -1,2 +1,2 @@\n a\n-b\n+c\n" }] },
+        },
+      }
+    : {
+        type: "tool",
+        id: `prt_replay_${index}`,
+        name: "write",
+        time: { created: 3 + index },
+        state: {
+          status: "completed",
+          input: { path: file, content: "export const b = 1" },
+          content: [{ type: "text", text: "ok" }],
+        },
+      }
+}
+
+async function createSessionFixture(
+  state: string,
+  input: { width: number; edits?: number; keybinds?: Record<string, string> },
+) {
+  const location = { directory, project: { id: session.projectID, directory, canonical: directory } }
+  return createAppFixture({
+    width: input.width,
+    height: 36,
+    state,
+    args: { sessionID: session.id },
+    config: {
+      animations: false,
+      tabs: { enabled: false },
+      session: { sidebar: "hide" },
+      diffs: { tree: false, view: "unified" },
+      keybinds: { "diff.open": "f6", ...input.keybinds },
+    },
+    fetch: async (url) => {
+      if (url.pathname === "/api/location") return json(location)
+      if (url.pathname === "/api/fs/list") return json({ location, data: [] })
+      if (url.pathname === "/api/agent")
+        return json({ location, data: [{ id: "build", mode: "primary", hidden: false, permissions: [] }] })
+      if (url.pathname === "/api/model")
+        return json({ location, data: [{ id: "model", providerID: "fixture", name: "Model", variants: [] }] })
+      if (url.pathname === "/api/provider") return json({ location, data: [{ id: "fixture", name: "Fixture" }] })
+      if (url.pathname === "/api/vcs") return json({ location, data: { branch: { current: "replay", default: "v2" } } })
+      if (url.pathname === "/api/vcs/base")
+        return json({ location, data: { name: "v2", ref: "refs/heads/v2", source: "default" } })
+      if (url.pathname === "/api/vcs/diff") return json({ location, data: diffs })
+      if (url.pathname === `/api/session/${session.id}`) return json({ data: session })
+      if (url.pathname === `/api/session/${session.id}/message`)
+        return json({ data: messages(input.edits).toReversed(), cursor: {} })
+      if (url.pathname === `/api/session/${session.id}/inbox`) return json({ data: [] })
+      if (url.pathname === `/api/session/${session.id}/permission`) return json({ data: [] })
+      if (url.pathname === `/api/session/${session.id}/form`) return json({ data: [] })
+      return undefined
+    },
+  })
+}
+
+type AppFixture = Awaited<ReturnType<typeof createAppFixture>>
+
+async function ready(setup: AppFixture) {
+  await setup.ready
+  await setup.waitForFrame((frame) => frame.includes("Transcript item 3") && frame.includes("Build · Model"), {
+    maxPasses: 120,
+  })
+  await setup.waitFor(() => setup.renderer.currentFocusedEditor instanceof TextareaRenderable)
+}
+
+async function replayReady(setup: AppFixture) {
+  await setup.waitForFrame((frame) => frame.includes("Replay") && frame.includes("1/2 edit"), { maxPasses: 120 })
+  await setup.flush()
+}
+
+function node(setup: AppFixture, id: string) {
+  const result = setup.renderer.root.findDescendantById(id)
+  if (!result) throw new Error(`Missing renderable: ${id}\n${setup.captureCharFrame()}`)
+  return result
+}
+
+function found(setup: AppFixture, id: string) {
+  return setup.renderer.root.findDescendantById(id)
+}
+
+function replayScroll(setup: AppFixture) {
+  const result = descendants(node(setup, "session-replay")).find((item) => item instanceof ScrollBoxRenderable)
+  if (!result) throw new Error("Missing replay scrollbox")
+  return result
+}
+
+function descendants(root: Renderable): Renderable[] {
+  return root.getChildren().flatMap((item) => [item, ...descendants(item)])
+}
+
+function text(setup: AppFixture, id: string) {
+  const item: Renderable | undefined = setup.renderer.root.findDescendantById(id)
+  if (!item) return ""
+  return setup
+    .captureCharFrame()
+    .split("\n")
+    .slice(item.y, item.y + item.height)
+    .map((line) => line.slice(item.x, item.x + item.width).trim())
+    .join("\n")
+    .trim()
+}
