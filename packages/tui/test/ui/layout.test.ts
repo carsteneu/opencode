@@ -1,7 +1,10 @@
 import { expect, test } from "bun:test"
 import {
+  clampSessionReplayWidth,
   clampSessionTabsWidth,
   sessionTabsFitVertically,
+  SESSION_REPLAY_MIN_WIDTH,
+  SESSION_REPLAY_WIDTH,
   SESSION_SIDEBAR_MAX_WIDTH,
   SESSION_SIDEBAR_WIDTH,
   SESSION_TABS_COMPACT_WIDTH,
@@ -28,4 +31,16 @@ test("vertical tab width preserves minimum rail and content widths", () => {
   expect(clampSessionTabsWidth(42, 54)).toBe(10)
   expect(sessionTabsFitVertically(69, SESSION_TABS_COMPACT_WIDTH)).toBe(true)
   expect(sessionTabsFitVertically(68, SESSION_TABS_COMPACT_WIDTH)).toBe(false)
+})
+
+test("the replay width keeps its floor, its default and the transcript's minimum", () => {
+  expect(SESSION_REPLAY_MIN_WIDTH).toBe(24)
+  expect(clampSessionReplayWidth(1, 160)).toBe(SESSION_REPLAY_MIN_WIDTH)
+  expect(clampSessionReplayWidth(SESSION_REPLAY_WIDTH, 160)).toBe(SESSION_REPLAY_WIDTH)
+  // The maximum is whatever is left after the transcript's 44 columns.
+  expect(clampSessionReplayWidth(500, 160)).toBe(160 - 44)
+  expect(clampSessionReplayWidth(500, 200)).toBe(200 - 44)
+  // Narrow rows keep the equal split, like the right pane's clamp.
+  expect(clampSessionReplayWidth(80, 80)).toBe(40)
+  expect(clampSessionReplayWidth(80, 40)).toBe(20)
 })

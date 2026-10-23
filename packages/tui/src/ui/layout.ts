@@ -1,5 +1,6 @@
 export const SESSION_SIDEBAR_WIDTH = 42
 export const SESSION_REPLAY_WIDTH = 36
+export const SESSION_REPLAY_MIN_WIDTH = 24
 export const SESSION_TABS_COMPACT_WIDTH = 5
 export const SESSION_TABS_COMPACT_BREAKPOINT = 12
 export const SESSION_SIDEBAR_MAX_WIDTH = 72
@@ -24,4 +25,13 @@ export function clampSessionPaneWidth(width: number, total: number) {
   const half = Math.max(1, Math.floor(total / 2))
   // Preserve the equal split when there is not enough room for both pane minima.
   return Math.max(Math.min(24, half), Math.min(width, Math.max(half, total - SESSION_CONTENT_MIN_WIDTH)))
+}
+
+export function clampSessionReplayWidth(width: number, total: number) {
+  const half = Math.max(1, Math.floor(total / 2))
+  // Preserve the equal split when there is not enough room for both pane minima.
+  return Math.max(
+    Math.min(SESSION_REPLAY_MIN_WIDTH, half),
+    Math.min(width, Math.max(half, total - SESSION_CONTENT_MIN_WIDTH)),
+  )
 }
