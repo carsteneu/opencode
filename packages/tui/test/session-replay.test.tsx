@@ -122,6 +122,35 @@ test("the toggle follows the configured keybind", async () => {
   await replayReady(setup)
 })
 
+test("the toggle belongs to the session it was pressed in", async () => {
+  await using state = await tmpdir()
+  const other = `ses_replay_other_${crypto.randomUUID()}`
+  {
+    await using setup = await createSessionFixture(state.path, { width: 200 })
+    await ready(setup)
+    setup.mockInput.pressKey("y", { ctrl: true })
+    await replayReady(setup)
+    expect(await storedReplayOpen(state.path, session.id)).toBe(true)
+  }
+
+  // Another session inherits nothing from the one that was left open, and its
+  // own toggle stays its own.
+  {
+    await using setup = await createSessionFixture(state.path, { width: 200, id: other })
+    await ready(setup)
+    expect(found(setup, "session-replay")).toBeUndefined()
+    setup.mockInput.pressKey("y", { ctrl: true })
+    await replayReady(setup)
+  }
+
+  // Both decisions come back on their own session, none on the other.
+  {
+    await using setup = await createSessionFixture(state.path, { width: 200 })
+    await ready(setup)
+    await replayReady(setup)
+  }
+})
+
 test("the replay column is part of the split budget at the narrowest wide terminal", async () => {
   await using state = await tmpdir()
   await using setup = await createSessionFixture(state.path, { width: 121 })
@@ -380,14 +409,16 @@ function editPart(index: number) {
 
 async function createSessionFixture(
   state: string,
-  input: { width: number; edits?: number; keybinds?: Record<string, string> },
+  input: { width: number; edits?: number; keybinds?: Record<string, string>; id?: string },
 ) {
+  const id = input.id ?? session.id
+  const info = { ...session, id }
   const location = { directory, project: { id: session.projectID, directory, canonical: directory } }
   return createAppFixture({
     width: input.width,
     height: 36,
     state,
-    args: { sessionID: session.id },
+    args: { sessionID: id },
     config: {
       animations: false,
       tabs: { enabled: false },
@@ -407,12 +438,12 @@ async function createSessionFixture(
       if (url.pathname === "/api/vcs/base")
         return json({ location, data: { name: "v2", ref: "refs/heads/v2", source: "default" } })
       if (url.pathname === "/api/vcs/diff") return json({ location, data: diffs })
-      if (url.pathname === `/api/session/${session.id}`) return json({ data: session })
-      if (url.pathname === `/api/session/${session.id}/message`)
+      if (url.pathname === `/api/session/${id}`) return json({ data: info })
+      if (url.pathname === `/api/session/${id}/message`)
         return json({ data: messages(input.edits).toReversed(), cursor: {} })
-      if (url.pathname === `/api/session/${session.id}/inbox`) return json({ data: [] })
-      if (url.pathname === `/api/session/${session.id}/permission`) return json({ data: [] })
-      if (url.pathname === `/api/session/${session.id}/form`) return json({ data: [] })
+      if (url.pathname === `/api/session/${id}/inbox`) return json({ data: [] })
+      if (url.pathname === `/api/session/${id}/permission`) return json({ data: [] })
+      if (url.pathname === `/api/session/${id}/form`) return json({ data: [] })
       return undefined
     },
   })
@@ -451,6 +482,21 @@ function replayScroll(setup: AppFixture) {
 
 function descendants(root: Renderable): Renderable[] {
   return root.getChildren().flatMap((item) => [item, ...descendants(item)])
+}
+
+async function storedReplayOpen(state: string, sessionID: string) {
+  const file = path.join(state, "test", "tui", "replay.json")
+  const deadline = Date.now() + 2_000
+  let raw = ""
+  while (Date.now() < deadline) {
+    try {
+      raw = readFileSync(file, "utf8")
+      const value = (JSON.parse(raw) as { open?: Record<string, boolean> }).open?.[sessionID]
+      if (value !== undefined) return value
+    } catch {}
+    await Bun.sleep(10)
+  }
+  throw new Error(`replay.json never recorded ${sessionID}: ${raw}`)
 }
 
 async function storedLayout(state: string) {

@@ -82,7 +82,16 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
     replayResize.onMouseUp(event)
   }
   const [sidebarOpen, setSidebarOpen] = createSignal(false)
-  const [replay, updateReplay] = useStorage().store<{ open: boolean }>("replay", { initial: { open: false } })
+  // The pane belongs to the session it was opened in: a toggle in one session
+  // must not open the pane in another one.
+  const [replay, updateReplay] = useStorage().store<{ open: Record<string, boolean> }>("replay", {
+    initial: { open: {} },
+  })
+  const replayOpen = () => replay.open[props.sessionID] === true
+  const setReplayOpen = (open: boolean) =>
+    updateReplay((draft) => {
+      draft.open[props.sessionID] = open
+    }).catch(toast.error)
   const [sessionWidth, setSessionWidth] = createSignal<number>()
   const [activePane, setActivePane] = createSignal<"session" | "right">("session")
   const [restoreTerminalFocus, setRestoreTerminalFocus] = createSignal(false)
@@ -136,7 +145,7 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
   // when the terminal narrows and only hides until it is wide enough again.
   // A fullscreen panel already claims the whole width, so the column yields
   // there instead of pushing the panel out of the frame.
-  const replayVisible = createMemo(() => replay.open && wide() && !fullscreen())
+  const replayVisible = createMemo(() => replayOpen() && wide() && !fullscreen())
   // The right-hand column the replay column shares the row with: a sidebar is
   // fixed, a terminal or panel pane owns the splitter.
   const rightColumn = (width: number) => {
@@ -248,17 +257,15 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
       },
       {
         id: "session.replay.toggle",
-        title: replay.open ? "Hide replay pane" : "Show replay pane",
+        title: replayOpen() ? "Hide replay pane" : "Show replay pane",
         group: "Session",
         palette: true,
         run: () => {
           dialog.clear()
           // Hiding always works. Showing needs the room, so a narrow terminal or
           // a fullscreen panel refuses without touching the stored preference.
-          if (replay.open) {
-            void updateReplay((draft) => {
-              draft.open = false
-            }).catch(toast.error)
+          if (replayOpen()) {
+            setReplayOpen(false)
             return
           }
           if (!wide()) {
@@ -269,9 +276,7 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
             toast.show({ message: "Exit the fullscreen panel to show the replay pane", variant: "warning", duration: 3000 })
             return
           }
-          void updateReplay((draft) => {
-            draft.open = true
-          }).catch(toast.error)
+          setReplayOpen(true)
         },
       },
       ...(sessions.available()
