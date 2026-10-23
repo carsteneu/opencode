@@ -7,7 +7,6 @@ import { createAppFixture } from "./fixture/app"
 import { directory, json } from "./fixture/tui-client"
 import { tmpdir } from "./fixture/fixture"
 import {
-  SESSION_PANE_MIN_WIDTH,
   SESSION_REPLAY_MIN_WIDTH,
   SESSION_REPLAY_WIDTH,
   SESSION_SIDEBAR_WIDTH,
@@ -261,9 +260,11 @@ test("a stored replay width from a wider terminal never crushes the panel", asyn
   const replay = node(setup, "session-replay").width
   const panel = node(setup, "session-panel").width
   const transcript = node(setup, "session-pane").width
-  // The stored width yields to the row: the panel keeps its floor, nothing overflows.
-  expect(panel).toBeGreaterThanOrEqual(SESSION_PANE_MIN_WIDTH)
-  expect(replay).toBeLessThanOrEqual(240 - 44)
+  // The stored width yields to the row, and the pane keeps the share it holds
+  // without any dragged replay: 50 + 40 + 40 is what the claim of 36 allows here.
+  expect(panel).toBe(50)
+  expect(replay).toBe(40)
+  expect(transcript).toBe(40)
   expect(transcript + replay + panel).toBeLessThanOrEqual(130)
 })
 
