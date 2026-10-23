@@ -1,10 +1,16 @@
 import { expect, test } from "bun:test"
+import { mkdirSync, readFileSync } from "node:fs"
+import path from "node:path"
 import { ScrollBoxRenderable, TextareaRenderable, type Renderable } from "@opentui/core"
 import type { FileDiffInfo, SessionInfo, SessionMessageInfo } from "@opencode/client"
 import { createAppFixture } from "./fixture/app"
 import { directory, json } from "./fixture/tui-client"
 import { tmpdir } from "./fixture/fixture"
-import { SESSION_REPLAY_WIDTH, SESSION_SIDEBAR_WIDTH } from "../src/ui/layout"
+import {
+  SESSION_REPLAY_MIN_WIDTH,
+  SESSION_REPLAY_WIDTH,
+  SESSION_SIDEBAR_WIDTH,
+} from "../src/ui/layout"
 
 test("the replay pane is off by default and reserves its column between transcript and sidebar", async () => {
   await using state = await tmpdir()
@@ -160,6 +166,144 @@ test("the toggle does what its label says while a panel is fullscreen", async ()
   expect(found(setup, "session-replay")).toBeUndefined()
 })
 
+test("the replay column drags at its border, clamps at the transcript minimum and persists", async () => {
+  await using state = await tmpdir()
+  await using setup = await createSessionFixture(state.path, { width: 200 })
+  await ready(setup)
+  setup.mockInput.pressKey("y", { ctrl: true })
+  await replayReady(setup)
+
+  // Nothing sits to the right, so the border is the pane's own left column.
+  const border = 200 - SESSION_REPLAY_WIDTH
+  expect(node(setup, "session-replay").x).toBe(border)
+  expect(node(setup, "session-pane").width).toBe(border)
+
+  await setup.mockMouse.pressDown(border, 10)
+  await setup.mockMouse.moveTo(border - 20, 10)
+  await setup.flush()
+  expect(node(setup, "session-replay").width).toBe(SESSION_REPLAY_WIDTH + 20)
+  expect(node(setup, "session-pane").width).toBe(border - 20)
+  await setup.mockMouse.release(border - 20, 10)
+  await setup.flush()
+
+  // Dragging past the maximum stops where the transcript keeps its 44 columns.
+  await setup.mockMouse.pressDown(border - 20, 10)
+  await setup.mockMouse.moveTo(8, 10)
+  await setup.mockMouse.release(8, 10)
+  await setup.flush()
+  expect(node(setup, "session-replay").width).toBe(200 - 44)
+  expect(node(setup, "session-pane").width).toBe(44)
+
+  expect(await storedLayout(state.path)).toMatchObject({ replayWidth: 200 - 44 })
+})
+
+test("dragging the replay border never resizes the panel split", async () => {
+  await using state = await tmpdir()
+  await using setup = await createSessionFixture(state.path, { width: 200 })
+  await ready(setup)
+  setup.mockInput.pressKey("y", { ctrl: true })
+  await replayReady(setup)
+  setup.mockInput.pressKey("F6")
+  await setup.waitForFrame((frame) => frame.includes("file00.txt"), { maxPasses: 120 })
+  await setup.flush()
+  const panel = node(setup, "session-panel").width
+  const border = 200 - panel - SESSION_REPLAY_WIDTH
+
+  await setup.mockMouse.pressDown(border, 10)
+  await setup.mockMouse.moveTo(border - 20, 10)
+  await setup.mockMouse.release(border - 20, 10)
+  await setup.flush()
+  expect(node(setup, "session-replay").width).toBe(SESSION_REPLAY_WIDTH + 20)
+  expect(node(setup, "session-panel").width).toBe(panel)
+
+  // The panel keeps its column out of the replay's budget: 100 + 56 + 44 = 200.
+  await setup.mockMouse.pressDown(border - 20, 10)
+  await setup.mockMouse.moveTo(8, 10)
+  await setup.mockMouse.release(8, 10)
+  await setup.flush()
+  expect(node(setup, "session-replay").width).toBe(200 - panel - 44)
+  expect(node(setup, "session-panel").width).toBe(panel)
+})
+
+test("a stored replay width is restored when the pane opens", async () => {
+  await using state = await tmpdir()
+  mkdirSync(path.join(state.path, "test", "tui"), { recursive: true })
+  await Bun.write(path.join(state.path, "test", "tui", "layout.json"), JSON.stringify({ replayWidth: 52 }))
+
+  await using setup = await createSessionFixture(state.path, { width: 200 })
+  await ready(setup)
+  setup.mockInput.pressKey("y", { ctrl: true })
+  await replayReady(setup)
+  expect(node(setup, "session-replay").width).toBe(52)
+  expect(node(setup, "session-pane").width).toBe(148)
+})
+
+test("a stored replay width from a wider terminal never crushes the panel", async () => {
+  await using state = await tmpdir()
+  await using setup = await createSessionFixture(state.path, { width: 240 })
+  await ready(setup)
+  setup.mockInput.pressKey("y", { ctrl: true })
+  await replayReady(setup)
+
+  // Fill the row with the replay first, so its stored width no longer fits later.
+  await setup.mockMouse.pressDown(240 - SESSION_REPLAY_WIDTH, 10)
+  await setup.mockMouse.moveTo(4, 10)
+  await setup.mockMouse.release(4, 10)
+  await setup.flush()
+  expect(node(setup, "session-replay").width).toBe(240 - 44)
+
+  setup.mockInput.pressKey("F6")
+  await setup.waitForFrame((frame) => frame.includes("file00.txt"), { maxPasses: 120 })
+  setup.resize(130, 36)
+  await setup.flush()
+
+  const replay = node(setup, "session-replay").width
+  const panel = node(setup, "session-panel").width
+  const transcript = node(setup, "session-pane").width
+  // The stored width yields to the row, and the pane keeps the share it holds
+  // without any dragged replay: 50 + 40 + 40 is what the claim of 36 allows here.
+  expect(panel).toBe(50)
+  expect(replay).toBe(40)
+  expect(transcript).toBe(40)
+  expect(transcript + replay + panel).toBeLessThanOrEqual(130)
+})
+
+test("the replay border also drags beside the sidebar and stops at its floor", async () => {
+  await using state = await tmpdir()
+  await using setup = await createSessionFixture(state.path, { width: 200 })
+  await ready(setup)
+  setup.mockInput.pressKey("y", { ctrl: true })
+  await replayReady(setup)
+  setup.mockInput.pressKey("x", { ctrl: true })
+  setup.mockInput.pressKey("b")
+  await setup.waitFor(() => node(setup, "session-pane").width === 200 - SESSION_REPLAY_WIDTH - SESSION_SIDEBAR_WIDTH)
+  await setup.flush()
+
+  // The sidebar is a fixed column, so the border sits that much further left.
+  const border = 200 - SESSION_SIDEBAR_WIDTH - SESSION_REPLAY_WIDTH
+  expect(node(setup, "session-replay").x).toBe(border)
+
+  await setup.mockMouse.pressDown(border, 10)
+  await setup.mockMouse.moveTo(border - 16, 10)
+  await setup.mockMouse.release(border - 16, 10)
+  await setup.flush()
+  expect(node(setup, "session-replay").width).toBe(SESSION_REPLAY_WIDTH + 16)
+  expect(node(setup, "session-pane").width).toBe(border - 16)
+
+  // Dragging right past the floor keeps the column usable instead of vanishing.
+  const grown = border - 16
+  await setup.mockMouse.pressDown(grown, 10)
+  await setup.mockMouse.moveTo(150, 10)
+  await setup.mockMouse.release(150, 10)
+  await setup.flush()
+  expect(node(setup, "session-replay").width).toBe(SESSION_REPLAY_MIN_WIDTH)
+
+  // Double-clicking the border restores the default column.
+  await setup.mockMouse.doubleClick(200 - SESSION_SIDEBAR_WIDTH - SESSION_REPLAY_MIN_WIDTH, 10)
+  await setup.flush()
+  expect(node(setup, "session-replay").width).toBe(SESSION_REPLAY_WIDTH)
+})
+
 const diffs = Array.from({ length: 2 }, (_, index) => ({
   file: `src/file0${index}.txt`,
   status: "modified",
@@ -307,6 +451,21 @@ function replayScroll(setup: AppFixture) {
 
 function descendants(root: Renderable): Renderable[] {
   return root.getChildren().flatMap((item) => [item, ...descendants(item)])
+}
+
+async function storedLayout(state: string) {
+  const file = path.join(state, "test", "tui", "layout.json")
+  const deadline = Date.now() + 2_000
+  let raw = ""
+  while (Date.now() < deadline) {
+    try {
+      raw = readFileSync(file, "utf8")
+      const layout = JSON.parse(raw) as { replayWidth?: number }
+      if (layout.replayWidth !== undefined) return layout
+    } catch {}
+    await Bun.sleep(10)
+  }
+  throw new Error(`layout.json never recorded a replay width: ${raw}`)
 }
 
 function text(setup: AppFixture, id: string) {

@@ -4,7 +4,6 @@ import { useRenderer } from "@opentui/solid"
 import { createEffect, createMemo, For, on, Show } from "solid-js"
 import { useData } from "../context/data"
 import { useTheme, useThemes } from "../context/theme"
-import { SESSION_REPLAY_WIDTH } from "../ui/layout"
 import { filetype } from "../util/filetype"
 import {
   clampReplayPatch,
@@ -19,10 +18,10 @@ import { PatchDiff } from "./patch-diff"
 
 /**
  * Reader for the edit history of a session: one card per completed
- * edit/write/patch call with its diff. The pane is a fixed-width column, so
- * patches are context-trimmed and clamped before they reach the renderer.
+ * edit/write/patch call with its diff. The pane is a narrow, resizable column,
+ * so patches are context-trimmed and clamped before they reach the renderer.
  */
-export function SessionReplay(props: { sessionID: string }) {
+export function SessionReplay(props: { sessionID: string; width: number }) {
   const data = useData()
   const theme = useTheme()
   const renderer = useRenderer()
@@ -89,7 +88,7 @@ export function SessionReplay(props: { sessionID: string }) {
     <box
       id="session-replay"
       flexShrink={0}
-      width={SESSION_REPLAY_WIDTH}
+      width={props.width}
       minWidth={0}
       minHeight={0}
       flexDirection="column"
