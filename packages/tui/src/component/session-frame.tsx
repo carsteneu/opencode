@@ -430,7 +430,7 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
                     {(ptyID) => (
                       <TerminalPane
                         ptyID={ptyID}
-                        resizing={paneResize.resizing() || replayResize.resizing()}
+                        resizing={paneResize.resizing()}
                         autoFocus={restoreTerminalFocus() || sessions.shouldFocus(ptyID)}
                         onAutoFocus={() => {
                           sessions.clearFocus(ptyID)
