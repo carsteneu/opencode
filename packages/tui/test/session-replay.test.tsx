@@ -101,6 +101,21 @@ test("a long ledger opens at its newest step", async () => {
   expect(setup.captureCharFrame()).not.toContain("1/8")
 })
 
+test("the toggle follows the configured keybind", async () => {
+  await using state = await tmpdir()
+  await using setup = await createSessionFixture(state.path, {
+    width: 200,
+    keybinds: { "session.replay.toggle": "f7" },
+  })
+  await ready(setup)
+  setup.mockInput.pressKey("y", { ctrl: true })
+  await setup.flush()
+  expect(found(setup, "session-replay")).toBeUndefined()
+
+  setup.mockInput.pressKey("F7")
+  await replayReady(setup)
+})
+
 const diffs = Array.from({ length: 2 }, (_, index) => ({
   file: `src/file0${index}.txt`,
   status: "modified",
@@ -175,7 +190,10 @@ function editPart(index: number) {
       }
 }
 
-async function createSessionFixture(state: string, input: { width: number; edits?: number }) {
+async function createSessionFixture(
+  state: string,
+  input: { width: number; edits?: number; keybinds?: Record<string, string> },
+) {
   const location = { directory, project: { id: session.projectID, directory, canonical: directory } }
   return createAppFixture({
     width: input.width,
@@ -187,7 +205,7 @@ async function createSessionFixture(state: string, input: { width: number; edits
       tabs: { enabled: false },
       session: { sidebar: "hide" },
       diffs: { tree: false, view: "unified" },
-      keybinds: { "diff.open": "f6" },
+      keybinds: { "diff.open": "f6", ...input.keybinds },
     },
     fetch: async (url) => {
       if (url.pathname === "/api/location") return json(location)
