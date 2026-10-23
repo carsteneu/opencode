@@ -5,6 +5,7 @@ import {
   formatDiffBytes,
   measureDiff,
   shouldLimitDiffSet,
+  summarizeDiffSet,
 } from "../../src/util/diff-preview"
 
 describe("createDiffPreview", () => {
@@ -150,5 +151,45 @@ describe("formatDiffBytes", () => {
     expect(formatDiffBytes(512)).toBe("512 B")
     expect(formatDiffBytes(1536)).toBe("1.5 KiB")
     expect(formatDiffBytes(1024 * 1024)).toBe("1 MiB")
+  })
+})
+
+describe("summarizeDiffSet", () => {
+  const small = "--- a/file\n+++ b/file\n@@ -1 +1 @@\n-old\n+new"
+
+  test("accepts a set within every limit and totals its measurements", () => {
+    const result = summarizeDiffSet([small, small])
+
+    expect(result.limited).toBe(false)
+    expect(result.totals).toEqual({
+      bytes: Buffer.byteLength(small) * 2,
+      additions: 2,
+      deletions: 2,
+    })
+    expect(result.measured).toHaveLength(2)
+  })
+
+  test("limits a set above the file count", () => {
+    const patches = Array.from({ length: DIFF_PREVIEW_LIMITS.maxSetFiles + 1 }, () => small)
+
+    expect(summarizeDiffSet(Array(DIFF_PREVIEW_LIMITS.maxSetFiles).fill(small)).limited).toBe(false)
+    expect(summarizeDiffSet(patches).limited).toBe(true)
+  })
+
+  test("limits a set above the aggregate byte budget", () => {
+    const wide = `+${"x".repeat(DIFF_PREVIEW_LIMITS.maxSetBytes / 4)}`
+
+    expect(
+      summarizeDiffSet(Array.from({ length: 4 }, () => wide)).limited,
+    ).toBe(true)
+  })
+
+  test("limits a set that holds one oversized patch", () => {
+    const large = `--- a/file\n+++ b/file\n@@ -0,0 +1,${DIFF_PREVIEW_LIMITS.maxChangedLines + 1} @@\n${"+x\n".repeat(DIFF_PREVIEW_LIMITS.maxChangedLines + 1)}`
+
+    expect(summarizeDiffSet([small, large])).toMatchObject({
+      limited: true,
+      measured: [{}, { limited: true }],
+    })
   })
 })
