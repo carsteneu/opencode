@@ -86,8 +86,9 @@ export function summarizeDiffSet(patches: readonly string[]) {
   return {
     measured,
     totals,
+    // The set is only safe to mount whole when no single patch and no aggregate is over budget.
     limited:
-      shouldLimitDiffSet(patches) ||
+      patches.length > DIFF_PREVIEW_LIMITS.maxSetFiles ||
       totals.bytes > DIFF_PREVIEW_LIMITS.maxSetBytes ||
       measured.some((item) => item.limited),
   }
