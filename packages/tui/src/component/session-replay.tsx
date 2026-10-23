@@ -1,7 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import type { ScrollBoxRenderable } from "@opentui/core"
 import { useRenderer } from "@opentui/solid"
-import { createEffect, createMemo, For, Show } from "solid-js"
+import { createEffect, createMemo, For, on, Show } from "solid-js"
 import { useData } from "../context/data"
 import { useTheme, useThemes } from "../context/theme"
 import { SESSION_REPLAY_WIDTH } from "../ui/layout"
@@ -12,6 +12,7 @@ import {
   replayFileName,
   replaySteps,
   replayTimeLabel,
+  REPLAY_MAX_STEPS,
   type ReplayStep,
 } from "../util/replay"
 import { PatchDiff } from "./patch-diff"
@@ -27,27 +28,35 @@ export function SessionReplay(props: { sessionID: string }) {
   const renderer = useRenderer()
   let scroll: ScrollBoxRenderable | undefined
 
-  // Completed steps never change afterwards, so comparing values keeps a
-  // streaming session from remounting every card on each token.
+  // Deriving the ledger sanitizes and bounds every patch, so it must not run
+  // per streaming token. Only an appended message, a new tool part or a part
+  // status change can produce a new step; text deltas touch none of them.
   const messages = createMemo(() => data.session.message.list(props.sessionID))
-  const steps = createMemo(() => replaySteps(messages()), undefined, {
-    equals: (previous: ReplayStep[], next: ReplayStep[]) =>
-      previous.length === next.length &&
-      previous.every((step: ReplayStep, index: number) => {
-        const other = next[index]
-        return (
-          other !== undefined &&
-          step.tool === other.tool &&
-          step.filePath === other.filePath &&
-          step.patch === other.patch &&
-          step.time === other.time
-        )
-      }),
+  const signature = createMemo(() =>
+    messages()
+      .map((message) =>
+        message.type === "assistant"
+          ? message.id + ":" + message.content.map((part) => (part.type === "tool" ? part.id + part.state.status : part.type)).join(",")
+          : message.id,
+      )
+      .join("|"),
+  )
+  let ledger: { signature: string; steps: ReplayStep[] } | undefined
+  const steps = createMemo(() => {
+    const key = signature()
+    if (ledger?.signature === key) return ledger.steps
+    ledger = { signature: key, steps: replaySteps(messages()) }
+    return ledger.steps
+  })
+  const visible = createMemo(() => {
+    const all = steps()
+    return all.length > REPLAY_MAX_STEPS ? all.slice(-REPLAY_MAX_STEPS) : all
   })
 
-  // The newest edit is the interesting one: follow the tail whenever a step
-  // is appended, and never re-anchor on re-renders. The scrollbox measures
-  // its content one frame after it mounts, so a single scroll can be a no-op.
+  // The newest edit is the interesting one: follow the tail whenever the last
+  // step changes, so loading older pages (which prepends) cannot yank the pane
+  // away from the user. The scrollbox measures its content one frame after it
+  // mounts, so a single scroll can be a no-op.
   const follow = () => {
     let attempts = 0
     const scrollToTail = () => {
@@ -57,13 +66,24 @@ export function SessionReplay(props: { sessionID: string }) {
     }
     renderer.requestAnimationFrame(scrollToTail)
   }
-  let followed = 0
+  let followed = ""
   createEffect(() => {
-    const count = steps().length
-    if (count === followed) return
-    followed = count
+    const last = steps()[steps().length - 1]
+    const key = last ? `${last.tool}|${last.filePath}|${last.time}|${last.patch?.length ?? 0}` : ""
+    if (key === followed) return
+    followed = key
     follow()
   })
+  createEffect(
+    on(
+      () => props.sessionID,
+      () => {
+        followed = ""
+        if (scroll && !scroll.isDestroyed) scroll.scrollTo(0)
+      },
+      { defer: true },
+    ),
+  )
 
   return (
     <box
@@ -95,7 +115,7 @@ export function SessionReplay(props: { sessionID: string }) {
           trackOptions: { backgroundColor: theme.background.raised.base, foregroundColor: theme.border.base },
         }}
       >
-        <For each={steps()}>{(step) => <ReplayCard step={step} total={steps().length} />}</For>
+        <For each={visible()}>{(step) => <ReplayCard step={step} total={steps().length} />}</For>
         <Show when={steps().length === 0}>
           <box paddingLeft={1} paddingTop={1}>
             <text fg={theme.text.muted}>no edits in this session</text>
