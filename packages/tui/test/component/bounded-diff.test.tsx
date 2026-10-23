@@ -19,9 +19,7 @@ ${Array.from({ length: lines }, (_, index) => `+new-${index}`).join("\n")}`
 }
 
 function findDiffs(node: Renderable): DiffRenderable[] {
-  return node instanceof DiffRenderable
-    ? [node]
-    : node.getChildren().flatMap((child: Renderable) => findDiffs(child))
+  return node instanceof DiffRenderable ? [node] : node.getChildren().flatMap((child: Renderable) => findDiffs(child))
 }
 
 function renderText(node: Renderable): string {

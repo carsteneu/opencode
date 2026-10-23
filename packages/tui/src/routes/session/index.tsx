@@ -24,12 +24,7 @@ import { useTuiTerminalEnvironment } from "../../context/runtime"
 import { Spinner, SPINNER_FRAMES } from "../../component/spinner"
 import { PatchDiff } from "../../component/patch-diff"
 import { BoundedDiff } from "../../component/bounded-diff"
-import {
-  DIFF_PREVIEW_LIMITS,
-  createDiffPreview,
-  formatDiffBytes,
-  summarizeDiffSet,
-} from "../../util/diff-preview"
+import { DIFF_PREVIEW_LIMITS, createDiffPreview, formatDiffBytes, summarizeDiffSet } from "../../util/diff-preview"
 import { useTheme, useThemes } from "../../context/theme"
 import {
   BoxRenderable,
@@ -3756,9 +3751,7 @@ function ApplyPatch(props: ToolProps) {
     return ctx.width > 120 ? "split" : "unified"
   })
   const setSummary = createMemo(() => summarizeDiffSet(files().map((file) => file.patch)))
-  const summaries = createMemo(() =>
-    files().map((file, index) => ({ file, measured: setSummary().measured[index]! })),
-  )
+  const summaries = createMemo(() => files().map((file, index) => ({ file, measured: setSummary().measured[index]! })))
   const totals = () => setSummary().totals
   // A set that cannot mount every patch at once gets one summary card instead of a card per file.
   const limited = () => setSummary().limited

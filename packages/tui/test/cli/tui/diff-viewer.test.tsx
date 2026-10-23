@@ -2435,7 +2435,11 @@ function findScrollBox(root: Renderable, patches = true): ScrollBoxRenderable | 
 }
 
 /** A patch over the preview limits mounts only after the reader asks for it. */
-async function expandFirstPreview(app: { renderer: { root: Renderable }; mockMouse: { click: (x: number, y: number) => Promise<void> }; flush: () => Promise<void> }) {
+async function expandFirstPreview(app: {
+  renderer: { root: Renderable }
+  mockMouse: { click: (x: number, y: number) => Promise<void> }
+  flush: () => Promise<void>
+}) {
   const preview = app.renderer.root.findDescendantById("diff-preview-limited")
   if (!preview) return
   await app.mockMouse.click(preview.x + 2, preview.y + 1)

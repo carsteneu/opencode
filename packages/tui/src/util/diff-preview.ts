@@ -87,7 +87,9 @@ export function summarizeDiffSet(patches: readonly string[]) {
     measured,
     totals,
     limited:
-      shouldLimitDiffSet(patches) || totals.bytes > DIFF_PREVIEW_LIMITS.maxSetBytes || measured.some((item) => item.limited),
+      shouldLimitDiffSet(patches) ||
+      totals.bytes > DIFF_PREVIEW_LIMITS.maxSetBytes ||
+      measured.some((item) => item.limited),
   }
 }
 

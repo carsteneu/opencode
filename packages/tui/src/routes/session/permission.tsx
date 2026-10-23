@@ -39,9 +39,7 @@ function EditBody(props: { file?: string; diff?: string; patch?: string }) {
 
   const ft = createMemo(() => filetype(filepath()))
   const scrollAcceleration = createMemo(() => getScrollAcceleration(config))
-  const patchPreview = createMemo(() =>
-    props.patch === undefined ? undefined : createDiffPreview(props.patch),
-  )
+  const patchPreview = createMemo(() => (props.patch === undefined ? undefined : createDiffPreview(props.patch)))
   const [expandedPatch, setExpandedPatch] = createSignal(false)
   const previewPatch = () => patchPreview()?.limited === true && !expandedPatch()
 

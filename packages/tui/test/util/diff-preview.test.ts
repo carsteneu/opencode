@@ -179,9 +179,7 @@ describe("summarizeDiffSet", () => {
   test("limits a set above the aggregate byte budget", () => {
     const wide = `+${"x".repeat(DIFF_PREVIEW_LIMITS.maxSetBytes / 4)}`
 
-    expect(
-      summarizeDiffSet(Array.from({ length: 4 }, () => wide)).limited,
-    ).toBe(true)
+    expect(summarizeDiffSet(Array.from({ length: 4 }, () => wide)).limited).toBe(true)
   })
 
   test("limits a set that holds one oversized patch", () => {
