@@ -19,7 +19,7 @@ import { useStorage } from "../context/storage"
 import { useDialog } from "../ui/dialog"
 import { Session } from "../routes/session"
 import { Sidebar } from "../routes/session/sidebar"
-import { clampSessionPaneWidth, SESSION_REPLAY_WIDTH, SESSION_SIDEBAR_WIDTH } from "../ui/layout"
+import { clampSessionPaneWidth, clampSessionReplayWidth, SESSION_REPLAY_WIDTH, SESSION_SIDEBAR_WIDTH } from "../ui/layout"
 import { createPaneResize } from "../ui/pane-resize"
 import { PaneResizeHandle } from "../ui/pane-resize-handle"
 import { useToast } from "../ui/toast"
@@ -40,14 +40,19 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
   const dialog = useDialog()
   const availableWidth = () => Math.max(0, dimensions().width - props.verticalTabsWidth)
   const defaultPaneWidth = () => Math.max(1, Math.floor(panels.width() / 2))
-  const [layout, updateLayout] = useStorage().store<{ paneWidth?: number; terminalWidth?: number }>("layout", {
-    initial: {},
-  })
+  const [layout, updateLayout] = useStorage().store<{ paneWidth?: number; terminalWidth?: number; replayWidth?: number }>(
+    "layout",
+    {
+      initial: {},
+    },
+  )
   const paneResize = createPaneResize({
     value: () => layout.paneWidth ?? layout.terminalWidth ?? defaultPaneWidth(),
     defaultValue: defaultPaneWidth,
-    clamp: (width) =>
-      clampSessionPaneWidth(width, panels.width() - (replayVisible() ? SESSION_REPLAY_WIDTH : 0)),
+    // The replay column is not part of this pane's own width, so the split budget
+    // must give back whatever the replay currently claims. Reading its clamped
+    // size here would recurse back into this clamp through the layout memos.
+    clamp: (width) => clampSessionPaneWidth(width, panels.width() - (replayVisible() ? replayResize.preferredSize() : 0)),
     fromMouse: (event) => dimensions().width - event.x - 1,
     contains: (event, width) => event.x >= dimensions().width - width - 1 && event.x <= dimensions().width - width,
     onCommit: (width) => {
@@ -57,8 +62,8 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
     },
   })
   let resizeRelease = false
-  const finishPaneResize = (event: MouseEvent) => {
-    if (paneResize.resizing()) {
+  const finishResize = (event: MouseEvent) => {
+    if (paneResize.resizing() || replayResize.resizing()) {
       // A captured drag-end can be followed by mouse-up on the focus overlay.
       resizeRelease = true
       queueMicrotask(() => {
@@ -66,6 +71,7 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
       })
     }
     paneResize.onMouseUp(event)
+    replayResize.onMouseUp(event)
   }
   const [sidebarOpen, setSidebarOpen] = createSignal(false)
   const [replay, updateReplay] = useStorage().store<{ open: boolean }>("replay", { initial: { open: false } })
@@ -123,6 +129,28 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
   // A fullscreen panel already claims the whole width, so the column yields
   // there instead of pushing the panel out of the frame.
   const replayVisible = createMemo(() => replay.open && wide() && !fullscreen())
+  // Rendered width of the right-hand column, which the replay column has to share
+  // the row with. A sidebar is fixed; terminal and panel panes own the splitter.
+  const rightWidth = createMemo(() => {
+    if (fullscreen()) return 0
+    const pane = rightPane()
+    if (pane === "sidebar") return SESSION_SIDEBAR_WIDTH
+    if (pane === "terminal" || pane === "panel") return paneResize.size()
+    return 0
+  })
+  const replayResize = createPaneResize({
+    value: () => layout.replayWidth ?? SESSION_REPLAY_WIDTH,
+    defaultValue: () => SESSION_REPLAY_WIDTH,
+    clamp: (width) => clampSessionReplayWidth(width, panels.width() - rightWidth()),
+    fromMouse: (event) => dimensions().width - rightWidth() - event.x,
+    contains: (event, width) =>
+      event.x >= dimensions().width - rightWidth() - width - 1 && event.x <= dimensions().width - rightWidth() - width,
+    onCommit: (width) => {
+      void updateLayout((draft) => {
+        draft.replayWidth = width
+      }).catch((error) => console.error("Failed to persist TUI layout", error))
+    },
+  })
   const toggleSidebar = () => {
     batch(() => {
       const visible = rightPane() === "sidebar"
@@ -301,9 +329,12 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
       minHeight={0}
       flexDirection="row"
       position="relative"
-      onMouseDrag={paneResize.onMouseDrag}
-      onMouseDragEnd={finishPaneResize}
-      onMouseUp={finishPaneResize}
+      onMouseDrag={(event) => {
+        paneResize.onMouseDrag(event)
+        replayResize.onMouseDrag(event)
+      }}
+      onMouseDragEnd={finishResize}
+      onMouseUp={finishResize}
     >
       <box
         id="session-pane"
@@ -352,14 +383,14 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
             }}
             // Consume the release before revealing permission buttons underneath.
             onMouseUp={() => {
-              if (paneResize.resizing() || resizeRelease) return
+              if (paneResize.resizing() || replayResize.resizing() || resizeRelease) return
               focusSession()
             }}
           />
         </Show>
       </box>
       <Show when={replayVisible()}>
-        <SessionReplay sessionID={props.sessionID} />
+        <SessionReplay sessionID={props.sessionID} width={replayResize.size()} />
       </Show>
       <Show when={rightPane() === "terminal" || rightPane() === "panel" || (rightPane() === "sidebar" && wide())}>
         <box
@@ -382,7 +413,7 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
                     {(ptyID) => (
                       <TerminalPane
                         ptyID={ptyID}
-                        resizing={paneResize.resizing()}
+                        resizing={paneResize.resizing() || replayResize.resizing()}
                         autoFocus={restoreTerminalFocus() || sessions.shouldFocus(ptyID)}
                         onAutoFocus={() => {
                           sessions.clearFocus(ptyID)
@@ -417,6 +448,13 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
             <Sidebar sessionID={props.sessionID} />
           </Show>
         </box>
+      </Show>
+      <Show when={replayVisible()}>
+        <PaneResizeHandle
+          resize={replayResize}
+          left={availableWidth() - rightWidth() - replayResize.size() - 1}
+          highlight="right"
+        />
       </Show>
       <Show when={!fullscreen() && (rightPane() === "terminal" || rightPane() === "panel") && availableWidth() >= 3}>
         <PaneResizeHandle resize={paneResize} left={availableWidth() - paneResize.size() - 1} highlight="right" />
