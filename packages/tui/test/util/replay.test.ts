@@ -6,6 +6,8 @@ import {
   replayFileName,
   replaySteps,
   replayTimeLabel,
+  REPLAY_PATCH_MAX_BYTES,
+  REPLAY_PATCH_MAX_LINES,
   sanitizeReplayText,
 } from "../../src/util/replay"
 
@@ -31,7 +33,11 @@ function assistant(
 function tool(
   name: string,
   input: Record<string, unknown>,
-  options: { status?: "completed" | "error" | "running" | "streaming"; files?: { patch?: string }[]; diff?: string } = {},
+  options: {
+    status?: "completed" | "error" | "running" | "streaming"
+    files?: { file?: string; patch?: string }[]
+    diff?: string
+  } = {},
 ) {
   const state =
     options.status === "error"
@@ -118,6 +124,39 @@ describe("replaySteps", () => {
   test("the step carries the message timestamp", () => {
     expect(replaySteps(FIXTURE)[0]?.time).toBe(CREATED)
   })
+
+  test("a patch call with several files yields one step per file with its own diff", () => {
+    const steps = replaySteps([
+      assistant("m1", [
+        tool(
+          "patch",
+          { patchText: "*** Begin Patch" },
+          { files: [{ file: "src/a.ts", patch: "+a" }, { file: "src/b.ts", patch: "+b" }] },
+        ),
+      ]),
+    ])
+    expect(steps.map((step) => [step.tool, step.filePath, step.patch])).toEqual([
+      ["patch", "src/a.ts", "+a"],
+      ["patch", "src/b.ts", "+b"],
+    ])
+    expect(steps.map((step) => step.index)).toEqual([1, 2])
+  })
+
+  test("a file entry names the step even when the tool input carries no path", () => {
+    const steps = replaySteps([
+      assistant("m1", [tool("patch", { patchText: "*** Begin Patch" }, { files: [{ file: "src/x.ts", patch: "+x" }] })]),
+    ])
+    expect(steps[0]?.filePath).toBe("src/x.ts")
+  })
+
+  test("a multi-file call without per-file diffs does not duplicate the concatenated diff", () => {
+    const steps = replaySteps([
+      assistant("m1", [
+        tool("patch", { patchText: "*** Begin Patch" }, { files: [{ file: "src/a.ts" }, { file: "src/b.ts" }], diff: "+all\n" }),
+      ]),
+    ])
+    expect(steps.map((step) => step.patch)).toEqual([undefined, undefined])
+  })
 })
 
 describe("sanitizeReplayText", () => {
@@ -125,6 +164,14 @@ describe("sanitizeReplayText", () => {
     expect(sanitizeReplayText("\x1b[31mred\x1b[0m")).toBe("red")
     expect(sanitizeReplayText("ok\x07bell\x00null")).toBe("okbellnull")
     expect(sanitizeReplayText("keep\nnewlines")).toBe("keep\nnewlines")
+  })
+
+  test("strips carriage returns, C1 controls and bidi overrides", () => {
+    expect(sanitizeReplayText("a\rb")).toBe("ab")
+    expect(sanitizeReplayText("\u009b31mC1-CSI")).toBe("31mC1-CSI")
+    expect(sanitizeReplayText("\u009d0;title\u0007")).toBe("0;title")
+    expect(sanitizeReplayText("a\u202eb")).toBe("ab")
+    expect(sanitizeReplayText("keep\ttabs")).toBe("keep\ttabs")
   })
 
   test("step file paths and patches are sanitized", () => {
@@ -188,6 +235,17 @@ describe("clampReplayPatch", () => {
     expect(lines[1]?.length).toBe(81)
     expect(lines[2]).toBe("+short")
   })
+
+  test("bounds the bytes of a hostile patch before splitting it", () => {
+    const huge = "@@ -0,0 +1,40000 @@\n" + Array.from({ length: 40_000 }, (_, index) => `+line${index}`).join("\n")
+    const steps = replaySteps([
+      assistant("m1", [tool("write", { path: "src/big.ts" }, { files: [{ patch: huge }] })]),
+    ])
+    const patch = steps[0]?.patch ?? ""
+    expect(patch.length).toBeLessThanOrEqual(REPLAY_PATCH_MAX_BYTES)
+    expect(patch.endsWith("line39999")).toBe(false)
+    expect(clampReplayPatch(patch).split("\n").length).toBeLessThanOrEqual(REPLAY_PATCH_MAX_LINES)
+  })
 })
 
 describe("compactReplayPatch", () => {
@@ -235,5 +293,10 @@ describe("labels", () => {
     expect(replayFileName("/home/u/proj/src/deep/file.ts")).toBe("file.ts")
     expect(replayFileName("README.md")).toBe("README.md")
     expect(replayFileName("")).toBe("")
+  })
+
+  test("replayFileName handles paths from another platform", () => {
+    expect(replayFileName("C:\\work\\proj\\src\\file.ts")).toBe("file.ts")
+    expect(replayFileName("src/deep/")).toBe("deep")
   })
 })
