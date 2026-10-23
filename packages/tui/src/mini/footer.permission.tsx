@@ -165,7 +165,11 @@ export function RunPermissionBody(props: {
     const value = info().diff
     return value === undefined ? undefined : createDiffPreview(value)
   })
-  const [expandedPatch, setExpandedPatch] = createSignal(false)
+  // Keyed by request: a queued permission replaces the body in place, and the expansion must not follow it.
+  const [expandedPatchRequestID, setExpandedPatchRequestID] = createSignal<string | undefined>()
+  const expandedPatch = () => expandedPatchRequestID() === props.request.id
+  const toggleExpandedPatch = () =>
+    setExpandedPatchRequestID((current) => (current === props.request.id ? undefined : props.request.id))
   const previewPatch = () => patchPreview()?.limited === true && !expandedPatch()
   let scroll: ScrollBoxRenderable | undefined
   const scrollbar = createMemo(() => ({
@@ -428,11 +432,27 @@ export function RunPermissionBody(props: {
                         fallback={
                           <box width="100%" flexDirection="column" flexShrink={0} gap={compact() ? 0 : 1}>
                             <For each={info().lines}>
-                              {(line) => (
-                                <text width="100%" fg={props.theme.text} wrapMode="word" flexShrink={0}>
-                                  {line}
-                                </text>
-                              )}
+                              {(line) => {
+                                // Mono mode folds the patch into a plain line, so the line itself carries the bound.
+                                const preview = createMemo(() => createDiffPreview(line))
+                                return (
+                                  <Show
+                                    when={preview().limited}
+                                    fallback={
+                                      <text width="100%" fg={props.theme.text} wrapMode="word" flexShrink={0}>
+                                        {line}
+                                      </text>
+                                    }
+                                  >
+                                    <text width="100%" fg={props.theme.muted} wrapMode="word" flexShrink={0}>
+                                      {`Preview limited (${formatDiffBytes(preview().bytes)}, ${preview().changedLines} changed lines)`}
+                                    </text>
+                                    <text width="100%" fg={props.theme.text} wrapMode="char" flexShrink={0}>
+                                      {preview().preview}
+                                    </text>
+                                  </Show>
+                                )
+                              }}
                             </For>
                           </box>
                         }
@@ -446,7 +466,7 @@ export function RunPermissionBody(props: {
                             onMouseUp={(event) => {
                               if (patchPreview()?.limited !== true) return
                               event.stopPropagation()
-                              setExpandedPatch((value) => !value)
+                              toggleExpandedPatch()
                             }}
                           >
                             <Show when={previewPatch() && patchPreview()}>
@@ -498,6 +518,8 @@ export function RunPermissionBody(props: {
                     >
                       <BoundedDiff
                         expandable
+                        expanded={expandedPatch}
+                        onExpand={toggleExpandedPatch}
                         noticeFg={props.theme.muted}
                         previewFg={props.theme.text}
                         diff={info().diff!}

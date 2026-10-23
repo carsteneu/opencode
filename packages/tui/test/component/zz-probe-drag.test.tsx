@@ -15,7 +15,7 @@ function findDiffs(node: Renderable): DiffRenderable[] {
   return node instanceof DiffRenderable ? [node] : node.getChildren().flatMap((child: Renderable) => findDiffs(child))
 }
 
-test("PROBE: drag-selecting the preview must not mount the full patch", async () => {
+test("PROBE: a drag over the preview must not mount the full patch", async () => {
   const large = patch("large.ts", DIFF_PREVIEW_LIMITS.maxChangedLines + 1)
   const app = await testRender(
     () => (
@@ -28,10 +28,12 @@ test("PROBE: drag-selecting the preview must not mount the full patch", async ()
   try {
     await app.renderOnce()
     expect(findDiffs(app.renderer.root)).toEqual([])
-    await app.mockMouse.drag(2, 1, 40, 3)
+    await app.mockMouse.pressDown(2, 1)
+    await app.mockMouse.moveTo(30, 3)
+    await app.mockMouse.release(30, 3)
     await app.flush()
-    console.log("selection:", JSON.stringify(app.renderer.getSelection()?.getSelectedText() ?? null))
-    console.log("mounted after drag:", findDiffs(app.renderer.root).length)
+    console.error("PROBE selection:", JSON.stringify(app.renderer.getSelection()?.getSelectedText() ?? null))
+    console.error("PROBE mounted diffs after drag:", findDiffs(app.renderer.root).length)
     expect(findDiffs(app.renderer.root)).toEqual([])
   } finally {
     app.renderer.destroy()

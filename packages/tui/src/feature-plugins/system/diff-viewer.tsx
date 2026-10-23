@@ -724,7 +724,8 @@ export function DiffViewerContent(props: {
       group: "VCS",
       enabled: () => !compact(),
       run() {
-        if (compact()) return
+        // Hidden by the file-tree limit, the tree cannot be shown again; do not record a preference that does nothing.
+        if (compact() || automaticFileTreeLimit()) return
         const next = !fileTreeEnabled()
         setFileTreeEnabled(next)
         props.onPreferencesChange?.({ tree: next })
@@ -735,6 +736,8 @@ export function DiffViewerContent(props: {
       title: "Toggle single patch view",
       group: "VCS",
       run() {
+        // Over the set limit the viewer stays on one patch, so the toggle must not record a preference it ignores.
+        if (automaticSinglePatch()) return
         setSelectedHunk(undefined)
         if (!singlePatch()) {
           ensureHighlightedPatchFile()
