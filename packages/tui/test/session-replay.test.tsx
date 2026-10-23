@@ -116,6 +116,50 @@ test("the toggle follows the configured keybind", async () => {
   await replayReady(setup)
 })
 
+test("the replay column is part of the split budget at the narrowest wide terminal", async () => {
+  await using state = await tmpdir()
+  await using setup = await createSessionFixture(state.path, { width: 121 })
+  await ready(setup)
+  setup.mockInput.pressKey("y", { ctrl: true })
+  await replayReady(setup)
+
+  setup.mockInput.pressKey("F6")
+  await setup.waitForFrame((frame) => frame.includes("file00.txt"), { maxPasses: 120 })
+  await setup.flush()
+  const panel = node(setup, "session-panel")
+  const transcript = node(setup, "session-pane").width
+  // The split clamp must know the replay column; otherwise the panel keeps half
+  // the terminal and the transcript drops far below its 44-column minimum.
+  expect(transcript + panel.width + SESSION_REPLAY_WIDTH).toBeLessThanOrEqual(121)
+  expect(transcript).toBeGreaterThanOrEqual(43)
+})
+
+test("the toggle does what its label says while a panel is fullscreen", async () => {
+  await using state = await tmpdir()
+  await using setup = await createSessionFixture(state.path, { width: 200 })
+  await ready(setup)
+  setup.mockInput.pressKey("y", { ctrl: true })
+  await replayReady(setup)
+
+  setup.mockInput.pressKey("F6")
+  await setup.waitForFrame((frame) => frame.includes("file00.txt"), { maxPasses: 120 })
+  setup.mockInput.pressKey("f")
+  await setup.waitFor(() => found(setup, "session-panel")?.width === setup.renderer.width)
+  expect(found(setup, "session-replay")).toBeUndefined()
+
+  // Hiding the open pane must work behind a fullscreen panel.
+  setup.mockInput.pressKey("y", { ctrl: true })
+  await setup.flush()
+  // Showing it must refuse with a reason instead of flipping the stored state.
+  setup.mockInput.pressKey("y", { ctrl: true })
+  await setup.waitForFrame((frame) => frame.includes("Exit the fullscreen panel to show the replay pane"))
+
+  setup.mockInput.pressKey("f")
+  await setup.waitFor(() => found(setup, "session-panel")?.width !== setup.renderer.width)
+  await setup.flush()
+  expect(found(setup, "session-replay")).toBeUndefined()
+})
+
 const diffs = Array.from({ length: 2 }, (_, index) => ({
   file: `src/file0${index}.txt`,
   status: "modified",

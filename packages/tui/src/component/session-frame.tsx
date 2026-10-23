@@ -19,7 +19,7 @@ import { useStorage } from "../context/storage"
 import { useDialog } from "../ui/dialog"
 import { Session } from "../routes/session"
 import { Sidebar } from "../routes/session/sidebar"
-import { clampSessionPaneWidth, SESSION_SIDEBAR_WIDTH } from "../ui/layout"
+import { clampSessionPaneWidth, SESSION_REPLAY_WIDTH, SESSION_SIDEBAR_WIDTH } from "../ui/layout"
 import { createPaneResize } from "../ui/pane-resize"
 import { PaneResizeHandle } from "../ui/pane-resize-handle"
 import { useToast } from "../ui/toast"
@@ -46,7 +46,8 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
   const paneResize = createPaneResize({
     value: () => layout.paneWidth ?? layout.terminalWidth ?? defaultPaneWidth(),
     defaultValue: defaultPaneWidth,
-    clamp: (width) => clampSessionPaneWidth(width, panels.width()),
+    clamp: (width) =>
+      clampSessionPaneWidth(width, panels.width() - (replayVisible() ? SESSION_REPLAY_WIDTH : 0)),
     fromMouse: (event) => dimensions().width - event.x - 1,
     contains: (event, width) => event.x >= dimensions().width - width - 1 && event.x <= dimensions().width - width,
     onCommit: (width) => {
@@ -202,21 +203,30 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
       },
       {
         id: "session.replay.toggle",
-        title: replayVisible() ? "Hide replay pane" : "Show replay pane",
+        title: replay.open ? "Hide replay pane" : "Show replay pane",
         group: "Session",
         palette: true,
         run: () => {
-          // The pane needs the room it takes: refuse on a narrow terminal
-          // instead of squeezing the transcript, and keep the state as it was.
+          dialog.clear()
+          // Hiding always works. Showing needs the room, so a narrow terminal or
+          // a fullscreen panel refuses without touching the stored preference.
+          if (replay.open) {
+            void updateReplay((draft) => {
+              draft.open = false
+            }).catch(toast.error)
+            return
+          }
           if (!wide()) {
             toast.show({ message: "Terminal too narrow for replay pane", variant: "warning", duration: 3000 })
-            dialog.clear()
+            return
+          }
+          if (fullscreen()) {
+            toast.show({ message: "Exit the fullscreen panel to show the replay pane", variant: "warning", duration: 3000 })
             return
           }
           void updateReplay((draft) => {
-            draft.open = !draft.open
+            draft.open = true
           }).catch(toast.error)
-          dialog.clear()
         },
       },
       ...(sessions.available()
