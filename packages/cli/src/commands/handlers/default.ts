@@ -1,6 +1,6 @@
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Global } from "@opencode/util/global"
-import { run } from "@opencode/tui"
+import { run, type TuiInput } from "@opencode/tui"
 import { Commands } from "../commands"
 import { Runtime } from "../../framework/runtime"
 import { Config } from "../../config"
@@ -20,6 +20,31 @@ import { errorMessage } from "../../util/error"
 // OPENCODE_THEME uses; the flag deliberately outranks a value already in the environment.
 export function applyThemeOverride(theme: string | undefined, env: Record<string, string | undefined> = process.env) {
   if (theme) env.OPENCODE_THEME = theme
+}
+
+// Split out of the handler so the launch arguments can be asserted without starting a server.
+// A --session naming a session that does not exist yet becomes the ID of the session the first
+// prompt creates; an existing one is continued instead.
+export function launchArgs(input: {
+  readonly continue: boolean
+  readonly session: string | undefined
+  readonly sessionExists: boolean
+  readonly prompt: Option.Option<string>
+  readonly model: Option.Option<string>
+  readonly agent: Option.Option<string>
+  readonly fork: boolean
+  readonly auto: boolean
+}): TuiInput["args"] {
+  return {
+    continue: input.continue,
+    sessionID: input.sessionExists ? input.session : undefined,
+    newSessionID: input.sessionExists ? undefined : input.session,
+    prompt: Option.getOrUndefined(input.prompt),
+    model: Option.getOrUndefined(input.model),
+    agent: Option.getOrUndefined(input.agent),
+    fork: input.fork,
+    auto: input.auto,
+  }
 }
 
 export default Runtime.handler(Commands, (input) =>
@@ -116,13 +141,16 @@ export default Runtime.handler(Commands, (input) =>
             }
           : undefined,
       },
-      args: {
+      args: launchArgs({
         continue: input.continue,
-        sessionID: sessionExists ? session : undefined,
-        newSessionID: sessionExists ? undefined : session,
-        prompt: Option.getOrUndefined(input.prompt),
+        session,
+        sessionExists,
+        prompt: input.prompt,
+        model: input.model,
+        agent: input.agent,
+        fork: input.fork,
         auto: input.auto || input.yolo || input.dangerouslySkipPermissions,
-      },
+      }),
       config: {
         path: config.path,
         get: () => runPromise(config.get()),
