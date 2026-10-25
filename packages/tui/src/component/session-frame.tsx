@@ -33,6 +33,13 @@ import { TerminalPane } from "./terminal-pane"
 import { PanelHost } from "./panel-host"
 import { SessionReplay } from "./session-replay"
 
+// Anything but a map of session ids is a state file this build cannot read: a
+// legacy boolean, a hand-edited string or an array is closed for every session.
+function replayStates(open: unknown): Record<string, boolean> | undefined {
+  if (typeof open !== "object" || open === null || Array.isArray(open)) return undefined
+  return open as Record<string, boolean>
+}
+
 export function SessionFrame(props: { sessionID: string; verticalTabsWidth: number }) {
   const sessions = useSessionTerminals()
   const prompt = usePromptRef()
@@ -87,10 +94,19 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
   const [replay, updateReplay] = useStorage().store<{ open: Record<string, boolean> }>("replay", {
     initial: { open: {} },
   })
-  const replayOpen = () => replay.open[props.sessionID] === true
+  const replayOpen = () => {
+    const open: unknown = replay.open
+    // Before the flag was scoped per session it was one global boolean, and a
+    // state file written by that build is still on disk after an upgrade.
+    return typeof open === "boolean" ? open : replayStates(open)?.[props.sessionID] === true
+  }
   const setReplayOpen = (open: boolean) =>
     updateReplay((draft) => {
-      draft.open[props.sessionID] = open
+      // Writing through a legacy or malformed value would throw, so the first
+      // write replaces it with the per-session map and the migration sticks.
+      const sessions = replayStates(draft.open) ?? {}
+      sessions[props.sessionID] = open
+      draft.open = sessions
     }).catch(toast.error)
   const [sessionWidth, setSessionWidth] = createSignal<number>()
   const [activePane, setActivePane] = createSignal<"session" | "right">("session")
