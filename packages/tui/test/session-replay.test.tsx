@@ -157,9 +157,23 @@ test("a replay file left open by the global flag still shows the pane", async ()
   // same file, so an upgrade reads this shape before anything is toggled.
   await seedReplay(state.path, { open: true })
 
-  await using setup = await createSessionFixture(state.path, { width: 200 })
-  await ready(setup)
-  await replayReady(setup)
+  {
+    await using setup = await createSessionFixture(state.path, { width: 200 })
+    await ready(setup)
+    await replayReady(setup)
+    expect(found(setup, "session-replay")).toBeDefined()
+    // The translation happens on read, so showing the pane must not touch the file.
+    expect(readFileSync(replayFile(state.path), "utf8")).toBe(JSON.stringify({ open: true }))
+  }
+
+  // That flag was global, so it holds for a session that never opened the pane
+  // until the first toggle writes the per-session map.
+  const other = `ses_replay_legacy_${crypto.randomUUID()}`
+  {
+    await using setup = await createSessionFixture(state.path, { width: 200, id: other })
+    await ready(setup)
+    await replayReady(setup)
+  }
 })
 
 test("the toggle migrates a globally closed replay file instead of throwing", async () => {
@@ -181,7 +195,7 @@ test("the toggle migrates a globally closed replay file instead of throwing", as
 test("a missing or malformed replay value stays closed and the toggle repairs it", async () => {
   await using state = await tmpdir()
 
-  for (const value of [{}, { open: null }, { open: "yes" }]) {
+  for (const value of [{}, { open: null }, { open: "yes" }, { open: [] }]) {
     await seedReplay(state.path, value)
     await using setup = await createSessionFixture(state.path, { width: 200 })
     await ready(setup)
@@ -189,6 +203,7 @@ test("a missing or malformed replay value stays closed and the toggle repairs it
 
     setup.mockInput.pressKey("y", { ctrl: true })
     await replayReady(setup)
+    expect(JSON.parse(readFileSync(replayFile(state.path), "utf8"))).toEqual({ open: { [session.id]: true } })
   }
 })
 
