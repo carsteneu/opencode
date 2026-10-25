@@ -35,6 +35,8 @@ import { SessionReplay } from "./session-replay"
 
 // Anything but a map of session ids is a state file this build cannot read: a
 // legacy boolean, a hand-edited string or an array is closed for every session.
+// The next write replaces all of those with a fresh map, except a whole-file
+// array, whose root the store mutation cannot retype.
 function replayStates(open: unknown): Record<string, boolean> | undefined {
   if (typeof open !== "object" || open === null || Array.isArray(open)) return undefined
   return open as Record<string, boolean>
