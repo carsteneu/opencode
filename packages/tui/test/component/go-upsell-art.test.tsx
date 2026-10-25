@@ -43,7 +43,12 @@ test("the art stops every frame when hidden, closed, or still, and leaves nothin
     // Each frame is one direct write into the art's own buffer, never a draw call per cell.
     expect(draws).toHaveBeenCalledTimes(1)
     expect(setCell).not.toHaveBeenCalled()
-    expect(app.captureCharFrame()).toContain("█▀▀▀ █▀▀█")
+    // The art paints into its own frame buffer, and in 0.6.6 those cells never reach
+    // captureCharFrame(). Assert the paint in the buffer the art owns: at 60x20 the logo is two
+    // short block runs, so a blank frame fails while the exact ring animation stays out of the test.
+    const painted = paintedText(art!)
+    expect(painted).toContain("▀▀▀▀")
+    expect(painted.replace(/\s/g, "").length).toBeGreaterThan(10)
 
     setVisible(false)
     expect(app.renderer.liveRequestCount).toBe(0)
@@ -85,3 +90,11 @@ test("the art stops every frame when hidden, closed, or still, and leaves nothin
     app.renderer.destroy()
   }
 })
+
+// The art owns a frame buffer and paints into it directly, so the renderer's character frame no
+// longer carries its cells. Read the art's own buffer to see what it actually painted.
+function paintedText(art: GoUpsellArtRenderable) {
+  const frame = (art as unknown as { frameBuffer: OptimizedBuffer | null }).frameBuffer
+  if (!frame) throw new Error("the art has no frame buffer to read")
+  return new TextDecoder().decode(frame.getRealCharBytes())
+}
