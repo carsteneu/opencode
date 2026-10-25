@@ -151,6 +151,62 @@ test("the toggle belongs to the session it was pressed in", async () => {
   }
 })
 
+test("a replay file left open by the global flag still shows the pane", async () => {
+  await using state = await tmpdir()
+  // The build before the per-session change stored one global boolean in the
+  // same file, so an upgrade reads this shape before anything is toggled.
+  await seedReplay(state.path, { open: true })
+
+  {
+    await using setup = await createSessionFixture(state.path, { width: 200 })
+    await ready(setup)
+    await replayReady(setup)
+    expect(found(setup, "session-replay")).toBeDefined()
+    // The translation happens on read, so showing the pane must not touch the file.
+    expect(readFileSync(replayFile(state.path), "utf8")).toBe(JSON.stringify({ open: true }))
+  }
+
+  // That flag was global, so it holds for a session that never opened the pane
+  // until the first toggle writes the per-session map.
+  const other = `ses_replay_legacy_${crypto.randomUUID()}`
+  {
+    await using setup = await createSessionFixture(state.path, { width: 200, id: other })
+    await ready(setup)
+    await replayReady(setup)
+  }
+})
+
+test("the toggle migrates a globally closed replay file instead of throwing", async () => {
+  await using state = await tmpdir()
+  await seedReplay(state.path, { open: false })
+
+  await using setup = await createSessionFixture(state.path, { width: 200 })
+  await ready(setup)
+  expect(found(setup, "session-replay")).toBeUndefined()
+
+  setup.mockInput.pressKey("y", { ctrl: true })
+  await replayReady(setup)
+
+  // The first write replaces the legacy boolean with the per-session map, so the
+  // migration is durable and not only a reading habit.
+  expect(JSON.parse(readFileSync(replayFile(state.path), "utf8"))).toEqual({ open: { [session.id]: true } })
+})
+
+test("a missing or malformed replay value stays closed and the toggle repairs it", async () => {
+  await using state = await tmpdir()
+
+  for (const value of [{}, { open: null }, { open: "yes" }, { open: [] }]) {
+    await seedReplay(state.path, value)
+    await using setup = await createSessionFixture(state.path, { width: 200 })
+    await ready(setup)
+    expect(found(setup, "session-replay")).toBeUndefined()
+
+    setup.mockInput.pressKey("y", { ctrl: true })
+    await replayReady(setup)
+    expect(JSON.parse(readFileSync(replayFile(state.path), "utf8"))).toEqual({ open: { [session.id]: true } })
+  }
+})
+
 test("the replay column is part of the split budget at the narrowest wide terminal", async () => {
   await using state = await tmpdir()
   await using setup = await createSessionFixture(state.path, { width: 121 })
@@ -484,8 +540,19 @@ function descendants(root: Renderable): Renderable[] {
   return root.getChildren().flatMap((item) => [item, ...descendants(item)])
 }
 
+function replayFile(state: string) {
+  return path.join(state, "test", "tui", "replay.json")
+}
+
+// Seeded before the app starts: a state dir that already carries a file is what
+// an upgrade looks like, while every other test starts from an empty one.
+async function seedReplay(state: string, value: unknown) {
+  mkdirSync(path.dirname(replayFile(state)), { recursive: true })
+  await Bun.write(replayFile(state), JSON.stringify(value))
+}
+
 async function storedReplayOpen(state: string, sessionID: string) {
-  const file = path.join(state, "test", "tui", "replay.json")
+  const file = replayFile(state)
   const deadline = Date.now() + 2_000
   let raw = ""
   while (Date.now() < deadline) {
