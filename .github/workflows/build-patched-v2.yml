@@ -197,6 +197,9 @@ jobs:
 
       - name: Setup Bun
         uses: ./.github/actions/setup-bun
+        with:
+          # Pinned so the release binary is built with the same Bun the dev branch expects.
+          bun-version: "1.4.4"
 
       - name: Add the fork remote
         # Only the publishing path touches the remote: with publish=false the script
