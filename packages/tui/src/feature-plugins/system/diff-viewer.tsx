@@ -344,17 +344,22 @@ export function DiffViewerContent(props: {
   const [fileTreeEnabled, setFileTreeEnabled] = createSignal(props.preferences?.tree ?? true)
   // Past the tree limit the tree itself becomes a render cost; the patches keep the whole pane.
   const automaticFileTreeLimit = createMemo(() => files().length > DIFF_PREVIEW_LIMITS.maxFileTreeFiles)
+  // The limits are safe defaults, not locks: a toggle lifts both for the rest of the view. One flag
+  // keeps the escape hatch simple to reason about, at the cost of lifting the other limit too.
+  const [safeModeOverride, setSafeModeOverride] = createSignal(false)
+  const limitedFileTree = createMemo(() => !safeModeOverride() && automaticFileTreeLimit())
   const showFileTree = createMemo(
-    () => !compact() && !automaticFileTreeLimit() && showDiffViewerFileTree(fileTreeEnabled(), files().length),
+    () => !compact() && !limitedFileTree() && showDiffViewerFileTree(fileTreeEnabled(), files().length),
   )
   const [singlePatchPreference, setSinglePatchPreference] = createSignal(props.preferences?.single ?? false)
-  // A set too large to mount at once starts on one patch; the preference only matters below the limits.
+  // A set too large to mount at once starts on one patch; below the limits only the preference counts.
   const automaticSinglePatch = createMemo(() => shouldLimitDiffSet(files().map((file) => file.patch)))
-  const singlePatch = () => automaticSinglePatch() || singlePatchPreference()
+  const limitedSinglePatch = createMemo(() => !safeModeOverride() && automaticSinglePatch())
+  const singlePatch = () => limitedSinglePatch() || singlePatchPreference()
   const safeMode = createMemo(() => {
     const reasons = [
-      automaticSinglePatch() ? "one patch at a time" : undefined,
-      automaticFileTreeLimit() ? "file tree hidden" : undefined,
+      limitedSinglePatch() ? "one patch at a time" : undefined,
+      limitedFileTree() ? "file tree hidden" : undefined,
     ].filter((reason): reason is string => reason !== undefined)
     return reasons.length > 0 ? `Safe mode: ${reasons.join(", ")}` : undefined
   })
@@ -722,10 +727,15 @@ export function DiffViewerContent(props: {
       id: "diff.toggle_file_tree",
       title: "Toggle diff viewer file tree",
       group: "VCS",
-      enabled: () => !compact() && !automaticFileTreeLimit(),
+      enabled: () => !compact(),
       run() {
-        // Hidden by the file-tree limit, the tree cannot be shown again; do not record a preference that does nothing.
-        if (compact() || automaticFileTreeLimit()) return
+        if (compact()) return
+        // Over the tree limit the tree starts hidden; the toggle lifts that instead of doing nothing.
+        if (automaticFileTreeLimit() && !safeModeOverride()) {
+          setSafeModeOverride(true)
+          setFileTreeEnabled(true)
+          return
+        }
         const next = !fileTreeEnabled()
         setFileTreeEnabled(next)
         props.onPreferencesChange?.({ tree: next })
@@ -735,11 +745,15 @@ export function DiffViewerContent(props: {
       id: "diff.single_patch",
       title: "Toggle single patch view",
       group: "VCS",
-      enabled: () => !automaticSinglePatch(),
       run() {
-        // Over the set limit the viewer stays on one patch, so the toggle must not record a preference it ignores.
-        if (automaticSinglePatch()) return
         setSelectedHunk(undefined)
+        // The set limit starts on one patch; the toggle lifts it and shows every patch.
+        if (limitedSinglePatch()) {
+          setSafeModeOverride(true)
+          setSinglePatchPreference(false)
+          props.onPreferencesChange?.({ single: false })
+          return
+        }
         if (!singlePatch()) {
           ensureHighlightedPatchFile()
           setSinglePatchPreference(true)

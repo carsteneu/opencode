@@ -2564,6 +2564,44 @@ test("a change set over the file tree limit hides the tree and says why", async 
   }
 })
 
+test("the file tree toggle lifts the file tree limit for this view", async () => {
+  const files = Array.from({ length: DIFF_PREVIEW_LIMITS.maxFileTreeFiles + 1 }, (_, index) => ({
+    file: `src/file${index}.txt`,
+    additions: 1,
+    deletions: 0,
+    status: "added" as const,
+    patch: `--- /dev/null\n+++ b/src/file${index}.txt\n@@ -0,0 +1 @@\n+one`,
+  }))
+  const viewer = await renderDiffViewer(files, { width: 100 })
+  try {
+    await viewer.app.waitForFrame((frame) => frame.includes("file tree hidden"))
+    viewer.commands.get("diff.toggle_file_tree")!.run()
+    await viewer.app.flush()
+    expect(viewer.app.renderer.root.findDescendantById("diff-tree-top-edge")).toBeDefined()
+    expect(viewer.app.captureCharFrame()).not.toContain("file tree hidden")
+  } finally {
+    viewer.app.renderer.destroy()
+  }
+})
+
+test("the single patch toggle lifts the set limit and shows every patch", async () => {
+  const files = Array.from({ length: DIFF_PREVIEW_LIMITS.maxSetFiles + 1 }, (_, index) => ({
+    ...hunkDiff[0],
+    file: `src/file${index}.txt`,
+  }))
+  const viewer = await renderDiffViewer(files)
+  try {
+    await viewer.app.waitForFrame((frame) => frame.includes("one patch at a time"))
+    expect(viewer.app.renderer.root.findDescendantById("diff-file-header-1")).toBeUndefined()
+    viewer.commands.get("diff.single_patch")!.run()
+    await viewer.app.flush()
+    expect(viewer.app.renderer.root.findDescendantById("diff-file-header-1")).toBeDefined()
+    expect(viewer.app.captureCharFrame()).not.toContain("one patch at a time")
+  } finally {
+    viewer.app.renderer.destroy()
+  }
+})
+
 test("an oversized patch in the diff viewer stays a preview until it is clicked", async () => {
   const patch = `--- a/src/huge.ts\n+++ b/src/huge.ts\n@@ -0,0 +1,${DIFF_PREVIEW_LIMITS.maxChangedLines + 1} @@\n${Array.from(
     { length: DIFF_PREVIEW_LIMITS.maxChangedLines + 1 },

@@ -3728,6 +3728,7 @@ function Edit(props: ToolProps) {
 function ApplyPatch(props: ToolProps) {
   const ctx = use()
   const theme = useTheme()
+  const renderer = useRenderer()
   const { currentSyntax: syntax } = useThemes()
   const pathFormatter = usePathFormatter()
   const files = createMemo(() => parseApplyPatchFiles(props.metadata.files))
@@ -3756,24 +3757,72 @@ function ApplyPatch(props: ToolProps) {
   const totals = () => setSummary().totals
   // A set that cannot mount every patch at once gets one summary card instead of a card per file.
   const limited = () => setSummary().limited
+  // The summary hides the patches by default; the card keeps an escape hatch for the whole set.
+  const [showPatch, setShowPatch] = createSignal(false)
 
   return (
     <Switch>
       <Match when={files().length > 0}>
         <Switch>
           <Match when={limited()}>
-            {/* The change is already applied: the review path is the diff viewer, so nothing here mounts a patch. */}
+            {/* The change is already applied: the summary keeps the card cheap, and the patch is one
+                click away for the case where the diff viewer is not where you want to look. */}
             <BlockTool
               title={`# Patched ${files().length} file${files().length === 1 ? "" : "s"} · +${totals().additions} -${totals().deletions} · ${formatDiffBytes(totals().bytes)}`}
               part={props.part}
             >
-              <ApplyPatchSummary
-                files={files()}
-                measured={summaries().map((item) => item.measured)}
-                fg={theme.text.base}
-                mutedFg={theme.text.muted}
-                formatPath={pathFormatter.format}
-              />
+              <box flexDirection="column" gap={1}>
+                <ApplyPatchSummary
+                  files={files()}
+                  measured={summaries().map((item) => item.measured)}
+                  fg={theme.text.base}
+                  mutedFg={theme.text.muted}
+                  formatPath={pathFormatter.format}
+                />
+                <Show when={showPatch()}>
+                  <For each={files()}>
+                    {(file) => (
+                      <box flexDirection="column" flexShrink={0}>
+                        <text fg={theme.text.muted} selectable={false}>
+                          {pathFormatter.format(file.relativePath)}
+                        </text>
+                        <box paddingLeft={1}>
+                          <PatchDiff
+                            diff={file.patch}
+                            hunkFg={theme.diff.text.hunkHeader}
+                            view={view()}
+                            filetype={filetype(file.relativePath)}
+                            syntaxStyle={syntax()}
+                            showLineNumbers={true}
+                            width="100%"
+                            wrapMode={ctx.diffWrapMode()}
+                            fg={theme.text.base}
+                            addedBg={theme.diff.background.added}
+                            removedBg={theme.diff.background.removed}
+                            contextBg={theme.diff.background.context}
+                            addedSignColor={theme.diff.highlight.added}
+                            removedSignColor={theme.diff.highlight.removed}
+                            lineNumberFg={theme.diff.lineNumber.text}
+                            lineNumberBg={theme.diff.background.context}
+                            addedLineNumberBg={theme.diff.lineNumber.background.added}
+                            removedLineNumberBg={theme.diff.lineNumber.background.removed}
+                          />
+                        </box>
+                      </box>
+                    )}
+                  </For>
+                </Show>
+                <box
+                  onMouseUp={() => {
+                    if (renderer.getSelection()?.getSelectedText()) return
+                    setShowPatch((value) => !value)
+                  }}
+                >
+                  <text fg={theme.text.feedback.warning.base} selectable={false}>
+                    {showPatch() ? "Click to hide the patch." : "Click to render the full patch."}
+                  </text>
+                </box>
+              </box>
             </BlockTool>
           </Match>
           <Match when={true}>
