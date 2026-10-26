@@ -393,6 +393,7 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
       onMouseDrag={(event) => {
         paneResize.onMouseDrag(event)
         replayResize.onMouseDrag(event)
+        sidebarResize.onMouseDrag(event)
       }}
       onMouseDragEnd={finishResize}
       onMouseUp={finishResize}
@@ -444,7 +445,8 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
             }}
             // Consume the release before revealing permission buttons underneath.
             onMouseUp={() => {
-              if (paneResize.resizing() || replayResize.resizing() || resizeRelease) return
+              if (paneResize.resizing() || replayResize.resizing() || sidebarResize.resizing() || resizeRelease)
+                return
               focusSession()
             }}
           />
