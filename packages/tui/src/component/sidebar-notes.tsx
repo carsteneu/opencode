@@ -1,6 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import type { Plugin } from "@opencode/plugin/tui"
 import type { SessionMessageInfo } from "@opencode/client"
+import { TextAttributes } from "@opentui/core"
 import { createEffect, createMemo, For, on, Show } from "solid-js"
 import {
   addNote,
@@ -278,10 +279,14 @@ export function SidebarNotes(props: { context: Plugin.Context; sessionID: string
           <span style={{ fg: theme.text.muted }}> ({open()})</span>
         </text>
         <box id="notes-history" flexShrink={0} onMouseUp={() => void notes.history(props.sessionID)}>
-          <text fg={theme.text.muted}>◷</text>
+          <text fg={theme.text.base} attributes={TextAttributes.BOLD}>
+            ◷
+          </text>
         </box>
         <box id="notes-add" flexShrink={0} onMouseUp={() => notes.add(props.sessionID)}>
-          <text fg={theme.text.muted}>+</text>
+          <text fg={theme.text.base} attributes={TextAttributes.BOLD}>
+            +
+          </text>
         </box>
       </box>
       <Show when={notes.view.open}>

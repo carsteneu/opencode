@@ -72,7 +72,7 @@ test("an unknown session has no notes and is not created by reading", () => {
 })
 
 test("a note row previews one flat line and keeps the note itself whole", () => {
-  expect(NOTE_ROW_CHARS).toBe(80)
+  expect(NOTE_ROW_CHARS).toBe(44)
   expect(notePreview("short question")).toBe("short question")
   // Newlines and runs of spaces collapse: the row is one line.
   expect(notePreview("first line\n\nsecond   line")).toBe("first line second line")

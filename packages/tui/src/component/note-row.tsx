@@ -35,7 +35,7 @@ export function NoteRow(props: {
     <box
       id={`note-row-${props.note.id}`}
       flexDirection="row"
-      gap={1}
+      gap={2}
       minWidth={0}
       onMouseOver={enter}
       onMouseOut={leave}
@@ -48,61 +48,62 @@ export function NoteRow(props: {
           {props.note.done ? "✔" : "○"}
         </text>
       </box>
-      <box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0}>
+      {/* Two lines are reserved: the row keeps its height, and the text column yields to the actions
+          instead of pushing them out when the note is long. */}
+      <box flexDirection="column" flexGrow={1} flexShrink={1} flexBasis={0} minWidth={0} height={2}>
         <text
           fg={props.note.done ? theme.text.muted : theme.text.base}
-          wrapMode="none"
+          wrapMode="word"
           attributes={props.note.done ? TextAttributes.DIM : undefined}
         >
           {notePreview(props.note.text)}
         </text>
       </box>
-      {/* Without hover the row gives the whole width to the question. */}
-      <Show when={hovered()}>
-        <box
-          flexDirection="row"
-          gap={2}
-          flexShrink={0}
-          onMouseOver={enter}
-          onMouseOut={leave}
-          onMouseUp={(event: { stopPropagation(): void }) => event.stopPropagation()}
+      {/* The actions keep their column whether or not the pointer is over the row: an icon that only
+          appears on hover shifts the text and disappears exactly when it is needed. */}
+      <box
+        flexDirection="row"
+        gap={2}
+        flexShrink={0}
+        onMouseOver={enter}
+        onMouseOut={leave}
+        onMouseUp={(event: { stopPropagation(): void }) => event.stopPropagation()}
+      >
+        <Show when={answer() || notePreview(props.note.text).length >= NOTE_ROW_CHARS}>
+          <text
+            id={`note-view-${props.note.id}`}
+            fg={hovered() ? theme.text.base : theme.text.faint}
+            attributes={TextAttributes.BOLD}
+            onMouseUp={() => props.onView()}
+          >
+            ▤
+          </text>
+        </Show>
+        <text
+          id={`note-edit-${props.note.id}`}
+          fg={hovered() ? theme.text.base : theme.text.faint}
+          attributes={TextAttributes.BOLD}
+          onMouseUp={() => props.onEdit()}
         >
-          <Show when={answer() || notePreview(props.note.text).length >= NOTE_ROW_CHARS}>
-            <text
-              id={`note-view-${props.note.id}`}
-              fg={theme.text.base}
-              attributes={TextAttributes.BOLD}
-              onMouseUp={() => props.onView()}
-            >
-              ▤
-            </text>
-          </Show>
-          <text
-            id={`note-edit-${props.note.id}`}
-            fg={theme.text.base}
-            attributes={TextAttributes.BOLD}
-            onMouseUp={() => props.onEdit()}
-          >
-            ✎
-          </text>
-          <text
-            id={`note-send-${props.note.id}`}
-            fg={theme.text.base}
-            attributes={TextAttributes.BOLD}
-            onMouseUp={() => props.onSend()}
-          >
-            ▶
-          </text>
-          <text
-            id={`note-delete-${props.note.id}`}
-            fg={theme.text.base}
-            attributes={TextAttributes.BOLD}
-            onMouseUp={() => props.onDelete()}
-          >
-            ✖
-          </text>
-        </box>
-      </Show>
+          ✎
+        </text>
+        <text
+          id={`note-send-${props.note.id}`}
+          fg={hovered() ? theme.text.base : theme.text.faint}
+          attributes={TextAttributes.BOLD}
+          onMouseUp={() => props.onSend()}
+        >
+          ▶
+        </text>
+        <text
+          id={`note-delete-${props.note.id}`}
+          fg={hovered() ? theme.text.base : theme.text.faint}
+          attributes={TextAttributes.BOLD}
+          onMouseUp={() => props.onDelete()}
+        >
+          ✖
+        </text>
+      </box>
     </box>
   )
 }

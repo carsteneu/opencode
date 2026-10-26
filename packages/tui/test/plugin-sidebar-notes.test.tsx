@@ -214,9 +214,12 @@ test("a long note stays one row and offers the view icon without an answer", asy
   const app = await render(h.context, 20)
   try {
     const frame = app.captureCharFrame()
-    // One line, and the visible text is a prefix of the note: clipped at the end, never in the middle.
     const row = frame.split("\n").find((line) => line.includes("○")) ?? ""
-    const shown = row.slice(row.indexOf("○") + 1).trim()
+    // The icons sit in the row without hovering: a long note must not push them out.
+    expect(row).toContain("▤")
+    expect(row).toContain("▶")
+    // The visible text is a prefix of the note: clipped at the end, never from the middle.
+    const shown = row.slice(row.indexOf("○") + 1).split("▤")[0]!.trim()
     expect(shown.length).toBeGreaterThan(0)
     expect(long.startsWith(shown)).toBe(true)
     expect(frame).not.toContain("must not grow with it")

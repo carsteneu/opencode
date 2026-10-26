@@ -3,7 +3,7 @@ import type { LocationPublicRef, SessionMessageInfo } from "@opencode/client"
 /** Answers are stored in the same file as the notes, so they get a ceiling. */
 export const NOTE_ANSWER_LIMIT = 4000
 /** Characters a note row shows. The note keeps its full text: it is sent as a prompt. */
-export const NOTE_ROW_CHARS = 80
+export const NOTE_ROW_CHARS = 44
 
 /** One flattened line for a row: a long or multi-line note must not grow the sidebar. */
 export function notePreview(text: string) {
