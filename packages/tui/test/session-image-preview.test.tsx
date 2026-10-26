@@ -237,7 +237,7 @@ test("keeps No preview when the image itself fails to decode", async () => {
   }
 }, 20000)
 
-test("draws no preview at all while the session is streaming", async () => {
+test("keeps the attachment preview while the session is streaming", async () => {
   await using state = await tmpdir()
   const { setup, server, task } = await renderSession(
     state.path,
@@ -246,7 +246,7 @@ test("draws no preview at all while the session is streaming", async () => {
   )
   try {
     await settle(setup)
-    expect(previewShapes(setup.renderer.root)).toHaveLength(0)
+    expect(previewShapes(setup.renderer.root).length).toBeGreaterThan(0)
     expect(setup.captureCharFrame()).not.toContain("No preview")
   } finally {
     setup.renderer.destroy()
@@ -416,7 +416,7 @@ test("ignores a markdown reference that is not an image", async () => {
   }
 }, 20000)
 
-test("draws no markdown preview while the session is streaming", async () => {
+test("keeps the markdown preview while the session is streaming", async () => {
   await using state = await tmpdir()
   const target = await imageFile(state.path, "chart.png", 96, 48)
   const { setup, server, task } = await renderSession(state.path, [textMessage(markdownBody(target))], {
@@ -425,7 +425,7 @@ test("draws no markdown preview while the session is streaming", async () => {
   })
   try {
     await settle(setup)
-    expect(previewShapes(setup.renderer.root)).toHaveLength(0)
+    expect(previewShapes(setup.renderer.root).length).toBeGreaterThan(0)
   } finally {
     setup.renderer.destroy()
     await task

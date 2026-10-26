@@ -2749,10 +2749,8 @@ function TextImages(props: { part: SessionMessageAssistantText; message: Session
       }
     }
 
-    // Nothing is loaded while the session streams: the previews are suspended then, so a fetch or a
-    // file read would be work for a row that is not drawn.
-    if (ctx.sessionRunning()) return
-
+    // Previews load while the session streams as well: a completed message keeps its sources, and the
+    // residency below drops the bytes of every row that leaves the viewport.
     const pending = list.filter((image) => !held.has(image.source))
     pending.forEach((image) => held.add(image.source))
     publish()
@@ -2800,9 +2798,11 @@ function SessionImages(props: { images: readonly SessionImagePreview[]; paddingL
   const dialog = useDialog()
   const renderer = useRenderer()
   const images = createMemo(() => (ctx.config.session?.image_preview ? props.images : []))
-  // Image glyphs repaint every shown line each frame while streaming text advances; suspend the
-  // previews until the runner idles so the two do not compete for the same frame budget.
-  const visible = createMemo(() => (ctx.sessionRunning() ? [] : images()))
+  // Previews stay drawn while a turn streams. They used to be suspended until the runner idled, which
+  // hid every image for the whole duration of the next turn; the pixel budget and the per-viewport
+  // residency below already bound the cost, and a streaming message contributes no sources at all
+  // until it completes.
+  const visible = images
   // Only the rows near the viewport hold a decoded image: the transcript mounts far more rows than it
   // shows, and every mounted preview used to decode and keep its pixels for as long as the window held
   // it. The row keeps its height either way, so nothing moves when an image is released.
