@@ -27,7 +27,7 @@ function harness(options: Options = {}) {
   const sent: Sent[] = []
   const toasts: Toast[] = []
   const layers: Array<{ commands?: Array<{ id?: string }> }> = []
-  const state = { confirms: 0, dialogs: 0, writes: 0 }
+  const state = { confirms: 0, dialogs: 0, writes: 0, selects: 0 }
   const entries = new Map<string, readonly [unknown, unknown]>()
   const color = RGBA.fromInts(200, 200, 200)
   const context = {
@@ -84,7 +84,10 @@ function harness(options: Options = {}) {
           state.confirms += 1
           return options.confirm ?? false
         },
-        select: async () => undefined,
+        select: async () => {
+          state.selects += 1
+          return undefined
+        },
         set: () => {},
         clear: () => {},
       },
@@ -179,6 +182,27 @@ test("the header counts open notes and lists them newest first", async () => {
     // Newest first, checked-off last: the oldest open note sits at the bottom.
     expect(frame.indexOf("second question")).toBeLessThan(frame.indexOf("first question"))
     expect(frame.indexOf("first question")).toBeLessThan(frame.indexOf("already done"))
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("a long list keeps the newest rows and hands the rest to the history", async () => {
+  const many = Array.from({ length: 12 }, (_, index) => note(`n${index}`, `note ${index}`, { created: 100 + index }))
+  const h = harness({ notes: { notes: { [SID]: many } } })
+  const app = await render(h.context, 40)
+  try {
+    const frame = app.captureCharFrame()
+    // Newest first: rows 11..4 are visible, 3 and older are behind the overflow row.
+    expect(frame).toContain("note 11")
+    expect(frame).toContain("note 4")
+    expect(frame).not.toContain("note 3")
+    expect(frame).toContain("⋮ 4 more → history")
+
+    const overflow = node(app, "notes-overflow")
+    await app.mockMouse.click(overflow.x, overflow.y)
+    await settle(app)
+    expect(h.state.selects).toBe(1)
   } finally {
     app.renderer.destroy()
   }

@@ -20,6 +20,9 @@ import { NoteRow } from "./note-row"
 import { DialogNote } from "./dialog-note"
 import { openNoteDetail, openNotesHistory } from "./dialog-notes-history"
 
+/** Rows the block renders before it hands the rest to the history dialog. */
+export const NOTE_VISIBLE_LIMIT = 8
+
 function fail(context: Plugin.Context, message: string, error: unknown) {
   context.ui.toast.show({
     message: `${message}: ${error instanceof Error ? error.message : String(error)}`,
@@ -249,6 +252,10 @@ export function SidebarNotes(props: { context: Plugin.Context; sessionID: string
   const theme = props.context.theme
   const list = createMemo(() => notesOf(notes.state, props.sessionID))
   const open = createMemo(() => list().filter((note) => !note.done).length)
+  // A long list would push every other sidebar block off the screen: the block shows the newest
+  // rows and hands the rest to the history dialog, which searches.
+  const visible = createMemo(() => list().slice(0, NOTE_VISIBLE_LIMIT))
+  const hidden = createMemo(() => Math.max(0, list().length - visible().length))
 
   return (
     <box gap={1}>
@@ -280,7 +287,7 @@ export function SidebarNotes(props: { context: Plugin.Context; sessionID: string
       <Show when={notes.view.open}>
         <Show when={list().length > 0} fallback={<text fg={theme.text.faint}>No notes yet</text>}>
           <box gap={1}>
-            <For each={list()}>
+            <For each={visible()}>
               {(note) => (
                 <NoteRow
                   context={props.context}
@@ -293,6 +300,11 @@ export function SidebarNotes(props: { context: Plugin.Context; sessionID: string
                 />
               )}
             </For>
+            <Show when={hidden() > 0}>
+              <box id="notes-overflow" onMouseUp={() => void notes.history(props.sessionID)}>
+                <text fg={theme.text.muted}>{`⋮ ${hidden()} more → history`}</text>
+              </box>
+            </Show>
           </box>
         </Show>
       </Show>
