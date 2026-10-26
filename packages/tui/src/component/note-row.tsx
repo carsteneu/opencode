@@ -4,6 +4,23 @@ import { TextAttributes } from "@opentui/core"
 import { createSignal, onCleanup, Show } from "solid-js"
 import { NOTE_ROW_CHARS, notePreview, type Note } from "../util/notes"
 
+/** One action: a two-cell box owns the click, the glyph sits inside it. */
+function Icon(props: {
+  id: string
+  glyph: string
+  theme: Plugin.Context["theme"]
+  bright: boolean
+  onPress: () => void
+}) {
+  return (
+    <box id={props.id} width={2} flexShrink={0} onMouseUp={() => props.onPress()}>
+      <text fg={props.bright ? props.theme.text.base : props.theme.text.faint} attributes={TextAttributes.BOLD}>
+        {props.glyph}
+      </text>
+    </box>
+  )
+}
+
 export function NoteRow(props: {
   context: Plugin.Context
   note: Note
@@ -60,49 +77,22 @@ export function NoteRow(props: {
         </text>
       </box>
       {/* The actions keep their column whether or not the pointer is over the row: an icon that only
-          appears on hover shifts the text and disappears exactly when it is needed. */}
+          appears on hover shifts the text and disappears exactly when it is needed. Each icon is a box
+          of its own, so the click lands on the box rather than on whatever width the glyph happens to
+          render with. */}
       <box
         flexDirection="row"
-        gap={2}
         flexShrink={0}
         onMouseOver={enter}
         onMouseOut={leave}
         onMouseUp={(event: { stopPropagation(): void }) => event.stopPropagation()}
       >
         <Show when={answer() || notePreview(props.note.text).length >= NOTE_ROW_CHARS}>
-          <text
-            id={`note-view-${props.note.id}`}
-            fg={hovered() ? theme.text.base : theme.text.faint}
-            attributes={TextAttributes.BOLD}
-            onMouseUp={() => props.onView()}
-          >
-            ▤
-          </text>
+          <Icon id={`note-view-${props.note.id}`} glyph="▤" theme={theme} bright={hovered()} onPress={() => props.onView()} />
         </Show>
-        <text
-          id={`note-edit-${props.note.id}`}
-          fg={hovered() ? theme.text.base : theme.text.faint}
-          attributes={TextAttributes.BOLD}
-          onMouseUp={() => props.onEdit()}
-        >
-          ✎
-        </text>
-        <text
-          id={`note-send-${props.note.id}`}
-          fg={hovered() ? theme.text.base : theme.text.faint}
-          attributes={TextAttributes.BOLD}
-          onMouseUp={() => props.onSend()}
-        >
-          ▶
-        </text>
-        <text
-          id={`note-delete-${props.note.id}`}
-          fg={hovered() ? theme.text.base : theme.text.faint}
-          attributes={TextAttributes.BOLD}
-          onMouseUp={() => props.onDelete()}
-        >
-          ✖
-        </text>
+        <Icon id={`note-edit-${props.note.id}`} glyph="✎" theme={theme} bright={hovered()} onPress={() => props.onEdit()} />
+        <Icon id={`note-send-${props.note.id}`} glyph="▶" theme={theme} bright={hovered()} onPress={() => props.onSend()} />
+        <Icon id={`note-delete-${props.note.id}`} glyph="✖" theme={theme} bright={hovered()} onPress={() => props.onDelete()} />
       </box>
     </box>
   )

@@ -227,7 +227,8 @@ test("a long note stays one row and offers the view icon without an answer", asy
     // The full text stays reachable: the view icon appears even though there is no answer yet.
     await hover(app, "note-row-a")
     const view = node(app, "note-view-a")
-    await app.mockMouse.click(view.x, view.y)
+    // The whole glyph is clickable, not only its left cell.
+    await app.mockMouse.click(view.x + 1, view.y)
     await settle(app)
     expect(h.state.dialogs).toBe(1)
   } finally {
