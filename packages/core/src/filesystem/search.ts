@@ -2,7 +2,7 @@ export * as FileSystemSearch from "./search.js"
 
 import { makeLocationNode } from "@opencode/util/effect/app-node"
 import path from "path"
-import { Clock, Context, Deferred, Duration, Effect, Layer, Schema, Scope } from "effect"
+import { Clock, Context, Deferred, Duration, Effect, Layer, Scope } from "effect"
 import { Fff } from "#fff"
 import fuzzysort from "fuzzysort"
 import { FileSystem } from "@opencode/schema/filesystem"
@@ -15,10 +15,9 @@ export interface Interface {
   readonly find: (input: FileSystem.FindInput) => Effect.Effect<FileSystem.Entry[]>
 }
 
-export const Options = Schema.Struct({
-  fff: Schema.optional(Schema.Boolean),
-})
-export type Options = typeof Options.Type
+export interface Options {
+  readonly fff?: boolean
+}
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/FileSystem/Search") {}
 
@@ -50,7 +49,7 @@ function search(index: ReturnType<typeof emptyIndex>, input: FileSystem.FindInpu
   })
 }
 
-export const ripgrepLayer = Layer.effect(
+const ripgrepLayer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const location = yield* Location.Service
@@ -200,7 +199,7 @@ export function makeFffLayer(create: typeof Fff.create) {
 
 export const fffLayer = makeFffLayer(Fff.create)
 
-export const layer = (options?: Options) =>
+const layer = (options?: Options) =>
   Layer.unwrap(
     Effect.gen(function* () {
       const location = yield* Location.Service
