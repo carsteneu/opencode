@@ -61,9 +61,9 @@ async function boot(state: string, fetch: FetchHandler) {
   return app
 }
 
-/** ctrl+shift+n as configured for notes.add. */
+/** alt+n as configured for notes.add: ctrl+shift+n belongs to the terminal (Ghostty opens a window). */
 async function addNote(app: Awaited<ReturnType<typeof boot>>, text: string) {
-  app.mockInput.pressKey("n", { ctrl: true, shift: true })
+  app.mockInput.pressKey("n", { meta: true })
   await app.waitForFrame((frame) => frame.includes("Add a note"))
   // The dialog focuses its textarea on the tick after it mounts.
   await Bun.sleep(30)
