@@ -69,13 +69,13 @@ test("an unknown session has no notes and is not created by reading", () => {
   expect(Object.keys(draft.notes)).toEqual([])
 })
 
-test("open notes sort by creation, checked-off ones go last", () => {
+test("open notes sort newest first, checked-off ones go last", () => {
   const draft = state()
   addNote(draft, SESSION, { text: "second", now: 20, id: "b" })
   addNote(draft, SESSION, { text: "third", now: 30, id: "c" })
   addNote(draft, SESSION, { text: "first", now: 10, id: "a" })
   toggleNote(draft, SESSION, "a", 40)
-  expect(notesOf(draft, SESSION).map((note) => note.id)).toEqual(["b", "c", "a"])
+  expect(notesOf(draft, SESSION).map((note) => note.id)).toEqual(["c", "b", "a"])
 })
 
 test("toggle, edit and delete only touch the addressed note", () => {
@@ -259,7 +259,9 @@ test("two notes each keep their own answer", () => {
     assistant("msg_2", 120, [{ type: "text", text: "answer two" }]),
   ])
 
-  const [first, second] = notesOf(draft, SESSION)
+  // Addressed by id: the listing order is display order, not identity.
+  const first = notesOf(draft, SESSION).find((note) => note.id === "a")!
+  const second = notesOf(draft, SESSION).find((note) => note.id === "b")!
   expect(first.answer).toMatchObject({ text: "answer one", messageID: "msg_1" })
   expect(second.answer).toMatchObject({ text: "answer two", messageID: "msg_2" })
 })
@@ -324,7 +326,8 @@ test("project fields are stored when the session carries them and omitted when i
   })
   addNote(draft, SESSION, { text: "without project", now: 2, id: "b" })
 
-  const [first, second] = notesOf(draft, SESSION)
+  const first = notesOf(draft, SESSION).find((note) => note.id === "a")!
+  const second = notesOf(draft, SESSION).find((note) => note.id === "b")!
   expect(first).toMatchObject({ projectID: "proj_1", location: { directory: "/repo" } })
   expect(second.projectID).toBeUndefined()
   expect(second.location).toBeUndefined()

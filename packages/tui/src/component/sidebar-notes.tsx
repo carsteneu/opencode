@@ -18,7 +18,7 @@ import {
 } from "../util/notes"
 import { NoteRow } from "./note-row"
 import { DialogNote } from "./dialog-note"
-import { openNotesHistory } from "./dialog-notes-history"
+import { openNoteDetail, openNotesHistory } from "./dialog-notes-history"
 
 function fail(context: Plugin.Context, message: string, error: unknown) {
   context.ui.toast.show({
@@ -288,6 +288,7 @@ export function SidebarNotes(props: { context: Plugin.Context; sessionID: string
                   onToggle={() => notes.toggle(props.sessionID, note)}
                   onEdit={() => notes.edit(props.sessionID, note)}
                   onSend={() => void notes.send(props.sessionID, note)}
+                  onView={() => openNoteDetail(props.context.ui, note)}
                   onDelete={() => void notes.remove(props.sessionID, note)}
                 />
               )}

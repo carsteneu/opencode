@@ -102,6 +102,12 @@ export function DialogNoteDetail(props: { note: Note }) {
   )
 }
 
+/** Opens one note as plain text: its question and its captured answer. */
+export function openNoteDetail(ui: Plugin.Context["ui"], note: Note) {
+  ui.dialog.show(() => <DialogNoteDetail note={note} />)
+  ui.dialog.set({ size: "large", centered: true })
+}
+
 /** Opens the session's note history: a searchable list, then the full note. */
 export async function openNotesHistory(ui: Plugin.Context["ui"], notes: readonly Note[]) {
   if (notes.length === 0) {
@@ -116,6 +122,5 @@ export async function openNotesHistory(ui: Plugin.Context["ui"], notes: readonly
   })
   if (!selected) return
   // The select dialog closes on a pick, so the detail is its own dialog.
-  ui.dialog.show(() => <DialogNoteDetail note={selected} />)
-  ui.dialog.set({ size: "large", centered: true })
+  openNoteDetail(ui, selected)
 }

@@ -67,7 +67,7 @@ function find(state: NotesState, sessionID: string, id: string) {
 export function notesOf(state: NotesState, sessionID: string) {
   return list(state, sessionID)
     .filter(isNote)
-    .sort((a, b) => Number(a.done) - Number(b.done) || a.created - b.created)
+    .sort((a, b) => Number(a.done) - Number(b.done) || b.created - a.created)
 }
 
 // The history dialog reads as an answer archive: answered first, then sent, then open, and a note

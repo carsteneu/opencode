@@ -160,7 +160,7 @@ test("the always-mounted runtime owns the four notes commands", async () => {
   }
 })
 
-test("the header counts open notes and lists them oldest first", async () => {
+test("the header counts open notes and lists them newest first", async () => {
   const h = harness({
     notes: {
       notes: {
@@ -176,9 +176,9 @@ test("the header counts open notes and lists them oldest first", async () => {
   try {
     const frame = app.captureCharFrame()
     expect(frame).toContain("Prompt Notes (2)")
-    // Oldest first, checked-off last.
-    expect(frame.indexOf("first question")).toBeLessThan(frame.indexOf("second question"))
-    expect(frame.indexOf("second question")).toBeLessThan(frame.indexOf("already done"))
+    // Newest first, checked-off last: the oldest open note sits at the bottom.
+    expect(frame.indexOf("second question")).toBeLessThan(frame.indexOf("first question"))
+    expect(frame.indexOf("first question")).toBeLessThan(frame.indexOf("already done"))
   } finally {
     app.renderer.destroy()
   }
@@ -281,7 +281,7 @@ test("a collapsed block hides its rows and keeps the count visible", async () =>
   }
 })
 
-test("an answered note previews the answer and expands to the full text", async () => {
+test("an answered note keeps the answer out of the row and opens it from the view icon", async () => {
   const h = harness({
     notes: {
       notes: {
@@ -300,13 +300,15 @@ test("an answered note previews the answer and expands to the full text", async 
   try {
     const frame = app.captureCharFrame()
     expect(frame).toContain("what is the cap?")
-    expect(frame).toContain("First line of the answer.")
-    expect(frame).not.toContain("Second line of it.")
+    // The row carries the question only: an answer inline made the list unreadable.
+    expect(frame).not.toContain("First line of the answer.")
 
-    const preview = node(app, "note-answer-a")
-    await app.mockMouse.click(preview.x, preview.y)
+    await hover(app, "note-row-a")
+    const view = node(app, "note-view-a")
+    await app.mockMouse.click(view.x, view.y)
     await settle(app)
-    expect(app.captureCharFrame()).toContain("Second line of it.")
+    // The harness dialog is a counter: rendering of the detail is covered in plugin-notes-dialogs.
+    expect(h.state.dialogs).toBe(1)
   } finally {
     app.renderer.destroy()
   }

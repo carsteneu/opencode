@@ -4,22 +4,18 @@ import { TextAttributes } from "@opentui/core"
 import { createSignal, onCleanup, Show } from "solid-js"
 import type { Note } from "../util/notes"
 
-function firstLine(text: string) {
-  return text.split("\n").find((line) => line.trim().length > 0) ?? ""
-}
-
 export function NoteRow(props: {
   context: Plugin.Context
   note: Note
   onToggle: () => void
   onEdit: () => void
   onSend: () => void
+  onView: () => void
   onDelete: () => void
 }) {
   const theme = props.context.theme
-  // Hover and expansion are memory-only: which row the pointer is over is not worth a disk write.
+  // Hover is memory-only: which row the pointer is over is not worth a disk write.
   const [hovered, setHovered] = createSignal(false)
-  const [expanded, setExpanded] = createSignal(false)
   const answer = () => props.note.answer
 
   // Entering a child fires `out` on the row, so a strict toggle would unmount the actions exactly when
@@ -60,15 +56,6 @@ export function NoteRow(props: {
         >
           {props.note.text}
         </text>
-        <Show when={answer()}>
-          {(stored) => (
-            <box id={`note-answer-${props.note.id}`} onMouseUp={() => setExpanded((value) => !value)}>
-              <text fg={theme.text.faint} wrapMode={expanded() ? "word" : "none"} truncate={!expanded()}>
-                {(expanded() ? "▾ " : "▸ ") + (expanded() ? stored().text : firstLine(stored().text))}
-              </text>
-            </box>
-          )}
-        </Show>
       </box>
       {/* Without hover the row gives the whole width to the question. */}
       <Show when={hovered()}>
@@ -80,6 +67,16 @@ export function NoteRow(props: {
           onMouseOut={leave}
           onMouseUp={(event: { stopPropagation(): void }) => event.stopPropagation()}
         >
+          <Show when={answer()}>
+            <text
+              id={`note-view-${props.note.id}`}
+              fg={theme.text.base}
+              attributes={TextAttributes.BOLD}
+              onMouseUp={() => props.onView()}
+            >
+              ▤
+            </text>
+          </Show>
           <text
             id={`note-edit-${props.note.id}`}
             fg={theme.text.base}
