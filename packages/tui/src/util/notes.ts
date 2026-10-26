@@ -177,11 +177,13 @@ function capped(text: string, messageID: string, time: number): NoteAnswer {
 /**
  * The answer is the first completed assistant message after the note's own user message that carries
  * text and no tool call: an intermediate step ("let me look at the file") is not the answer, and a
- * turn that errored produced none.
+ * turn that errored produced none. Another user message ends the search — its answer belongs to that
+ * turn, not to this note, and a note whose own turn failed must wait rather than claim it.
  */
 function answerAfter(messages: readonly SessionMessageInfo[], start: number) {
   for (let index = start; index < messages.length; index++) {
     const message = messages[index]
+    if (message?.type === "user") return
     if (message?.type !== "assistant") continue
     if (message.time.completed === undefined) continue
     if (message.error !== undefined || message.finish === "error") continue

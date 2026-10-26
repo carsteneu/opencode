@@ -208,6 +208,23 @@ test("a streaming answer, an errored turn and a textless message are not capture
   expect(notesOf(draft, SESSION)[0]).toMatchObject({ state: "sent" })
 })
 
+test("an errored turn does not let the note claim a later turn's answer", () => {
+  const draft = state()
+  sent(draft, "a", "msg_a", 50)
+
+  // The note's own turn errored, so it produced no answer. What follows is a different question the
+  // user typed themselves; that answer belongs to no note.
+  expect(
+    captureAnswers(draft, SESSION, [
+      user("msg_a", "run this"),
+      assistant("msg_1", 60, [{ type: "text", text: "boom" }], { finish: "error" }),
+      user("msg_other", "an unrelated question", 200),
+      assistant("msg_2", 210, [{ type: "text", text: "an unrelated answer" }]),
+    ]),
+  ).toBe(false)
+  expect(notesOf(draft, SESSION)[0]).toMatchObject({ state: "sent" })
+})
+
 test("a note whose own message has not been echoed yet waits", () => {
   const draft = state()
   sent(draft, "a", "msg_a", 50)
