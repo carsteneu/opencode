@@ -84,16 +84,27 @@ export function useNotes(context: Plugin.Context) {
     ))
   }
 
-  /** Resolves true when the prompt really went out, so the caller can check the note off. */
+  // A second click on the send action while the first is still in flight would post the prompt twice
+  // — two turns, two charges — so sends are serialized per note.
+  const sending = new Set<string>()
+
   async function send(target: string, note: Note) {
+    const key = `${target}:${note.id}`
+    if (sending.has(key)) return
+    sending.add(key)
+    let sentID: string
     try {
-      await context.data.session.enqueue({ sessionID: target, text: note.text })
+      sentID = await context.data.session.enqueue({ sessionID: target, text: note.text })
     } catch (error) {
       fail(context, "Failed to send the note", error)
-      return false
+      return
+    } finally {
+      sending.delete(key)
     }
-    await save(target, (draft) => markSent(draft, target, note.id, Date.now()))
-    return true
+    await save(target, (draft) => markSent(draft, target, note.id, sentID, Date.now()))
+    // The answer may already be in the transcript — a fast turn, or a steer into a running one — and
+    // marking the note sent changes no message, so nothing else would trigger the capture.
+    capture(target)
   }
 
   function toggle(target: string, note: Note) {
@@ -209,6 +220,7 @@ export function NotesRuntime(props: { context: Plugin.Context }) {
       {
         id: "notes.toggle",
         title: "Toggle prompt notes",
+        description: "Show or hide the prompt notes block in the session sidebar",
         group: "Notes",
         palette: true,
         run: () =>

@@ -21,6 +21,8 @@ export type Note = {
   updated: number
   state: NoteState
   sentAt?: number
+  /** The user message this note's last send produced; the answer is looked up from it. */
+  sentID?: string
   /** Project attribution captured at creation; nothing groups by it yet. */
   projectID?: string
   location?: LocationPublicRef
@@ -33,22 +35,28 @@ type AssistantMessage = Extract<SessionMessageInfo, { type: "assistant" }>
 type AssistantPart = AssistantMessage["content"][number]
 type TextPart = Extract<AssistantPart, { type: "text" }>
 
-// The note map is keyed by session id and the draft is a JSON-derived object, so a "__proto__" key
-// would walk into Object.prototype instead of adding an entry. Session ids are server-made, but the
-// guard is what keeps a malformed one from silently corrupting the whole store.
+// The note map is keyed by session id, so a "__proto__" key would shadow the notes record's own
+// prototype instead of adding an entry. Session ids are server-made, but the guard is what keeps a
+// malformed one from silently replacing the map's prototype.
 function ownKey(sessionID: string) {
   if (sessionID === "__proto__" || sessionID === "constructor" || sessionID === "prototype") return
   return sessionID
 }
 
+function isNote(value: unknown): value is Note {
+  return typeof value === "object" && value !== null
+}
+
 /** The live array for a session (mutate through it), or an empty throwaway. */
 function list(state: NotesState, sessionID: string) {
   if (ownKey(sessionID) === undefined) return [] as Note[]
+  const notes: unknown = state.notes
+  if (typeof notes !== "object" || notes === null) return [] as Note[]
   // Reading the property is what subscribes the caller to the first note of a session; a guard based
   // on Object.hasOwn would return an empty list without ever touching the key, and the sidebar would
   // not re-render when that session's first note arrives.
-  const notes = state.notes[sessionID]
-  return Array.isArray(notes) ? notes : ([] as Note[])
+  const value = (notes as Record<string, unknown>)[sessionID]
+  return Array.isArray(value) ? (value as Note[]) : ([] as Note[])
 }
 
 function find(state: NotesState, sessionID: string, id: string) {
@@ -57,7 +65,9 @@ function find(state: NotesState, sessionID: string, id: string) {
 
 /** Unchecked notes by creation, checked-off ones last. */
 export function notesOf(state: NotesState, sessionID: string) {
-  return [...list(state, sessionID)].sort((a, b) => Number(a.done) - Number(b.done) || a.created - b.created)
+  return list(state, sessionID)
+    .filter(isNote)
+    .sort((a, b) => Number(a.done) - Number(b.done) || a.created - b.created)
 }
 
 // The history dialog reads as an answer archive: answered first, then sent, then open, and a note
@@ -70,9 +80,9 @@ function rank(note: Note) {
 
 /** The same notes, ordered for the history dialog, newest activity first within each state. */
 export function historyNotes(state: NotesState, sessionID: string) {
-  return [...list(state, sessionID)].sort(
-    (a, b) => rank(a) - rank(b) || (b.sentAt ?? b.created) - (a.sentAt ?? a.created),
-  )
+  return list(state, sessionID)
+    .filter(isNote)
+    .sort((a, b) => rank(a) - rank(b) || (b.sentAt ?? b.created) - (a.sentAt ?? a.created))
 }
 
 export function addNote(
@@ -140,26 +150,52 @@ export function clearDone(state: NotesState, sessionID: string) {
   return true
 }
 
-/** Only call this after the send actually succeeded. */
-export function markSent(state: NotesState, sessionID: string, id: string, at: number) {
+/**
+ * Records a send that really happened. A re-send starts a fresh wait: the previous answer belongs to
+ * the turn the earlier send caused, and keeping it would leave the note looking answered forever.
+ */
+export function markSent(state: NotesState, sessionID: string, id: string, sentID: string, at: number) {
   const note = find(state, sessionID, id)
   if (!note) return
   note.state = "sent"
+  note.sentID = sentID
   note.sentAt = at
   note.done = true
   note.updated = at
+  note.answer = undefined
 }
 
 function capped(text: string, messageID: string, time: number): NoteAnswer {
   if (text.length <= NOTE_ANSWER_LIMIT) return { text, messageID, time }
-  return { text: text.slice(0, NOTE_ANSWER_LIMIT), messageID, time, truncated: true }
+  const cut = text.slice(0, NOTE_ANSWER_LIMIT)
+  // slice() counts UTF-16 units: a pair on the boundary would leave a lone surrogate in the stored
+  // JSON, which renders as a replacement character.
+  const whole = /[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut
+  return { text: whole, messageID, time, truncated: true }
 }
 
 /**
- * Matches sent notes to the answers they caused: the first completed assistant message with a text
- * part that started at or after the note's send time, and that no other note already claimed. Notes
- * are walked in send order, so two quick sends keep their order instead of both taking the first
- * answer.
+ * The answer is the first completed assistant message after the note's own user message that carries
+ * text and no tool call: an intermediate step ("let me look at the file") is not the answer, and a
+ * turn that errored produced none.
+ */
+function answerAfter(messages: readonly SessionMessageInfo[], start: number) {
+  for (let index = start; index < messages.length; index++) {
+    const message = messages[index]
+    if (message?.type !== "assistant") continue
+    if (message.time.completed === undefined) continue
+    if (message.error !== undefined || message.finish === "error") continue
+    if (message.content.some((part) => part.type === "tool")) continue
+    if (!message.content.some((part) => part.type === "text")) continue
+    return message
+  }
+  return
+}
+
+/**
+ * Matches sent notes to the answers they caused. Each note is anchored on the user message its send
+ * produced, so the match does not depend on wall-clock agreement between client and server, on when
+ * the send's state write landed, or on the note text staying unchanged.
  */
 export function pendingAnswers(
   notes: readonly Note[],
@@ -167,23 +203,18 @@ export function pendingAnswers(
 ): Map<string, NoteAnswer> {
   const result = new Map<string, NoteAnswer>()
   const waiting = notes
-    .filter((note) => note.state === "sent" && !note.answer)
+    .filter(isNote)
+    .filter((note) => note.state === "sent" && !note.answer && note.sentID !== undefined)
     .sort((a, b) => (a.sentAt ?? a.updated) - (b.sentAt ?? b.updated))
   if (waiting.length === 0) return result
 
-  const claimed = new Set(notes.flatMap((note) => (note.answer ? [note.answer.messageID] : [])))
-  const answers = messages
-    .filter((message): message is AssistantMessage => message.type === "assistant")
-    .filter((message) => message.time.completed !== undefined)
-    .sort((a, b) => a.time.created - b.time.created)
-
+  const claimed = new Set(notes.filter(isNote).flatMap((note) => (note.answer ? [note.answer.messageID] : [])))
   for (const note of waiting) {
-    const at = note.sentAt ?? note.updated
-    const match = answers.find((message) => {
-      if (claimed.has(message.id) || message.time.created < at) return false
-      return message.content.some((part) => part.type === "text")
-    })
-    if (!match) continue
+    const start = messages.findIndex((message) => message.type === "user" && message.id === note.sentID)
+    // The echo of the note's own message has not arrived yet; the next completed message retries.
+    if (start < 0) continue
+    const match = answerAfter(messages, start + 1)
+    if (!match || claimed.has(match.id)) continue
     // Reasoning and tool output stay out of the note: the note mirrors what was asked and shown,
     // not the machinery that produced it.
     const text = match.content
@@ -203,7 +234,7 @@ export function captureAnswers(state: NotesState, sessionID: string, messages: r
   const notes = list(state, sessionID)
   const answers = pendingAnswers(notes, messages)
   if (answers.size === 0) return false
-  for (const note of notes) {
+  for (const note of notes.filter(isNote)) {
     const answer = answers.get(note.id)
     if (!answer) continue
     note.answer = answer

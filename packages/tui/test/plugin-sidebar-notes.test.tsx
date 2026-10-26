@@ -2,6 +2,7 @@
 import { expect, test } from "bun:test"
 import { RGBA } from "@opentui/core"
 import { testRender } from "@opentui/solid"
+import type { SessionMessageInfo } from "@opencode/client"
 import type { Plugin } from "@opencode/plugin/tui"
 import { createStore, produce } from "solid-js/store"
 import Plugin_ from "../src/feature-plugins/sidebar/notes"
@@ -17,7 +18,8 @@ type Options = {
   notes?: NotesState
   open?: boolean
   confirm?: boolean
-  enqueue?: (input: Sent) => Promise<void>
+  enqueue?: (input: Sent) => Promise<string>
+  messages?: readonly SessionMessageInfo[]
   session?: { id: string; projectID?: string; location?: { directory: string } }
 }
 
@@ -25,7 +27,7 @@ function harness(options: Options = {}) {
   const sent: Sent[] = []
   const toasts: Toast[] = []
   const layers: Array<{ commands?: Array<{ id?: string }> }> = []
-  const state = { confirms: 0, dialogs: 0 }
+  const state = { confirms: 0, dialogs: 0, writes: 0 }
   const entries = new Map<string, readonly [unknown, unknown]>()
   const color = RGBA.fromInts(200, 200, 200)
   const context = {
@@ -43,7 +45,13 @@ function harness(options: Options = {}) {
         if (hit) return hit
         const value = key === "notes" ? structuredClone(options.notes ?? { notes: {} }) : { open: options.open ?? true }
         const [store, setStore] = createStore(structuredClone(value))
-        const entry = [store, async (mutation: (draft: object) => void) => setStore(produce(mutation))] as const
+        const entry = [
+          store,
+          async (mutation: (draft: object) => void) => {
+            state.writes += 1
+            setStore(produce(mutation))
+          },
+        ] as const
         entries.set(key, entry)
         return entry
       },
@@ -51,11 +59,12 @@ function harness(options: Options = {}) {
     data: {
       session: {
         get: () => options.session,
-        message: { list: () => [] as const },
+        message: { list: () => options.messages ?? [] },
         enqueue:
           options.enqueue ??
           (async (input: Sent) => {
             sent.push(input)
+            return "msg_sent"
           }),
       },
     },
@@ -210,7 +219,7 @@ test("sending enqueues the question and only then checks the note off", async ()
     await settle(app)
     expect(h.sent).toEqual([{ sessionID: SID, text: "why does it stall?" }])
     const store = h.context.storage.store("notes", { initial: { notes: {} } })[0] as unknown as NotesState
-    expect(store.notes[SID][0]).toMatchObject({ done: true, state: "sent" })
+    expect(store.notes[SID][0]).toMatchObject({ done: true, state: "sent", sentID: "msg_sent" })
   } finally {
     app.renderer.destroy()
   }
@@ -298,6 +307,81 @@ test("an answered note previews the answer and expands to the full text", async 
     await app.mockMouse.click(preview.x, preview.y)
     await settle(app)
     expect(app.captureCharFrame()).toContain("Second line of it.")
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("a second click while the send is in flight does not post the prompt twice", async () => {
+  let calls = 0
+  let release: (id: string) => void = () => {}
+  const pending = new Promise<string>((resolve) => (release = resolve))
+  const h = harness({
+    notes: { notes: { [SID]: [note("a", "send me once")] } },
+    enqueue: () => {
+      calls += 1
+      return pending
+    },
+  })
+  const app = await render(h.context)
+  try {
+    await hover(app, "note-row-a")
+    const send = node(app, "note-send-a")
+    await app.mockMouse.click(send.x, send.y)
+    await app.mockMouse.click(send.x, send.y)
+    await settle(app)
+    // The first send is still awaiting the server; the second click is dropped.
+    expect(calls).toBe(1)
+
+    release("msg_sent")
+    await settle(app)
+    const store = h.context.storage.store("notes", { initial: { notes: {} } })[0] as unknown as NotesState
+    expect(store.notes[SID][0]).toMatchObject({ done: true, state: "sent", sentID: "msg_sent" })
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("the always-mounted runtime writes the answer of a sent note onto it", async () => {
+  const h = harness({
+    notes: {
+      notes: {
+        [SID]: [note("a", "why the stall?", { done: true, state: "sent", sentAt: 5, sentID: "msg_note" })],
+      },
+    },
+    messages: [
+      { id: "msg_note", type: "user", time: { created: 10 }, text: "why the stall?" },
+      {
+        id: "msg_step",
+        type: "assistant",
+        time: { created: 20, completed: 30 },
+        agent: "build",
+        model: { providerID: "provider", modelID: "model" },
+        content: [
+          { type: "text", text: "Let me look." },
+          { type: "tool", text: "read" },
+        ],
+      },
+      {
+        id: "msg_answer",
+        type: "assistant",
+        time: { created: 40, completed: 50 },
+        agent: "build",
+        model: { providerID: "provider", modelID: "model" },
+        content: [{ type: "text", text: "Because the box has no height." }],
+      },
+    ] as unknown as SessionMessageInfo[],
+  })
+  const app = await testRender(() => <NotesRuntime context={h.context} />, { width: 40, height: 6 })
+  try {
+    await settle(app)
+    const store = h.context.storage.store("notes", { initial: { notes: {} } })[0] as unknown as NotesState
+    // The intermediate tool step is skipped; the answer after it is stored, once.
+    expect(store.notes[SID][0]).toMatchObject({
+      state: "answered",
+      answer: { text: "Because the box has no height.", messageID: "msg_answer" },
+    })
+    expect(h.state.writes).toBe(1)
   } finally {
     app.renderer.destroy()
   }

@@ -8,7 +8,7 @@ import { useConfig } from "../config"
 import { useTheme } from "../context/theme"
 import { DIALOG_INSET, DialogBleed, DialogFooter, DialogHeader, DialogLayout } from "../ui/dialog"
 import { datetime } from "../util/locale"
-import type { Note } from "../util/notes"
+import { NOTE_ANSWER_LIMIT, type Note } from "../util/notes"
 import { getScrollAcceleration } from "../util/scroll"
 
 function firstLine(text: string) {
@@ -93,7 +93,7 @@ export function DialogNoteDetail(props: { note: Note }) {
             <text fg={theme.text.faint}>
               added {datetime(props.note.created)}
               {answer() ? ` · answered ${datetime(answer()!.time)}` : ""}
-              {props.note.answer?.truncated ? " · capped at 4000 characters" : ""}
+              {answer()?.truncated ? ` · capped at ${NOTE_ANSWER_LIMIT} characters` : ""}
             </text>
           </box>
         </scrollbox>

@@ -24,8 +24,9 @@ function assistant(
   id: string,
   created: number,
   content: Array<{ type: string; text?: string }>,
-  completed: number | null = created + 10,
+  options: { completed?: number | null; finish?: string } = {},
 ) {
+  const completed = options.completed === undefined ? created + 10 : options.completed
   return {
     id,
     type: "assistant",
@@ -34,11 +35,18 @@ function assistant(
     agent: "build",
     model: { providerID: "provider", modelID: "model" },
     content,
+    ...(options.finish === undefined ? {} : { finish: options.finish }),
   } as unknown as SessionMessageInfo
 }
 
-function user(id: string, created: number) {
-  return { id, type: "user", time: { created }, text: "hi" } as unknown as SessionMessageInfo
+function user(id: string, text: string, created = 0) {
+  return { id, type: "user", time: { created }, text } as unknown as SessionMessageInfo
+}
+
+/** A note that was sent, anchored on the user message `sentID`. */
+function sent(state: NotesState, id = "note", sentID = "msg_note", at = 100) {
+  addNote(state, SESSION, { text: "run this", now: 10, id })
+  markSent(state, SESSION, id, sentID, at)
 }
 
 test("a new note starts open, unchecked and stamped", () => {
@@ -96,25 +104,51 @@ test("a blank edit is refused instead of emptying the note", () => {
   expect(notesOf(draft, SESSION)[0]).toMatchObject({ text: "keep me", updated: 10 })
 })
 
-test("sending marks the note sent and checks it off", () => {
+test("sending marks the note sent, checks it off and anchors it on its message", () => {
   const draft = state()
-  addNote(draft, SESSION, { text: "run this", now: 10, id: "a" })
-  markSent(draft, SESSION, "a", 50)
-  expect(notesOf(draft, SESSION)[0]).toMatchObject({ state: "sent", sentAt: 50, done: true, updated: 50 })
+  sent(draft, "a", "msg_a", 50)
+  expect(notesOf(draft, SESSION)[0]).toMatchObject({
+    state: "sent",
+    sentAt: 50,
+    sentID: "msg_a",
+    done: true,
+    updated: 50,
+  })
+})
+
+test("re-sending re-anchors the note and drops the answer of the previous turn", () => {
+  const draft = state()
+  sent(draft, "a", "msg_first", 50)
+  captureAnswers(draft, SESSION, [
+    user("msg_first", "run this"),
+    assistant("msg_1", 60, [{ type: "text", text: "old" }]),
+  ])
+  expect(notesOf(draft, SESSION)[0]).toMatchObject({ state: "answered", answer: { text: "old" } })
+
+  markSent(draft, SESSION, "a", "msg_second", 100)
+  // Keeping the old answer would leave the note looking answered while a new turn runs.
+  expect(notesOf(draft, SESSION)[0]).toMatchObject({ state: "sent", sentID: "msg_second" })
+  expect(notesOf(draft, SESSION)[0].answer).toBeUndefined()
+
+  captureAnswers(draft, SESSION, [
+    user("msg_first", "run this"),
+    assistant("msg_1", 60, [{ type: "text", text: "old" }]),
+    user("msg_second", "run this"),
+    assistant("msg_2", 110, [{ type: "text", text: "new" }]),
+  ])
+  expect(notesOf(draft, SESSION)[0]).toMatchObject({ state: "answered", answer: { text: "new" } })
 })
 
 test("the answer keeps text parts only and drops reasoning and tool output", () => {
   const draft = state()
-  addNote(draft, SESSION, { text: "run this", now: 10, id: "a" })
-  markSent(draft, SESSION, "a", 50)
+  sent(draft, "a", "msg_a", 50)
 
   expect(
     captureAnswers(draft, SESSION, [
-      user("msg_user", 50),
-      assistant("msg_a", 60, [
+      user("msg_a", "run this"),
+      assistant("msg_1", 60, [
         { type: "reasoning", text: "thinking out loud" },
         { type: "text", text: "first paragraph" },
-        { type: "tool", text: "tool output" },
         { type: "text", text: "second paragraph" },
       ]),
     ]),
@@ -122,46 +156,89 @@ test("the answer keeps text parts only and drops reasoning and tool output", () 
 
   expect(notesOf(draft, SESSION)[0]).toMatchObject({
     state: "answered",
-    answer: { text: "first paragraph\n\nsecond paragraph", messageID: "msg_a", time: 70 },
+    answer: { text: "first paragraph\n\nsecond paragraph", messageID: "msg_1", time: 70 },
   })
 })
 
-test("an answer that started before the send, or never finished, is not captured", () => {
+test("the capture does not depend on the clocks agreeing", () => {
   const draft = state()
-  addNote(draft, SESSION, { text: "run this", now: 10, id: "a" })
-  markSent(draft, SESSION, "a", 100)
+  // A client clock far ahead of the server, or a send recorded late, must not matter: the note is
+  // anchored on its own user message, not on a timestamp.
+  sent(draft, "a", "msg_a", 9_999_999)
+  expect(
+    captureAnswers(draft, SESSION, [
+      user("msg_a", "run this", 10),
+      assistant("msg_1", 20, [{ type: "text", text: "the answer" }]),
+    ]),
+  ).toBe(true)
+  expect(notesOf(draft, SESSION)[0].answer).toMatchObject({ text: "the answer" })
+})
+
+test("a tool-using turn captures its final answer, not the intermediate step", () => {
+  const draft = state()
+  sent(draft, "a", "msg_a", 50)
+
+  captureAnswers(draft, SESSION, [
+    user("msg_a", "run this"),
+    assistant("msg_1", 60, [
+      { type: "text", text: "Let me look at the sidebar component." },
+      { type: "tool", text: "read output" },
+    ]),
+    assistant("msg_2", 80, [{ type: "text", text: "It does not scroll because the box has no height." }]),
+  ])
+
+  expect(notesOf(draft, SESSION)[0].answer).toMatchObject({
+    text: "It does not scroll because the box has no height.",
+    messageID: "msg_2",
+  })
+})
+
+test("a streaming answer, an errored turn and a textless message are not captured", () => {
+  const draft = state()
+  sent(draft, "a", "msg_a", 50)
 
   expect(
     captureAnswers(draft, SESSION, [
-      assistant("msg_before", 90, [{ type: "text", text: "too early" }]),
-      assistant("msg_running", 110, [{ type: "text", text: "still streaming" }], null),
-      assistant("msg_empty", 120, [{ type: "reasoning", text: "no text part" }]),
+      user("msg_a", "run this"),
+      assistant("msg_1", 60, [{ type: "text", text: "still streaming" }], { completed: null }),
+      assistant("msg_2", 70, [{ type: "text", text: "partial" }], { finish: "error" }),
+      assistant("msg_3", 80, [{ type: "reasoning", text: "no text part" }]),
     ]),
   ).toBe(false)
   expect(notesOf(draft, SESSION)[0]).toMatchObject({ state: "sent" })
 })
 
-test("a long answer is capped and flagged", () => {
+test("a note whose own message has not been echoed yet waits", () => {
   const draft = state()
-  addNote(draft, SESSION, { text: "run this", now: 10, id: "a" })
-  markSent(draft, SESSION, "a", 50)
-  captureAnswers(draft, SESSION, [assistant("msg_a", 60, [{ type: "text", text: "x".repeat(NOTE_ANSWER_LIMIT + 25) }])])
-
-  const answer = notesOf(draft, SESSION)[0].answer!
-  expect(answer.text.length).toBe(NOTE_ANSWER_LIMIT)
-  expect(answer.truncated).toBe(true)
+  sent(draft, "a", "msg_a", 50)
+  expect(captureAnswers(draft, SESSION, [assistant("msg_1", 60, [{ type: "text", text: "orphan" }])])).toBe(false)
+  expect(notesOf(draft, SESSION)[0]).toMatchObject({ state: "sent" })
 })
 
-test("two quick sends keep their order: the first note claims the first answer", () => {
+test("a long answer is capped and flagged without splitting a surrogate pair", () => {
+  const draft = state()
+  sent(draft, "a", "msg_a", 50)
+  // The emoji straddles the cap: slicing UTF-16 units would leave a lone high surrogate behind.
+  const text = "x".repeat(NOTE_ANSWER_LIMIT - 1) + "😀" + "tail"
+  captureAnswers(draft, SESSION, [user("msg_a", "run this"), assistant("msg_1", 60, [{ type: "text", text }])])
+
+  const answer = notesOf(draft, SESSION)[0].answer!
+  expect(answer.truncated).toBe(true)
+  expect(answer.text.length).toBe(NOTE_ANSWER_LIMIT - 1)
+  expect(/[\uD800-\uDBFF]$/.test(answer.text)).toBe(false)
+})
+
+test("two notes each keep their own answer", () => {
   const draft = state()
   addNote(draft, SESSION, { text: "first question", now: 10, id: "a" })
+  markSent(draft, SESSION, "a", "msg_a", 100)
   addNote(draft, SESSION, { text: "second question", now: 11, id: "b" })
-  markSent(draft, SESSION, "a", 100)
-  markSent(draft, SESSION, "b", 101)
+  markSent(draft, SESSION, "b", "msg_b", 101)
 
-  // Both answers arrive in one batch; capture runs once over the whole list.
   captureAnswers(draft, SESSION, [
+    user("msg_a", "first question"),
     assistant("msg_1", 110, [{ type: "text", text: "answer one" }]),
+    user("msg_b", "second question"),
     assistant("msg_2", 120, [{ type: "text", text: "answer two" }]),
   ])
 
@@ -170,15 +247,15 @@ test("two quick sends keep their order: the first note claims the first answer",
   expect(second.answer).toMatchObject({ text: "answer two", messageID: "msg_2" })
 })
 
-test("an already claimed answer is not handed to a later note", () => {
+test("an answer already claimed by another note is not handed out twice", () => {
   const draft = state()
-  addNote(draft, SESSION, { text: "first", now: 10, id: "a" })
-  markSent(draft, SESSION, "a", 100)
-  captureAnswers(draft, SESSION, [assistant("msg_1", 110, [{ type: "text", text: "only answer" }])])
+  sent(draft, "a", "msg_a", 100)
+  captureAnswers(draft, SESSION, [user("msg_a", "run this"), assistant("msg_1", 110, [{ type: "text", text: "only" }])])
 
-  addNote(draft, SESSION, { text: "second", now: 200, id: "b" })
-  markSent(draft, SESSION, "b", 300)
-  captureAnswers(draft, SESSION, [assistant("msg_1", 110, [{ type: "text", text: "only answer" }])])
+  // A second note anchored on the same message (a duplicated row) must not take the same answer.
+  addNote(draft, SESSION, { text: "again", now: 200, id: "b" })
+  markSent(draft, SESSION, "b", "msg_a", 300)
+  captureAnswers(draft, SESSION, [user("msg_a", "run this"), assistant("msg_1", 110, [{ type: "text", text: "only" }])])
 
   expect(notesOf(draft, SESSION).find((note) => note.id === "b")).toMatchObject({ state: "sent" })
 })
@@ -187,16 +264,36 @@ test("history lists answered, then sent, then open, with manually checked-off la
   const draft = state()
   // The answered note is sent and captured first so it is the only note waiting for that answer.
   addNote(draft, SESSION, { text: "answered", now: 14, id: "answered" })
-  markSent(draft, SESSION, "answered", 30)
-  captureAnswers(draft, SESSION, [assistant("msg_a", 40, [{ type: "text", text: "done" }])])
+  markSent(draft, SESSION, "answered", "msg_a", 30)
+  captureAnswers(draft, SESSION, [user("msg_a", "answered"), assistant("msg_1", 40, [{ type: "text", text: "done" }])])
 
   addNote(draft, SESSION, { text: "sent", now: 13, id: "sent" })
-  markSent(draft, SESSION, "sent", 20)
+  markSent(draft, SESSION, "sent", "msg_b", 20)
   addNote(draft, SESSION, { text: "open", now: 10, id: "open" })
   addNote(draft, SESSION, { text: "checked", now: 11, id: "checked" })
   toggleNote(draft, SESSION, "checked", 12)
 
   expect(historyNotes(draft, SESSION).map((note) => note.id)).toEqual(["answered", "sent", "open", "checked"])
+})
+
+test("clearing checked notes keeps the ones that captured an answer", () => {
+  const draft = state()
+  addNote(draft, SESSION, { text: "clutter", now: 10, id: "clutter" })
+  toggleNote(draft, SESSION, "clutter", 11)
+  sent(draft, "sent", "msg_b", 20)
+  addNote(draft, SESSION, { text: "answered", now: 13, id: "answered" })
+  markSent(draft, SESSION, "answered", "msg_a", 30)
+  captureAnswers(draft, SESSION, [user("msg_a", "answered"), assistant("msg_1", 40, [{ type: "text", text: "kept" }])])
+  addNote(draft, SESSION, { text: "untouched", now: 14, id: "open" })
+
+  expect(clearDone(draft, SESSION)).toBe(true)
+  // Captured answers are the archive, and a sent note still waits for one: neither may be swept.
+  expect(
+    notesOf(draft, SESSION)
+      .map((note) => note.id)
+      .sort(),
+  ).toEqual(["answered", "open", "sent"])
+  expect(clearDone(draft, SESSION)).toBe(false)
 })
 
 test("project fields are stored when the session carries them and omitted when it does not", () => {
@@ -216,35 +313,21 @@ test("project fields are stored when the session carries them and omitted when i
   expect(second.location).toBeUndefined()
 })
 
-test("clearing checked notes keeps the ones that captured an answer", () => {
-  const draft = state()
-  addNote(draft, SESSION, { text: "clutter", now: 10, id: "clutter" })
-  toggleNote(draft, SESSION, "clutter", 11)
-  addNote(draft, SESSION, { text: "still waiting", now: 12, id: "sent" })
-  markSent(draft, SESSION, "sent", 20)
-  addNote(draft, SESSION, { text: "answered", now: 13, id: "answered" })
-  markSent(draft, SESSION, "answered", 30)
-  captureAnswers(draft, SESSION, [assistant("msg_a", 40, [{ type: "text", text: "kept answer" }])])
-  addNote(draft, SESSION, { text: "untouched", now: 14, id: "open" })
-
-  expect(clearDone(draft, SESSION)).toBe(true)
-  // Captured answers are the archive, and a sent note still waits for one: neither may be swept.
-  expect(
-    notesOf(draft, SESSION)
-      .map((note) => note.id)
-      .sort(),
-  ).toEqual(["answered", "open", "sent"])
-  expect(clearDone(draft, SESSION)).toBe(false)
-})
-
-test("a prototype-shaped session id cannot reach the note map's prototype", () => {
+test("a prototype-shaped session id cannot replace the note map's prototype", () => {
   const draft = state()
   for (const key of ["__proto__", "constructor", "prototype"]) {
     expect(addNote(draft, key, { text: "nope", now: 1, id: "x" })).toBeUndefined()
     expect(notesOf(draft, key)).toEqual([])
   }
-  expect({}.hasOwnProperty("nope")).toBe(false)
+  expect(Object.getPrototypeOf(draft.notes)).toBe(Object.prototype)
   expect(Object.keys(draft.notes)).toEqual([])
+})
+
+test("a corrupt state file degrades to no notes instead of throwing", () => {
+  // The state file is JSON the user's own machine owns; a hand-edited file must not crash the sidebar.
+  expect(notesOf({ notes: null as never }, SESSION)).toEqual([])
+  expect(notesOf({ notes: { [SESSION]: [null as never] } }, SESSION)).toEqual([])
+  expect(captureAnswers({ notes: { [SESSION]: [null as never] } }, SESSION, [])).toBe(false)
 })
 
 test("mutating a missing note is a no-op instead of a throw", () => {
@@ -253,5 +336,6 @@ test("mutating a missing note is a no-op instead of a throw", () => {
   toggleNote(draft, SESSION, "missing", 20)
   setNoteText(draft, SESSION, "missing", "text", 20)
   deleteNote(draft, SESSION, "missing")
+  markSent(draft, SESSION, "missing", "msg_x", 20)
   expect(notesOf(draft, SESSION)).toHaveLength(1)
 })

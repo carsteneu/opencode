@@ -1,7 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import { TextareaRenderable } from "@opentui/core"
 import { useRenderer } from "@opentui/solid"
-import { createEffect, createSignal, onMount } from "solid-js"
+import { createSignal, onMount } from "solid-js"
 import { useConfig } from "../config"
 import { Keymap } from "../context/keymap"
 import { useTheme } from "../context/theme"
@@ -73,11 +73,6 @@ export function DialogNote(props: {
       textarea.focus()
       textarea.gotoLineEnd()
     }, 1)
-  })
-
-  createEffect(() => {
-    if (!textarea || textarea.isDestroyed) return
-    textarea.focus()
   })
 
   return (
