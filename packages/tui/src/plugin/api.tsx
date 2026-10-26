@@ -165,9 +165,7 @@ export function createPluginContext(input: {
       session: {
         ...host.data.session,
         enqueue: (input) =>
-          host.data.session
-            .prompt({ sessionID: input.sessionID, text: input.text })
-            .then(() => undefined),
+          host.data.session.prompt({ sessionID: input.sessionID, text: input.text }).then(() => undefined),
       },
     },
     attention: host.attention,
