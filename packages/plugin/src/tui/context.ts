@@ -78,6 +78,16 @@ export interface Data {
       sync(sessionID: string): Promise<void>
       invalidate(sessionID: string): void
     }
+    /**
+     * Submits a user prompt as if the composer had sent it: the host admits it
+     * optimistically, tracks it in the outbox and reconciles with the durable
+     * echo. Resolves once the server accepted it and rejects when it did not,
+     * so a caller can tell a real send from a failed one.
+     */
+    enqueue(input: {
+      readonly sessionID: string
+      readonly text: string
+    }): Promise<void>
     sync(sessionID: string): Promise<void>
     invalidate(sessionID: string): void
     readonly message: {

@@ -157,7 +157,19 @@ export function createPluginContext(input: {
     app: { version: host.app.version, channel: host.app.channel },
     renderer: host.renderer,
     client: host.client.api,
-    data: host.data,
+    // The data layer's prompt() is the one send path the composer uses: it mints the id, admits the
+    // row optimistically and tracks the outbox until the durable echo lands. Plugins get it here
+    // instead of reaching for the client, so a plugin send behaves exactly like a typed one.
+    data: {
+      ...host.data,
+      session: {
+        ...host.data.session,
+        enqueue: (input) =>
+          host.data.session
+            .prompt({ sessionID: input.sessionID, text: input.text })
+            .then(() => undefined),
+      },
+    },
     attention: host.attention,
     get theme() {
       return host.themes.currentTokens()
