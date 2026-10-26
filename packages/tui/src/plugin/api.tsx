@@ -157,7 +157,27 @@ export function createPluginContext(input: {
     app: { version: host.app.version, channel: host.app.channel },
     renderer: host.renderer,
     client: host.client.api,
-    data: host.data,
+    // The data layer's prompt() is the one send path the composer uses: it mints the id, admits the
+    // row optimistically and tracks the outbox until the durable echo lands. Plugins get it here
+    // instead of reaching for the client, so a plugin send is admitted the same way. The composer
+    // adds its own model/agent commit and queue choice on top; a plugin send runs with the session's
+    // committed selection and steers.
+    data: {
+      ...host.data,
+      session: {
+        ...host.data.session,
+        enqueue: async (input) => {
+          // A staged revert splices every local row at or after its boundary when it commits, which
+          // would delete the prompt this call is about to admit. The composer settles it first for
+          // the same reason.
+          if (host.data.session.get(input.sessionID)?.revert) {
+            await host.client.api.session.revert.commit({ sessionID: input.sessionID })
+          }
+          const item = await host.data.session.prompt({ sessionID: input.sessionID, text: input.text })
+          return item.id
+        },
+      },
+    },
     attention: host.attention,
     get theme() {
       return host.themes.currentTokens()

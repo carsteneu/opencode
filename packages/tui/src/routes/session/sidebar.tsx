@@ -10,7 +10,7 @@ import "../../component/title-shimmer"
 import { getScrollAcceleration } from "../../util/scroll"
 import { SESSION_SIDEBAR_WIDTH } from "../../ui/layout"
 
-export function Sidebar(props: { sessionID: string }) {
+export function Sidebar(props: { sessionID: string; width?: number }) {
   const data = useData()
   const theme = useTheme()
   const config = useConfig().data
@@ -20,8 +20,9 @@ export function Sidebar(props: { sessionID: string }) {
   return (
     <Show when={session()}>
       <box
+        id="session-sidebar"
         backgroundColor={theme.background.raised.base}
-        width={SESSION_SIDEBAR_WIDTH}
+        width={props.width ?? SESSION_SIDEBAR_WIDTH}
         height="100%"
         paddingTop={1}
         paddingBottom={1}

@@ -18,7 +18,11 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
       connection: client.connection,
       directory: props.directory,
     })
-    data satisfies Plugin.Context["data"]
+    // The plugin host adds the session enqueue on top of this object (src/plugin/api.tsx); every
+    // other member must match the plugin contract.
+    data satisfies Omit<Plugin.Context["data"], "session"> & {
+      session: Omit<Plugin.Context["data"]["session"], "enqueue">
+    }
     const [generatingTitles, setGeneratingTitles] = createStore<Record<string, boolean | undefined>>({})
     return {
       ...data,

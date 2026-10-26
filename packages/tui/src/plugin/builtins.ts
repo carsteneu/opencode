@@ -7,6 +7,7 @@ import SidebarContext from "../feature-plugins/sidebar/context"
 import SidebarFooter from "../feature-plugins/sidebar/footer"
 import SidebarFooterIdentity from "../feature-plugins/sidebar/footer-identity"
 import SidebarMcp from "../feature-plugins/sidebar/mcp"
+import SidebarNotes from "../feature-plugins/sidebar/notes"
 import SidebarTitleRename from "../feature-plugins/sidebar/title-rename"
 import SidebarTodo from "../feature-plugins/sidebar/todo"
 import DiffViewer from "../feature-plugins/system/diff-viewer"
@@ -43,4 +44,5 @@ export const builtins = [
   PromptTokensPerSecond,
   SidebarFooterIdentity,
   SidebarTitleRename,
+  SidebarNotes,
 ]

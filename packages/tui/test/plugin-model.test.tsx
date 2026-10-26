@@ -11,6 +11,7 @@ function pluginModel(local: ReturnType<typeof usePluginHost>["local"]) {
     shortcuts: {},
     keymapState: {},
     sessionTabs: {},
+    data: { session: {} },
     local,
   } as unknown as ReturnType<typeof usePluginHost>
   const registry: Registry = { has: () => false, set() {}, remove() {}, active: () => true }

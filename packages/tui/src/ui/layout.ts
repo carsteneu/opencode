@@ -1,4 +1,5 @@
 export const SESSION_SIDEBAR_WIDTH = 42
+export const SESSION_SIDEBAR_MIN_WIDTH = 32
 export const SESSION_REPLAY_WIDTH = 36
 export const SESSION_REPLAY_MIN_WIDTH = 24
 export const SESSION_PANE_MIN_WIDTH = 24
@@ -28,6 +29,15 @@ export function clampSessionPaneWidth(width: number, total: number) {
   return Math.max(
     Math.min(SESSION_PANE_MIN_WIDTH, half),
     Math.min(width, Math.max(half, total - SESSION_CONTENT_MIN_WIDTH)),
+  )
+}
+
+export function clampSessionSidebarWidth(width: number, total: number) {
+  // The sidebar keeps the transcript's minimum intact; the ceiling is the same one the vertical
+  // tab rail uses, so a dragged sidebar cannot take the whole frame.
+  return Math.max(
+    SESSION_SIDEBAR_MIN_WIDTH,
+    Math.min(width, SESSION_SIDEBAR_MAX_WIDTH, total - SESSION_CONTENT_MIN_WIDTH),
   )
 }
 
