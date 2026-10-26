@@ -22,7 +22,9 @@
     "dev": "bun run src/index.ts",
     "test": "bun test --timeout 30000 --only-failures",
     "typecheck": "bun check --no-script -b",
-    "typecheck:tsc": "tsc -b"
+    "typecheck:tsc": "tsc -b",
+    "build:patched": "bun run script/build-patched.ts",
+    "release:patched": "bun run script/patched-release.ts"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.6.0",
