@@ -85,26 +85,26 @@ export function useNotes(context: Plugin.Context) {
   }
 
   // A second click on the send action while the first is still in flight would post the prompt twice
-  // — two turns, two charges — so sends are serialized per note.
+  // — two turns, two charges — so sends are serialized per note. The guard covers the state write
+  // too: releasing it right after the enqueue leaves the note still unchecked on disk, and a click in
+  // that window posts again.
   const sending = new Set<string>()
 
   async function send(target: string, note: Note) {
     const key = `${target}:${note.id}`
     if (sending.has(key)) return
     sending.add(key)
-    let sentID: string
     try {
-      sentID = await context.data.session.enqueue({ sessionID: target, text: note.text })
+      const sentID = await context.data.session.enqueue({ sessionID: target, text: note.text })
+      await save(target, (draft) => markSent(draft, target, note.id, sentID, Date.now()))
+      // The answer may already be in the transcript — a fast turn, or a steer into a running one — and
+      // marking the note sent changes no message, so nothing else would trigger the capture.
+      capture(target)
     } catch (error) {
       fail(context, "Failed to send the note", error)
-      return
     } finally {
       sending.delete(key)
     }
-    await save(target, (draft) => markSent(draft, target, note.id, sentID, Date.now()))
-    // The answer may already be in the transcript — a fast turn, or a steer into a running one — and
-    // marking the note sent changes no message, so nothing else would trigger the capture.
-    capture(target)
   }
 
   function toggle(target: string, note: Note) {
