@@ -22,6 +22,7 @@ import { Sidebar } from "../routes/session/sidebar"
 import {
   clampSessionPaneWidth,
   clampSessionReplayWidth,
+  clampSessionSidebarWidth,
   SESSION_REPLAY_MIN_WIDTH,
   SESSION_REPLAY_WIDTH,
   SESSION_SIDEBAR_WIDTH,
@@ -59,6 +60,7 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
     paneWidth?: number
     terminalWidth?: number
     replayWidth?: number
+    sidebarWidth?: number
   }>("layout", {
     initial: {},
   })
@@ -78,9 +80,27 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
       }).catch((error) => console.error("Failed to persist TUI layout", error))
     },
   })
+  const sidebarWidth = () => {
+    const stored = layout.sidebarWidth
+    return typeof stored === "number" && Number.isFinite(stored) ? stored : SESSION_SIDEBAR_WIDTH
+  }
+  // The sidebar is the rightmost column too, so it drags by its own left edge. Its ceiling leaves the
+  // replay column and the transcript their shares.
+  const sidebarResize = createPaneResize({
+    value: sidebarWidth,
+    defaultValue: () => SESSION_SIDEBAR_WIDTH,
+    clamp: (width) => clampSessionSidebarWidth(width, panels.width() - replayClaim()),
+    fromMouse: (event) => dimensions().width - event.x - 1,
+    contains: (event, width) => event.x >= dimensions().width - width - 1 && event.x <= dimensions().width - width,
+    onCommit: (width) => {
+      void updateLayout((draft) => {
+        draft.sidebarWidth = width
+      }).catch((error) => console.error("Failed to persist TUI layout", error))
+    },
+  })
   let resizeRelease = false
   const finishResize = (event: MouseEvent) => {
-    if (paneResize.resizing() || replayResize.resizing()) {
+    if (paneResize.resizing() || replayResize.resizing() || sidebarResize.resizing()) {
       // A captured drag-end can be followed by mouse-up on the focus overlay.
       resizeRelease = true
       queueMicrotask(() => {
@@ -89,6 +109,7 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
     }
     paneResize.onMouseUp(event)
     replayResize.onMouseUp(event)
+    sidebarResize.onMouseUp(event)
   }
   const [sidebarOpen, setSidebarOpen] = createSignal(false)
   // The pane belongs to the session it was opened in: a toggle in one session
@@ -168,7 +189,7 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
   // fixed, a terminal or panel pane owns the splitter.
   const rightColumn = (width: number) => {
     const pane = rightPane()
-    if (pane === "sidebar") return SESSION_SIDEBAR_WIDTH
+    if (pane === "sidebar") return sidebarResize.size()
     if (pane === "terminal" || pane === "panel") return width
     return 0
   }
@@ -437,7 +458,11 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
           ref={(value: BoxRenderable) => (rightNode = value)}
           flexShrink={0}
           width={
-            fullscreen() ? availableWidth() : rightPane() === "sidebar" ? SESSION_SIDEBAR_WIDTH : paneResize.size()
+            fullscreen()
+              ? availableWidth()
+              : rightPane() === "sidebar"
+                ? sidebarResize.size()
+                : paneResize.size()
           }
           minWidth={0}
           minHeight={0}
@@ -485,7 +510,7 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
               </Show>
             }
           >
-            <Sidebar sessionID={props.sessionID} />
+            <Sidebar sessionID={props.sessionID} width={sidebarResize.size()} />
           </Show>
         </box>
       </Show>
@@ -495,6 +520,9 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
           left={availableWidth() - rightWidth() - replayResize.size() - 1}
           highlight="right"
         />
+      </Show>
+      <Show when={!fullscreen() && rightPane() === "sidebar" && wide()}>
+        <PaneResizeHandle resize={sidebarResize} left={availableWidth() - sidebarResize.size() - 1} highlight="right" />
       </Show>
       <Show when={!fullscreen() && (rightPane() === "terminal" || rightPane() === "panel") && availableWidth() >= 3}>
         <PaneResizeHandle resize={paneResize} left={availableWidth() - paneResize.size() - 1} highlight="right" />
@@ -509,7 +537,7 @@ export function SessionFrame(props: { sessionID: string; verticalTabsWidth: numb
           alignItems="flex-end"
           backgroundColor={RGBA.fromInts(0, 0, 0, 70)}
         >
-          <Sidebar sessionID={props.sessionID} />
+          <Sidebar sessionID={props.sessionID} width={sidebarResize.size()} />
         </box>
       </Show>
     </box>

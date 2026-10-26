@@ -45,8 +45,11 @@ export function NoteRow(props: {
       onMouseOut={leave}
     >
       <box id={`note-check-${props.note.id}`} flexShrink={0} onMouseUp={() => props.onToggle()}>
-        <text fg={props.note.done ? theme.text.feedback.success.base : theme.text.muted}>
-          {props.note.done ? "✓" : "○"}
+        <text
+          fg={props.note.done ? theme.text.feedback.success.base : theme.text.muted}
+          attributes={TextAttributes.BOLD}
+        >
+          {props.note.done ? "✔" : "○"}
         </text>
       </box>
       <box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0}>
@@ -71,20 +74,35 @@ export function NoteRow(props: {
       <Show when={hovered()}>
         <box
           flexDirection="row"
-          gap={1}
+          gap={2}
           flexShrink={0}
           onMouseOver={enter}
           onMouseOut={leave}
           onMouseUp={(event: { stopPropagation(): void }) => event.stopPropagation()}
         >
-          <text id={`note-edit-${props.note.id}`} fg={theme.text.muted} onMouseUp={() => props.onEdit()}>
+          <text
+            id={`note-edit-${props.note.id}`}
+            fg={theme.text.base}
+            attributes={TextAttributes.BOLD}
+            onMouseUp={() => props.onEdit()}
+          >
             ✎
           </text>
-          <text id={`note-send-${props.note.id}`} fg={theme.text.muted} onMouseUp={() => props.onSend()}>
-            ↵
+          <text
+            id={`note-send-${props.note.id}`}
+            fg={theme.text.base}
+            attributes={TextAttributes.BOLD}
+            onMouseUp={() => props.onSend()}
+          >
+            ▶
           </text>
-          <text id={`note-delete-${props.note.id}`} fg={theme.text.muted} onMouseUp={() => props.onDelete()}>
-            ✕
+          <text
+            id={`note-delete-${props.note.id}`}
+            fg={theme.text.base}
+            attributes={TextAttributes.BOLD}
+            onMouseUp={() => props.onDelete()}
+          >
+            ✖
           </text>
         </box>
       </Show>

@@ -131,7 +131,7 @@ test("sending a note enqueues the prompt and checks it off", async () => {
       if (!row) throw new Error("note row not rendered")
       // The actions live behind the row's hover.
       await app.mockMouse.moveTo(row.x + 1, row.y)
-      await app.waitForFrame((frame) => frame.includes("↵"))
+      await app.waitForFrame((frame) => frame.includes("▶"))
       const send = app.renderer.root.findDescendantById(`note-send-${id}`)
       if (!send) throw new Error("send action not rendered")
       await app.mockMouse.click(send.x, send.y)
