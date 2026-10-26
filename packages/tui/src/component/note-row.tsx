@@ -2,7 +2,7 @@
 import type { Plugin } from "@opencode/plugin/tui"
 import { TextAttributes } from "@opentui/core"
 import { createSignal, onCleanup, Show } from "solid-js"
-import type { Note } from "../util/notes"
+import { NOTE_ROW_CHARS, notePreview, type Note } from "../util/notes"
 
 export function NoteRow(props: {
   context: Plugin.Context
@@ -51,10 +51,10 @@ export function NoteRow(props: {
       <box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0}>
         <text
           fg={props.note.done ? theme.text.muted : theme.text.base}
-          wrapMode="word"
+          wrapMode="none"
           attributes={props.note.done ? TextAttributes.DIM : undefined}
         >
-          {props.note.text}
+          {notePreview(props.note.text)}
         </text>
       </box>
       {/* Without hover the row gives the whole width to the question. */}
@@ -67,7 +67,7 @@ export function NoteRow(props: {
           onMouseOut={leave}
           onMouseUp={(event: { stopPropagation(): void }) => event.stopPropagation()}
         >
-          <Show when={answer()}>
+          <Show when={answer() || notePreview(props.note.text).length >= NOTE_ROW_CHARS}>
             <text
               id={`note-view-${props.note.id}`}
               fg={theme.text.base}

@@ -208,6 +208,30 @@ test("a long list keeps the newest rows and hands the rest to the history", asyn
   }
 })
 
+test("a long note stays one row and offers the view icon without an answer", async () => {
+  const long = "This is a very long note that keeps going and going so the sidebar must not grow with it at all."
+  const h = harness({ notes: { notes: { [SID]: [note("a", long, { created: 10 })] } } })
+  const app = await render(h.context, 20)
+  try {
+    const frame = app.captureCharFrame()
+    // One line, and the visible text is a prefix of the note: clipped at the end, never in the middle.
+    const row = frame.split("\n").find((line) => line.includes("○")) ?? ""
+    const shown = row.slice(row.indexOf("○") + 1).trim()
+    expect(shown.length).toBeGreaterThan(0)
+    expect(long.startsWith(shown)).toBe(true)
+    expect(frame).not.toContain("must not grow with it")
+
+    // The full text stays reachable: the view icon appears even though there is no answer yet.
+    await hover(app, "note-row-a")
+    const view = node(app, "note-view-a")
+    await app.mockMouse.click(view.x, view.y)
+    await settle(app)
+    expect(h.state.dialogs).toBe(1)
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
 test("an empty session shows a placeholder instead of an empty list", async () => {
   const app = await render(harness().context)
   try {

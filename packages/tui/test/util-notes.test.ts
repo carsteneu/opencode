@@ -2,12 +2,14 @@ import { expect, test } from "bun:test"
 import type { SessionMessageInfo } from "@opencode/client"
 import {
   NOTE_ANSWER_LIMIT,
+  NOTE_ROW_CHARS,
   addNote,
   captureAnswers,
   clearDone,
   deleteNote,
   historyNotes,
   markSent,
+  notePreview,
   notesOf,
   setNoteText,
   toggleNote,
@@ -67,6 +69,23 @@ test("an unknown session has no notes and is not created by reading", () => {
   const draft = state()
   expect(notesOf(draft, "ses_missing")).toEqual([])
   expect(Object.keys(draft.notes)).toEqual([])
+})
+
+test("a note row previews one flat line and keeps the note itself whole", () => {
+  expect(NOTE_ROW_CHARS).toBe(80)
+  expect(notePreview("short question")).toBe("short question")
+  // Newlines and runs of spaces collapse: the row is one line.
+  expect(notePreview("first line\n\nsecond   line")).toBe("first line second line")
+  const long = "x".repeat(200)
+  const preview = notePreview(long)
+  expect(preview).toHaveLength(NOTE_ROW_CHARS)
+  expect(preview.endsWith("…")).toBe(true)
+
+  // The stored note is untouched: it is sent as the prompt.
+  const draft = state()
+  const note = addNote(draft, SESSION, { text: long, now: 1, id: "long" })!
+  expect(note.text).toBe(long)
+  expect(notesOf(draft, SESSION)[0]!.text).toBe(long)
 })
 
 test("open notes sort newest first, checked-off ones go last", () => {
