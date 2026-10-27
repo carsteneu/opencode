@@ -1,13 +1,14 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "version": "2.1.2",
+  "version": "2.1.4",
   "name": "@opencode/ai",
   "type": "module",
   "license": "MIT",
   "scripts": {
     "setup:recording-env": "bun run script/setup-recording-env.ts",
     "test": "bun test --timeout 30000 --only-failures",
-    "typecheck": "tsgo --noEmit && tsgo --noEmit -p tsconfig.types.json",
+    "typecheck": "bun check --no-script && bun check --no-script -p tsconfig.types.json",
+    "typecheck:tsc": "tsc --noEmit && tsc --noEmit -p tsconfig.types.json",
     "build": "tsc -p tsconfig.build.json"
   },
   "files": [
@@ -26,8 +27,7 @@
     "@tsconfig/bun": "catalog:",
     "@types/bun": "catalog:",
     "@typescript/native": "catalog:",
-    "typescript": "catalog:",
-    "@typescript/native-preview": "catalog:"
+    "typescript": "catalog:"
   },
   "dependencies": {
     "@aws-sdk/credential-providers": "3.1057.0",
