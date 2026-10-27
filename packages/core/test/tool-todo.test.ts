@@ -37,9 +37,21 @@ const names = (registry: Tool.Interface) =>
   toolDefinitions(registry).pipe(Effect.map((definitions) => definitions.map((definition) => definition.name)))
 
 describe("TodoTool", () => {
-  it.effect("is absent unless experimental.todo is enabled", () =>
+  // One registry per test: a registration from a previous case would still be listed here.
+  it.effect("registers todowrite by default", () =>
     Effect.gen(function* () {
-      expect(yield* names(yield* setup(undefined))).not.toContain(TodoTool.name)
+      expect(yield* names(yield* setup(undefined))).toContain(TodoTool.name)
+    }),
+  )
+
+  it.effect("registers todowrite when experimental.todo is true", () =>
+    Effect.gen(function* () {
+      expect(yield* names(yield* setup(new ConfigExperimental.Info({ todo: true })))).toContain(TodoTool.name)
+    }),
+  )
+
+  it.effect("hides todowrite when experimental.todo is false", () =>
+    Effect.gen(function* () {
       expect(yield* names(yield* setup(new ConfigExperimental.Info({ todo: false })))).not.toContain(TodoTool.name)
     }),
   )

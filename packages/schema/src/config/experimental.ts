@@ -9,7 +9,7 @@ export class Info extends Schema.Class<Info>("ConfigExperimental.Info")({
     description: "Enable the experimental portable shell permission scanner. Defaults to false.",
   }),
   todo: Schema.Boolean.pipe(optional).annotate({
-    description: "Enable the experimental todowrite tool. Defaults to false.",
+    description: "Enable the todowrite tool. Defaults to true; set false to hide it.",
   }),
   background_compaction: Schema.Boolean.pipe(optional).annotate({
     description:

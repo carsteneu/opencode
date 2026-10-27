@@ -47,7 +47,9 @@ export const Plugin = {
     const permission = yield* Permission.Service
     // Internal plugins are not re-run on config changes, so reload the tool transform instead.
     const loaded = yield* ConfigEntryObserver.observe(config, ctx.event, ctx.tool.reload())
-    const enabled = () => Config.latest(loaded.entries, "experimental")?.todo === true
+    // On by default in this fork: v2 hid the tool behind a flag, but the todo list is part of the
+    // workflow people came from v1 for. `experimental.todo: false` still turns it off.
+    const enabled = () => Config.latest(loaded.entries, "experimental")?.todo !== false
 
     yield* ctx.tool
       .transform((editor) => {
