@@ -1182,9 +1182,19 @@ function App() {
         category: "System",
       },
       {
-        name: "app.exit",
+        name: "app.quit",
         title: "Exit the app",
         slash: { name: "exit", aliases: ["quit", "q"] },
+        // Typing /exit or picking this from the palette is deliberate, so it leaves at once.
+        run: () => exit(),
+        category: "System",
+      },
+      {
+        // Bound to ctrl+c by config and reachable only from the keyboard: the two-press guard is
+        // there for the accidental press, and it would only be in the way of a chosen exit.
+        name: "app.exit",
+        title: "Exit the app",
+        palette: undefined,
         run: () => requestExit(),
         category: "System",
       },

@@ -2887,3 +2887,75 @@ test("quitting after a background update tells the user to start OpenCode again"
     await server.stop()
   }
 })
+
+
+// fork: the two-press exit guard is ours, and it must not slow down an explicit exit.
+// The fork guards the exit on ctrl+c: one press arms, the second leaves. An explicit exit - /exit or
+// the palette - must not be slowed down by it, which is what the sibling app-lifecycle test covers.
+test("ctrl+c exits only on the second press", async () => {
+  await using state = await tmpdir()
+  const setup = await createTestRenderer({ width: 80, height: 24 })
+  await setup.renderer.setupTerminal()
+
+  const started = Promise.withResolvers<void>()
+  const setTitle = setup.renderer.setTerminalTitle.bind(setup.renderer)
+  setup.renderer.setTerminalTitle = (title) => {
+    if (title === "OpenCode") started.resolve()
+    setTitle(title)
+  }
+
+  const events = createEventStream()
+  const calls = createFetch(undefined, events)
+  const server = Bun.serve({ port: 0, fetch: (request) => calls.fetch(request) })
+
+  const originalWrite = process.stdout.write.bind(process.stdout)
+  let stdout = ""
+  process.stdout.write = ((chunk: string | Uint8Array) => {
+    stdout += String(chunk)
+    return true
+  }) as typeof process.stdout.write
+
+  try {
+    const { run } = await import("../src/app")
+    const task = Effect.runPromise(
+      run({
+        app: { name: "test", version: "test", channel: "test" },
+        server: { endpoint: { url: server.url.toString() } },
+        config: { get: async () => ({}), update: async () => ({}) },
+        packages: { prepare: async () => ({ directory: "" }) },
+        terminalHandoff: async () => ({ renderer: setup.renderer, mode: "dark", complete: () => {} }),
+        updater: {
+          remote: false,
+          subscribe: (notify) => {
+            notify({ type: "installed", version: "2.0.0" })
+            return () => {}
+          },
+          check: async () => undefined,
+          apply: async () => {},
+        },
+        args: {},
+        log: () => {},
+      }).pipe(Effect.provide(Global.layerWith({ state: state.path })), Effect.provide(FileSystem.layerNoop({}))),
+    )
+
+    await started.promise
+    await setup.waitForFrame((frame) => frame.includes("commands"))
+    // The startup overlay swallows keyboard input for about three seconds after plugins.ready.
+    await Bun.sleep(3500)
+
+    setup.mockInput.pressKey("c", { ctrl: true })
+    await setup.waitForFrame((frame) => frame.includes("Press ctrl+c again to exit"))
+    // Armed, not exited: the app is still rendering and nothing was printed on the way out.
+    expect(setup.renderer.isDestroyed).toBe(false)
+    expect(Bun.stripANSI(stdout)).not.toContain("Run opencode to use 2.0.0")
+
+    setup.mockInput.pressKey("c", { ctrl: true })
+    await task
+
+    expect(Bun.stripANSI(stdout)).toContain("  Run opencode to use 2.0.0\n")
+  } finally {
+    process.stdout.write = originalWrite
+    if (!setup.renderer.isDestroyed) setup.renderer.destroy()
+    await server.stop()
+  }
+}, 60_000)
