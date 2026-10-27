@@ -19,6 +19,7 @@ import { Keymap } from "../context/keymap"
 import { useRoute } from "../context/route"
 import { useTuiApp, useTuiPaths } from "../context/runtime"
 import { useLocation } from "../context/location"
+import { usePromptRef } from "../context/prompt"
 import { useThemes } from "../context/theme"
 import { DialogAlert } from "../ui/dialog-alert"
 import { DialogConfirm } from "../ui/dialog-confirm"
@@ -82,6 +83,7 @@ export function usePluginHost() {
     sessionTabs: useSessionTabs(),
     panel: useOptionalPanel(),
     local: useLocal(),
+    prompt: usePromptRef(),
   }
 }
 
@@ -224,6 +226,17 @@ export function createPluginContext(input: {
     ui: {
       dialog: dialogApi,
       toast: toastApi,
+      // The composer is view state, not data: a plugin that wants to hand its text elsewhere reads it
+      // here and clears it itself. Both calls stay inert when no composer is mounted.
+      composer: {
+        text: () => host.prompt.current?.current.text ?? "",
+        clear: () => {
+          const prompt = host.prompt.current
+          if (!prompt) return false
+          prompt.reset()
+          return true
+        },
+      },
       format: {
         path: (value) => abbreviateHome(value, host.paths.home),
       },

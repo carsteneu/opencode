@@ -78,6 +78,32 @@ export function useNotes(context: Plugin.Context) {
     ))
   }
 
+  /**
+   * Takes the composer's text as a note and empties the field. Returns false when there was nothing
+   * to take, so the caller can say so instead of leaving the click without an answer.
+   */
+  function saveForLater(target = routed()) {
+    const text = context.ui.composer.text().trim()
+    if (!text) return false
+    if (!target) {
+      context.ui.toast.show({ message: "Open a session first", variant: "warning" })
+      return true
+    }
+    const sessionID = target
+    const session = context.data.session.get(sessionID)
+    void save(sessionID, (draft) =>
+      addNote(draft, sessionID, { text, projectID: session?.projectID, location: session?.location }),
+    )
+    context.ui.composer.clear()
+    return true
+  }
+
+  /** The one entry point behind the footer button, the keybinding and the palette command. */
+  function parkPrompt() {
+    if (saveForLater()) return
+    context.ui.toast.show({ message: "Nothing to save for later", variant: "warning" })
+  }
+
   function edit(target: string, note: Note) {
     context.ui.dialog.show(() => (
       <DialogNote
@@ -171,6 +197,8 @@ export function useNotes(context: Plugin.Context) {
     history,
     clearDone,
     capture,
+    saveForLater,
+    parkPrompt,
   }
 }
 
@@ -212,6 +240,14 @@ export function NotesRuntime(props: { context: Plugin.Context }) {
         group: "Notes",
         palette: true,
         run: () => notes.add(),
+      },
+      {
+        id: "notes.save_for_later",
+        title: "Save prompt for later",
+        description: "Park whatever is typed in the prompt as a note instead of sending it",
+        group: "Notes",
+        palette: true,
+        run: () => notes.parkPrompt(),
       },
       {
         id: "notes.history",

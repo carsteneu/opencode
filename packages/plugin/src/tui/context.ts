@@ -501,6 +501,13 @@ export interface Keymap {
 export interface UI {
   readonly dialog: Dialog
   readonly toast: Toast
+  /** The prompt composer of the session on screen. Empty and inert when no composer is mounted. */
+  readonly composer: {
+    /** The text currently typed into the composer; an empty string when it is not mounted. */
+    text(): string
+    /** Clears the composer. Returns false when no composer is mounted. */
+    clear(): boolean
+  }
   readonly format: {
     path(value: string): string
   }

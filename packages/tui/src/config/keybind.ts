@@ -133,6 +133,7 @@ export const Definitions = {
   "session.cd": keybind("none", "Change working directory"),
   "session.queued_prompts": keybind("<leader>q", "Manage queued prompts"),
   "notes.add": keybind("alt+n", "Add a prompt note for this session"),
+  "notes.save_for_later": keybind("alt+s", "Park the prompt in the notes instead of sending it"),
   "notes.history": keybind("none", "Browse this session's prompt notes"),
   "notes.toggle": keybind("none", "Show or hide the prompt notes block"),
   "notes.clear_done": keybind("none", "Remove checked-off prompt notes"),

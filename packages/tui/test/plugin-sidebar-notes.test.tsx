@@ -7,6 +7,7 @@ import type { Plugin } from "@opencode/plugin/tui"
 import { createStore, produce } from "solid-js/store"
 import Plugin_ from "../src/feature-plugins/sidebar/notes"
 import { NotesRuntime, SidebarNotes } from "../src/component/sidebar-notes"
+import { NotesSaveButton } from "../src/component/prompt-notes-save"
 import type { NotesState } from "../src/util/notes"
 
 const SID = "ses_notes"
@@ -21,17 +22,21 @@ type Options = {
   enqueue?: (input: Sent) => Promise<string>
   messages?: readonly SessionMessageInfo[]
   session?: { id: string; projectID?: string; location?: { directory: string } }
+  /** Text the fake composer holds when the test starts. */
+  composerText?: string
 }
 
 function harness(options: Options = {}) {
   const sent: Sent[] = []
   const toasts: Toast[] = []
   const layers: Array<{ commands?: Array<{ id?: string }> }> = []
-  const state = { confirms: 0, dialogs: 0, writes: 0, selects: 0 }
+  const state = { confirms: 0, dialogs: 0, writes: 0, selects: 0, cleared: 0 }
+  let composer = options.composerText ?? ""
   const entries = new Map<string, readonly [unknown, unknown]>()
   const color = RGBA.fromInts(200, 200, 200)
   const context = {
     theme: {
+      background: { raised: { base: color } },
       text: {
         base: color,
         muted: color,
@@ -74,6 +79,14 @@ function harness(options: Options = {}) {
       },
     },
     ui: {
+      composer: {
+        text: () => composer,
+        clear: () => {
+          state.cleared += 1
+          composer = ""
+          return true
+        },
+      },
       router: { current: () => ({ type: "session", sessionID: SID }) },
       toast: { show: (toast: Toast) => toasts.push(toast) },
       dialog: {
@@ -93,7 +106,15 @@ function harness(options: Options = {}) {
       },
     },
   } as unknown as Plugin.Context
-  return { context, sent, toasts, layers, state }
+  return {
+    context,
+    sent,
+    toasts,
+    layers,
+    state,
+    /** The live notes store, so a test can read what the plugin actually wrote. */
+    stored: () => entries.get("notes")?.[0] as NotesState | undefined,
+  }
 }
 
 async function render(context: Plugin.Context, height = 20) {
@@ -143,17 +164,19 @@ test("ships as a built-in plugin that claims the sidebar and an always-mounted s
     },
   } as unknown as Plugin.Context
   await Plugin_.setup(setupContext)
-  // The commands and the answer capture hang off the app slot, so closing the sidebar cannot disable them.
-  expect(claims).toEqual(["sidebar.content", "app"])
+  // The commands and the answer capture hang off the app slot, so closing the sidebar cannot disable
+  // them; the save-for-later button lives in the composer footer, which outlives the sidebar too.
+  expect(claims).toEqual(["sidebar.content", "app", "prompt.footer"])
 })
 
-test("the always-mounted runtime owns the four notes commands", async () => {
+test("the always-mounted runtime owns the five notes commands", async () => {
   const h = harness()
   const app = await testRender(() => <NotesRuntime context={h.context} />, { width: 40, height: 6 })
   try {
     await app.renderOnce()
     expect(h.layers.at(-1)?.commands?.map((command) => command.id)).toEqual([
       "notes.add",
+      "notes.save_for_later",
       "notes.history",
       "notes.toggle",
       "notes.clear_done",
@@ -231,6 +254,56 @@ test("a long note stays one row and offers the view icon without an answer", asy
     await app.mockMouse.click(view.x + 1, view.y)
     await settle(app)
     expect(h.state.dialogs).toBe(1)
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("the footer button parks the composer text as a note and empties the field", async () => {
+  const h = harness({ composerText: "check the migrator later" })
+  const app = await testRender(
+    () => (
+      <box width={60}>
+        <NotesSaveButton context={h.context} />
+      </box>
+    ),
+    { width: 60, height: 6 },
+  )
+  try {
+    await app.renderOnce()
+    const button = node(app, "notes-save-prompt")
+    await app.mockMouse.click(button.x + 1, button.y)
+    await settle(app)
+
+    // The note carries the text, the field is emptied, nothing was sent.
+    const stored = h.stored()
+    expect(stored?.notes[SID]?.[0]?.text).toBe("check the migrator later")
+    expect(h.state.cleared).toBe(1)
+    expect(h.sent).toHaveLength(0)
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("the footer button says so when the composer is empty", async () => {
+  const h = harness()
+  const app = await testRender(
+    () => (
+      <box width={60}>
+        <NotesSaveButton context={h.context} />
+      </box>
+    ),
+    { width: 60, height: 6 },
+  )
+  try {
+    await app.renderOnce()
+    const button = node(app, "notes-save-prompt")
+    await app.mockMouse.click(button.x + 1, button.y)
+    await settle(app)
+
+    expect(h.state.writes).toBe(0)
+    expect(h.state.cleared).toBe(0)
+    expect(h.toasts.at(-1)?.message).toBe("Nothing to save for later")
   } finally {
     app.renderer.destroy()
   }
