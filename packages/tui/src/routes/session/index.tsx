@@ -105,6 +105,7 @@ import { collapseShellOutput, collapseToolOutput } from "../../util/collapse-too
 import { probeSessionImage, sessionImagePreviewHeight, type SessionImageProbe } from "../../util/session-image-preview"
 import { textPartImageSources, type MarkdownImageSource } from "../../util/session-image-markdown"
 import { acquireImagePreview, releaseImagePreview } from "../../util/session-image-preview-cache"
+import { isSessionDataImageUri } from "../../util/session-image-load"
 import { intersectsViewport, visibilityMargin } from "../../util/session-image-visibility"
 import { SessionImageBands } from "../../component/session-image-bands"
 import { Keymap, type KeymapCommand } from "../../context/keymap"
@@ -2784,6 +2785,30 @@ function SessionImages(props: { images: readonly SessionImagePreview[]; paddingL
   const dialog = useDialog()
   const renderer = useRenderer()
   const images = createMemo(() => (ctx.config.session?.image_preview ? props.images : []))
+  // A row's source is what the message carried: inline bytes, or a stored `media:` ref once
+  // experimental.media_blob is on. Only the preview cache knows how to read a ref, and only the
+  // resolved bytes can be measured, so a source that is not already inline is resolved once here and
+  // the row is sized from the result instead of the 16:9 fallback.
+  const [resolved, setResolved] = createSignal<ReadonlyMap<string, string>>(new Map())
+  const held = new Set<string>()
+  const source = (image: SessionImagePreview) => resolved().get(image.uri) ?? image.uri
+  createEffect(() => {
+    const pending = images().filter((image) => !image.probe && !isSessionDataImageUri(image.uri) && !held.has(image.uri))
+    if (pending.length === 0) return
+    pending.forEach((image) => held.add(image.uri))
+    void Promise.all(pending.map(async (image) => ({ uri: image.uri, preview: await acquireImagePreview(image.uri) })))
+      .catch(() => undefined)
+      .then((loaded) => {
+        if (!loaded) return
+        const next = new Map(resolved())
+        for (const item of loaded) if (item.preview) next.set(item.uri, item.preview)
+        setResolved(next)
+      })
+  })
+  onCleanup(() => {
+    held.forEach((uri) => releaseImagePreview(uri))
+    held.clear()
+  })
   // Previews stay drawn while a turn streams. They used to be suspended until the runner idled, which
   // hid every image for the whole duration of the next turn; the pixel budget and the per-viewport
   // residency below already bound the cost, and a streaming message contributes no sources at all
@@ -2812,7 +2837,7 @@ function SessionImages(props: { images: readonly SessionImagePreview[]; paddingL
   // The probe is width-independent, so it belongs to the image list rather than to the geometry:
   // a resize must not re-decode a payload that can run to the whole inline budget. A caller that
   // already probed its payload hands the verdict in, so it is read at most once.
-  const probes = createMemo(() => visible().map((image) => image.probe ?? probeSessionImage(image.uri)))
+  const probes = createMemo(() => visible().map((image) => image.probe ?? probeSessionImage(source(image))))
   // The image renderable sizes itself with the renderer's cell aspect ratio, so a row height
   // derived from anything else would letterbox the glyphs inside their own box. Read lazily
   // rather than through a memo: the resolution arrives without a dimension change, so a memo
@@ -2893,7 +2918,7 @@ function SessionImages(props: { images: readonly SessionImagePreview[]; paddingL
                   <Show when={!preview().oversized && !failed()} fallback={<text>No preview</text>}>
                     <Show when={shown()}>
                       <SessionImageBands
-                        source={image.uri}
+                        source={source(image)}
                         rows={preview().height}
                         // A band stays well under the renderer's paint limit (about twice the viewport).
                         maxBandRows={Math.max(4, Math.floor(ctx.terminal.height / 2))}
