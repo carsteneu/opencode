@@ -57,14 +57,16 @@ export function BoundedDiff(props: Props) {
           <text fg={local.noticeFg} selectable={false}>
             {`Preview limited (${formatDiffBytes(preview().bytes)}, ${preview().changedLines} changed lines)`}
           </text>
-          <text fg={local.previewFg} wrapMode="char">
-            {preview().preview}
-          </text>
+          {/* The affordance sits above the preview: a preview longer than the viewport clips its own
+              tail, and a hint below it would be the first thing to go. */}
           <Show when={local.expandable}>
             <text fg={local.noticeFg} selectable={false}>
               Click to render the full patch.
             </text>
           </Show>
+          <text fg={local.previewFg} wrapMode="char">
+            {preview().preview}
+          </text>
         </box>
       }
     >
