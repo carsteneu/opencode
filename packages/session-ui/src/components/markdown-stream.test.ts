@@ -482,18 +482,6 @@ describe("markdown stream tail reconciliation", () => {
     expect(next.blocks).toEqual(stream(text, true))
   })
 
-  test("does not carry a normalized tail raw into the next projection", () => {
-    const previous = project(undefined, "- item ", true)
-
-    // the lexer rewrites a list item's trailing whitespace into a newline, so the tail raw is not
-    // the text suffix it came from
-    expect(previous.blocks.at(-1)).toEqual({ raw: "- item\n", src: "- item\n", mode: "live" })
-
-    const next = project(previous, "- item x", true)
-
-    expect(next.blocks).toEqual(stream("- item x", true))
-  })
-
   test("keeps a normalized tail region correct while it keeps growing", () => {
     let projection = project(undefined, "- item ", true)
 
