@@ -4,6 +4,7 @@ import { createGlobalEmitter } from "@solid-primitives/event-bus"
 import { onCleanup } from "solid-js"
 import { createSimpleContext } from "./helper"
 import { createMediaCache } from "../util/media"
+import { setImageMediaReader } from "../util/session-image-preview-cache"
 import { useLog } from "./log"
 
 type ManagedService = {
@@ -28,6 +29,9 @@ export const {
     let headers = props.headers
     let persistentPty = url ? createPersistentPtyClient(api, { url }) : undefined
     const media = createMediaCache(() => api)
+    // Stored media (`media:<hash>` refs, written while `experimental.media_blob` is on) is only readable through this
+    // cache, so the preview pipeline and the save dialog resolve refs through it rather than keeping their own copy.
+    setImageMediaReader((source) => media.read(source))
 
     const connection = createClientConnection(api, {
       reconnect: service

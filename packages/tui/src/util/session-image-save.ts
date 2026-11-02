@@ -1,5 +1,6 @@
 import path from "node:path"
 import { mkdir, writeFile } from "node:fs/promises"
+import { resolveImageToDataUri } from "./session-image-preview-cache"
 
 const DATA_IMAGE = /^data:([^;,]+);base64,(.*)$/s
 const IMAGE_EXTENSION = /\.(png|jpe?g|webp|gif|ico|avif|bmp|tiff)$/i
@@ -98,8 +99,11 @@ export function resolveSessionImageDirectory(input: string, roots: { home: strin
 export async function saveSessionImage(uri: string, directory: string, label?: string): Promise<string> {
   if (!directory.trim()) throw new Error("Image save directory is required")
   if (directory.includes("\0")) throw new Error("Image save directory is invalid")
-  const data = decodeSessionImage(uri)
-  const filename = sessionImageFilename(uri, label, data)
+  // A row's source is whatever the message carried: inline bytes, a URL, a local path or a `media:` ref. Resolving
+  // first means the dialog writes the same bytes it displayed instead of only understanding inline data URLs.
+  const resolved = (await resolveImageToDataUri(uri)) ?? uri
+  const data = decodeSessionImage(resolved)
+  const filename = sessionImageFilename(resolved, label, data)
   await mkdir(directory, { recursive: true, mode: 0o700 })
   return publishUnique(directory, filename, data)
 }
