@@ -985,7 +985,7 @@ describe("OpenAI Chat route", () => {
     Effect.gen(function* () {
       const mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model,
           messages: [
             Message.user([
@@ -1012,7 +1012,7 @@ describe("OpenAI Chat route", () => {
   it.effect("requires inline data for office documents", () =>
     Effect.gen(function* () {
       const error = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model,
           messages: [
             Message.user({
@@ -1071,7 +1071,7 @@ describe("OpenAI Chat route", () => {
     Effect.gen(function* () {
       const mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
       const prepared = yield* compileRequest(
-        LLM.request({
+        ai.request({
           model,
           messages: [
             Message.user("Read the sheet."),
