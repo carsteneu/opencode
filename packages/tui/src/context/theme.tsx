@@ -324,12 +324,12 @@ const themeContext = createSimpleContext({
       const sources = available()
       const name = sources[store.active] ? store.active : "opencode"
       try {
-        return loadTheme(sources[name], name, store.mode)
+        return loadTheme(sources[name], name, store.mode, newDesigns())
       } catch (error) {
         if (name === "opencode") throw error
         themeErrors.emit(name, error)
         setStore("active", "opencode")
-        return loadTheme(sources.opencode, "opencode", store.mode)
+        return loadTheme(sources.opencode, "opencode", store.mode, newDesigns())
       }
     })
     const modes = () => selected().modes
@@ -421,8 +421,8 @@ function usablePalette(colors: TerminalColors | undefined): colors is TerminalCo
   )
 }
 
-function loadTheme(source: ThemeDocumentSource, name: string, requested: "dark" | "light") {
-  const document = parseTheme(source, name)
+function loadTheme(source: ThemeDocumentSource, name: string, requested: "dark" | "light", newDesigns: boolean) {
+  const document = parseTheme(source, name, { newDesigns })
   const modes = themeModes(document)
   const mode = modes.includes(requested) ? requested : (modes[0] ?? requested)
   return { modes, mode, theme: resolveThemeDocument(document, mode) }

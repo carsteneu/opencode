@@ -1,4 +1,5 @@
 import path from "node:path"
+import { pathToFileURL } from "node:url"
 import { documentMimes } from "../../prompt/attachment"
 
 // Bound filesystem work per terminal paste; the byte budget also bounds staged data.
@@ -55,8 +56,19 @@ export async function resolvePastedAttachments(text: string, platform: string) {
       type: "file" as const,
       uri: `data:${item.attachment.mime};base64,${Buffer.from(item.attachment.content).toString("base64")}`,
       filename,
+      path: path.resolve(item.filepath),
     }
   })
+}
+
+// Keep the captured bytes: a local server may not have the terminal's access to the source file.
+export function promptFilesForServer<T extends { uri: string; path?: string }>(
+  files: readonly T[] | undefined,
+  localServer: boolean,
+) {
+  return files?.map(({ path: file, ...rest }) =>
+    file && localServer ? { ...rest, source: { type: "uri" as const, uri: pathToFileURL(file).href } } : rest,
+  )
 }
 
 const mimeTypes: Record<string, string> = {

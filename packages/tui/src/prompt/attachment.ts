@@ -2,14 +2,15 @@ import type { PromptInput } from "@opencode/schema"
 
 type PromptFile = PromptInput.FileAttachment
 type PromptFileIdentity = Pick<PromptFile, "uri" | "name" | "description">
-type ProjectedFile = Readonly<{
-  data: string
-  mime: string
-  source: { type: string }
-  name?: string
-  description?: string
-  mention?: { text: string }
-}>
+type ProjectedFile = Readonly<
+  {
+    mime: string
+    source: { type: string }
+    name?: string
+    description?: string
+    mention?: { text: string }
+  } & ({ data: string } | { uri: string })
+>
 
 /**
  * Office and OpenDocument media types. The composer admits them as file attachments and labels them `[File N]`
@@ -86,7 +87,7 @@ export function deduplicateVisibleImages<T extends ProjectedFile>(files: readonl
     file.mime.startsWith("image/") && file.source.type === "inline" && file.mention?.text
       ? {
           metadata: JSON.stringify([file.mime, file.name ?? null, file.description ?? null, file.mention.text]),
-          payload: file.data,
+          payload: "uri" in file ? file.uri : file.data,
         }
       : undefined,
   )

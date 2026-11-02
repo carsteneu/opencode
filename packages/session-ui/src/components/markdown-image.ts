@@ -1,3 +1,4 @@
+import { abort } from "@opencode/util/abort"
 import { isLineRangeHash, localImagePath, parsePathLineSuffix } from "@opencode/util/path"
 import type { ReadMarkdownImage } from "../context/markdown"
 
@@ -41,7 +42,7 @@ export function createMarkdownImages(read: ReadMarkdownImage) {
       const paths = new Set(images.map((image) => image.dataset.localImage))
       entries.forEach((entry, path) => {
         if (paths.has(path)) return
-        entry.controller.abort()
+        abort(entry.controller)
 
         if (entry.url) URL.revokeObjectURL(entry.url)
         entries.delete(path)
@@ -82,7 +83,7 @@ export function createMarkdownImages(read: ReadMarkdownImage) {
     },
     dispose() {
       entries.forEach((entry) => {
-        entry.controller.abort()
+        abort(entry.controller)
 
         if (entry.url) URL.revokeObjectURL(entry.url)
       })

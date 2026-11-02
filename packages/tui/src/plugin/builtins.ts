@@ -6,6 +6,7 @@ import PromptTokensPerSecond from "../feature-plugins/prompt/tokens-per-second"
 import SidebarContext from "../feature-plugins/sidebar/context"
 import SidebarFooter from "../feature-plugins/sidebar/footer"
 import SidebarFooterIdentity from "../feature-plugins/sidebar/footer-identity"
+import SidebarLimit from "../feature-plugins/sidebar/limit"
 import SidebarMcp from "../feature-plugins/sidebar/mcp"
 import SidebarNotes from "../feature-plugins/sidebar/notes"
 import SidebarTitleRename from "../feature-plugins/sidebar/title-rename"
@@ -23,6 +24,7 @@ export const builtins = [
   PromptFooter,
   PromptBtw,
   SidebarContext,
+  SidebarLimit,
   SidebarMcp,
   SidebarTodo,
   SidebarFooter,
