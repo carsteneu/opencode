@@ -300,7 +300,10 @@ test("gives a markdown image its own full-width line", async () => {
     // payload or the path, and nothing may leave as anything but a read, which is the only shape a
     // leaked preview could take.
     expect(requests.filter((entry) => entry.url.includes("data:image") || entry.url.includes(target))).toEqual([])
-    expect(requests.filter((entry) => entry.method !== "GET")).toEqual([])
+    // The goal plugin polls its state over an RPC POST; it never sees a preview.
+    expect(
+      requests.filter((entry) => entry.method !== "GET" && !entry.url.includes("/api/rpc/opencode.goal/")),
+    ).toEqual([])
     // And the resolved payload must not surface in the transcript text either.
     expect(setup.captureCharFrame()).not.toContain("data:image")
   } finally {
