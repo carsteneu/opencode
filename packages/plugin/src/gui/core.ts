@@ -59,8 +59,9 @@ export interface App {
    * - `dev`: the development channel.
    * - `beta`: the beta channel.
    * - `prod`: the stable release.
+   * - `special`: a fork build that installs beside the official app.
    */
-  readonly channel: "local" | "dev" | "beta" | "prod"
+  readonly channel: "local" | "dev" | "beta" | "prod" | "special"
   /**
    * Where the code runs. Main is always `desktop`.
    * - `web`: a browser tab.

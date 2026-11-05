@@ -33,7 +33,7 @@ const previewCompressionFpm = (target: "deb" | "rpm") => [`--${target}-compressi
 function resolveChannel() {
   const raw = process.env.OPENCODE_CHANNEL
 
-  if (raw === "dev" || raw === "beta" || raw === "prod") return raw
+  if (raw === "dev" || raw === "beta" || raw === "prod" || raw === "special") return raw
 
   if (raw === "latest") return "prod"
 
@@ -44,6 +44,7 @@ const APP_IDS = {
   dev: "ai.opencode.desktop.dev",
   beta: "ai.opencode.desktop.beta",
   prod: "ai.opencode.desktop",
+  special: "ai.opencode.desktop.special",
 } as const
 
 // libappimage (used by AppImageLauncher) resolves the .desktop entry inside an
@@ -269,6 +270,29 @@ export function getConfig() {
         },
         deb: { fpm: [metainfoFpm(appId), legacyDesktopEntryFpm] },
         rpm: { packageName: "opencode", fpm: [rpmNoBuildIdLinksFpm, metainfoFpm(appId), legacyDesktopEntryFpm] },
+      }
+    }
+
+    // A fork channel beside the official app: its own app id, product name and
+    // package name, so both installs and their config directories stay apart.
+    case "special": {
+      return {
+        ...base,
+        appId,
+        productName: "OCSpecial",
+        // The fork publishes its own Linux x64 desktop on the fork repository;
+        // the release script uploads the artifacts and the update metadata.
+        publish: {
+          provider: "github",
+          owner: "carsteneu",
+          repo: "opencode",
+          channel: "patched",
+        },
+        // rpm stays out until it is asked for; electron-builder sanitizes the
+        // `-patched.N` suffix for both targets (`2.2.5~patched.1`).
+        linux: { ...(base.linux ?? {}), target: ["AppImage", "deb"] },
+        deb: { packageName: "ocspecial", fpm: [metainfoFpm(appId)] },
+        rpm: { packageName: "ocspecial", fpm: [rpmNoBuildIdLinksFpm, metainfoFpm(appId)] },
       }
     }
   }

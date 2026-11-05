@@ -3,9 +3,10 @@ import { resolveChannel } from "./utils"
 
 const arg = process.argv[2]
 
-const channel = arg === "dev" || arg === "beta" || arg === "prod" ? arg : resolveChannel()
+const channel = arg === "dev" || arg === "beta" || arg === "prod" || arg === "special" ? arg : resolveChannel()
 
-const src = `./icons/${channel}`
+// The fork channel ships the production artwork until it has a set of its own.
+const src = `./icons/${channel === "special" ? "prod" : channel}`
 
 const dest = "resources/icons"
 

@@ -8,7 +8,7 @@ export function parseCliVersion(output: string) {
 }
 
 export function serviceVersion(input: {
-  readonly channel: "local" | "dev" | "beta" | "prod"
+  readonly channel: "local" | "dev" | "beta" | "prod" | "special"
   readonly isolated?: boolean
   readonly mode: "initial" | "reconnect"
   readonly version: string

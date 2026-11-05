@@ -67,13 +67,13 @@ if (!app && os === "win") {
 async function writeUpdateConfig(resources: string) {
   const publish = getConfig().publish
   const name: string = (await Bun.file("package.json").json()).name
+  // A generic feed carries a url; the GitHub provider carries owner and repo instead.
+  const source =
+    publish.provider === "github"
+      ? ["provider: github", `owner: ${publish.owner}`, `repo: ${publish.repo}`, `channel: ${publish.channel}`]
+      : [`provider: ${publish.provider}`, `url: ${publish.url}`, `channel: ${publish.channel}`]
   await Bun.write(
     path.join(resources, "app-update.yml"),
-    [
-      `provider: ${publish.provider}`,
-      `url: ${publish.url}`,
-      `channel: ${publish.channel}`,
-      `updaterCacheDirName: '${name.replace(/[/\\:*?"<>|]/g, "").toLowerCase()}-updater'`,
-    ].join("\n") + "\n",
+    [...source, `updaterCacheDirName: '${name.replace(/[/\\:*?"<>|]/g, "").toLowerCase()}-updater'`].join("\n") + "\n",
   )
 }

@@ -242,3 +242,65 @@ jobs:
           name: patched-binaries-${{ env.VERSION }}
           path: packages/cli/dist/patched-release/
           if-no-files-found: error
+
+  # The fork's desktop, built from the same commit as the CLI above. It rebuilds the CLI
+  # instead of borrowing the publishing job's artifact: the desktop packs
+  # packages/cli/dist/<package> into its own resources and verifies it in afterPack, so it
+  # needs the package directory, not the renamed release binaries. This job creates no
+  # release — attaching the desktop assets to it belongs to packages/cli/script/patched-release.ts,
+  # which owns the channel contract.
+  build-desktop:
+    name: Build OCSpecial desktop (linux-x64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    needs: build-patched
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ github.event_name == 'push' && github.ref_type == 'tag' && github.ref_name || inputs.version }}
+      OPENCODE_CHANNEL: special
+      OPENCODE_TARGET: linux-x64
+      # electron-builder stamps the version from here instead of rewriting package.json.
+      OPENCODE_VERSION: ${{ github.event_name == 'push' && github.ref_type == 'tag' && github.ref_name || inputs.version }}
+    # The same group as the job above: a desktop build must not overlap a run that publishes
+    # the version it belongs to.
+    concurrency:
+      group: build-patched-v2
+      cancel-in-progress: false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: "1.4.4"
+
+      # Without a target filter the CLI build produces every target, including the
+      # avx2:false `cli-linux-x64-baseline` package the desktop bundles.
+      - name: Build the CLI the desktop bundles
+        working-directory: packages/cli
+        env:
+          BUN_COMPILE_RELEASE: bun-v1.4.4
+          GH_TOKEN: ${{ github.token }} # read-only; raises the rate limit for Bun release downloads
+        run: |
+          set -euo pipefail
+          bun run build
+          rm -rf dist/.bun
+
+      - name: Build and pack the desktop
+        working-directory: packages/desktop
+        run: |
+          set -euo pipefail
+          bun run build
+          bun run pack
+
+      - name: Upload the desktop packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: patched-desktop-${{ env.VERSION }}
+          path: dist/desktop
+          if-no-files-found: error
