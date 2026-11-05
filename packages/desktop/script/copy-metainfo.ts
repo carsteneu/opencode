@@ -1,8 +1,8 @@
-import { resolveChannel } from "./utils"
+import { isChannel, resolveChannel } from "./utils"
 
 const arg = process.argv[2]
 
-const channel = arg === "dev" || arg === "beta" || arg === "prod" || arg === "special" ? arg : resolveChannel()
+const channel = isChannel(arg) ? arg : resolveChannel()
 
 const appId = channel === "prod" ? "ai.opencode.desktop" : `ai.opencode.desktop.${channel}`
 

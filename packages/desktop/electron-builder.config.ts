@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url"
 import { Arch, type Configuration } from "electron-builder"
 import { NativeArch } from "../../script/native-arch"
 import { DESKTOP_NATIVE_ENGLISH } from "@opencode/app/i18n/desktop-native"
-import { CLI_BINARIES, getCurrentCli, nodePtyPackage } from "./script/utils"
+import { CLI_BINARIES, getCurrentCli, nodePtyPackage, resolveChannel } from "./script/utils"
 
 const packageDir = path.dirname(fileURLToPath(import.meta.url))
 
@@ -29,16 +29,6 @@ const metainfoFpm = (appId: string) =>
 // Dev and beta package every commit, so they trade about 5% (deb) and 17% (rpm) larger files for xz -1, which
 // compresses the payload about 3x faster than the deb default (-3) and 5x faster than the rpm default (-9).
 const previewCompressionFpm = (target: "deb" | "rpm") => [`--${target}-compression-level`, "1"]
-
-function resolveChannel() {
-  const raw = process.env.OPENCODE_CHANNEL
-
-  if (raw === "dev" || raw === "beta" || raw === "prod" || raw === "special") return raw
-
-  if (raw === "latest") return "prod"
-
-  return "dev"
-}
 
 const APP_IDS = {
   dev: "ai.opencode.desktop.dev",

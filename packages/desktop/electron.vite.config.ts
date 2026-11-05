@@ -2,17 +2,7 @@ import { defineConfig } from "electron-vite"
 import type { Plugin } from "vite"
 import { BetaNotes } from "./script/beta-notes"
 import { pickerPlugin } from "./script/picker"
-import { nodePtyPackage } from "./script/utils"
-
-function resolveChannel() {
-  const raw = process.env.OPENCODE_CHANNEL
-
-  if (raw === "local" || raw === "dev" || raw === "beta" || raw === "prod") return raw
-
-  if (raw === "latest") return "prod"
-
-  return "dev"
-}
+import { nodePtyPackage, resolveChannel } from "./script/utils"
 
 const appPlugin = (await import("@opencode/app/vite")).default
 

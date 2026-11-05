@@ -1,9 +1,9 @@
 import { $ } from "bun"
-import { resolveChannel } from "./utils"
+import { isChannel, resolveChannel } from "./utils"
 
 const arg = process.argv[2]
 
-const channel = arg === "dev" || arg === "beta" || arg === "prod" || arg === "special" ? arg : resolveChannel()
+const channel = isChannel(arg) ? arg : resolveChannel()
 
 // The fork channel ships the production artwork until it has a set of its own.
 const src = `./icons/${channel === "special" ? "prod" : channel}`

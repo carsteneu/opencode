@@ -129,3 +129,22 @@ test("bundles one Effect runtime and Drizzle while keeping native dependencies e
     if (previousTarget !== undefined) process.env.OPENCODE_TARGET = previousTarget
   }
 }, 30_000)
+
+// A channel this build does not know falls back to dev, and the define is what gives the
+// packaged app its identity: userData directory, app name and updater policy. Beta is left
+// out because its build fetches release notes.
+test("every channel's identity reaches the main bundle", async () => {
+  const previous = process.env.OPENCODE_CHANNEL
+
+  try {
+    for (const channel of ["dev", "prod", "special"] as const) {
+      process.env.OPENCODE_CHANNEL = channel
+      const main = (await load("build")).config.main
+      expect(main?.define?.["import.meta.env.OPENCODE_CHANNEL"], channel).toBe(JSON.stringify(channel))
+    }
+  } finally {
+    delete process.env.OPENCODE_CHANNEL
+
+    if (previous !== undefined) process.env.OPENCODE_CHANNEL = previous
+  }
+})
