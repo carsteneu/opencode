@@ -279,10 +279,13 @@ jobs:
       # avx2:false `cli-linux-x64-baseline` package the desktop bundles. OPENCODE_TARGET must
       # stay off this step: the same variable filters this build to one target, and that
       # filter matches `opencode-linux-x64` alone, which drops the baseline package.
+      # The version is the opposite case: without OPENCODE_VERSION the CLI stamps itself
+      # `0.0.0-<channel>-<run>`, and the desktop bundles that string as its own CLI version.
       - name: Build the CLI the desktop bundles
         working-directory: packages/cli
         env:
           BUN_COMPILE_RELEASE: bun-v1.4.4
+          OPENCODE_VERSION: ${{ env.VERSION }}
           GH_TOKEN: ${{ github.token }} # read-only; raises the rate limit for Bun release downloads
         run: |
           set -euo pipefail
