@@ -258,10 +258,6 @@ jobs:
       contents: read
     env:
       VERSION: ${{ github.event_name == 'push' && github.ref_type == 'tag' && github.ref_name || inputs.version }}
-      OPENCODE_CHANNEL: special
-      OPENCODE_TARGET: linux-x64
-      # electron-builder stamps the version from here instead of rewriting package.json.
-      OPENCODE_VERSION: ${{ github.event_name == 'push' && github.ref_type == 'tag' && github.ref_name || inputs.version }}
     # The same group as the job above: a desktop build must not overlap a run that publishes
     # the version it belongs to.
     concurrency:
@@ -280,7 +276,9 @@ jobs:
           bun-version: "1.4.4"
 
       # Without a target filter the CLI build produces every target, including the
-      # avx2:false `cli-linux-x64-baseline` package the desktop bundles.
+      # avx2:false `cli-linux-x64-baseline` package the desktop bundles. OPENCODE_TARGET must
+      # stay off this step: the same variable filters this build to one target, and that
+      # filter matches `opencode-linux-x64` alone, which drops the baseline package.
       - name: Build the CLI the desktop bundles
         working-directory: packages/cli
         env:
@@ -293,6 +291,11 @@ jobs:
 
       - name: Build and pack the desktop
         working-directory: packages/desktop
+        env:
+          OPENCODE_CHANNEL: special
+          OPENCODE_TARGET: linux-x64
+          # electron-builder stamps the version from here instead of rewriting package.json.
+          OPENCODE_VERSION: ${{ env.VERSION }}
         run: |
           set -euo pipefail
           bun run build
