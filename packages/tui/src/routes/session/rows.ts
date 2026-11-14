@@ -191,7 +191,8 @@ export function createSessionRows(
     ),
   )
 
-  createEffect(on([turnTokens, verbosity], rebuild, { defer: true }))
+  // A thinking toggle re-groups reasoning at low verbosity, so it rebuilds the projection like verbosity does.
+  createEffect(on([turnTokens, verbosity, groupReasoning], rebuild, { defer: true }))
 
   const appendMessage = (messageID: string) =>
     setRows(

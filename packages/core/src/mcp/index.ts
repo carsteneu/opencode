@@ -420,7 +420,14 @@ export const layer = (options?: Options) =>
           // The lock covers the attempt only: holding it across the wait would block every other
           // lifecycle operation on this server for up to six hours.
           yield* locks.withLock(name)(
-            isDeepStrictEqual(current.config, config) ? current.connection.start : replaceServer(name, config),
+            Effect.suspend(() => {
+              // Another path (a credential reconnect or /mcps) may have connected the server while this
+              // attempt waited for the lock. Starting again would abandon that live connection's scope,
+              // so an attempt only runs against a server that is still failed.
+              const live = entries.get(name)
+              if (!live || live.status.status !== "failed") return Effect.void
+              return isDeepStrictEqual(live.config, config) ? live.connection.start : replaceServer(name, config)
+            }),
           )
           // A replaced or settled episode must not commit over the one that replaced it.
           if (disposed || episodes.get(name) !== episode) return
@@ -776,6 +783,10 @@ export const layer = (options?: Options) =>
             fork,
             events: {
               connecting: Effect.gen(function* () {
+                // An automatic retry keeps the episode's failed status and its countdown visible: a flip to
+                // pending would hide the hint, re-alert the sidebar on the next failure and reset the
+                // startup window on every attempt.
+                if (episodes.has(name)) return
                 // A server still pending from creation keeps the window that started with its entry.
                 if (!entry.attempt || entry.status.status !== "pending")
                   entry.attempt = { started: yield* Clock.currentTimeMillis, settled: Latch.makeUnsafe() }

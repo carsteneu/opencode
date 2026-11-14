@@ -41,6 +41,10 @@ const databaseLayer = (lock: Effect.Effect<Semaphore.Semaphore>) =>
       if (supportsTuningPragmas && !durableObject) {
         yield* db.run("PRAGMA journal_mode = WAL")
         yield* db.run("PRAGMA synchronous = NORMAL")
+        // A blocking busy handler stalls the JavaScript event loop for up to this long per locked
+        // statement. This fork used to retry cooperatively instead (busy_timeout = 0); upstream's
+        // sqlite driver rewrite removed that hook, so the blocking default is back and a reimplementation
+        // on the new driver is an open follow-up.
         yield* db.run("PRAGMA busy_timeout = 5000")
         yield* db.run("PRAGMA cache_size = -64000")
         yield* db.run("PRAGMA wal_checkpoint(PASSIVE)")

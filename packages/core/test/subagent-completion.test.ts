@@ -201,6 +201,15 @@ describe("SubagentCompletion.bound", () => {
     expect(bounded.split("\n\n...")[0]!.length).toBeLessThanOrEqual(ToolOutput.MAX_BYTES)
   })
 
+  test("keeps the beginning of one line longer than the whole byte budget and reports the bytes", () => {
+    const value = "z".repeat(ToolOutput.MAX_BYTES * 2)
+    const bounded = SubagentCompletion.bound(value)
+    // The body is not empty: a clipped first line still tells the parent something.
+    expect(bounded.startsWith("zzz")).toBe(true)
+    expect(bounded).toContain(`...${ToolOutput.MAX_BYTES} bytes truncated...`)
+    expect(bounded.split("\n\n...")[0]!.length).toBeLessThanOrEqual(ToolOutput.MAX_BYTES)
+  })
+
   test("never claims a truncation it did not perform", () => {
     const value = `${"z".repeat(ToolOutput.MAX_BYTES - 1)}\n`
     expect(SubagentCompletion.bound(value)).toBe(value)

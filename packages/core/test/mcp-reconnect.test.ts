@@ -244,6 +244,25 @@ it.live(
 )
 
 it.live(
+  "keeps the retry hint through an attempt instead of flipping the status to pending",
+  () =>
+    withTempDir((tmp) =>
+      Effect.gen(function* () {
+        const pidFile = path.join(tmp.path, "server.pid")
+        const mcp = yield* Mcp.Service
+        yield* mcp.add("hinted", local({ MCP_RECONNECT_PID_FILE: pidFile, MCP_RECONNECT_EXIT_AFTER_LIST: "40" }))
+
+        // One pending belongs to the first connect. Every later attempt inside an episode must keep the
+        // failed status and its countdown: a pending flip would hide the hint and re-alert the sidebar.
+        const labels = yield* trace(mcp, "hinted", (seen) => seen.filter((label) => label === "retrying").length >= 2)
+        expect(labels.filter((label) => label === "pending")).toHaveLength(1)
+        expect(labels.at(0)).toBe("pending")
+      }).pipe(Effect.provide(reconnectLayer(reconnect))),
+    ),
+  30_000,
+)
+
+it.live(
   "ends the episode when the server is disconnected",
   () =>
     withTempDir((tmp) =>

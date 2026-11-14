@@ -51,6 +51,14 @@ export function bound(value: string) {
     kept.push(line)
     bytes += size
   }
+  // A single line longer than the whole budget keeps its beginning: replacing the subagent's output with
+  // nothing but a truncation note would tell the parent less than a clipped first line does.
+  const capped = kept.length === 0 && lines.length > 0
+  if (capped) {
+    const head = Buffer.from(lines[0]!, "utf-8").subarray(0, ToolOutput.MAX_BYTES)
+    const text = head.toString("utf-8").replace(/\uFFFD$/, "")
+    return `${text}\n\n...${Buffer.byteLength(lines[0]!, "utf-8") - Buffer.byteLength(text, "utf-8")} bytes truncated...`
+  }
   if (kept.length === lines.length) return value
   return `${kept.join("\n")}\n\n...${lines.length - kept.length} lines truncated...`
 }

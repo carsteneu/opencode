@@ -3,7 +3,7 @@ import { Location } from "@opencode/schema/location"
 import { Schema } from "effect"
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api"
 import { LocationQuery, locationQueryOpenApi } from "./location.js"
-import { AgentNotFoundError, ServiceUnavailableError } from "../errors.js"
+import { AgentNotFoundError } from "../errors.js"
 
 export const AgentGroup = HttpApiGroup.make("server.agent")
   .add(
@@ -25,7 +25,7 @@ export const AgentGroup = HttpApiGroup.make("server.agent")
       params: { agentID: Agent.ID },
       query: LocationQuery,
       success: Location.response(Agent.Info),
-      error: [AgentNotFoundError, ServiceUnavailableError],
+      error: AgentNotFoundError,
     })
       .annotateMerge(locationQueryOpenApi)
       .annotateMerge(

@@ -187,7 +187,7 @@ export class Asset {
   stream(): Stream.Stream<Uint8Array, AIError, Service> {
     const source = this.source
     if (source.type !== "url" || this.#bytes !== undefined) return Stream.fromEffect(this.bytes())
-    return Stream.unwrap(downloadStream(source, this.headers))
+    return Stream.unwrap(downloadStream(source, this.headers, this.kind === "image" ? MAX_IMAGE_DOWNLOAD_BYTES : undefined))
   }
 
   base64(): Effect.Effect<string, AIError, Service> {
@@ -323,22 +323,38 @@ const declaresImage = (headers: Record<string, string>) =>
 const downloadStream = Effect.fn("Media.downloadStream")(function* (
   source: Extract<Source, { readonly type: "url" }>,
   headers: Record<string, string> | undefined,
+  limit?: number,
 ) {
   const executor = yield* Service
   const response = yield* executor.execute(
     HttpClientRequest.get(source.url).pipe(HttpClientRequest.setHeaders(headers ?? {})),
   )
+  const http = responseHttp(response)
+  let received = 0
   return response.stream.pipe(
     Stream.mapError(
       (cause) =>
         new AIError({
           reason: new InvalidProviderOutputError({
             message: `Failed to read media from ${source.url}`,
-            http: responseHttp(response),
+            http,
             cause,
           }),
         }),
     ),
+    // The cap covers the streaming path too: `write` streams to disk, so an unbounded body would fill it.
+    Stream.tap((chunk) => {
+      received += chunk.byteLength
+      if (limit === undefined || received <= limit) return Effect.void
+      return Effect.fail(
+        new AIError({
+          reason: new InvalidProviderOutputError({
+            message: `Media image from ${source.url} exceeds the ${limit} byte limit`,
+            http,
+          }),
+        }),
+      )
+    }),
   )
 })
 

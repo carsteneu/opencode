@@ -1,6 +1,6 @@
 import { describe, expect } from "bun:test"
 import { NodeFileSystem } from "@effect/platform-node"
-import { Effect, Ref, Schema } from "effect"
+import { Effect, Ref, Schema, Stream } from "effect"
 import { FileSystem } from "effect"
 import { HttpClientRequest } from "effect/http"
 import { ai, AIError, Media, Message, ToolCallPart } from "../src/effect.js"
@@ -395,6 +395,35 @@ describe("Media", () => {
       ),
     )
   })
+  it.effect("caps a streamed image download, so writing one to disk cannot fill it", () => {
+    const limit = Media.MAX_IMAGE_DOWNLOAD_BYTES
+    const oversized = new Uint8Array(limit + 1)
+    return Effect.gen(function* () {
+      const error = yield* Media.url("https://cdn.example.test/streamed.png", { mediaType: "image/png" })
+        .stream()
+        .pipe(Stream.runDrain, Effect.flip)
+      expect(error).toBeInstanceOf(AIError)
+      expect(error.reason._tag).toBe("InvalidProviderOutput")
+      expect(error.message).toContain(`exceeds the ${limit} byte limit`)
+
+      // A non-image asset still streams unbounded: the cap is the image preview budget, not a general one.
+      const video = yield* Media.url("https://cdn.example.test/clip.mp4", { mediaType: "video/mp4" })
+        .stream()
+        .pipe(Stream.runCollect, Effect.map((chunks) => Array.from(chunks).reduce((sum, chunk) => sum + chunk.byteLength, 0)))
+      expect(video).toBe(limit + 1)
+    }).pipe(
+      Effect.provide(
+        dynamicResponse((input) =>
+          Effect.succeed(
+            input.respond(oversized, {
+              headers: { "content-type": input.request.url.endsWith(".png") ? "image/png" : "video/mp4" },
+            }),
+          ),
+        ),
+      ),
+    )
+  })
+
   it.effect("streams a URL download into place and leaves an existing file alone when the download fails", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem

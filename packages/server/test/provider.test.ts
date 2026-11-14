@@ -77,7 +77,9 @@ it.live(
         Effect.forkScoped,
       )
       // Everything else answers with the current snapshot, and clients refresh on the matching *.updated events.
-      for (const route of ["/api/agent", "/api/skill", "/api/integration"]) {
+      // /api/skill is the exception in this fork: the policy plugin removes skills that `skill.use` denies, so
+      // listing before activation would return a denied skill with its content (handlers/skill.ts).
+      for (const route of ["/api/agent", "/api/integration"]) {
         const response = yield* request("GET", route).pipe(Effect.timeout("2 seconds"))
         expect(response.status).toBe(200)
       }
