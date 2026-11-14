@@ -155,6 +155,9 @@ export const Info = Schema.Struct({
         description: "Session sidebar visibility; 'auto' shows it when space permits",
       }),
       scrollbar: Schema.optional(Schema.Boolean).annotate({ description: "Show the session transcript scrollbar" }),
+      submit_scroll: Schema.optional(Schema.Literals(["bottom", "keep"])).annotate({
+        description: "Jump to the latest message when sending a prompt, or keep the current transcript position",
+      }),
       thinking: Schema.optional(Schema.Literals(["show", "hide"])).annotate({
         description: "Show or hide model reasoning by default",
       }),
@@ -170,7 +173,7 @@ export const Info = Schema.Struct({
           "Show image previews in the session transcript: user attachments, tool results, and markdown image references (local files and remote https links)",
       }),
       tps: Schema.optional(Schema.Boolean).annotate({
-        description: "Show average tokens per second",
+        description: "Show output tokens per second while the model streams",
       }),
       markdown: Schema.optional(Schema.Literals(["source", "rendered"])).annotate({
         description: "Show Markdown syntax markers or conceal them in rendered transcript content",

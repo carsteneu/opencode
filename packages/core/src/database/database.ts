@@ -35,18 +35,18 @@ const databaseLayer = (lock: Effect.Effect<Semaphore.Semaphore>) =>
     Service,
     Effect.gen(function* () {
       const db = yield* makeDatabase
+      // An injected Durable Object client may run under a non-workerd module condition in tests.
+      const durableObject = EffectDrizzleSqlite.managesTransactionsNatively(db.$client)
 
-      if (supportsTuningPragmas) {
+      if (supportsTuningPragmas && !durableObject) {
         yield* db.run("PRAGMA journal_mode = WAL")
         yield* db.run("PRAGMA synchronous = NORMAL")
-        // Blocking busy handlers stall the JavaScript event loop; locked statements are
-        // retried cooperatively instead (see Database/Sqlite.retryLockedStatement).
-        yield* db.run("PRAGMA busy_timeout = 0")
+        yield* db.run("PRAGMA busy_timeout = 5000")
         yield* db.run("PRAGMA cache_size = -64000")
         yield* db.run("PRAGMA wal_checkpoint(PASSIVE)")
       }
       // Durable Object SQLite always enforces foreign keys and rejects the pragma.
-      if (supportsForeignKeyToggle) yield* db.run("PRAGMA foreign_keys = ON")
+      if (supportsForeignKeyToggle && !durableObject) yield* db.run("PRAGMA foreign_keys = ON")
       const semaphore = yield* lock
       yield* semaphore.withPermit(DatabaseMigration.apply(db))
 

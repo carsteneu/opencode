@@ -79,6 +79,7 @@ export const ServerDefinitions = Event.inventory(
   ...VcsEvent.Definitions,
   McpEvent.StatusChanged,
   McpEvent.ResourcesChanged,
+  McpEvent.ExperimentalEvent,
   // Live-only, so the inventory above leaves it out; the client still shows byte progress while tool
   // arguments stream, and it can only do that if the event reaches the public stream.
   SessionEvent.Tool.Input.Progress,

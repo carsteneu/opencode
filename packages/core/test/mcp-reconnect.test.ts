@@ -2,20 +2,28 @@ import path from "node:path"
 import { expect } from "bun:test"
 import { ConfigMCP } from "@opencode/schema/config/mcp"
 import { ID, type Payload } from "@opencode/schema/event"
+import { App } from "@opencode/core/app"
 import { Bus } from "@opencode/core/bus"
+import { Config } from "@opencode/core/config"
 import { Credential } from "@opencode/core/credential"
+import { Flag } from "@opencode/core/flag"
 import { Form } from "@opencode/core/form"
 import { Integration } from "@opencode/core/integration"
 import { Location } from "@opencode/core/location"
 import { Mcp } from "@opencode/core/mcp/index"
+import { McpPool } from "@opencode/core/mcp/pool"
 import { AbsolutePath } from "@opencode/core/schema"
 import { State } from "@opencode/core/state"
+import { LayerNode } from "@opencode/util/effect/layer-node"
+import { CrossSpawnSpawner } from "@opencode/util/cross-spawn-spawner"
 import { Context, Effect, Exit, Layer, Schedule, Scope, Stream } from "effect"
 import { TestConsole } from "effect/testing"
 import { it } from "./lib/effect"
 import { hostEnvironmentLayer } from "./fixture/environment"
 import { location } from "./fixture/location"
 import { withTempDir } from "./fixture/tmpdir"
+
+const poolLayer = McpPool.layer.pipe(Layer.provide(LayerNode.compile(CrossSpawnSpawner.node)))
 
 const fixture = path.join(import.meta.dir, "fixture/mcp-reconnect-stdio.ts")
 
@@ -31,8 +39,13 @@ const unusedIntegration = () => Effect.die("unused integration service")
 function reconnectLayer(options?: Mcp.Reconnect) {
   return Mcp.layer({ reconnect: options }).pipe(
     Layer.provideMerge(Form.layer),
+    Layer.provideMerge(Flag.layer),
     Layer.provide(
       Layer.mergeAll(
+        poolLayer,
+        Config.testLayer([]),
+        App.layer(),
+        Layer.succeed(Flag.Overrides, undefined),
         Layer.succeed(
           Location.Service,
           Location.Service.of(location({ directory: AbsolutePath.make(import.meta.dir) })),

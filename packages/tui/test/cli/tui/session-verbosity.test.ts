@@ -89,6 +89,12 @@ test("low wraps tools, thoughts and instruction loads in activity; text and othe
   ).toEqual([])
 })
 
+test("shown reasoning stays out of the low activity summary so the thoughts stay readable", () => {
+  expect(partPath({ type: "reasoning" }, "low", false)).toEqual(["reasoning"])
+  // Tools keep the activity wrapper: the exemption is about reasoning only.
+  expect(partPath({ type: "tool", name: "read" }, "low", false)).toEqual(["activity", "exploration"])
+})
+
 test("low hydration nests subgroups inside one activity group per run", () => {
   const messages: SessionMessageInfo[] = [
     { type: "user", id: "u", text: "Go", time: { created: 0 } },

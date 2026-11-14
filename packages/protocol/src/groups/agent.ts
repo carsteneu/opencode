@@ -10,7 +10,6 @@ export const AgentGroup = HttpApiGroup.make("server.agent")
     HttpApiEndpoint.get("agent.list", "/api/agent", {
       query: LocationQuery,
       success: Location.response(Schema.Array(Agent.Info)),
-      error: ServiceUnavailableError,
     })
       .annotateMerge(locationQueryOpenApi)
       .annotateMerge(

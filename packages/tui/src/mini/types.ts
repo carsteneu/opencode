@@ -103,6 +103,7 @@ export type RunAgent = {
   id: string
   name: string
   description?: string
+  color?: string
   mode: "subagent" | "primary" | "all"
   hidden: boolean
 }
@@ -317,7 +318,6 @@ export type FooterSubagentTab = {
   label: string
   description: string
   status: "running" | "completed" | "cancelled" | "error"
-  background?: boolean
   title?: string
 }
 

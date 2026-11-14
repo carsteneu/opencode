@@ -9,7 +9,7 @@ type TitleRenderer = Pick<CliRenderer, "isDestroyed" | "controlState" | "setTerm
 export function setTerminalTitle(renderer: TitleRenderer, title: string) {
   if (renderer.isDestroyed || renderer.controlState === RendererControlState.EXPLICIT_SUSPENDED) return
   try {
-    renderer.setTerminalTitle(title)
+    renderer.setTerminalTitle(title.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " "))
   } catch {}
 }
 

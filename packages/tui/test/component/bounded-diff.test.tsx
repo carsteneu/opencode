@@ -34,7 +34,9 @@ async function render(diff: string, expandable = true) {
         <BoundedDiff {...colors} diff={diff} expandable={expandable} />
       </box>
     ),
-    { width: 80, height: 20 },
+    // Tall enough for the notice, the affordance and the bounded preview: a viewport shorter than the
+    // content clips from the top, which hides the notice instead of the tail.
+    { width: 80, height: 60 },
   )
 }
 

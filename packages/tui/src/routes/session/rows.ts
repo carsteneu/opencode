@@ -4,6 +4,7 @@ import { createStore, produce, reconcile } from "solid-js/store"
 import { useConfig } from "../../config"
 import { useData } from "../../context/data"
 import { useClient } from "../../context/client"
+import { groupsReasoning } from "../../context/thinking"
 import {
   append,
   completePrevious,
@@ -44,7 +45,11 @@ export async function completeGroupBoundary(input: {
   }
 }
 
-export function createSessionRows(sessionID: Accessor<string>, onSynced?: (sessionID: string) => void) {
+export function createSessionRows(
+  sessionID: Accessor<string>,
+  onSynced?: (sessionID: string) => void,
+  beforePublish?: () => void,
+) {
   const data = useData()
   const client = useClient()
   const config = useConfig()
@@ -52,6 +57,8 @@ export function createSessionRows(sessionID: Accessor<string>, onSynced?: (sessi
   const revertBoundary = () => data.session.get(sessionID())?.revert?.messageID
   const turnTokens = () => Boolean(config.data.debug?.turn_tokens)
   const verbosity = () => config.data.session?.verbosity ?? defaultVerbosity
+  // Shown reasoning stays out of the low-verbosity activity summary (see partPath).
+  const groupReasoning = () => groupsReasoning(config.data.session?.thinking ?? "hide")
 
   function reduce() {
     const messages = data.session.message.list(sessionID())
@@ -67,6 +74,7 @@ export function createSessionRows(sessionID: Accessor<string>, onSynced?: (sessi
       inputs,
       turnTokens(),
       verbosity(),
+      groupReasoning(),
     )
     partitionPending(rows, pendingPermissions())
     const position = rows.findIndex((row) => row.type === "message" && inputs.has(row.messageID))
@@ -131,7 +139,7 @@ export function createSessionRows(sessionID: Accessor<string>, onSynced?: (sessi
             rows,
             messages: () => data.session.message.list(id).length,
             more: () => data.session.message.more(id),
-            loadMore: () => data.session.message.loadMore(id),
+            loadMore: () => data.session.message.loadMore(id, { beforePublish }),
             active: () => sessionID() === id,
           }).catch(() => undefined)
           if (sessionID() === id) onSynced?.(id)
@@ -202,7 +210,7 @@ export function createSessionRows(sessionID: Accessor<string>, onSynced?: (sessi
     setRows(
       produce((draft) => {
         if (!hasPart(draft, ref)) {
-          append(draft, ref, part, queuedStart(draft), verbosity())
+          append(draft, ref, part, queuedStart(draft), verbosity(), groupReasoning())
           return
         }
         if (part.type !== "reasoning" || part.time?.completed === undefined) return
@@ -345,6 +353,7 @@ export function reduceSessionRows(
   inputs = new Set<string>(),
   turnTokens = false,
   verbosity: Verbosity = defaultVerbosity,
+  groupReasoning = true,
 ) {
   const isInput = (message: SessionMessageInfo) => inputs.has(message.id)
   const pendingCompactions = messages.filter((message) => message.type === "compaction" && message.status === "running")
@@ -405,7 +414,7 @@ export function reduceSessionRows(
       rows.push({
         entry: { type: "part", ref: { messageID: message.id, partID } },
         part,
-        path: partPath(part, verbosity),
+        path: partPath(part, verbosity, groupReasoning),
       })
     })
     const terminal = (message.finish && !["tool-calls", "unknown"].includes(message.finish)) || message.error
