@@ -6,6 +6,12 @@ this file only records what is different here.
 
 Current base: upstream **2.1.4**.
 
+## Taking a new upstream release
+
+The merge procedure lives in [`docs/fork/upstream-merge.md`](docs/fork/upstream-merge.md): measure the
+delta first, merge the release tag `--no-ff` in its own worktree, resolve conflicts by class, prove the
+result with the file-set and delta checks, then fast-forward `workingv2` and push the branch before the tag.
+
 ## Install and update
 
 Releases come from `carsteneu/opencode`, not from upstream. The fork publishes into the release
