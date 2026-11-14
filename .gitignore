@@ -38,3 +38,6 @@ tsconfig.tsbuildinfo
 
 # Legal drafts pending review are kept outside the repository; never copy them in.
 legal-drafts-private/
+
+# Output the claim verifier captures when it re-runs a test command.
+.check-verify.log
