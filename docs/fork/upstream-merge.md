@@ -5,7 +5,7 @@ Applies to the `workingv2` line in this repository. Upstream is `origin` (`sst/o
 
 Every number below was measured during a real merge; the running example is v2.2.5 (981 commits, 3881 files,
 57 conflicts, 02./03.11.2026) with the v2.3.0 outlook (890 commits, 6404 files, 0 new migrations).
-Read this before starting; follow it in order. `RULES.md` rule 15 makes the first two steps mandatory.
+Read this before starting; follow it in order. `PROJECT_RULES.md` rule 15 makes the first two steps mandatory.
 
 ## Phase 0 — Preconditions
 

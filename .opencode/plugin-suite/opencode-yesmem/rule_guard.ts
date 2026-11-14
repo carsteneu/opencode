@@ -1,6 +1,6 @@
 // rule_guard — pre-tool rule compliance hook.
 //
-// Fires on every tool call and evaluates it against RULES.md via a small model.
+// Fires on every tool call and evaluates it against PROJECT_RULES.md via a small model.
 //   BLOCK:   Write/Edit/Patch violating a rule → the call is rejected (Tool.Error)
 //   SUGGEST: missed skill activation → directive injected into the tool result
 //   PASS:    no issue
@@ -47,8 +47,8 @@ async function readText(file: string): Promise<string | undefined> {
 }
 
 async function loadRules(directory: string): Promise<string> {
-  const content = await readText(`${directory}/RULES.md`)
-  if (content === undefined) return "No RULES.md found in project root"
+  const content = (await readText(`${directory}/PROJECT_RULES.md`)) ?? (await readText(`${directory}/RULES.md`))
+  if (content === undefined) return "No PROJECT_RULES.md (or RULES.md) found in project root"
   const lines = content
     .split("\n")
     .filter((line) => /^\d+\.\s/.test(line))
@@ -381,7 +381,7 @@ export function ruleGuard(directory: string) {
       if (!suggestableTools.has(toolName)) return
 
       const filePath = args?.filePath || args?.file_path || args?.path || ""
-      if (filePath && (filePath.endsWith("RULES.md") || filePath.endsWith("rule_guard.ts"))) return
+      if (filePath && (filePath.endsWith("PROJECT_RULES.md") || filePath.endsWith("RULES.md") || filePath.endsWith("rule_guard.ts"))) return
 
       const docExtensions = /\.(md|txt|rst|pdf)(\*|$|,)/
       const isDocTarget =
