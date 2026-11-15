@@ -1,8 +1,8 @@
 # Hinweise zum Fork
 
-Dies ist ein persönlicher Fork von [sst/opencode](https://github.com/sst/opencode) auf der v2-Linie. Er folgt dem Upstream und ergänzt ihn an wenigen Stellen. Upstreams eigene Dokumentation gilt weiter; diese Datei hält nur fest, was hier anders ist.
+Dies ist ein persönlicher Fork von [anomalyco/opencode](https://github.com/anomalyco/opencode) auf der v2-Linie. Er folgt dem Upstream und ergänzt ihn an wenigen Stellen. Upstreams eigene Dokumentation gilt weiter; diese Datei hält nur fest, was hier anders ist.
 
-Aktuelle Basis: Upstream **2.1.4**.
+Aktuelle Basis: Upstream **2.3.0**.
 
 ## Installation und Aktualisierung
 
@@ -44,7 +44,7 @@ Skripte, die nur der Fork kennt, stehen in `packages/cli/package.json`: `build:p
 
 1. `workingv2` ist sauber und deckungsgleich mit `fork/workingv2`.
 2. `bun run check` läuft grün.
-3. Das Tag `2.1.4-patched.N` sitzt auf dem Merge-Commit und wird übertragen.
+3. Das Tag `2.3.0-patched.N` sitzt auf dem Merge-Commit und wird übertragen.
 4. Die CI baut `opencode-linux-x64` und veröffentlicht eine Vorabversion.
 5. Der Download wird gegen die `.sha256`-Datei geprüft, bevor er installiert wird.
 

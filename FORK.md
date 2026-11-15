@@ -1,10 +1,10 @@
 # Fork notes
 
-This is a personal fork of [sst/opencode](https://github.com/sst/opencode) on the v2 line. It tracks
+This is a personal fork of [anomalyco/opencode](https://github.com/anomalyco/opencode) on the v2 line. It tracks
 upstream and carries a handful of additions on top. Upstream's own documentation still applies;
 this file only records what is different here.
 
-Current base: upstream **2.1.4**.
+Current base: upstream **2.3.0**.
 
 ## Taking a new upstream release
 
@@ -62,7 +62,7 @@ not exist upstream, so a manifest merge must never replace that file wholesale.
 
 1. `workingv2` clean and in sync with `fork/workingv2`.
 2. `bun run check` green.
-3. Tag `2.1.4-patched.N` on the merge commit, push the tag.
+3. Tag `2.3.0-patched.N` on the merge commit, push the tag.
 4. CI builds `opencode-linux-x64` and publishes a prerelease.
 5. Verify the download against the `.sha256` sidecar before installing it.
 
