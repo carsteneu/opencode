@@ -8,9 +8,14 @@ Current base: upstream **2.1.4**.
 
 ## Taking a new upstream release
 
-The merge procedure lives in [`docs/fork/upstream-merge.md`](docs/fork/upstream-merge.md): measure the
-delta first, merge the release tag `--no-ff` in its own worktree, resolve conflicts by class, prove the
-result with the file-set and delta checks, then fast-forward `workingv2` and push the branch before the tag.
+Two documents describe the working agreement: [`docs/fork/upstream-merge.md`](docs/fork/upstream-merge.md) for
+taking a new upstream release, and [`docs/fork/testing.md`](docs/fork/testing.md) for what has to be proven
+before a change counts as working (baseline sets, isolated `XDG_DATA_HOME`, the database matrix, the
+packaged-binary smoke gate).
+
+The merge procedure: measure the delta first, merge the release tag `--no-ff` in its own worktree, resolve
+conflicts by class, prove the result with the file-set and delta checks, then fast-forward `workingv2` and push
+the branch before the tag.
 
 ## Install and update
 

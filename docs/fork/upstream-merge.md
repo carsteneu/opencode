@@ -125,6 +125,8 @@ Order matters; later steps build on earlier ones.
 9. **Smoke gate** (always): fresh XDG root, PTY, `--standalone`, ~25 s. Expect no crash markers, the exact
    version, `plugin reconciliation completed`, and **zero `level=ERROR`**. `bun run release:patched <version>`
    performs this gate itself.
+10. The discipline behind 6–9 — baseline sets instead of failure counts, the isolated `XDG_DATA_HOME`, the
+   database-layer matrix, performance measurement — is [`testing.md`](testing.md).
 
 ## Phase 6 — Land it
 
