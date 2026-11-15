@@ -29,6 +29,8 @@ export type SessionGroup = {
 
 /** Experimental transcript detail; undefined selects the default production rules. */
 export type Verbosity = "low" | "medium" | "high"
+// This fork keeps medium as the default: its transcript already shows reasoning and tool results
+// individually, and "low" would fold both into one activity line. Low stays available on request.
 export const defaultVerbosity: Verbosity = "medium"
 
 export type SessionRow = SessionEntry | SessionGroup
@@ -82,9 +84,18 @@ const explorationTools = new Set(["read", "glob", "grep", "webfetch", "websearch
  * and web fetches. Low wraps every run of tools and thoughts in one activity summary.
  * Questions always stand alone.
  */
-export function partPath(part: AppendPart, verbosity: Verbosity): readonly GroupKind[] {
+export function partPath(
+  part: AppendPart,
+  verbosity: Verbosity,
+  groupReasoning = true,
+): readonly GroupKind[] {
   if (part.type === "tool" && part.name.toLowerCase() === "question") return []
-  const activity: GroupKind[] = verbosity === "low" && part.type !== "text" ? ["activity"] : []
+  // Shown reasoning is exempt from the low-verbosity activity summary: `thinking: show` asks to read the
+  // thoughts, and an activity group would collapse them into a one-line count.
+  const activity: GroupKind[] =
+    verbosity === "low" && part.type !== "text" && (part.type !== "reasoning" || groupReasoning)
+      ? ["activity"]
+      : []
   if (part.type === "reasoning") return [...activity, "reasoning"]
   if (part.type === "tool" && explorationTools.has(part.name.toLowerCase())) return [...activity, "exploration"]
   return activity
@@ -113,8 +124,11 @@ export function append(
   part: AppendPart,
   index = rows.length,
   verbosity = defaultVerbosity,
+  groupReasoning = true,
 ) {
-  const [node] = groupEntries<SessionEntry, GroupKind>([{ type: "part", ref }], () => partPath(part, verbosity))
+  const [node] = groupEntries<SessionEntry, GroupKind>([{ type: "part", ref }], () =>
+    partPath(part, verbosity, groupReasoning),
+  )
   if (node.type === "entry") {
     completePrevious(rows, index)
     rows.splice(index, 0, node.entry)

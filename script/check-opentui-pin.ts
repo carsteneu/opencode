@@ -15,7 +15,7 @@
 
 import path from "node:path"
 
-const EXPECTED_VERSION = "0.8.0"
+const EXPECTED_VERSION = "0.8.4"
 
 const PINNED = ["@opentui/core", "@opentui/keymap", "@opentui/solid"] as const
 const FORK_TARBALL = /github\.com\/carsteneu\/opentui\/releases\/download\//

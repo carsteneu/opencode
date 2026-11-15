@@ -5,6 +5,7 @@ import type { Context } from "@opencode/plugin/effect/plugin"
 import { Effect, Schema } from "effect"
 import { Config } from "../../config.js"
 import { ConfigEntryObserver } from "../../config/plugin/entry-observer.js"
+import { Flag } from "../../flag.js"
 import { Permission } from "../../permission.js"
 import DESCRIPTION from "../todowrite.txt"
 
@@ -47,9 +48,13 @@ export const Plugin = {
     const permission = yield* Permission.Service
     // Internal plugins are not re-run on config changes, so reload the tool transform instead.
     const loaded = yield* ConfigEntryObserver.observe(config, ctx.event, ctx.tool.reload())
-    // On by default in this fork: v2 hid the tool behind a flag, but the todo list is part of the
-    // workflow people came from v1 for. `experimental.todo: false` still turns it off.
-    const enabled = () => Config.latest(loaded.entries, "experimental")?.todo !== false
+    const flags = yield* Flag.Service
+    // On by default in this fork, including in release builds: the todo list is part of the workflow people
+    // came from v1 for. `experimental.todo: false` or `OPENCODE_FLAGS=-todo` still turns it off.
+    const enabled = () => {
+      const state = flags.resolve(loaded.entries).todo
+      return state.source === "default" ? true : state.enabled
+    }
 
     yield* ctx.tool
       .transform((editor) => {
@@ -66,9 +71,7 @@ export const Plugin = {
                 action: name,
                 resources: ["*"],
                 save: ["*"],
-                sessionID: context.sessionID,
-                agent: context.agent,
-                source: { type: "tool", messageID: context.messageID, id: context.id },
+                ...Permission.invocation(context),
               })
               .pipe(
                 Effect.mapError((error) => new ToolFailure({ message: "Unable to update todos", error })),

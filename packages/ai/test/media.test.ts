@@ -1,6 +1,6 @@
 import { describe, expect } from "bun:test"
 import { NodeFileSystem } from "@effect/platform-node"
-import { Effect, Ref, Schema } from "effect"
+import { Effect, Ref, Schema, Stream } from "effect"
 import { FileSystem } from "effect"
 import { HttpClientRequest } from "effect/http"
 import { ai, AIError, Media, Message, ToolCallPart } from "../src/effect.js"
@@ -239,7 +239,8 @@ describe("Media", () => {
       const json = Schema.encodeSync(codec)(message)
       expect(json).not.toContain("null")
       const restored = Schema.decodeSync(codec)(json)
-      const parts = restored.content.filter((part) => part.type === "media")
+      expect(restored.role).toBe("user")
+      const parts = restored.role === "user" ? restored.content.filter((part) => part.type === "media") : []
       expect(parts).toHaveLength(2)
       expect(parts[0].media).toBeInstanceOf(Media.Asset)
       expect(parts[0].media.source).toEqual({ type: "base64", data: "AQID", mediaType: "image/png" })
@@ -394,4 +395,59 @@ describe("Media", () => {
       ),
     )
   })
+  it.effect("caps a streamed image download, so writing one to disk cannot fill it", () => {
+    const limit = Media.MAX_IMAGE_DOWNLOAD_BYTES
+    const oversized = new Uint8Array(limit + 1)
+    return Effect.gen(function* () {
+      const error = yield* Media.url("https://cdn.example.test/streamed.png", { mediaType: "image/png" })
+        .stream()
+        .pipe(Stream.runDrain, Effect.flip)
+      expect(error).toBeInstanceOf(AIError)
+      expect(error.reason._tag).toBe("InvalidProviderOutput")
+      expect(error.message).toContain(`exceeds the ${limit} byte limit`)
+
+      // A non-image asset still streams unbounded: the cap is the image preview budget, not a general one.
+      const video = yield* Media.url("https://cdn.example.test/clip.mp4", { mediaType: "video/mp4" })
+        .stream()
+        .pipe(Stream.runCollect, Effect.map((chunks) => Array.from(chunks).reduce((sum, chunk) => sum + chunk.byteLength, 0)))
+      expect(video).toBe(limit + 1)
+    }).pipe(
+      Effect.provide(
+        dynamicResponse((input) =>
+          Effect.succeed(
+            input.respond(oversized, {
+              headers: { "content-type": input.request.url.endsWith(".png") ? "image/png" : "video/mp4" },
+            }),
+          ),
+        ),
+      ),
+    )
+  })
+
+  it.effect("streams a URL download into place and leaves an existing file alone when the download fails", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const dir = yield* fs.makeTempDirectoryScoped()
+      const target = `${dir}/clip.mp4`
+
+      yield* Media.write(Media.url("https://cdn.example.test/ok.mp4"), target)
+      expect(yield* fs.readFile(target)).toEqual(Uint8Array.from([7, 8, 9]))
+
+      const error = yield* Media.write(Media.url("https://cdn.example.test/expired.mp4"), target).pipe(Effect.flip)
+      expect(error.reason.http?.status).toBe(404)
+      expect(yield* fs.readFile(target)).toEqual(Uint8Array.from([7, 8, 9]))
+      expect(yield* fs.readDirectory(dir)).toEqual(["clip.mp4"])
+    }).pipe(
+      Effect.provide(NodeFileSystem.layer),
+      Effect.provide(
+        dynamicResponse((input) =>
+          Effect.succeed(
+            input.request.url.endsWith("/ok.mp4")
+              ? input.respond(Uint8Array.from([7, 8, 9]), { headers: { "content-type": "video/mp4" } })
+              : input.respond("file expired", { status: 404 }),
+          ),
+        ),
+      ),
+    ),
+  )
 })
