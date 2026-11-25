@@ -75,7 +75,9 @@ const it = testEffect(
 )
 
 describe("PluginInternal flags", () => {
-  it.live("turns flagged built-in tools on for a dev-channel server with no config while keeping todo off", () =>
+  // This fork keeps the todo tool on by default, in release builds too (tool/plugin/todo.ts), where
+  // upstream makes it opt-in. An explicit `-todo` still turns it off.
+  it.live("turns flagged built-in tools on for a dev-channel server with no config, todo included", () =>
     Effect.gen(function* () {
       const directory = yield* tmpdirScoped()
       const locations = yield* LocationServiceMap.Service
@@ -94,8 +96,25 @@ describe("PluginInternal flags", () => {
 
       expect(registered).toContain("opencode_artifact_create")
       expect(registered).toContain("shell")
-      expect(registered).not.toContain(TodoTool.name)
+      expect(registered).toContain(TodoTool.name)
       expect(direct).not.toContain("shell")
     }).pipe(Effect.provideService(Flag.Overrides, undefined)),
+  )
+
+  it.live("leaves todo out when the flag turns it off", () =>
+    Effect.gen(function* () {
+      const directory = yield* tmpdirScoped()
+      const locations = yield* LocationServiceMap.Service
+      const registered = yield* Effect.gen(function* () {
+        const plugins = yield* Plugin.Service
+        yield* plugins.awaitActivation
+        return (yield* (yield* Tool.Service).list()).map((tool) => tool.id)
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(locations.get(Location.Ref.make({ directory: AbsolutePath.make(directory.path) }))),
+      )
+
+      expect(registered).not.toContain(TodoTool.name)
+    }).pipe(Effect.provideService(Flag.Overrides, "-todo")),
   )
 })

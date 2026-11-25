@@ -83,7 +83,7 @@ export function ReasoningPart(props: {
               toggleable={inMinimal()}
               open={!inMinimal() || expanded()}
               done={isDone()}
-              title={inMinimal() && !expanded() ? summary().title : null}
+              title={summary().title}
               duration={isDone() ? Locale.duration(duration()) : undefined}
             />
           </box>

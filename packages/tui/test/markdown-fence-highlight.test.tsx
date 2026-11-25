@@ -170,8 +170,9 @@ test("leaves inline code and fence-like prose alone", async () => {
 }, 60000)
 
 test("leaves fences inside a list and inside a blockquote alone", async () => {
-  // A list item owns a real code block, a blockquote renders its body as markdown source. Both are left
-  // as written: whether such a fence opens or closes depends on the container, which a line cannot tell us.
+  // A list item owns a real code block; a blockquote's body is parsed as markdown, so its fence opens a code
+  // block there too. Both are left as written: whether such a fence opens or closes depends on the container,
+  // which a line cannot tell us. Neither reaches the frame, and neither gets an injected language.
   const text = [
     "- steps:",
     "",
@@ -187,7 +188,9 @@ test("leaves fences inside a list and inside a blockquote alone", async () => {
   await withSession([{ type: "text", text }], {}, "npm run build --quote", async (setup) => {
     expect(fenceBlock(setup, "npm run build --list").filetype).toBeUndefined()
     expect(fenceBlock(setup, "npm run build --list").content).toBe("npm run build --list")
-    expect(fenceBlock(setup, "npm run build --quote").content).toBe("```\nnpm run build --quote\n```")
+    // The container's fence is markdown syntax to the parser (OpenTUI 0.9), so only the body stays content.
+    expect(fenceBlock(setup, "npm run build --quote").content).toBe("npm run build --quote")
+    expect(fenceBlock(setup, "npm run build --quote").filetype).toBeUndefined()
     expect(setup.captureCharFrame()).not.toContain("bash")
   })
 }, 60000)
@@ -211,10 +214,9 @@ test("honours the default language in the reasoning block without touching the r
     { session: { thinking: "show" } },
     "npm ci",
     async (setup) => {
-      const block = reasoningBlock(setup)
-      expect(block?.filetype).toBe("markdown")
-      expect(block?.content).toBe("Checking the toolchain:\n\n```bash\nnpm ci\n```")
-      // Rendered markdown conceals the whole fence line, so the frame stays free of the injected tag.
+      // Rendered reasoning is native Markdown (ReasoningBody), so the fence becomes a code block inside
+      // it: the injected language decides the highlight, and the fence line never reaches the frame.
+      expect(fenceBlock(setup, "npm ci").filetype).toBe("bash")
       expect(setup.captureCharFrame()).toContain("npm ci")
       expect(setup.captureCharFrame()).not.toContain("bash")
     },

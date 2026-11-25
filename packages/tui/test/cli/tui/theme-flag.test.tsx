@@ -61,7 +61,12 @@ async function observe(
     return <text>{value.selected}</text>
   }
 
-  const resolved = createTuiResolvedConfig({ theme: input.config })
+  // Theme resolution is what this file measures, so it starts from the shipped default (new designs on,
+  // the "opencode" theme) instead of the fixture's previous-designs pin. A config passed here still wins.
+  const resolved = createTuiResolvedConfig({
+    experimental: { "new-designs": true },
+    theme: input.config ?? { name: "opencode" },
+  })
   let info: { theme?: { name?: string; mode?: "dark" | "light" | "system" } } = input.config
     ? { theme: input.config }
     : {}

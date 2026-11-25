@@ -248,7 +248,7 @@ describe("SubagentCompletion.deliver bounding", () => {
 
   test("passes a small completed result through unchanged", async () => {
     const text = await deliver({ status: "completed", output: "done", recovery: boundRecovery })
-    expect(text).toContain("<subagent")
+    expect(text).toContain('<background-result kind="subagent"')
     expect(text).toContain("\ndone\n")
   })
 })
