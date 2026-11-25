@@ -6,7 +6,14 @@ import { HttpClientRequest } from "effect/http"
 import { ProviderID } from "./schema/ids.js"
 import { AIError, InvalidProviderOutputError, InvalidRequestError } from "./schema/errors.js"
 import { ProviderMetadata } from "./schema/options.js"
-import { responseHttp, Service } from "./route/executor-service.js"
+import {
+  CurrentMiddleware,
+  type HttpMiddleware,
+  responseBytes,
+  responseHttp,
+  responseStream,
+  Service,
+} from "./route/executor-service.js"
 import { detectMediaType, fileMediaType } from "./utils/media-type.js"
 
 export { detectMediaType } from "./utils/media-type.js"
@@ -136,6 +143,8 @@ export class Asset {
   readonly providerMetadata?: ProviderMetadata
   /** Transient download credentials for `url` sources; see `Asset.Input.headers`. */
   readonly headers?: Record<string, string>
+  /** Middleware for downloading a `url` source; see `Asset.Input.middleware`. */
+  readonly middleware?: HttpMiddleware
 
   // Derived payload forms are cached on the instance because every protocol lowering re-reads the same payload. The
   // cache is check-then-set (concurrent first reads of a `url` source may both download) and is never observable
@@ -154,6 +163,7 @@ export class Asset {
     this.expiresAt = input.source.type === "url" ? input.source.expiresAt : undefined
     this.providerMetadata = input.providerMetadata
     this.headers = input.source.type === "url" ? input.headers : undefined
+    this.middleware = input.source.type === "url" ? input.middleware : undefined
   }
 
   /** Inline payload without effects, for protocols that embed base64 or data URLs directly. */
@@ -178,7 +188,7 @@ export class Asset {
           ? Effect.fromResult(Base64.decode(source.data)).pipe(
               Effect.mapError((cause) => invalid(`Media asset contains invalid base64 data`, cause)),
             )
-          : download(source, this.headers, this.kind === "image" ? MAX_IMAGE_DOWNLOAD_BYTES : undefined)
+          : download(source, this.headers, this.middleware, this.kind === "image" ? MAX_IMAGE_DOWNLOAD_BYTES : undefined)
       return decoded.pipe(Effect.tap((data) => Effect.sync(() => (this.#bytes = data))))
     })
   }
@@ -187,7 +197,9 @@ export class Asset {
   stream(): Stream.Stream<Uint8Array, AIError, Service> {
     const source = this.source
     if (source.type !== "url" || this.#bytes !== undefined) return Stream.fromEffect(this.bytes())
-    return Stream.unwrap(downloadStream(source, this.headers, this.kind === "image" ? MAX_IMAGE_DOWNLOAD_BYTES : undefined))
+    return Stream.unwrap(
+      downloadStream(source, this.headers, this.middleware, this.kind === "image" ? MAX_IMAGE_DOWNLOAD_BYTES : undefined),
+    )
   }
 
   base64(): Effect.Effect<string, AIError, Service> {
@@ -238,6 +250,12 @@ export namespace Asset {
      * credentials and cannot be downloaded again after a round-trip. Call `materialize()` before persisting.
      */
     readonly headers?: Record<string, string>
+    /**
+     * Middleware for downloading a `url` source, runtime-only like `headers`. A download never uses the caller's
+     * scoped middleware (`RequestExecutor.withMiddleware`), so hooks that add provider credentials can't reach another
+     * host. Routes set this to that middleware only for result URLs on the provider's origin.
+     */
+    readonly middleware?: HttpMiddleware
   }
 }
 
@@ -266,24 +284,35 @@ export const AssetSchema = AssetEncoded.pipe(
   }),
 )
 
+/**
+ * An image, or a URL or provider file reference whose type it doesn't state, which the provider checks itself. Build one with
+ * `Media.image`; an asset known to be a video, audio or document is rejected.
+ */
+export const ImageAssetSchema = AssetInstance.check(
+  Schema.makeFilter(
+    (asset) =>
+      asset.kind === "image" ||
+      ((asset.source.type === "url" || asset.source.type === "ref") && asset.source.mediaType === undefined) ||
+      `expected an image, got ${asset.mediaType}`,
+  ),
+).pipe(Schema.brand("Media.ImageAsset"))
+export type ImageAsset = typeof ImageAssetSchema.Type
+
 const download = Effect.fn("Media.download")(function* (
   source: Extract<Source, { readonly type: "url" }>,
   headers: Record<string, string> | undefined,
+  middleware: HttpMiddleware | undefined,
   limit?: number,
 ) {
   const executor = yield* Service
-  const response = yield* executor.execute(
-    HttpClientRequest.get(source.url).pipe(HttpClientRequest.setHeaders(headers ?? {})),
-  )
+  const response = yield* executor
+    .execute(HttpClientRequest.get(source.url).pipe(HttpClientRequest.setHeaders(headers ?? {})))
+    .pipe(Effect.provideService(CurrentMiddleware, middleware))
   const http = responseHttp(response)
-  const failure = (cause: unknown) =>
-    new AIError({
-      reason: new InvalidProviderOutputError({ message: `Failed to read media from ${source.url}`, http, cause }),
-    })
   const capped = limit ?? (declaresImage(response.headers) ? MAX_IMAGE_DOWNLOAD_BYTES : undefined)
-  // Only the capped read streams. Unbounded downloads keep `arrayBuffer` so their allocation pattern is unchanged.
-  if (capped === undefined) return new Uint8Array(yield* response.arrayBuffer.pipe(Effect.mapError(failure)))
-  return yield* response.stream.pipe(
+  // Only the capped read streams. Unbounded downloads keep the buffered read so their allocation pattern is unchanged.
+  if (capped === undefined) return yield* responseBytes(response)
+  return yield* responseStream(response).pipe(
     Stream.runFoldEffect(
       () => ({ chunks: [] as Array<Uint8Array>, bytes: 0 }),
       (acc, chunk) => {
@@ -311,7 +340,6 @@ const download = Effect.fn("Media.download")(function* (
       }
       return data
     }),
-    Effect.mapError((error) => (error instanceof AIError ? error : failure(error))),
   )
 })
 
@@ -323,25 +351,16 @@ const declaresImage = (headers: Record<string, string>) =>
 const downloadStream = Effect.fn("Media.downloadStream")(function* (
   source: Extract<Source, { readonly type: "url" }>,
   headers: Record<string, string> | undefined,
+  middleware: HttpMiddleware | undefined,
   limit?: number,
 ) {
   const executor = yield* Service
-  const response = yield* executor.execute(
-    HttpClientRequest.get(source.url).pipe(HttpClientRequest.setHeaders(headers ?? {})),
-  )
+  const response = yield* executor
+    .execute(HttpClientRequest.get(source.url).pipe(HttpClientRequest.setHeaders(headers ?? {})))
+    .pipe(Effect.provideService(CurrentMiddleware, middleware))
   const http = responseHttp(response)
   let received = 0
-  return response.stream.pipe(
-    Stream.mapError(
-      (cause) =>
-        new AIError({
-          reason: new InvalidProviderOutputError({
-            message: `Failed to read media from ${source.url}`,
-            http,
-            cause,
-          }),
-        }),
-    ),
+  return responseStream(response).pipe(
     // The cap covers the streaming path too: `write` streams to disk, so an unbounded body would fill it.
     Stream.tap((chunk) => {
       received += chunk.byteLength
@@ -403,6 +422,13 @@ export type Data = Uint8Array | ArrayBuffer | URL | string
 
 /** What file inputs accept: an `Asset` or plain `Data`. */
 export type Input = Asset | Data
+
+/** Normalize input into an `ImageAsset`; throws when it's known not to be an image. */
+export const image = (input: Input, mediaType?: string): ImageAsset => {
+  const asset = make(input, mediaType)
+  if (!Schema.is(ImageAssetSchema)(asset)) throw invalid(`expected an image, got ${asset.mediaType}`)
+  return asset
+}
 
 /**
  * Normalize file input into an `Asset`. Data URLs carry their media type and bytes or base64 are sniffed from magic

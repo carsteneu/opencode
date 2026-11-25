@@ -1028,6 +1028,7 @@ export function RunFooterView(props: RunFooterViewProps) {
             interrupt={() => subagentInterruptShortcut() || undefined}
             shellOutput={() => props.miniSettings().shell_output === "show"}
             mono={props.mono}
+            markdown={props.tuiConfig.session?.markdown}
           />
         </box>
       </Show>

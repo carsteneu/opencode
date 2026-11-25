@@ -120,6 +120,12 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
             fetch: !truthy(process.env.OPENCODE_DISABLE_MODELS_FETCH),
           },
           config: configOptions(process.env),
+          instructions: {
+            claude: !(
+              truthy(process.env.OPENCODE_DISABLE_CLAUDE_CODE) ||
+              truthy(process.env.OPENCODE_DISABLE_CLAUDE_CODE_PROMPT)
+            ),
+          },
           windows: {
             gitbash: process.env.OPENCODE_GIT_BASH_PATH,
           },

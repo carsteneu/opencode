@@ -8,6 +8,7 @@ import type { HttpMiddleware, Transport, TransportRuntime, WebSocketChannelExecu
 import type { Protocol } from "./protocol.js"
 import { applyCachePolicy } from "../cache-policy.js"
 import { applyEffortUpdates } from "../effort-updates.js"
+import { mapToolUpdates, planToolUpdates, type ToolUpdateEncoding } from "../tool-updates.js"
 import { normalizeToolHistory } from "../tool-history.js"
 import { sanitizeSurrogates } from "../utils/sanitize.js"
 import * as ProviderShared from "../protocols/shared.js"
@@ -67,6 +68,7 @@ export interface Route<
   readonly supportsEffortUpdates?: (request: LLMRequest) => boolean
   /** From the protocol: which document media types its `body.from` carries inline. */
   readonly lowersDocument?: (mediaType: string) => boolean
+  readonly toolUpdates?: ToolUpdateEncoding
   readonly sanitizer?: LanguageModelSanitizerCompatibility
   readonly with: {
     <Next extends CompactionOperations | undefined>(
@@ -379,6 +381,7 @@ function makeFromTransport<Body, Prepared, Frame, Event, State>(
       body: protocol.body,
       supportsEffortUpdates: protocol.supportsEffortUpdates,
       lowersDocument: protocol.lowersDocument,
+      toolUpdates: protocol.toolUpdates,
       sanitizer: protocol.sanitizer,
       with: (patch: RoutePatch<Body, Prepared>) => {
         const { compact, id, provider, providerMetadataKey, auth, transport, endpoint, ...options } = patch
@@ -550,8 +553,10 @@ const prepareRequest = (request: LLMRequest): LLMRequest => {
     [...new Map(tools.map((tool) => [`${tool.type}:${tool.name}`, tool])).values()].map((tool) =>
       tool.type === "tool" ? tool : { ...tool, tools: dedupe(tool.tools) },
     )
+  const project = (tools: LLMRequest["tools"]) => ToolSchemaProjection.tools(dedupe(tools), sanitized.model)
+  const updated = planToolUpdates(sanitized)
   const resolved = applyCachePolicy(
-    applyEffortUpdates({ ...sanitized, tools: ToolSchemaProjection.tools(dedupe(sanitized.tools), sanitized.model) }),
+    applyEffortUpdates(mapToolUpdates({ ...updated, tools: project(updated.tools) }, project)),
   )
   const headers = resolved.model.route.headers?.({ request: resolved })
   return headers === undefined ? resolved : { ...resolved, headers: { ...headers, ...resolved.headers } }

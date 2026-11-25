@@ -31,7 +31,6 @@ async function runArm(arm: "content" | "contentUpdate"): Promise<{ cpuMs: number
     syntaxStyle,
     content: "",
     streaming: true,
-    internalBlockMode: "top-level",
     tableOptions: { style: "grid", cellPaddingX: 1 },
   })
 

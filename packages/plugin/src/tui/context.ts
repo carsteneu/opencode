@@ -5,6 +5,7 @@ import type {
   FormInfo,
   SessionFormReplyInput,
   IntegrationInfo,
+  JobInfo,
   LocationRef,
   McpResource,
   McpServer,
@@ -119,6 +120,10 @@ export interface Data {
       sync(projectID: string): Promise<void>
       invalidate(projectID: string): void
     }
+  }
+  readonly job: {
+    /** Running background jobs owned by the session or any session below it. Experimental. */
+    list(sessionID: string): JobInfo[]
   }
   readonly shell: {
     list(location?: LocationRef): ShellInfo[]

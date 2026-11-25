@@ -176,10 +176,9 @@ export function Answer(props: {
             <markdown
               ref={useSessionLinks()}
               syntaxStyle={syntax()}
-              renderNode={props.markdown()}
+              renderBlock={props.markdown()}
               content={withDefaultFenceLanguage(props.answer)}
               conceal
-              internalBlockMode="top-level"
               tableOptions={{ style: "grid", cellPaddingX: 1 }}
               fg={overlay.markdown.text}
               bg={overlay.background.raised.high}

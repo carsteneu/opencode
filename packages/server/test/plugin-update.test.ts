@@ -22,6 +22,7 @@ function fakeUpdates(options: { fail?: readonly string[] } = {}): Fake {
     updates: {
       check: () => Effect.succeed(false),
       changes: () => Stream.empty,
+      intervals: () => Stream.empty,
       update: (target: string) =>
         Effect.suspend(() => {
           calls.push(target)

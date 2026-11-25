@@ -1,3 +1,4 @@
+import { SQLiteError } from "bun:sqlite"
 import { SqliteClient } from "@effect/sql-sqlite-bun"
 import { Effect, Layer } from "effect"
 import { SqlClient } from "effect/sql"
@@ -16,3 +17,6 @@ export const sqliteLayer = (config: SqliteClient.SqliteClientConfig): Layer.Laye
     Layer.effect(SqlClient.SqlClient, Effect.map(SqlClient.SqlClient, LockRetry.client)),
     Layer.orDie(SqliteClient.layer(config)),
   )
+
+// bun:sqlite throws SQLiteError, whose errno is SQLite's extended result code.
+export const resultCode = (cause: unknown) => (cause instanceof SQLiteError ? cause.errno : undefined)
